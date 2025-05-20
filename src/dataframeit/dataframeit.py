@@ -4,7 +4,7 @@ from langchain.output_parsers import PydanticOutputParser
 from tqdm import tqdm
 import polars as pl
 
-from utils import parse_json
+from .utils import parse_json
 
 # Função principal
 # Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
