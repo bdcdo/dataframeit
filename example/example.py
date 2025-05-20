@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Literal
+import polars as pl
+from dataframeit import dataframeit
 
 TEMPLATE = """
 Você é um advogado especialista em direito sanitário.
@@ -53,3 +55,10 @@ class RespostaFinalWrapper(BaseModel):
                                        description='Se o paciente pediu danos morais e, se sim, quanto. Responda "nao" se não há menção a danos morais na decisão. Responda None se o caso é fora do escopo.')
     danos_morais_concedido: tuple[Literal['sim', 'nao'], float] | None = Field(None,
                                        description='Se o magistrado concedeu o pedido danos morais e, se sim, de que valor. Responda None se não há menção a danos morais na decisão.')
+    
+if __name__=='__main__':
+    df = pl.read_excel('clusters_saude_cluster_amostras_rodada5_5porCluster.xlsx')
+    
+    df_final=dataframeit(df, RespostaFinalWrapper, TEMPLATE)
+
+    df_final.write_excel('clusters_analisados.xlsx')
