@@ -70,7 +70,7 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
             if col in expected_columns:
                 df = df.with_columns(
                     pl.when(pl.int_range(0, df.height) == i)
-                    .then(pl.lit(value))
+                    .then(pl.lit(value, allow_object=True))
                     .otherwise(pl.col(col))
                     .alias(col)
                 )
