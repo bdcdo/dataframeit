@@ -9,11 +9,11 @@ from .utils import parse_json
 # Função principal
 # Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
 # O usuário precisaria apenas definir um objeto pydantic com as perguntas e definir o template
-def dataframeit(df, perguntas, prompt, resume=True):
+def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', provider='google_genai'):
     parser = PydanticOutputParser(pydantic_object=perguntas)
     prompt_inicial = ChatPromptTemplate.from_template(prompt)
     prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
-    llm = init_chat_model('gemini-2.5-flash-preview-04-17', model_provider='google_genai', temperature=0)
+    llm = init_chat_model(model, model_provider=provider, temperature=0)
 
     chain_g = prompt_intermediario | llm
 
