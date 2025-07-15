@@ -50,14 +50,25 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
     # Update progress bar description
     desc = f'Processando (resumindo de {processed_count}/{total})' if processed_count > 0 else 'Processando'
     
+    # Collect all updates to apply at once
+    updates = {}
+    for col in expected_columns:
+        updates[col] = []
+    
     for i, row in enumerate(tqdm(df.iter_rows(named=True), total=total, desc=desc)):
         # Skip already processed rows
         if i < start_idx:
+            # Keep existing values for skipped rows
+            for col in expected_columns:
+                updates[col].append(row.get(col))
             continue
             
         # Check if this specific row is already processed
         row_processed = all(row.get(col) is not None for col in expected_columns)
         if row_processed:
+            # Keep existing values for processed rows
+            for col in expected_columns:
+                updates[col].append(row.get(col))
             continue
             
         resposta = chain_g.invoke({'sentenca': row['texto']})
@@ -65,14 +76,18 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
         # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
         novas_infos = parse_json(resposta)
         
-        # Update DataFrame in place
-        for col, value in novas_infos.items():
-            if col in expected_columns:
-                df = df.with_columns(
-                    pl.when(pl.int_range(0, df.height) == i)
-                    .then(pl.lit(value, allow_object=True))
-                    .otherwise(pl.col(col))
-                    .alias(col)
-                )
+        # Collect new values
+        for col in expected_columns:
+            if col in novas_infos:
+                updates[col].append(novas_infos[col])
+            else:
+                updates[col].append(row.get(col))
+    
+    # Apply all updates at once
+    for col in expected_columns:
+        if col in df.columns:
+            df = df.with_columns(pl.Series(col, updates[col], strict=False).alias(col))
+        else:
+            df = df.with_columns(pl.Series(col, updates[col], strict=False))
     
     return df
