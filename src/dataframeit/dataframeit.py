@@ -72,6 +72,6 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
         # Update DataFrame immediately for this row (in-place operation)
         for col in expected_columns:
             if col in novas_infos:
-                df.loc[idx, col] = novas_infos[col]
+                df.at[idx, col] = novas_infos[col]
     
     return df
