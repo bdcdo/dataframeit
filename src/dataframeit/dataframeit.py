@@ -9,7 +9,7 @@ from .utils import parse_json
 # Função principal
 # Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
 # O usuário precisaria apenas definir um objeto pydantic com as perguntas e definir o template
-def dataframeit(df, perguntas, prompt):
+def dataframeit(df, perguntas, prompt, resume=True):
     parser = PydanticOutputParser(pydantic_object=perguntas)
     prompt_inicial = ChatPromptTemplate.from_template(prompt)
     prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
