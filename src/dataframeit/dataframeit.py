@@ -2,7 +2,8 @@ from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 from tqdm import tqdm
-import polars as pl
+import pandas as pd
+import warnings
 
 from .utils import parse_json
 
@@ -32,62 +33,45 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
     
     # Add only missing columns
     if new_columns:
-        df = df.with_columns([pl.lit(None).alias(col) for col in new_columns])
+        for col in new_columns:
+            df[col] = None
     
     # Find rows that need processing (any expected column is null)
     if resume and existing_result_columns:
         # Check which rows have all expected columns filled
-        null_mask = pl.any_horizontal([pl.col(col).is_null() for col in expected_columns])
-        unprocessed_indices = df.with_row_index().filter(null_mask)["index"].to_list()
-        start_idx = min(unprocessed_indices) if unprocessed_indices else df.height
+        null_mask = df[expected_columns].isnull().any(axis=1)
+        unprocessed_indices = df.index[null_mask].tolist()
+        start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
         processed_count = start_idx
     else:
         start_idx = 0
         processed_count = 0
     
-    total = df.height
+    total = len(df)
     
     # Update progress bar description
     desc = f'Processando (resumindo de {processed_count}/{total})' if processed_count > 0 else 'Processando'
     
-    # Collect all updates to apply at once
-    updates = {}
-    for col in expected_columns:
-        updates[col] = []
-    
-    for i, row in enumerate(tqdm(df.iter_rows(named=True), total=total, desc=desc)):
+    for i, row in enumerate(tqdm(df.iterrows(), total=total, desc=desc)):
+        idx, row_data = row
+        
         # Skip already processed rows
         if i < start_idx:
-            # Keep existing values for skipped rows
-            for col in expected_columns:
-                updates[col].append(row.get(col))
             continue
             
         # Check if this specific row is already processed
-        row_processed = all(row.get(col) is not None for col in expected_columns)
+        row_processed = all(pd.notna(row_data.get(col)) for col in expected_columns)
         if row_processed:
-            # Keep existing values for processed rows
-            for col in expected_columns:
-                updates[col].append(row.get(col))
             continue
             
-        resposta = chain_g.invoke({'sentenca': row['texto']})
+        resposta = chain_g.invoke({'sentenca': row_data['texto']})
         
         # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
         novas_infos = parse_json(resposta)
         
-        # Collect new values
+        # Update DataFrame immediately for this row (in-place operation)
         for col in expected_columns:
             if col in novas_infos:
-                updates[col].append(novas_infos[col])
-            else:
-                updates[col].append(row.get(col))
-    
-    # Apply all updates at once
-    for col in expected_columns:
-        if col in df.columns:
-            df = df.with_columns(pl.Series(col, updates[col], strict=False).alias(col))
-        else:
-            df = df.with_columns(pl.Series(col, updates[col], strict=False))
+                df.loc[idx, col] = novas_infos[col]
     
     return df
