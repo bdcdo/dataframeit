@@ -10,7 +10,7 @@ from .utils import parse_json
 # Função principal
 # Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
 # O usuário precisaria apenas definir um objeto pydantic com as perguntas e definir o template
-def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', provider='google_genai', status_column=None):
+def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', provider='google_genai', status_column=None, nome_coluna='texto'):
     parser = PydanticOutputParser(pydantic_object=perguntas)
     prompt_inicial = ChatPromptTemplate.from_template(prompt)
     prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
@@ -72,7 +72,7 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
         if pd.notna(row_data[status_column]):
             continue
             
-        resposta = chain_g.invoke({'sentenca': row_data['texto']})
+        resposta = chain_g.invoke({'sentenca': row_data['nome_coluna]})
         
         # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
         novas_infos = parse_json(resposta)
