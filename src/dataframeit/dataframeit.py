@@ -72,7 +72,7 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
         if pd.notna(row_data[status_column]):
             continue
             
-        resposta = chain_g.invoke({'sentenca': row_data['nome_coluna]})
+        resposta = chain_g.invoke({'sentenca': row_data[nome_coluna]})
         
         # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
         novas_infos = parse_json(resposta)
