@@ -10,7 +10,7 @@ from .utils import parse_json
 # Função principal
 # Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
 # O usuário precisaria apenas definir um objeto pydantic com as perguntas e definir o template
-def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', provider='google_genai'):
+def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', provider='google_genai', status_column=None):
     parser = PydanticOutputParser(pydantic_object=perguntas)
     prompt_inicial = ChatPromptTemplate.from_template(prompt)
     prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
@@ -34,15 +34,24 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
     # Add only missing columns
     if new_columns:
         for col in new_columns:
-            df[col] = None
+            df.loc[:, col] = None
     
-    # Find rows that need processing (any expected column is null)
-    if resume and existing_result_columns:
-        # Check which rows have all expected columns filled
-        null_mask = df[expected_columns].isnull().any(axis=1)
+    # Determine which column to use for checking processed status
+    if status_column is None:
+        # Use the first expected column as default
+        status_column = expected_columns[0]
+    
+    # Add status column if it doesn't exist
+    if status_column not in df.columns:
+        df.loc[:, status_column] = None
+    
+    # Find rows that need processing (status column is null)
+    if resume:
+        # Check which rows have been processed using the status column
+        null_mask = df[status_column].isnull()
         unprocessed_indices = df.index[null_mask].tolist()
         start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
-        processed_count = start_idx
+        processed_count = len(df) - len(unprocessed_indices)
     else:
         start_idx = 0
         processed_count = 0
@@ -59,9 +68,8 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
         if i < start_idx:
             continue
             
-        # Check if this specific row is already processed
-        row_processed = all(pd.notna(row_data.get(col)) for col in expected_columns)
-        if row_processed:
+        # Check if this specific row is already processed using status column
+        if pd.notna(row_data[status_column]):
             continue
             
         resposta = chain_g.invoke({'sentenca': row_data['texto']})
@@ -73,5 +81,13 @@ def dataframeit(df, perguntas, prompt, resume=True, model='gemini-2.5-flash', pr
         for col in expected_columns:
             if col in novas_infos:
                 df.at[idx, col] = novas_infos[col]
+        
+        # Mark this row as processed by setting the status column to a non-null value
+        if status_column in novas_infos:
+            # Use the actual value from LLM response
+            df.at[idx, status_column] = novas_infos[status_column]
+        else:
+            # Set a default "processed" marker
+            df.at[idx, status_column] = "processed"
     
     return df

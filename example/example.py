@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Literal
-import polars as pl
+import pandas as pd
 from dataframeit import dataframeit
 
 TEMPLATE = """
@@ -57,8 +57,8 @@ class RespostaFinalWrapper(BaseModel):
                                        description='Se o magistrado concedeu o pedido danos morais e, se sim, de que valor. Responda None se não há menção a danos morais na decisão.')
     
 if __name__=='__main__':
-    df = pl.read_excel('clusters_saude_cluster_amostras_rodada5_5porCluster.xlsx')
+    df = pd.read_excel('clusters_saude_cluster_amostras_rodada5_5porCluster.xlsx')
     
     df_final=dataframeit(df, RespostaFinalWrapper, TEMPLATE)
 
-    df_final.write_excel('clusters_analisados.xlsx')
+    df_final.to_excel('clusters_analisados.xlsx', index=False)
