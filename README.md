@@ -4,7 +4,7 @@ Uma biblioteca Python para enriquecer DataFrames com análises de texto usando M
 
 ## Descrição
 
-DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFrame e extrair informações estruturadas usando LLMs. A biblioteca utiliza LangChain para interagir com modelos de linguagem e Polars para manipulação eficiente de dados.
+DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFrame e extrair informações estruturadas usando LLMs. A biblioteca utiliza LangChain e pandas para manipulação de dados. Polars é suportado via conversão interna (entrada Polars é convertida para pandas durante o processamento e convertida de volta ao final).
 
 ## Funcionalidades
 
@@ -18,7 +18,7 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 ```python
 from pydantic import BaseModel, Field
 from typing import Literal
-import polars as pl
+import pandas as pd
 from dataframeit import dataframeit
 
 # Defina um modelo Pydantic para estruturar as respostas
@@ -35,13 +35,13 @@ Texto a ser analisado:
 """
 
 # Carregue seus dados
-df = pl.read_excel('seu_arquivo.xlsx')
+df = pd.read_excel('seu_arquivo.xlsx')
 
 # Processe os dados
 df_resultado = dataframeit(df, SuaClasse, TEMPLATE)
 
 # Salve o resultado
-df_resultado.write_excel('resultado.xlsx')
+df_resultado.to_excel('resultado.xlsx', index=False)
 ```
 
 ## Exemplo

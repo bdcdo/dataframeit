@@ -5,3 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ['langchain', 'pandas', 'pydantic', 'tqdm', 'langchain-google-genai']
+
+[project.optional-dependencies]
+polars = ["polars>=0.20"]
