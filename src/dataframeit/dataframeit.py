@@ -11,7 +11,42 @@ try:
 except Exception:  # Polars não instalado
     pl = None  # type: ignore
 
+# Import opcional de OpenAI
+try:
+    from openai import OpenAI  # type: ignore
+except ImportError:  # OpenAI não instalado
+    OpenAI = None  # type: ignore
+
 from .utils import parse_json
+
+def _call_openai_chain(client, prompt_template, perguntas, text_value, model, reasoning_effort, verbosity):
+    """
+    Função helper para processar texto usando OpenAI em vez de LangChain
+    """
+    # Obter instruções de formato do parser Pydantic (para manter compatibilidade)
+    parser = PydanticOutputParser(pydantic_object=perguntas)
+    format_instructions = parser.get_format_instructions()
+    
+    # Construir prompt completo
+    full_prompt = f"""
+    {prompt_template}
+    
+    {format_instructions}
+    """.format(sentenca=text_value, format=format_instructions)
+    
+    # Chamar OpenAI
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": full_prompt}],
+        reasoning={
+            "effort": reasoning_effort
+        },
+        completion={
+            "verbosity": verbosity
+        }
+    )
+    
+    return response.choices[0].message.content
 
 # Função principal
 # Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
@@ -25,23 +60,42 @@ def dataframeit(
     provider='google_genai',
     status_column=None,
     text_column: str = 'texto',
+    # Novos parâmetros para suporte ao OpenAI
+    use_openai=False,
+    openai_client=None,
+    reasoning_effort='minimal',
+    verbosity='low',
 ):
-    parser = PydanticOutputParser(pydantic_object=perguntas)
-    prompt_inicial = ChatPromptTemplate.from_template(prompt)
-    prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
-    llm = init_chat_model(model, model_provider=provider, temperature=0)
-
-    chain_g = prompt_intermediario | llm
+    # Lógica condicional: OpenAI vs LangChain
+    if use_openai:
+        if OpenAI is None:
+            raise ImportError("OpenAI not installed. Install with: pip install openai")
+        client = openai_client or OpenAI()
+        chain_g = None  # Não usado com OpenAI
+    else:
+        # Lógica LangChain original
+        parser = PydanticOutputParser(pydantic_object=perguntas)
+        prompt_inicial = ChatPromptTemplate.from_template(prompt)
+        prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
+        llm = init_chat_model(model, model_provider=provider, temperature=0)
+        chain_g = prompt_intermediario | llm
+        client = None  # Não usado com LangChain
 
     # Detectar engine e converter se necessário (polars -> pandas)
     original_was_polars = False
-    engine_label = 'pandas'
+    
     if pl is not None and hasattr(pl, 'DataFrame') and isinstance(df, pl.DataFrame):
         original_was_polars = True
-        engine_label = 'polars→pandas'
         df = df.to_pandas()
     elif not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas.DataFrame or polars.DataFrame")
+    
+    # Construir engine label
+    engine_parts = [
+        'polars→pandas' if original_was_polars else 'pandas',
+        'openai' if use_openai else 'langchain'
+    ]
+    engine_label = '+'.join(engine_parts)
 
     # Get expected columns from Pydantic model
     expected_columns = list(perguntas.__fields__.keys())
@@ -105,7 +159,11 @@ def dataframeit(
         if pd.notna(row_data[status_column]):
             continue
             
-        resposta = chain_g.invoke({'sentenca': row_data[text_column]})
+        if use_openai:
+            resposta = _call_openai_chain(client, prompt, perguntas, row_data[text_column], 
+                                        model, reasoning_effort, verbosity)
+        else:
+            resposta = chain_g.invoke({'sentenca': row_data[text_column]})
         
         # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
         novas_infos = parse_json(resposta)
