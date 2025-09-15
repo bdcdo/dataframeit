@@ -204,6 +204,55 @@ def create_langchain_chain(config: DataFrameConfiguration, perguntas, prompt: st
 
 
 # ============================================================================
+# UTILITÁRIOS SIMPLIFICADOS (SEM OVER-ENGINEERING)
+# ============================================================================
+
+def retry_with_backoff(func):
+    """Decorator para implementar retry com backoff exponencial.
+    
+    Usa os parâmetros de configuração do DataFrameConfiguration.
+    
+    Args:
+        func: Função a ser decorada com retry.
+        
+    Returns:
+        Decorator que implementa retry com backoff exponencial.
+        
+    Raises:
+        Exception: Relança a última exceção ocorrida após todas as tentativas.
+    """
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # Obter configuração de retry do self.config
+        max_retries = getattr(self.config, 'max_retries', 3)
+        base_delay = getattr(self.config, 'base_delay', 1.0)
+        max_delay = getattr(self.config, 'max_delay', 30.0)
+        exponential_base = 2
+        
+        retries = 0
+        while retries < max_retries:
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                retries += 1
+                if retries >= max_retries:
+                    # Lançar a exceção em vez de retornar None
+                    raise e
+                
+                # Calcular delay com backoff exponencial
+                delay = min(base_delay * (exponential_base ** (retries - 1)), max_delay)
+                # Adicionar jitter para evitar thundering herd
+                # O jitter adiciona uma pequena variação aleatória ao delay para evitar
+                # que múltiplas requisições ocorram simultaneamente após falhas
+                jitter = random.uniform(0, 0.1) * delay
+                time.sleep(delay + jitter)
+        # Esta linha não será alcançada, mas está aqui para clareza
+        return None
+    return wrapper
+
+
+
+# ============================================================================
 # STRATEGY PATTERN PARA LLM PROCESSING
 # ============================================================================
 
@@ -226,6 +275,7 @@ class LLMStrategy(ABC):
             str: Resposta do LLM como string.
         """
         pass
+
 
 
 class OpenAIStrategy(LLMStrategy):
@@ -275,6 +325,7 @@ class OpenAIStrategy(LLMStrategy):
         return response.choices[0].message.content
 
 
+
 class LangChainStrategy(LLMStrategy):
     """Estratégia para processamento usando LangChain.
     
@@ -306,6 +357,7 @@ class LangChainStrategy(LLMStrategy):
             str: Resposta do modelo processado pelo LangChain.
         """
         return self.chain.invoke({self.placeholder: text})
+
 
 
 class LLMStrategyFactory:
