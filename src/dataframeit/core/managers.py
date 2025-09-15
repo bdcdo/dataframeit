@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Union, Hashable
 import pandas as pd
 from tqdm import tqdm
 
@@ -30,7 +30,7 @@ class ColumnManager:
         Returns:
             str: Nome da coluna de status.
         """
-        return self.status_column or self.expected_columns[0]
+        return self.status_column or '_dataframeit_status'
 
     def setup_columns(self, df: pd.DataFrame) -> None:
         """Configura colunas necessárias no DataFrame (modifica in-place).
@@ -144,3 +144,73 @@ class TextProcessor:
         """
         response = self.strategy.process_text(text)
         return parse_json(response)
+
+
+class RowProcessor:
+    """Processador especializado para linhas individuais do DataFrame.
+
+    Responsável por processar uma linha específica, extrair dados via LLM
+    e atualizar o DataFrame com os resultados ou erros.
+    """
+
+    def __init__(self, text_processor: TextProcessor, expected_columns: List[str],
+                 processed_marker: str, error_marker: str, error_column: str):
+        """Inicializa o processador de linhas.
+
+        Args:
+            text_processor: Processador de texto configurado com estratégia LLM.
+            expected_columns: Lista de colunas esperadas no resultado.
+            processed_marker: Marcador para linhas processadas com sucesso.
+            error_marker: Marcador para linhas que falharam no processamento.
+            error_column: Nome da coluna onde armazenar detalhes do erro.
+        """
+        self.text_processor = text_processor
+        self.expected_columns = expected_columns
+        self.processed_marker = processed_marker
+        self.error_marker = error_marker
+        self.error_column = error_column
+
+    def process_row(self, df: pd.DataFrame, idx: Hashable, text: str, status_column: str) -> None:
+        """Processa uma linha individual do DataFrame.
+
+        Args:
+            df: DataFrame a ser modificado.
+            idx: Índice da linha a ser processada.
+            text: Texto a ser processado pelo LLM.
+            status_column: Nome da coluna de status.
+        """
+        try:
+            extracted_data = self.text_processor.process_text(text)
+            self._handle_success(df, idx, extracted_data, status_column)
+        except (ValueError, Exception) as e:
+            self._handle_error(df, idx, e, status_column)
+
+    def _handle_success(self, df: pd.DataFrame, idx: Hashable, extracted_data: Dict[str, Any],
+                       status_column: str) -> None:
+        """Atualiza linha com dados extraídos com sucesso.
+
+        Args:
+            df: DataFrame a ser modificado.
+            idx: Índice da linha.
+            extracted_data: Dados extraídos do texto.
+            status_column: Nome da coluna de status.
+        """
+        for col in self.expected_columns:
+            if col in extracted_data:
+                df.at[idx, col] = extracted_data[col]
+        df.at[idx, status_column] = self.processed_marker
+
+    def _handle_error(self, df: pd.DataFrame, idx: Hashable, error: Exception, status_column: str) -> None:
+        """Atualiza linha que falhou no processamento.
+
+        Args:
+            df: DataFrame a ser modificado.
+            idx: Índice da linha.
+            error: Exceção capturada.
+            status_column: Nome da coluna de status.
+        """
+        import warnings
+        error_msg = f"{type(error).__name__}: {error}"
+        warnings.warn(f"Falha ao processar linha {idx}. {error_msg}. Marcando como 'error'.")
+        df.at[idx, status_column] = self.error_marker
+        df.at[idx, self.error_column] = error_msg

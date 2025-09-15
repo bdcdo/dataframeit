@@ -1,11 +1,10 @@
-import warnings
-from typing import Union, Any, Dict, List
+from typing import Union, Any
 import pandas as pd
 from tqdm import tqdm
 
 from .config import DataFrameConfiguration
 from .core.services import ValidationService, DataFrameTransformer
-from .core.managers import ColumnManager, ProgressManager, TextProcessor
+from .core.managers import ColumnManager, ProgressManager, TextProcessor, RowProcessor
 from .providers.factory import LLMStrategyFactory
 
 
@@ -130,16 +129,23 @@ class DataFrameProcessor:
         progress_manager = ProgressManager(self.config.resume)
         start_pos, processed_count = progress_manager.get_processing_indices(df_pandas, status_column)
 
-        # Configurar processador de texto
+        # Configurar processadores
         strategy = LLMStrategyFactory.create_strategy(self.config, perguntas, prompt)
         text_processor = TextProcessor(strategy)
+        row_processor = RowProcessor(
+            text_processor=text_processor,
+            expected_columns=expected_columns,
+            processed_marker=self.config.processed_marker,
+            error_marker=self.config.error_marker,
+            error_column=self.config.error_column
+        )
 
         # Criar identificador e descrição do processamento
         engine_label = self._create_engine_label(was_polars)
         desc = ProgressManager.create_progress_description(engine_label, processed_count, len(df_pandas))
 
         # Processar linhas
-        self._process_rows(df_pandas, text_processor, expected_columns, status_column, start_pos, desc)
+        self._process_rows(df_pandas, row_processor, status_column, start_pos, desc)
 
         return DataFrameTransformer.from_pandas(df_pandas, was_polars)
 
@@ -151,31 +157,15 @@ class DataFrameProcessor:
         ]
         return '+'.join(engine_parts)
 
-    def _process_rows(self, df: pd.DataFrame, text_processor: 'TextProcessor',
-                     expected_columns: List[str], status_column: str, start_pos: int, desc: str) -> None:
-        """Processa as linhas do DataFrame."""
+    def _process_rows(self, df: pd.DataFrame, row_processor: RowProcessor,
+                     status_column: str, start_pos: int, desc: str) -> None:
+        """Processa as linhas do DataFrame usando RowProcessor especializado."""
         for i, (idx, row_data) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
             # Pular linhas já processadas
             if i < start_pos or pd.notna(row_data[status_column]):
                 continue
 
-            try:
-                extracted_data = text_processor.process_text(row_data[self.config.text_column])
-                self._update_row_success(df, idx, extracted_data, expected_columns, status_column)
-            except (ValueError, Exception) as e:
-                self._update_row_error(df, idx, e, status_column)
+            # idx pode ser qualquer tipo hashable, mas RowProcessor espera int para compatibilidade
+            # Usar idx diretamente para indexação no DataFrame
+            row_processor.process_row(df, idx, str(row_data[self.config.text_column]), status_column)
 
-    def _update_row_success(self, df: pd.DataFrame, idx: int, extracted_data: Dict[str, Any],
-                           expected_columns: List[str], status_column: str) -> None:
-        """Atualiza linha com dados extraídos com sucesso."""
-        for col in expected_columns:
-            if col in extracted_data:
-                df.at[idx, col] = extracted_data[col]
-        df.at[idx, status_column] = self.config.processed_marker
-
-    def _update_row_error(self, df: pd.DataFrame, idx: int, error: Exception, status_column: str) -> None:
-        """Atualiza linha que falhou no processamento."""
-        error_msg = f"{type(error).__name__}: {error}"
-        warnings.warn(f"Falha ao processar linha {idx}. {error_msg}. Marcando como 'error'.")
-        df.at[idx, status_column] = self.config.error_marker
-        df.at[idx, self.config.error_column] = error_msg
