@@ -40,8 +40,6 @@ class DataFramePreparationPipeline:
         """
         # Transformar para pandas
         df_pandas, was_polars = DataFrameTransformer.to_pandas(df)
-        # Garantir cópia para evitar SettingWithCopyWarning quando df é um slice/view
-        df_pandas = df_pandas.copy()
 
         # Validações
         self.validation_service.validate_text_column(df_pandas, self.config.text_column)
