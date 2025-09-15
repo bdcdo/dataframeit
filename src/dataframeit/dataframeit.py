@@ -1,3 +1,6 @@
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Optional, Any, Dict, List, Tuple, Union
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
@@ -11,11 +14,15 @@ try:
 except Exception:  # Polars não instalado
     pl = None  # type: ignore
 
+# Import opcional de OpenAI
+try:
+    from openai import OpenAI  # type: ignore
+except ImportError:  # OpenAI não instalado
+    OpenAI = None  # type: ignore
+
 from .utils import parse_json
 
-# Função principal
-# Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
-# O usuário precisaria apenas definir um objeto pydantic com as perguntas e definir o template
+
 def dataframeit(
     df,
     perguntas,
@@ -25,106 +32,352 @@ def dataframeit(
     provider='google_genai',
     status_column=None,
     text_column: str = 'texto',
+    use_openai=False,
+    openai_client=None,
+    reasoning_effort='minimal',
+    verbosity='low',
+    api_key=None,
 ):
+    """
+    Processa textos em um DataFrame usando LLMs para extrair informações estruturadas.
+
+    Suporta processamento via OpenAI ou LangChain com diferentes modelos e providers.
+    Converte automaticamente DataFrames do Polars para pandas quando necessário.
+
+    Args:
+        df: DataFrame pandas ou polars contendo os textos para processar
+        perguntas: Modelo Pydantic definindo a estrutura das informações a extrair
+        prompt: Template do prompt com placeholder {sentenca} para o texto
+        resume: Se True, continua processamento de onde parou usando status_column
+        model: Nome do modelo LLM (padrão: 'gemini-2.5-flash')
+        provider: Provider do LangChain (padrão: 'google_genai')
+        status_column: Coluna para rastrear progresso (padrão: primeira coluna do modelo)
+        text_column: Nome da coluna contendo os textos (padrão: 'texto')
+        use_openai: Se True, usa OpenAI em vez de LangChain
+        openai_client: Cliente OpenAI customizado (opcional)
+        reasoning_effort: Esforço de raciocínio para OpenAI ('minimal', 'medium', 'high')
+        verbosity: Nível de verbosidade para OpenAI ('low', 'medium', 'high')
+        api_key: Chave API específica (opcional, senão usa variável de ambiente)
+
+    Returns:
+        DataFrame com colunas originais mais as definidas no modelo Pydantic
+
+    Raises:
+        ImportError: Se OpenAI não estiver instalado quando use_openai=True
+        TypeError: Se df não for pandas.DataFrame nem polars.DataFrame
+        ValueError: Se text_column não existir no DataFrame
+    """
+    # Criar configuração centralizada
+    config = DataFrameConfiguration(
+        model=model,
+        provider=provider,
+        use_openai=use_openai,
+        api_key=api_key,
+        openai_client=openai_client,
+        reasoning_effort=reasoning_effort,
+        verbosity=verbosity,
+        resume=resume,
+        status_column=status_column,
+        text_column=text_column,
+    )
+
+    # Processar usando nova arquitetura refatorada
+    processor = DataFrameProcessor(config)
+    return processor.process(df, perguntas, prompt)
+
+
+# ============================================================================
+# NOVA ARQUITETURA REFATORADA
+# ============================================================================
+
+@dataclass
+class DataFrameConfiguration:
+    """Configuração centralizada para processamento de DataFrame."""
+
+    model: str = 'gemini-2.5-flash'
+    provider: str = 'google_genai'
+    use_openai: bool = False
+    api_key: Optional[str] = None
+    openai_client: Optional[Any] = None
+    reasoning_effort: str = 'minimal'
+    verbosity: str = 'low'
+    resume: bool = True
+    status_column: Optional[str] = None
+    text_column: str = 'texto'
+    processed_marker: str = 'processed'  # Marcador configurável
+
+
+def create_openai_client(config: DataFrameConfiguration) -> Any:
+    """Cria cliente OpenAI baseado na configuração."""
+    if OpenAI is None:
+        raise ImportError("OpenAI not installed. Install with: pip install openai")
+
+    if config.openai_client:
+        return config.openai_client
+    elif config.api_key:
+        return OpenAI(api_key=config.api_key)
+    else:
+        return OpenAI()
+
+
+def create_langchain_chain(config: DataFrameConfiguration, perguntas, prompt: str) -> Any:
+    """Cria chain LangChain baseado na configuração."""
     parser = PydanticOutputParser(pydantic_object=perguntas)
     prompt_inicial = ChatPromptTemplate.from_template(prompt)
     prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
-    llm = init_chat_model(model, model_provider=provider, temperature=0)
 
-    chain_g = prompt_intermediario | llm
+    model_kwargs = {"model_provider": config.provider, "temperature": 0}
+    if config.api_key:
+        model_kwargs["api_key"] = config.api_key
 
-    # Detectar engine e converter se necessário (polars -> pandas)
-    original_was_polars = False
-    engine_label = 'pandas'
+    llm = init_chat_model(config.model, **model_kwargs)
+    return prompt_intermediario | llm
+
+
+# ============================================================================
+# STRATEGY PATTERN PARA LLM PROCESSING
+# ============================================================================
+
+class LLMStrategy(ABC):
+    """Interface para estratégias de processamento de LLM."""
+
+    @abstractmethod
+    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+        """Processa texto usando a estratégia específica do LLM."""
+        pass
+
+
+class OpenAIStrategy(LLMStrategy):
+    """Estratégia para processamento usando OpenAI."""
+
+    def __init__(self):
+        self.client = None
+        self.parser = None
+
+    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+        # Lazy initialization do client e parser
+        if self.client is None:
+            self.client = create_openai_client(config)
+        if self.parser is None:
+            self.parser = PydanticOutputParser(pydantic_object=perguntas)
+
+        format_instructions = self.parser.get_format_instructions()
+        full_prompt = f"""
+        {prompt}
+
+        {format_instructions}
+        """.format(sentenca=text, format=format_instructions)
+
+        response = self.client.chat.completions.create(
+            model=config.model,
+            messages=[{"role": "user", "content": full_prompt}],
+            reasoning={"effort": config.reasoning_effort},
+            completion={"verbosity": config.verbosity}
+        )
+
+        return response.choices[0].message.content
+
+
+class LangChainStrategy(LLMStrategy):
+    """Estratégia para processamento usando LangChain."""
+
+    def __init__(self):
+        self.chain = None
+
+    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+        # Lazy initialization do chain
+        if self.chain is None:
+            self.chain = create_langchain_chain(config, perguntas, prompt)
+
+        return self.chain.invoke({'sentenca': text})
+
+
+class LLMStrategyFactory:
+    """Factory para criar strategies de LLM baseado na configuração."""
+
+    @staticmethod
+    def create_strategy(config: DataFrameConfiguration) -> LLMStrategy:
+        """Cria strategy apropriada baseada na configuração."""
+        if config.use_openai:
+            return OpenAIStrategy()
+        else:
+            return LangChainStrategy()
+
+
+# ============================================================================
+# UTILITÁRIOS SIMPLIFICADOS (SEM OVER-ENGINEERING)
+# ============================================================================
+
+def convert_dataframe_to_pandas(df) -> Tuple[pd.DataFrame, bool]:
+    """Converte DataFrame para pandas se necessário."""
     if pl is not None and hasattr(pl, 'DataFrame') and isinstance(df, pl.DataFrame):
-        original_was_polars = True
-        engine_label = 'polars→pandas'
-        df = df.to_pandas()
-    elif not isinstance(df, pd.DataFrame):
+        return df.to_pandas(), True
+    elif isinstance(df, pd.DataFrame):
+        return df, False
+    else:
         raise TypeError("df must be a pandas.DataFrame or polars.DataFrame")
 
-    # Get expected columns from Pydantic model
-    expected_columns = list(perguntas.__fields__.keys())
-    
-    # Validar existência de text_column
+
+def convert_dataframe_back(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
+    """Converte de volta para Polars se necessário."""
+    if was_polars and pl is not None:
+        return pl.from_pandas(df)
+    return df
+
+
+def validate_text_column(df: pd.DataFrame, text_column: str) -> None:
+    """Valida se coluna de texto existe no DataFrame."""
     if text_column not in df.columns:
         raise ValueError(f"Column '{text_column}' not found in DataFrame.")
 
-    # Check existing columns
-    existing_columns = df.columns
-    new_columns = [col for col in expected_columns if col not in existing_columns]
-    existing_result_columns = [col for col in expected_columns if col in existing_columns]
-    
-    # Handle conflicts
+
+def validate_columns_conflict(df: pd.DataFrame, expected_columns: List[str], resume: bool) -> bool:
+    """Valida conflitos de colunas existentes. Retorna True se deve continuar."""
+    existing_result_columns = [col for col in expected_columns if col in df.columns]
     if existing_result_columns and not resume:
         warnings.warn(f"Columns {existing_result_columns} already exist. Use resume=True to continue or rename them.")
-        return df
-    
-    # Add only missing columns
-    if new_columns:
-        for col in new_columns:
-            df.loc[:, col] = None
-    
-    # Determine which column to use for checking processed status
-    if status_column is None:
-        # Use the first expected column as default
-        status_column = expected_columns[0]
-    
-    # Add status column if it doesn't exist
-    if status_column not in df.columns:
-        df.loc[:, status_column] = None
-    
-    # Find rows that need processing (status column is null)
-    if resume:
-        # Check which rows have been processed using the status column
-        null_mask = df[status_column].isnull()
-        unprocessed_indices = df.index[null_mask].tolist()
-        start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
-        processed_count = len(df) - len(unprocessed_indices)
-    else:
-        start_idx = 0
-        processed_count = 0
-    
-    total = len(df)
-    
-    # Update progress bar description
-    desc = (
-        f"Processando [{engine_label}] (resumindo de {processed_count}/{total})"
-        if processed_count > 0
-        else f"Processando [{engine_label}]"
-    )
-    
-    for i, row in enumerate(tqdm(df.iterrows(), total=total, desc=desc)):
-        idx, row_data = row
-        
-        # Skip already processed rows
-        if i < start_idx:
-            continue
-            
-        # Check if this specific row is already processed using status column
-        if pd.notna(row_data[status_column]):
-            continue
-            
-        resposta = chain_g.invoke({'sentenca': row_data[text_column]})
-        
-        # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
-        novas_infos = parse_json(resposta)
-        
-        # Update DataFrame immediately for this row (in-place operation)
-        for col in expected_columns:
-            if col in novas_infos:
-                df.at[idx, col] = novas_infos[col]
-        
-        # Mark this row as processed by setting the status column to a non-null value
-        if status_column in novas_infos:
-            # Use the actual value from LLM response
-            df.at[idx, status_column] = novas_infos[status_column]
-        else:
-            # Set a default "processed" marker
-            df.at[idx, status_column] = "processed"
-    
-    # Converter de volta para Polars se a entrada original era Polars
-    if original_was_polars and pl is not None:
-        return pl.from_pandas(df)
+        return False  # Não continuar
+    return True  # Continuar processamento
 
-    return df
+
+class ProgressManager:
+    """Gerenciamento de progresso e colunas de status."""
+
+    def __init__(self, expected_columns: List[str], config: DataFrameConfiguration):
+        self.expected_columns = expected_columns
+        self.config = config
+
+    def setup_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Configura colunas necessárias no DataFrame sem mutação."""
+        # Usar cópia defensiva para evitar side effects
+        df_copy = df.copy()
+
+        # Identificar colunas existentes e novas
+        new_columns = [col for col in self.expected_columns if col not in df_copy.columns]
+
+        # Criar apenas colunas que não existem
+        if new_columns:
+            for col in new_columns:
+                df_copy.loc[:, col] = None
+
+        # Definir coluna para controle de progresso
+        status_column = self.config.status_column or self.expected_columns[0]
+
+        # Criar coluna de status se não existir
+        if status_column not in df_copy.columns:
+            df_copy.loc[:, status_column] = None
+
+        return df_copy
+
+    def get_processing_indices(self, df: pd.DataFrame) -> Tuple[int, int, str]:
+        """Retorna índices de processamento e coluna de status."""
+        status_column = self.config.status_column or self.expected_columns[0]
+
+        if self.config.resume:
+            null_mask = df[status_column].isnull()
+            unprocessed_indices = df.index[null_mask].tolist()
+            start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
+            processed_count = len(df) - len(unprocessed_indices)
+        else:
+            start_idx = 0
+            processed_count = 0
+
+        return start_idx, processed_count, status_column
+
+    def create_progress_description(self, engine_label: str, processed_count: int, total: int) -> str:
+        """Cria descrição para barra de progresso."""
+        if processed_count > 0:
+            return f"Processando [{engine_label}] (resumindo de {processed_count}/{total})"
+        else:
+            return f"Processando [{engine_label}]"
+
+
+class TextProcessor:
+    """Processamento de texto usando LLMs com Strategy Pattern."""
+
+    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str):
+        self.config = config
+        self.perguntas = perguntas
+        self.prompt = prompt
+
+        # Usar factory para criar estratégia (Open/Closed Principle)
+        self.strategy = LLMStrategyFactory.create_strategy(config)
+
+    def process_text(self, text: str) -> Dict[str, Any]:
+        """Processa texto usando estratégia LLM configurada."""
+        response = self.strategy.process_text(text, self.prompt, self.perguntas, self.config)
+        return parse_json(response)
+
+
+class DataFrameProcessor:
+    """Orquestração principal do processamento de DataFrame."""
+
+    def __init__(self, config: DataFrameConfiguration):
+        self.config = config
+
+    def update_dataframe_row(self, df: pd.DataFrame, idx: int, extracted_data: Dict[str, Any],
+                           expected_columns: List[str], status_column: str) -> None:
+        """Atualiza linha do DataFrame com dados extraídos."""
+        # Atualizar DataFrame com as informações extraídas
+        for col in expected_columns:
+            if col in extracted_data:
+                df.at[idx, col] = extracted_data[col]
+
+        # Marcar linha como processada
+        if status_column in extracted_data:
+            df.at[idx, status_column] = extracted_data[status_column]
+        else:
+            df.at[idx, status_column] = self.config.processed_marker
+
+    def process(self, df, perguntas, prompt: str) -> Union[pd.DataFrame, Any]:
+        """Processa DataFrame usando a nova arquitetura."""
+        # Converter para pandas se necessário
+        df_pandas, was_polars = convert_dataframe_to_pandas(df)
+
+        # Validações
+        validate_text_column(df_pandas, self.config.text_column)
+        expected_columns = list(perguntas.__fields__.keys())
+
+        # Validar conflitos e interromper se necessário
+        if not validate_columns_conflict(df_pandas, expected_columns, self.config.resume):
+            return convert_dataframe_back(df_pandas, was_polars)  # Retornar sem processar
+
+        # Configurar progresso e colunas
+        progress_manager = ProgressManager(expected_columns, self.config)
+        df_pandas = progress_manager.setup_columns(df_pandas)
+        start_idx, processed_count, status_column = progress_manager.get_processing_indices(df_pandas)
+
+        # Configurar processador de texto
+        text_processor = TextProcessor(self.config, perguntas, prompt)
+
+        # Criar identificador do processamento
+        engine_parts = [
+            'polars→pandas' if was_polars else 'pandas',
+            'openai' if self.config.use_openai else 'langchain'
+        ]
+        engine_label = '+'.join(engine_parts)
+
+        # Configurar barra de progresso
+        total = len(df_pandas)
+        desc = progress_manager.create_progress_description(engine_label, processed_count, total)
+
+        # Loop principal de processamento
+        for i, (idx, row_data) in enumerate(tqdm(df_pandas.iterrows(), total=total, desc=desc)):
+            # Pular linhas já processadas
+            if i < start_idx:
+                continue
+
+            # Verificar se linha específica já foi processada
+            if pd.notna(row_data[status_column]):
+                continue
+
+            # Processar texto
+            extracted_data = text_processor.process_text(row_data[self.config.text_column])
+
+            # Atualizar DataFrame
+            self.update_dataframe_row(df_pandas, idx, extracted_data, expected_columns, status_column)
+
+        # Converter de volta se necessário
+        return convert_dataframe_back(df_pandas, was_polars)
+
+
