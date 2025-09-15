@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Any, Dict, List, Tuple, Union
 from langchain.chat_models import init_chat_model
@@ -105,83 +106,125 @@ class DataFrameConfiguration:
     text_column: str = 'texto'
 
 
-class LLMClientFactory:
-    """Factory para criação de clientes LLM (OpenAI/LangChain)."""
+def create_openai_client(config: DataFrameConfiguration) -> Any:
+    """Cria cliente OpenAI baseado na configuração."""
+    if OpenAI is None:
+        raise ImportError("OpenAI not installed. Install with: pip install openai")
 
-    @staticmethod
-    def create_openai_client(config: DataFrameConfiguration) -> Any:
-        """Cria cliente OpenAI baseado na configuração."""
-        if OpenAI is None:
-            raise ImportError("OpenAI not installed. Install with: pip install openai")
-
-        if config.openai_client:
-            return config.openai_client
-        elif config.api_key:
-            return OpenAI(api_key=config.api_key)
-        else:
-            return OpenAI()
-
-    @staticmethod
-    def create_langchain_chain(config: DataFrameConfiguration, perguntas, prompt: str) -> Any:
-        """Cria chain LangChain baseado na configuração."""
-        parser = PydanticOutputParser(pydantic_object=perguntas)
-        prompt_inicial = ChatPromptTemplate.from_template(prompt)
-        prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
-
-        model_kwargs = {"model_provider": config.provider, "temperature": 0}
-        if config.api_key:
-            model_kwargs["api_key"] = config.api_key
-
-        llm = init_chat_model(config.model, **model_kwargs)
-        return prompt_intermediario | llm
+    if config.openai_client:
+        return config.openai_client
+    elif config.api_key:
+        return OpenAI(api_key=config.api_key)
+    else:
+        return OpenAI()
 
 
-class DataFrameValidator:
-    """Validações centralizadas para DataFrame."""
+def create_langchain_chain(config: DataFrameConfiguration, perguntas, prompt: str) -> Any:
+    """Cria chain LangChain baseado na configuração."""
+    parser = PydanticOutputParser(pydantic_object=perguntas)
+    prompt_inicial = ChatPromptTemplate.from_template(prompt)
+    prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
 
-    @staticmethod
-    def validate_dataframe(df) -> pd.DataFrame:
-        """Valida e converte DataFrame se necessário."""
-        if pl is not None and hasattr(pl, 'DataFrame') and isinstance(df, pl.DataFrame):
-            return df.to_pandas(), True
-        elif isinstance(df, pd.DataFrame):
-            return df, False
-        else:
-            raise TypeError("df must be a pandas.DataFrame or polars.DataFrame")
+    model_kwargs = {"model_provider": config.provider, "temperature": 0}
+    if config.api_key:
+        model_kwargs["api_key"] = config.api_key
 
-    @staticmethod
-    def validate_text_column(df: pd.DataFrame, text_column: str) -> None:
-        """Valida se coluna de texto existe no DataFrame."""
-        if text_column not in df.columns:
-            raise ValueError(f"Column '{text_column}' not found in DataFrame.")
-
-    @staticmethod
-    def validate_columns_conflict(df: pd.DataFrame, expected_columns: List[str], resume: bool) -> None:
-        """Valida conflitos de colunas existentes."""
-        existing_result_columns = [col for col in expected_columns if col in df.columns]
-        if existing_result_columns and not resume:
-            warnings.warn(f"Columns {existing_result_columns} already exist. Use resume=True to continue or rename them.")
+    llm = init_chat_model(config.model, **model_kwargs)
+    return prompt_intermediario | llm
 
 
-class DataFrameTransformer:
-    """Transformações de formato de DataFrame."""
+# ============================================================================
+# STRATEGY PATTERN PARA LLM PROCESSING
+# ============================================================================
 
-    @staticmethod
-    def convert_to_pandas(df) -> Tuple[pd.DataFrame, bool]:
-        """Converte DataFrame para pandas se necessário."""
-        if pl is not None and hasattr(pl, 'DataFrame') and isinstance(df, pl.DataFrame):
-            return df.to_pandas(), True
-        elif isinstance(df, pd.DataFrame):
-            return df, False
-        else:
-            raise TypeError("df must be a pandas.DataFrame or polars.DataFrame")
+class LLMStrategy(ABC):
+    """Interface para estratégias de processamento de LLM."""
 
-    @staticmethod
-    def convert_back_if_needed(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
-        """Converte de volta para Polars se necessário."""
-        if was_polars and pl is not None:
-            return pl.from_pandas(df)
-        return df
+    @abstractmethod
+    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+        """Processa texto usando a estratégia específica do LLM."""
+        pass
+
+
+class OpenAIStrategy(LLMStrategy):
+    """Estratégia para processamento usando OpenAI."""
+
+    def __init__(self):
+        self.client = None
+        self.parser = None
+
+    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+        # Lazy initialization do client e parser
+        if self.client is None:
+            self.client = create_openai_client(config)
+        if self.parser is None:
+            self.parser = PydanticOutputParser(pydantic_object=perguntas)
+
+        format_instructions = self.parser.get_format_instructions()
+        full_prompt = f"""
+        {prompt}
+
+        {format_instructions}
+        """.format(sentenca=text, format=format_instructions)
+
+        response = self.client.chat.completions.create(
+            model=config.model,
+            messages=[{"role": "user", "content": full_prompt}],
+            reasoning={"effort": config.reasoning_effort},
+            completion={"verbosity": config.verbosity}
+        )
+
+        return response.choices[0].message.content
+
+
+class LangChainStrategy(LLMStrategy):
+    """Estratégia para processamento usando LangChain."""
+
+    def __init__(self):
+        self.chain = None
+
+    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+        # Lazy initialization do chain
+        if self.chain is None:
+            self.chain = create_langchain_chain(config, perguntas, prompt)
+
+        return self.chain.invoke({'sentenca': text})
+
+
+# ============================================================================
+# UTILITÁRIOS SIMPLIFICADOS (SEM OVER-ENGINEERING)
+# ============================================================================
+
+def convert_dataframe_to_pandas(df) -> Tuple[pd.DataFrame, bool]:
+    """Converte DataFrame para pandas se necessário."""
+    if pl is not None and hasattr(pl, 'DataFrame') and isinstance(df, pl.DataFrame):
+        return df.to_pandas(), True
+    elif isinstance(df, pd.DataFrame):
+        return df, False
+    else:
+        raise TypeError("df must be a pandas.DataFrame or polars.DataFrame")
+
+
+def convert_dataframe_back(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
+    """Converte de volta para Polars se necessário."""
+    if was_polars and pl is not None:
+        return pl.from_pandas(df)
+    return df
+
+
+def validate_text_column(df: pd.DataFrame, text_column: str) -> None:
+    """Valida se coluna de texto existe no DataFrame."""
+    if text_column not in df.columns:
+        raise ValueError(f"Column '{text_column}' not found in DataFrame.")
+
+
+def validate_columns_conflict(df: pd.DataFrame, expected_columns: List[str], resume: bool) -> bool:
+    """Valida conflitos de colunas existentes. Retorna True se deve continuar."""
+    existing_result_columns = [col for col in expected_columns if col in df.columns]
+    if existing_result_columns and not resume:
+        warnings.warn(f"Columns {existing_result_columns} already exist. Use resume=True to continue or rename them.")
+        return False  # Não continuar
+    return True  # Continuar processamento
 
 
 class ProgressManager:
@@ -235,7 +278,7 @@ class ProgressManager:
 
 
 class TextProcessor:
-    """Processamento de texto usando LLMs."""
+    """Processamento de texto usando LLMs com Strategy Pattern."""
 
     PROCESSED_MARKER = "processed"
 
@@ -244,46 +287,16 @@ class TextProcessor:
         self.perguntas = perguntas
         self.prompt = prompt
 
-        # Configurar clientes baseado na escolha
+        # Selecionar estratégia baseada na configuração
         if config.use_openai:
-            self.client = LLMClientFactory.create_openai_client(config)
-            self.chain = None
+            self.strategy = OpenAIStrategy()
         else:
-            self.client = None
-            self.chain = LLMClientFactory.create_langchain_chain(config, perguntas, prompt)
+            self.strategy = LangChainStrategy()
 
     def process_text(self, text: str) -> Dict[str, Any]:
-        """Processa texto usando LLM configurado."""
-        if self.config.use_openai:
-            response = self._process_openai(text)
-        else:
-            response = self._process_langchain(text)
-
+        """Processa texto usando estratégia LLM configurada."""
+        response = self.strategy.process_text(text, self.prompt, self.perguntas, self.config)
         return parse_json(response)
-
-    def _process_openai(self, text: str) -> str:
-        """Processa texto usando OpenAI."""
-        parser = PydanticOutputParser(pydantic_object=self.perguntas)
-        format_instructions = parser.get_format_instructions()
-
-        full_prompt = f"""
-        {self.prompt}
-
-        {format_instructions}
-        """.format(sentenca=text, format=format_instructions)
-
-        response = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=[{"role": "user", "content": full_prompt}],
-            reasoning={"effort": self.config.reasoning_effort},
-            completion={"verbosity": self.config.verbosity}
-        )
-
-        return response.choices[0].message.content
-
-    def _process_langchain(self, text: str) -> str:
-        """Processa texto usando LangChain."""
-        return self.chain.invoke({'sentenca': text})
 
     def update_dataframe_row(self, df: pd.DataFrame, idx: int, extracted_data: Dict[str, Any],
                            expected_columns: List[str], status_column: str) -> None:
@@ -309,12 +322,15 @@ class DataFrameProcessor:
     def process(self, df, perguntas, prompt: str) -> Union[pd.DataFrame, Any]:
         """Processa DataFrame usando a nova arquitetura."""
         # Converter para pandas se necessário
-        df_pandas, was_polars = DataFrameTransformer.convert_to_pandas(df)
+        df_pandas, was_polars = convert_dataframe_to_pandas(df)
 
         # Validações
-        DataFrameValidator.validate_text_column(df_pandas, self.config.text_column)
+        validate_text_column(df_pandas, self.config.text_column)
         expected_columns = list(perguntas.__fields__.keys())
-        DataFrameValidator.validate_columns_conflict(df_pandas, expected_columns, self.config.resume)
+
+        # Validar conflitos e interromper se necessário
+        if not validate_columns_conflict(df_pandas, expected_columns, self.config.resume):
+            return convert_dataframe_back(df_pandas, was_polars)  # Retornar sem processar
 
         # Configurar progresso e colunas
         progress_manager = ProgressManager(df_pandas, expected_columns, self.config)
@@ -352,6 +368,6 @@ class DataFrameProcessor:
             text_processor.update_dataframe_row(df_pandas, idx, extracted_data, expected_columns, status_column)
 
         # Converter de volta se necessário
-        return DataFrameTransformer.convert_back_if_needed(df_pandas, was_polars)
+        return convert_dataframe_back(df_pandas, was_polars)
 
 
