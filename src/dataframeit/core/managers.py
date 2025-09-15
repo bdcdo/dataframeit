@@ -42,16 +42,16 @@ class ColumnManager:
         new_result_columns = [col for col in self.expected_columns if col not in df.columns]
         if new_result_columns:
             for col in new_result_columns:
-                df.loc[:, col] = None
+                df[col] = None
 
         # Criar coluna de erro se não existir
         if self.error_column not in df.columns:
-            df.loc[:, self.error_column] = None
+            df[self.error_column] = None
 
         # Definir e criar coluna de status se não existir
         status_column = self.get_status_column_name()
         if status_column not in df.columns:
-            df.loc[:, status_column] = None
+            df[status_column] = None
 
 
 class ProgressManager:
