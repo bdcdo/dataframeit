@@ -104,6 +104,7 @@ class DataFrameConfiguration:
     resume: bool = True
     status_column: Optional[str] = None
     text_column: str = 'texto'
+    processed_marker: str = 'processed'  # Marcador configurável
 
 
 def create_openai_client(config: DataFrameConfiguration) -> Any:
@@ -191,6 +192,18 @@ class LangChainStrategy(LLMStrategy):
         return self.chain.invoke({'sentenca': text})
 
 
+class LLMStrategyFactory:
+    """Factory para criar strategies de LLM baseado na configuração."""
+
+    @staticmethod
+    def create_strategy(config: DataFrameConfiguration) -> LLMStrategy:
+        """Cria strategy apropriada baseada na configuração."""
+        if config.use_openai:
+            return OpenAIStrategy()
+        else:
+            return LangChainStrategy()
+
+
 # ============================================================================
 # UTILITÁRIOS SIMPLIFICADOS (SEM OVER-ENGINEERING)
 # ============================================================================
@@ -230,39 +243,41 @@ def validate_columns_conflict(df: pd.DataFrame, expected_columns: List[str], res
 class ProgressManager:
     """Gerenciamento de progresso e colunas de status."""
 
-    def __init__(self, df: pd.DataFrame, expected_columns: List[str], config: DataFrameConfiguration):
-        self.df = df
+    def __init__(self, expected_columns: List[str], config: DataFrameConfiguration):
         self.expected_columns = expected_columns
         self.config = config
 
-    def setup_columns(self) -> pd.DataFrame:
-        """Configura colunas necessárias no DataFrame."""
+    def setup_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Configura colunas necessárias no DataFrame sem mutação."""
+        # Usar cópia defensiva para evitar side effects
+        df_copy = df.copy()
+
         # Identificar colunas existentes e novas
-        new_columns = [col for col in self.expected_columns if col not in self.df.columns]
+        new_columns = [col for col in self.expected_columns if col not in df_copy.columns]
 
         # Criar apenas colunas que não existem
         if new_columns:
             for col in new_columns:
-                self.df.loc[:, col] = None
+                df_copy.loc[:, col] = None
 
         # Definir coluna para controle de progresso
         status_column = self.config.status_column or self.expected_columns[0]
 
         # Criar coluna de status se não existir
-        if status_column not in self.df.columns:
-            self.df.loc[:, status_column] = None
+        if status_column not in df_copy.columns:
+            df_copy.loc[:, status_column] = None
 
-        return self.df
+        return df_copy
 
-    def get_processing_indices(self) -> Tuple[int, int, str]:
+    def get_processing_indices(self, df: pd.DataFrame) -> Tuple[int, int, str]:
         """Retorna índices de processamento e coluna de status."""
         status_column = self.config.status_column or self.expected_columns[0]
 
         if self.config.resume:
-            null_mask = self.df[status_column].isnull()
-            unprocessed_indices = self.df.index[null_mask].tolist()
-            start_idx = min(unprocessed_indices) if unprocessed_indices else len(self.df)
-            processed_count = len(self.df) - len(unprocessed_indices)
+            null_mask = df[status_column].isnull()
+            unprocessed_indices = df.index[null_mask].tolist()
+            start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
+            processed_count = len(df) - len(unprocessed_indices)
         else:
             start_idx = 0
             processed_count = 0
@@ -280,23 +295,25 @@ class ProgressManager:
 class TextProcessor:
     """Processamento de texto usando LLMs com Strategy Pattern."""
 
-    PROCESSED_MARKER = "processed"
-
     def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str):
         self.config = config
         self.perguntas = perguntas
         self.prompt = prompt
 
-        # Selecionar estratégia baseada na configuração
-        if config.use_openai:
-            self.strategy = OpenAIStrategy()
-        else:
-            self.strategy = LangChainStrategy()
+        # Usar factory para criar estratégia (Open/Closed Principle)
+        self.strategy = LLMStrategyFactory.create_strategy(config)
 
     def process_text(self, text: str) -> Dict[str, Any]:
         """Processa texto usando estratégia LLM configurada."""
         response = self.strategy.process_text(text, self.prompt, self.perguntas, self.config)
         return parse_json(response)
+
+
+class DataFrameProcessor:
+    """Orquestração principal do processamento de DataFrame."""
+
+    def __init__(self, config: DataFrameConfiguration):
+        self.config = config
 
     def update_dataframe_row(self, df: pd.DataFrame, idx: int, extracted_data: Dict[str, Any],
                            expected_columns: List[str], status_column: str) -> None:
@@ -310,14 +327,7 @@ class TextProcessor:
         if status_column in extracted_data:
             df.at[idx, status_column] = extracted_data[status_column]
         else:
-            df.at[idx, status_column] = self.PROCESSED_MARKER
-
-
-class DataFrameProcessor:
-    """Orquestração principal do processamento de DataFrame."""
-
-    def __init__(self, config: DataFrameConfiguration):
-        self.config = config
+            df.at[idx, status_column] = self.config.processed_marker
 
     def process(self, df, perguntas, prompt: str) -> Union[pd.DataFrame, Any]:
         """Processa DataFrame usando a nova arquitetura."""
@@ -333,9 +343,9 @@ class DataFrameProcessor:
             return convert_dataframe_back(df_pandas, was_polars)  # Retornar sem processar
 
         # Configurar progresso e colunas
-        progress_manager = ProgressManager(df_pandas, expected_columns, self.config)
-        df_pandas = progress_manager.setup_columns()
-        start_idx, processed_count, status_column = progress_manager.get_processing_indices()
+        progress_manager = ProgressManager(expected_columns, self.config)
+        df_pandas = progress_manager.setup_columns(df_pandas)
+        start_idx, processed_count, status_column = progress_manager.get_processing_indices(df_pandas)
 
         # Configurar processador de texto
         text_processor = TextProcessor(self.config, perguntas, prompt)
@@ -365,7 +375,7 @@ class DataFrameProcessor:
             extracted_data = text_processor.process_text(row_data[self.config.text_column])
 
             # Atualizar DataFrame
-            text_processor.update_dataframe_row(df_pandas, idx, extracted_data, expected_columns, status_column)
+            self.update_dataframe_row(df_pandas, idx, extracted_data, expected_columns, status_column)
 
         # Converter de volta se necessário
         return convert_dataframe_back(df_pandas, was_polars)
