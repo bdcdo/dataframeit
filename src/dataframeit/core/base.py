@@ -73,4 +73,6 @@ class PromptBuilder:
         Returns:
             str: Prompt formatado pronto para envio ao LLM.
         """
-        return template.format(**{self.placeholder: text})
+        # Substitui apenas o placeholder do documento para evitar KeyError
+        # causado por chaves adicionais em format_instructions (ex.: {format})
+        return template.replace(f"{{{self.placeholder}}}", text)

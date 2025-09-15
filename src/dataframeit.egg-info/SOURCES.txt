@@ -2,6 +2,7 @@ LICENSE
 README.md
 pyproject.toml
 src/dataframeit/__init__.py
+src/dataframeit/config.py
 src/dataframeit/dataframeit.py
 src/dataframeit/utils.py
 src/dataframeit.egg-info/PKG-INFO
@@ -9,3 +10,18 @@ src/dataframeit.egg-info/SOURCES.txt
 src/dataframeit.egg-info/dependency_links.txt
 src/dataframeit.egg-info/requires.txt
 src/dataframeit.egg-info/top_level.txt
+src/dataframeit/core/__init__.py
+src/dataframeit/core/base.py
+src/dataframeit/core/dependency.py
+src/dataframeit/core/managers.py
+src/dataframeit/core/services.py
+src/dataframeit/providers/__init__.py
+src/dataframeit/providers/factory.py
+src/dataframeit/providers/langchain/__init__.py
+src/dataframeit/providers/langchain/client.py
+src/dataframeit/providers/langchain/config.py
+src/dataframeit/providers/langchain/strategy.py
+src/dataframeit/providers/openai/__init__.py
+src/dataframeit/providers/openai/client.py
+src/dataframeit/providers/openai/config.py
+src/dataframeit/providers/openai/strategy.py
