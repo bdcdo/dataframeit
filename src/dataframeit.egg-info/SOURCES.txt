@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+src/dataframeit/__init__.py
+src/dataframeit/dataframeit.py
+src/dataframeit/utils.py
+src/dataframeit.egg-info/PKG-INFO
+src/dataframeit.egg-info/SOURCES.txt
+src/dataframeit.egg-info/dependency_links.txt
+src/dataframeit.egg-info/requires.txt
+src/dataframeit.egg-info/top_level.txt
