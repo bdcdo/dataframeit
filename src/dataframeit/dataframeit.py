@@ -65,19 +65,31 @@ def dataframeit(
     openai_client=None,
     reasoning_effort='minimal',
     verbosity='low',
+    # Parâmetro para chave API específica
+    api_key=None,
 ):
     # Lógica condicional: OpenAI vs LangChain
     if use_openai:
         if OpenAI is None:
             raise ImportError("OpenAI not installed. Install with: pip install openai")
-        client = openai_client or OpenAI()
+        if openai_client:
+            client = openai_client
+        elif api_key:
+            client = OpenAI(api_key=api_key)
+        else:
+            client = OpenAI()
         chain_g = None  # Não usado com OpenAI
     else:
         # Lógica LangChain original
         parser = PydanticOutputParser(pydantic_object=perguntas)
         prompt_inicial = ChatPromptTemplate.from_template(prompt)
         prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
-        llm = init_chat_model(model, model_provider=provider, temperature=0)
+        # Configurar parâmetros do modelo
+        model_kwargs = {"model_provider": provider, "temperature": 0}
+        if api_key:
+            model_kwargs["api_key"] = api_key
+
+        llm = init_chat_model(model, **model_kwargs)
         chain_g = prompt_intermediario | llm
         client = None  # Não usado com LangChain
 
