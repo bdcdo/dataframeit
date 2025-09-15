@@ -351,6 +351,11 @@ class DataFrameProcessor:
         validate_text_column(df_pandas, self.config.text_column)
         expected_columns = list(perguntas.model_fields.keys())
 
+        if not expected_columns:
+            raise ValueError(
+                "O modelo Pydantic 'perguntas' não pode estar vazio. Defina pelo menos um campo."
+            )
+
         # Validar conflitos e interromper se necessário
         if not validate_columns_conflict(df_pandas, expected_columns, self.config.resume):
             return convert_dataframe_back(df_pandas, was_polars)  # Retornar sem processar
