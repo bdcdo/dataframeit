@@ -21,20 +21,35 @@ from .utils import parse_json
 
 def _call_openai_chain(client, prompt_template, perguntas, text_value, model, reasoning_effort, verbosity):
     """
-    Função helper para processar texto usando OpenAI em vez de LangChain
+    Processa texto usando API OpenAI diretamente.
+
+    Constrói o prompt com instruções de formato Pydantic e chama o modelo OpenAI
+    com configurações de raciocínio e verbosidade específicas.
+
+    Args:
+        client: Cliente OpenAI configurado
+        prompt_template: Template do prompt com placeholder {sentenca}
+        perguntas: Modelo Pydantic para instruções de formato
+        text_value: Texto a ser processado
+        model: Nome do modelo OpenAI
+        reasoning_effort: Esforço de raciocínio ('minimal', 'medium', 'high')
+        verbosity: Nível de verbosidade ('low', 'medium', 'high')
+
+    Returns:
+        str: Resposta JSON do modelo OpenAI
     """
-    # Obter instruções de formato do parser Pydantic (para manter compatibilidade)
+    # Gerar instruções de formato JSON usando parser Pydantic
     parser = PydanticOutputParser(pydantic_object=perguntas)
     format_instructions = parser.get_format_instructions()
     
-    # Construir prompt completo
+    # Combinar template com instruções de formato
     full_prompt = f"""
     {prompt_template}
     
     {format_instructions}
     """.format(sentenca=text_value, format=format_instructions)
     
-    # Chamar OpenAI
+    # Enviar requisição para API OpenAI com configurações específicas
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": full_prompt}],
@@ -48,9 +63,6 @@ def _call_openai_chain(client, prompt_template, perguntas, text_value, model, re
     
     return response.choices[0].message.content
 
-# Função principal
-# Trabalho maior seria incluir muitas mensages de erro e garantir que funciona com diferentes LLMs
-# O usuário precisaria apenas definir um objeto pydantic com as perguntas e definir o template
 def dataframeit(
     df,
     perguntas,
@@ -60,15 +72,42 @@ def dataframeit(
     provider='google_genai',
     status_column=None,
     text_column: str = 'texto',
-    # Novos parâmetros para suporte ao OpenAI
     use_openai=False,
     openai_client=None,
     reasoning_effort='minimal',
     verbosity='low',
-    # Parâmetro para chave API específica
     api_key=None,
 ):
-    # Lógica condicional: OpenAI vs LangChain
+    """
+    Processa textos em um DataFrame usando LLMs para extrair informações estruturadas.
+
+    Suporta processamento via OpenAI ou LangChain com diferentes modelos e providers.
+    Converte automaticamente DataFrames do Polars para pandas quando necessário.
+
+    Args:
+        df: DataFrame pandas ou polars contendo os textos para processar
+        perguntas: Modelo Pydantic definindo a estrutura das informações a extrair
+        prompt: Template do prompt com placeholder {sentenca} para o texto
+        resume: Se True, continua processamento de onde parou usando status_column
+        model: Nome do modelo LLM (padrão: 'gemini-2.5-flash')
+        provider: Provider do LangChain (padrão: 'google_genai')
+        status_column: Coluna para rastrear progresso (padrão: primeira coluna do modelo)
+        text_column: Nome da coluna contendo os textos (padrão: 'texto')
+        use_openai: Se True, usa OpenAI em vez de LangChain
+        openai_client: Cliente OpenAI customizado (opcional)
+        reasoning_effort: Esforço de raciocínio para OpenAI ('minimal', 'medium', 'high')
+        verbosity: Nível de verbosidade para OpenAI ('low', 'medium', 'high')
+        api_key: Chave API específica (opcional, senão usa variável de ambiente)
+
+    Returns:
+        DataFrame com colunas originais mais as definidas no modelo Pydantic
+
+    Raises:
+        ImportError: Se OpenAI não estiver instalado quando use_openai=True
+        TypeError: Se df não for pandas.DataFrame nem polars.DataFrame
+        ValueError: Se text_column não existir no DataFrame
+    """
+    # Configurar cliente baseado na escolha OpenAI vs LangChain
     if use_openai:
         if OpenAI is None:
             raise ImportError("OpenAI not installed. Install with: pip install openai")
@@ -78,22 +117,22 @@ def dataframeit(
             client = OpenAI(api_key=api_key)
         else:
             client = OpenAI()
-        chain_g = None  # Não usado com OpenAI
+        chain_g = None
     else:
-        # Lógica LangChain original
+        # Configurar chain LangChain
         parser = PydanticOutputParser(pydantic_object=perguntas)
         prompt_inicial = ChatPromptTemplate.from_template(prompt)
         prompt_intermediario = prompt_inicial.partial(format=parser.get_format_instructions())
-        # Configurar parâmetros do modelo
+        # Incluir chave API se fornecida
         model_kwargs = {"model_provider": provider, "temperature": 0}
         if api_key:
             model_kwargs["api_key"] = api_key
 
         llm = init_chat_model(model, **model_kwargs)
         chain_g = prompt_intermediario | llm
-        client = None  # Não usado com LangChain
+        client = None
 
-    # Detectar engine e converter se necessário (polars -> pandas)
+    # Converter Polars para pandas se necessário
     original_was_polars = False
     
     if pl is not None and hasattr(pl, 'DataFrame') and isinstance(df, pl.DataFrame):
@@ -102,47 +141,47 @@ def dataframeit(
     elif not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas.DataFrame or polars.DataFrame")
     
-    # Construir engine label
+    # Criar identificador do processamento para barra de progresso
     engine_parts = [
         'polars→pandas' if original_was_polars else 'pandas',
         'openai' if use_openai else 'langchain'
     ]
     engine_label = '+'.join(engine_parts)
 
-    # Get expected columns from Pydantic model
+    # Extrair colunas esperadas do modelo Pydantic
     expected_columns = list(perguntas.__fields__.keys())
     
-    # Validar existência de text_column
+    # Verificar se coluna de texto existe
     if text_column not in df.columns:
         raise ValueError(f"Column '{text_column}' not found in DataFrame.")
 
-    # Check existing columns
+    # Identificar colunas existentes e novas
     existing_columns = df.columns
     new_columns = [col for col in expected_columns if col not in existing_columns]
     existing_result_columns = [col for col in expected_columns if col in existing_columns]
     
-    # Handle conflicts
+    # Tratar conflitos de colunas existentes
     if existing_result_columns and not resume:
         warnings.warn(f"Columns {existing_result_columns} already exist. Use resume=True to continue or rename them.")
         return df
     
-    # Add only missing columns
+    # Criar apenas colunas que não existem
     if new_columns:
         for col in new_columns:
             df.loc[:, col] = None
     
-    # Determine which column to use for checking processed status
+    # Definir coluna para controle de progresso
     if status_column is None:
-        # Use the first expected column as default
+        # Usar primeira coluna do modelo como padrão
         status_column = expected_columns[0]
     
-    # Add status column if it doesn't exist
+    # Criar coluna de status se não existir
     if status_column not in df.columns:
         df.loc[:, status_column] = None
     
-    # Find rows that need processing (status column is null)
+    # Determinar quais linhas precisam ser processadas
     if resume:
-        # Check which rows have been processed using the status column
+        # Identificar linhas já processadas pela coluna de status
         null_mask = df[status_column].isnull()
         unprocessed_indices = df.index[null_mask].tolist()
         start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
@@ -153,7 +192,7 @@ def dataframeit(
     
     total = len(df)
     
-    # Update progress bar description
+    # Configurar descrição da barra de progresso
     desc = (
         f"Processando [{engine_label}] (resumindo de {processed_count}/{total})"
         if processed_count > 0
@@ -163,11 +202,11 @@ def dataframeit(
     for i, row in enumerate(tqdm(df.iterrows(), total=total, desc=desc)):
         idx, row_data = row
         
-        # Skip already processed rows
+        # Pular linhas já processadas
         if i < start_idx:
             continue
             
-        # Check if this specific row is already processed using status column
+        # Verificar se linha específica já foi processada
         if pd.notna(row_data[status_column]):
             continue
             
@@ -177,23 +216,23 @@ def dataframeit(
         else:
             resposta = chain_g.invoke({'sentenca': row_data[text_column]})
         
-        # Acho que isso eu jogaria para utils. Suponho que diferentes LLMs vão responder de maneira um pouco diferente
+        # Parsear resposta JSON do LLM
         novas_infos = parse_json(resposta)
         
-        # Update DataFrame immediately for this row (in-place operation)
+        # Atualizar DataFrame com as informações extraídas
         for col in expected_columns:
             if col in novas_infos:
                 df.at[idx, col] = novas_infos[col]
         
-        # Mark this row as processed by setting the status column to a non-null value
+        # Marcar linha como processada
         if status_column in novas_infos:
-            # Use the actual value from LLM response
+            # Usar valor retornado pelo LLM
             df.at[idx, status_column] = novas_infos[status_column]
         else:
-            # Set a default "processed" marker
+            # Usar marcador padrão se não retornado pelo LLM
             df.at[idx, status_column] = "processed"
     
-    # Converter de volta para Polars se a entrada original era Polars
+    # Retornar ao formato original se DataFrame veio do Polars
     if original_was_polars and pl is not None:
         return pl.from_pandas(df)
 
