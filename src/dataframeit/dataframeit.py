@@ -32,6 +32,7 @@ def dataframeit(
     provider='google_genai',
     status_column=None,
     text_column: str = 'texto',
+    placeholder: str = 'documento',
     use_openai=False,
     openai_client=None,
     reasoning_effort='minimal',
@@ -47,12 +48,13 @@ def dataframeit(
     Args:
         df: DataFrame pandas ou polars contendo os textos para processar
         perguntas: Modelo Pydantic definindo a estrutura das informações a extrair
-        prompt: Template do prompt com placeholder {sentenca} para o texto
+        prompt: Template do prompt com placeholder para o texto (padrão: {documento})
         resume: Se True, continua processamento de onde parou usando status_column
         model: Nome do modelo LLM (padrão: 'gemini-2.5-flash')
         provider: Provider do LangChain (padrão: 'google_genai')
         status_column: Coluna para rastrear progresso (padrão: primeira coluna do modelo)
         text_column: Nome da coluna contendo os textos (padrão: 'texto')
+        placeholder: Nome do placeholder para o texto no prompt (padrão: 'documento')
         use_openai: Se True, usa OpenAI em vez de LangChain
         openai_client: Cliente OpenAI customizado (opcional)
         reasoning_effort: Esforço de raciocínio para OpenAI ('minimal', 'medium', 'high')
@@ -79,6 +81,7 @@ def dataframeit(
         resume=resume,
         status_column=status_column,
         text_column=text_column,
+        placeholder=placeholder,
     )
 
     # Processar usando nova arquitetura refatorada
@@ -104,7 +107,9 @@ class DataFrameConfiguration:
     resume: bool = True
     status_column: Optional[str] = None
     text_column: str = 'texto'
+    placeholder: str = 'documento'
     processed_marker: str = 'processed'  # Marcador configurável
+    error_marker: str = 'error'  # Marcador para falhas
 
 
 def create_openai_client(config: DataFrameConfiguration) -> Any:
@@ -150,9 +155,10 @@ class LLMStrategy(ABC):
 class OpenAIStrategy(LLMStrategy):
     """Estratégia para processamento usando OpenAI."""
 
-    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str):
+    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str, placeholder: str):
         self.client = create_openai_client(config)
         self.config = config
+        self.placeholder = placeholder
         parser = PydanticOutputParser(pydantic_object=perguntas)
         format_instructions = parser.get_format_instructions()
         self.prompt_template = f"""
@@ -162,7 +168,7 @@ class OpenAIStrategy(LLMStrategy):
         """
 
     def process_text(self, text: str) -> str:
-        full_prompt = self.prompt_template.format(sentenca=text)
+        full_prompt = self.prompt_template.format(**{self.placeholder: text})
         response = self.client.chat.completions.create(
             model=self.config.model,
             messages=[{"role": "user", "content": full_prompt}],
@@ -175,23 +181,26 @@ class OpenAIStrategy(LLMStrategy):
 class LangChainStrategy(LLMStrategy):
     """Estratégia para processamento usando LangChain."""
 
-    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str):
+    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str, placeholder: str):
         self.chain = create_langchain_chain(config, perguntas, prompt)
+        self.placeholder = placeholder
 
     def process_text(self, text: str) -> str:
-        return self.chain.invoke({'sentenca': text})
+        return self.chain.invoke({self.placeholder: text})
 
 
 class LLMStrategyFactory:
     """Factory para criar strategies de LLM baseado na configuração."""
 
     @staticmethod
-    def create_strategy(config: DataFrameConfiguration, perguntas, prompt: str) -> LLMStrategy:
+    def create_strategy(
+        config: DataFrameConfiguration, perguntas, prompt: str, placeholder: str
+    ) -> LLMStrategy:
         """Cria strategy apropriada baseada na configuração."""
         if config.use_openai:
-            return OpenAIStrategy(config, perguntas, prompt)
+            return OpenAIStrategy(config, perguntas, prompt, placeholder)
         else:
-            return LangChainStrategy(config, perguntas, prompt)
+            return LangChainStrategy(config, perguntas, prompt, placeholder)
 
 
 # ============================================================================
@@ -261,19 +270,30 @@ class ProgressManager:
             df.loc[:, status_column] = None
 
     def get_processing_indices(self, df: pd.DataFrame) -> Tuple[int, int, str]:
-        """Retorna índices de processamento e coluna de status."""
+        """Retorna a posição inicial de processamento e a contagem de itens já processados."""
         status_column = self.config.status_column or self.expected_columns[0]
 
         if self.config.resume:
+            # Encontra as linhas não processadas (onde o status é nulo)
             null_mask = df[status_column].isnull()
-            unprocessed_indices = df.index[null_mask].tolist()
-            start_idx = min(unprocessed_indices) if unprocessed_indices else len(df)
+            unprocessed_indices = df.index[null_mask]
+
+            if not unprocessed_indices.empty:
+                # Encontra o rótulo do primeiro item não processado
+                first_unprocessed_label = unprocessed_indices.min()
+                # Converte o rótulo para sua posição numérica (inteiro)
+                start_pos = df.index.get_loc(first_unprocessed_label)
+            else:
+                # Se não há nada para processar, começa no final
+                start_pos = len(df)
+
             processed_count = len(df) - len(unprocessed_indices)
         else:
-            start_idx = 0
+            start_pos = 0
             processed_count = 0
 
-        return start_idx, processed_count, status_column
+        # Garante que o nome da coluna de status seja retornado também
+        return start_pos, processed_count, status_column
 
     def create_progress_description(self, engine_label: str, processed_count: int, total: int) -> str:
         """Cria descrição para barra de progresso."""
@@ -292,7 +312,9 @@ class TextProcessor:
         self.prompt = prompt
 
         # Usar factory para criar estratégia (Open/Closed Principle)
-        self.strategy = LLMStrategyFactory.create_strategy(config, perguntas, prompt)
+        self.strategy = LLMStrategyFactory.create_strategy(
+            config, perguntas, prompt, config.placeholder
+        )
 
     def process_text(self, text: str) -> Dict[str, Any]:
         """Processa texto usando estratégia LLM configurada."""
@@ -327,7 +349,7 @@ class DataFrameProcessor:
 
         # Validações
         validate_text_column(df_pandas, self.config.text_column)
-        expected_columns = list(perguntas.__fields__.keys())
+        expected_columns = list(perguntas.model_fields.keys())
 
         # Validar conflitos e interromper se necessário
         if not validate_columns_conflict(df_pandas, expected_columns, self.config.resume):
@@ -336,7 +358,7 @@ class DataFrameProcessor:
         # Configurar progresso e colunas
         progress_manager = ProgressManager(expected_columns, self.config)
         progress_manager.setup_columns(df_pandas)  # Modifica o df_pandas in-place
-        start_idx, processed_count, status_column = progress_manager.get_processing_indices(df_pandas)
+        start_pos, processed_count, status_column = progress_manager.get_processing_indices(df_pandas)
 
         # Configurar processador de texto
         text_processor = TextProcessor(self.config, perguntas, prompt)
@@ -354,19 +376,30 @@ class DataFrameProcessor:
 
         # Loop principal de processamento
         for i, (idx, row_data) in enumerate(tqdm(df_pandas.iterrows(), total=total, desc=desc)):
-            # Pular linhas já processadas
-            if i < start_idx:
+            # Pular linhas já processadas (otimização)
+            if i < start_pos:
                 continue
 
-            # Verificar se linha específica já foi processada
+            # Verificar se linha específica já foi processada (segurança)
             if pd.notna(row_data[status_column]):
                 continue
 
-            # Processar texto
-            extracted_data = text_processor.process_text(row_data[self.config.text_column])
+            try:
+                # Processar texto
+                extracted_data = text_processor.process_text(
+                    row_data[self.config.text_column]
+                )
 
-            # Atualizar DataFrame
-            self.update_dataframe_row(df_pandas, idx, extracted_data, expected_columns, status_column)
+                # Atualizar DataFrame
+                self.update_dataframe_row(
+                    df_pandas, idx, extracted_data, expected_columns, status_column
+                )
+
+            except Exception as e:
+                warnings.warn(
+                    f"Falha ao processar linha {idx}: {e}. Marcando como 'error'."
+                )
+                df_pandas.at[idx, status_column] = self.config.error_marker
 
         # Converter de volta se necessário
         return convert_dataframe_back(df_pandas, was_polars)
