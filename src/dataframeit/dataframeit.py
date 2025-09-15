@@ -237,27 +237,28 @@ class ProgressManager:
         self.expected_columns = expected_columns
         self.config = config
 
-    def setup_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Configura colunas necessárias no DataFrame sem mutação."""
-        # Usar cópia defensiva para evitar side effects
-        df_copy = df.copy()
+    def setup_columns(self, df: pd.DataFrame) -> None:
+        """
+        Configura colunas de resultado e status no DataFrame (modifica in-place).
 
+        Nota: A modificação in-place é intencional para garantir que o progresso
+        parcial seja salvo no DataFrame original, permitindo a funcionalidade
+        de resumo (`resume=True`) mesmo se o processo for interrompido.
+        """
         # Identificar colunas existentes e novas
-        new_columns = [col for col in self.expected_columns if col not in df_copy.columns]
+        new_columns = [col for col in self.expected_columns if col not in df.columns]
 
         # Criar apenas colunas que não existem
         if new_columns:
             for col in new_columns:
-                df_copy.loc[:, col] = None
+                df.loc[:, col] = None
 
         # Definir coluna para controle de progresso
         status_column = self.config.status_column or self.expected_columns[0]
 
         # Criar coluna de status se não existir
-        if status_column not in df_copy.columns:
-            df_copy.loc[:, status_column] = None
-
-        return df_copy
+        if status_column not in df.columns:
+            df.loc[:, status_column] = None
 
     def get_processing_indices(self, df: pd.DataFrame) -> Tuple[int, int, str]:
         """Retorna índices de processamento e coluna de status."""
@@ -334,7 +335,7 @@ class DataFrameProcessor:
 
         # Configurar progresso e colunas
         progress_manager = ProgressManager(expected_columns, self.config)
-        df_pandas = progress_manager.setup_columns(df_pandas)
+        progress_manager.setup_columns(df_pandas)  # Modifica o df_pandas in-place
         start_idx, processed_count, status_column = progress_manager.get_processing_indices(df_pandas)
 
         # Configurar processador de texto
