@@ -1,5 +1,6 @@
 import re
 import json
+import importlib
 
 def parse_json(resposta: str) -> dict:
     """
@@ -47,4 +48,15 @@ def parse_json(resposta: str) -> dict:
     try:
         return json.loads(json_string_extraida)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Falha ao decodificar JSON. Erro: {e}. Resposta recebida: '{json_string_extraida[:200]}...'" )
+        raise ValueError(f"Falha ao decodificar JSON. Erro: {e}. Resposta recebida: '{json_string_extraida[:200]}'...")
+
+def check_dependency(dependency: str, pip_name: str = None):
+    """Verifica se uma dependência está instalada e lança um erro claro se não estiver."""
+    pip_name = pip_name or dependency
+    try:
+        importlib.import_module(dependency)
+    except ImportError:
+        raise ImportError(
+            f"A dependência '{dependency}' não está instalada. "
+            f"Por favor, instale-a com: uv pip install '{pip_name}'"
+        )
