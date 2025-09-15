@@ -142,7 +142,7 @@ class LLMStrategy(ABC):
     """Interface para estratégias de processamento de LLM."""
 
     @abstractmethod
-    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
+    def process_text(self, text: str) -> str:
         """Processa texto usando a estratégia específica do LLM."""
         pass
 
@@ -150,45 +150,35 @@ class LLMStrategy(ABC):
 class OpenAIStrategy(LLMStrategy):
     """Estratégia para processamento usando OpenAI."""
 
-    def __init__(self):
-        self.client = None
-        self.parser = None
-
-    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
-        # Lazy initialization do client e parser
-        if self.client is None:
-            self.client = create_openai_client(config)
-        if self.parser is None:
-            self.parser = PydanticOutputParser(pydantic_object=perguntas)
-
-        format_instructions = self.parser.get_format_instructions()
-        full_prompt = f"""
+    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str):
+        self.client = create_openai_client(config)
+        self.config = config
+        parser = PydanticOutputParser(pydantic_object=perguntas)
+        format_instructions = parser.get_format_instructions()
+        self.prompt_template = f"""
         {prompt}
 
         {format_instructions}
-        """.format(sentenca=text, format=format_instructions)
+        """
 
+    def process_text(self, text: str) -> str:
+        full_prompt = self.prompt_template.format(sentenca=text)
         response = self.client.chat.completions.create(
-            model=config.model,
+            model=self.config.model,
             messages=[{"role": "user", "content": full_prompt}],
-            reasoning={"effort": config.reasoning_effort},
-            completion={"verbosity": config.verbosity}
+            reasoning={"effort": self.config.reasoning_effort},
+            completion={"verbosity": self.config.verbosity},
         )
-
         return response.choices[0].message.content
 
 
 class LangChainStrategy(LLMStrategy):
     """Estratégia para processamento usando LangChain."""
 
-    def __init__(self):
-        self.chain = None
+    def __init__(self, config: DataFrameConfiguration, perguntas, prompt: str):
+        self.chain = create_langchain_chain(config, perguntas, prompt)
 
-    def process_text(self, text: str, prompt: str, perguntas, config: DataFrameConfiguration) -> str:
-        # Lazy initialization do chain
-        if self.chain is None:
-            self.chain = create_langchain_chain(config, perguntas, prompt)
-
+    def process_text(self, text: str) -> str:
         return self.chain.invoke({'sentenca': text})
 
 
@@ -196,12 +186,12 @@ class LLMStrategyFactory:
     """Factory para criar strategies de LLM baseado na configuração."""
 
     @staticmethod
-    def create_strategy(config: DataFrameConfiguration) -> LLMStrategy:
+    def create_strategy(config: DataFrameConfiguration, perguntas, prompt: str) -> LLMStrategy:
         """Cria strategy apropriada baseada na configuração."""
         if config.use_openai:
-            return OpenAIStrategy()
+            return OpenAIStrategy(config, perguntas, prompt)
         else:
-            return LangChainStrategy()
+            return LangChainStrategy(config, perguntas, prompt)
 
 
 # ============================================================================
@@ -301,11 +291,11 @@ class TextProcessor:
         self.prompt = prompt
 
         # Usar factory para criar estratégia (Open/Closed Principle)
-        self.strategy = LLMStrategyFactory.create_strategy(config)
+        self.strategy = LLMStrategyFactory.create_strategy(config, perguntas, prompt)
 
     def process_text(self, text: str) -> Dict[str, Any]:
         """Processa texto usando estratégia LLM configurada."""
-        response = self.strategy.process_text(text, self.prompt, self.perguntas, self.config)
+        response = self.strategy.process_text(text)
         return parse_json(response)
 
 
