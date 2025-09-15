@@ -38,20 +38,30 @@ class ColumnManager:
         Args:
             df: DataFrame no qual configurar as colunas.
         """
-        # Identificar colunas de resultado novas
+        # Verificar se precisamos adicionar colunas
         new_result_columns = [col for col in self.expected_columns if col not in df.columns]
-        if new_result_columns:
-            for col in new_result_columns:
-                df.loc[:, col] = None
-
-        # Criar coluna de erro se não existir
-        if self.error_column not in df.columns:
-            df.loc[:, self.error_column] = None
-
-        # Definir e criar coluna de status se não existir
         status_column = self.get_status_column_name()
-        if status_column not in df.columns:
-            df.loc[:, status_column] = None
+        needs_error_column = self.error_column not in df.columns
+        needs_status_column = status_column not in df.columns
+
+        # Se não precisamos adicionar nenhuma coluna, não fazemos nada
+        if not new_result_columns and not needs_error_column and not needs_status_column:
+            return
+
+        # Silenciar warning do pandas temporariamente para operações seguras
+        with pd.option_context('mode.chained_assignment', None):
+            # Identificar colunas de resultado novas
+            if new_result_columns:
+                for col in new_result_columns:
+                    df[col] = None
+
+            # Criar coluna de erro se não existir
+            if needs_error_column:
+                df[self.error_column] = None
+
+            # Criar coluna de status se não existir
+            if needs_status_column:
+                df[status_column] = None
 
 
 class ProgressManager:
