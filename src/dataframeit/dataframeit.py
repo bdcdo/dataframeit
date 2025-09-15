@@ -1,4 +1,4 @@
-from typing import Union, Any, Tuple, List
+from typing import Union, Any, Tuple, List, Optional
 import pandas as pd
 from tqdm import tqdm
 
@@ -110,8 +110,8 @@ class DataFrameOrchestrator:
     """
 
     def __init__(self, config: DataFrameConfiguration,
-                 preparation_pipeline: DataFramePreparationPipeline = None,
-                 processor: 'DataFrameProcessor' = None):
+                 preparation_pipeline: Optional[DataFramePreparationPipeline] = None,
+                 processor: Optional['DataFrameProcessor'] = None):
         """Inicializa o orquestrador.
 
         Args:
@@ -157,7 +157,7 @@ class PreparedData:
 
     def __init__(self, df_pandas: pd.DataFrame, was_polars: bool, should_skip_processing: bool,
                  expected_columns: List[str], status_column: str, start_pos: int,
-                 processed_count: int, row_processor: RowProcessor, engine_label: str, text_column: str):
+                 processed_count: int, row_processor: Optional[RowProcessor], engine_label: str, text_column: str):
         self.df_pandas = df_pandas
         self.was_polars = was_polars
         self.should_skip_processing = should_skip_processing
@@ -277,11 +277,13 @@ class DataFrameProcessor:
     def _process_rows(self, prepared_data: PreparedData, desc: str) -> None:
         """Executa o loop de processamento das linhas."""
         df = prepared_data.df_pandas
+        row_processor = prepared_data.row_processor
+        if row_processor is None:
+            raise RuntimeError("RowProcessor não inicializado. Verifique a preparação do pipeline.")
 
         for i, (idx, row_data) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
             if i < prepared_data.start_pos or pd.notna(row_data[prepared_data.status_column]):
                 continue
 
             text = str(row_data[prepared_data.text_column])
-            prepared_data.row_processor.process_row(df, idx, text, prepared_data.status_column)
-
+            row_processor.process_row(df, idx, text, prepared_data.status_column)
