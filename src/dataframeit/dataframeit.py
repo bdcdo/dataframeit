@@ -110,6 +110,7 @@ class DataFrameConfiguration:
     placeholder: str = 'documento'
     processed_marker: str = 'processed'  # Marcador configurável
     error_marker: str = 'error'  # Marcador para falhas
+    error_column: str = 'error_details'  # Coluna para armazenar detalhes do erro
 
 
 def create_openai_client(config: DataFrameConfiguration) -> Any:
@@ -248,24 +249,24 @@ class ProgressManager:
 
     def setup_columns(self, df: pd.DataFrame) -> None:
         """
-        Configura colunas de resultado e status no DataFrame (modifica in-place).
+        Configura colunas de resultado, status e erro no DataFrame (modifica in-place).
 
         Nota: A modificação in-place é intencional para garantir que o progresso
         parcial seja salvo no DataFrame original, permitindo a funcionalidade
         de resumo (`resume=True`) mesmo se o processo for interrompido.
         """
-        # Identificar colunas existentes e novas
-        new_columns = [col for col in self.expected_columns if col not in df.columns]
-
-        # Criar apenas colunas que não existem
-        if new_columns:
-            for col in new_columns:
+        # Identificar colunas de resultado novas
+        new_result_columns = [col for col in self.expected_columns if col not in df.columns]
+        if new_result_columns:
+            for col in new_result_columns:
                 df.loc[:, col] = None
 
-        # Definir coluna para controle de progresso
-        status_column = self.config.status_column or self.expected_columns[0]
+        # Criar coluna de erro se não existir
+        if self.config.error_column not in df.columns:
+            df.loc[:, self.config.error_column] = None
 
-        # Criar coluna de status se não existir
+        # Definir e criar coluna de status se não existir
+        status_column = self.config.status_column or self.expected_columns[0]
         if status_column not in df.columns:
             df.loc[:, status_column] = None
 
@@ -400,11 +401,13 @@ class DataFrameProcessor:
                     df_pandas, idx, extracted_data, expected_columns, status_column
                 )
 
-            except Exception as e:
+            except (ValueError, Exception) as e:
+                error_msg = f"{type(e).__name__}: {e}"
                 warnings.warn(
-                    f"Falha ao processar linha {idx}: {e}. Marcando como 'error'."
+                    f"Falha ao processar linha {idx}. {error_msg}. Marcando como 'error'."
                 )
                 df_pandas.at[idx, status_column] = self.config.error_marker
+                df_pandas.at[idx, self.config.error_column] = error_msg
 
         # Converter de volta se necessário
         return convert_dataframe_back(df_pandas, was_polars)
