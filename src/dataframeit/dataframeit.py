@@ -1,4 +1,4 @@
-from typing import Union, Any
+from typing import Union, Any, Tuple, List
 import pandas as pd
 from tqdm import tqdm
 
@@ -8,10 +8,173 @@ from .core.managers import ColumnManager, ProgressManager, TextProcessor, RowPro
 from .providers.factory import LLMStrategyFactory
 
 
+class DataFramePreparationPipeline:
+    """Pipeline dedicado para preparação de DataFrame antes do processamento.
+
+    Consolida todas as etapas de preparação em um componente coeso:
+    - Transformação pandas/polars
+    - Validações de entrada
+    - Configuração de colunas e progresso
+    - Criação de processadores especializados
+    """
+
+    def __init__(self, config: DataFrameConfiguration):
+        """Inicializa o pipeline de preparação.
+
+        Args:
+            config: Configuração para o processamento.
+        """
+        self.config = config
+        self.validation_service = ValidationService()
+
+    def prepare(self, df, questions, prompt: str) -> 'PreparedData':
+        """Prepara DataFrame para processamento.
+
+        Args:
+            df: DataFrame pandas ou polars contendo os textos.
+            questions: Modelo Pydantic definindo a estrutura esperada.
+            prompt: Template do prompt com placeholder.
+
+        Returns:
+            PreparedData: Dados preparados para processamento.
+        """
+        # Transformar para pandas
+        df_pandas, was_polars = DataFrameTransformer.to_pandas(df)
+
+        # Validações
+        self.validation_service.validate_text_column(df_pandas, self.config.text_column)
+        expected_columns = self.validation_service.validate_model_fields(questions)
+
+        if not self.validation_service.validate_columns_conflict(df_pandas, expected_columns, self.config.resume):
+            return PreparedData(
+                df_pandas=df_pandas,
+                was_polars=was_polars,
+                should_skip_processing=True,
+                expected_columns=expected_columns,
+                status_column='',
+                start_pos=0,
+                processed_count=0,
+                row_processor=None,
+                engine_label='',
+                text_column=self.config.text_column
+            )
+
+        # Configurar colunas
+        column_manager = ColumnManager(expected_columns, self.config.status_column, self.config.error_column)
+        column_manager.setup_columns(df_pandas)
+        status_column = column_manager.get_status_column_name()
+
+        # Configurar progresso
+        progress_manager = ProgressManager(self.config.resume)
+        start_pos, processed_count = progress_manager.get_processing_indices(df_pandas, status_column)
+
+        # Configurar processadores
+        strategy = LLMStrategyFactory.create_strategy(self.config, questions, prompt)
+        text_processor = TextProcessor(strategy)
+        row_processor = RowProcessor(
+            text_processor=text_processor,
+            expected_columns=expected_columns,
+            processed_marker=self.config.processed_marker,
+            error_marker=self.config.error_marker,
+            error_column=self.config.error_column
+        )
+
+        # Criar identificador do motor
+        engine_label = self._create_engine_label(was_polars)
+
+        return PreparedData(
+            df_pandas=df_pandas,
+            was_polars=was_polars,
+            should_skip_processing=False,
+            expected_columns=expected_columns,
+            status_column=status_column,
+            start_pos=start_pos,
+            processed_count=processed_count,
+            row_processor=row_processor,
+            engine_label=engine_label,
+            text_column=self.config.text_column
+        )
+
+    def _create_engine_label(self, was_polars: bool) -> str:
+        """Cria identificador do motor de processamento."""
+        dataframe_engine = 'polars→pandas' if was_polars else 'pandas'
+        llm_engine = 'openai' if self.config.use_openai else 'langchain'
+        return f'{dataframe_engine}+{llm_engine}'
+
+
+class DataFrameOrchestrator:
+    """Orquestrador principal do processamento de DataFrame.
+
+    Coordena a interação entre o pipeline de preparação e o processador,
+    garantindo fluxo limpo e separação de responsabilidades.
+    """
+
+    def __init__(self, config: DataFrameConfiguration,
+                 preparation_pipeline: DataFramePreparationPipeline = None,
+                 processor: 'DataFrameProcessor' = None):
+        """Inicializa o orquestrador.
+
+        Args:
+            config: Configuração para processamento.
+            preparation_pipeline: Pipeline de preparação (opcional, criará se None).
+            processor: Processador (opcional, criará se None).
+        """
+        self.config = config
+        self.preparation_pipeline = preparation_pipeline or DataFramePreparationPipeline(config)
+        self.processor = processor or DataFrameProcessor()
+
+    def execute(self, df, questions, prompt: str) -> Union[pd.DataFrame, Any]:
+        """Executa o processamento completo do DataFrame.
+
+        Args:
+            df: DataFrame pandas ou polars contendo os textos.
+            questions: Modelo Pydantic definindo a estrutura esperada.
+            prompt: Template do prompt com placeholder.
+
+        Returns:
+            Union[pd.DataFrame, Any]: DataFrame processado.
+        """
+        # Preparar dados
+        prepared_data = self.preparation_pipeline.prepare(df, questions, prompt)
+
+        # Verificar se deve pular processamento
+        if prepared_data.should_skip_processing:
+            return DataFrameTransformer.from_pandas(prepared_data.df_pandas, prepared_data.was_polars)
+
+        # Processar
+        self.processor.process(prepared_data)
+
+        # Retornar no formato original
+        return DataFrameTransformer.from_pandas(prepared_data.df_pandas, prepared_data.was_polars)
+
+
+class PreparedData:
+    """Encapsula dados preparados para processamento de DataFrame.
+
+    Contém todos os dados e configurações necessárias para o processamento
+    das linhas, eliminando dependências entre componentes.
+    """
+
+    def __init__(self, df_pandas: pd.DataFrame, was_polars: bool, should_skip_processing: bool,
+                 expected_columns: List[str], status_column: str, start_pos: int,
+                 processed_count: int, row_processor: RowProcessor, engine_label: str, text_column: str):
+        self.df_pandas = df_pandas
+        self.was_polars = was_polars
+        self.should_skip_processing = should_skip_processing
+        self.expected_columns = expected_columns
+        self.status_column = status_column
+        self.start_pos = start_pos
+        self.processed_count = processed_count
+        self.row_processor = row_processor
+        self.engine_label = engine_label
+        self.text_column = text_column
+
+
 def dataframeit(
     df,
-    perguntas,
-    prompt,
+    questions=None,
+    prompt=None,
+    perguntas=None,  # Deprecated: use 'questions'
     resume=True,
     model='gemini-2.5-flash',
     provider='google_genai',
@@ -35,7 +198,7 @@ def dataframeit(
 
     Args:
         df: DataFrame pandas ou polars contendo os textos para processar
-        perguntas: Modelo Pydantic definindo a estrutura das informações a extrair
+        questions: Modelo Pydantic definindo a estrutura das informações a extrair
         prompt: Template do prompt com placeholder para o texto (padrão: {documento})
         resume: Se True, continua processamento de onde parou usando status_column
         model: Nome do modelo LLM (padrão: 'gemini-2.5-flash')
@@ -60,7 +223,15 @@ def dataframeit(
         TypeError: Se df não for pandas.DataFrame nem polars.DataFrame
         ValueError: Se text_column não existir no DataFrame
     """
-    # Criar configuração centralizada
+    # Compatibilidade com API anterior
+    if questions is None and perguntas is not None:
+        questions = perguntas
+    elif questions is None and perguntas is None:
+        raise ValueError("Either 'questions' or 'perguntas' parameter must be provided")
+
+    if prompt is None:
+        raise ValueError("'prompt' parameter is required")
+
     config = DataFrameConfiguration.create(
         model=model,
         provider=provider,
@@ -78,94 +249,39 @@ def dataframeit(
         max_delay=max_delay,
     )
 
-    # Processar usando nova arquitetura refatorada
-    processor = DataFrameProcessor(config)
-    return processor.process(df, perguntas, prompt)
+    orchestrator = DataFrameOrchestrator(config)
+    return orchestrator.execute(df, questions, prompt)
 
 
 class DataFrameProcessor:
-    """Orquestração principal do processamento de DataFrame.
+    """Processador focado exclusivamente no processamento de linhas do DataFrame.
 
-    Responsável apenas pela coordenação entre componentes especializados,
-    seguindo o princípio da responsabilidade única.
+    Responsável apenas pelo loop de processamento das linhas,
+    delegando toda a preparação para outros componentes.
     """
 
-    def __init__(self, config: DataFrameConfiguration):
-        """Inicializa o processador de DataFrame.
+    def process(self, prepared_data: PreparedData) -> None:
+        """Processa as linhas do DataFrame usando dados preparados.
 
         Args:
-            config: Configuração para processamento.
+            prepared_data: Dados preparados contendo tudo necessário para processamento.
         """
-        self.config = config
-
-    def process(self, df, perguntas, prompt: str) -> Union[pd.DataFrame, Any]:
-        """Orquestra o processamento do DataFrame usando componentes especializados.
-
-        Args:
-            df: DataFrame pandas ou polars contendo os textos para processar.
-            perguntas: Modelo Pydantic definindo a estrutura das informações a extrair.
-            prompt: Template do prompt com placeholder para o texto.
-
-        Returns:
-            Union[pd.DataFrame, Any]: DataFrame processado com colunas adicionais.
-        """
-        # Transformar para pandas
-        df_pandas, was_polars = DataFrameTransformer.to_pandas(df)
-
-        # Validações
-        validation_service = ValidationService()
-        validation_service.validate_text_column(df_pandas, self.config.text_column)
-        expected_columns = validation_service.validate_model_fields(perguntas)
-
-        if not validation_service.validate_columns_conflict(df_pandas, expected_columns, self.config.resume):
-            return DataFrameTransformer.from_pandas(df_pandas, was_polars)
-
-        # Configurar colunas
-        column_manager = ColumnManager(expected_columns, self.config.status_column, self.config.error_column)
-        column_manager.setup_columns(df_pandas)
-        status_column = column_manager.get_status_column_name()
-
-        # Configurar progresso
-        progress_manager = ProgressManager(self.config.resume)
-        start_pos, processed_count = progress_manager.get_processing_indices(df_pandas, status_column)
-
-        # Configurar processadores
-        strategy = LLMStrategyFactory.create_strategy(self.config, perguntas, prompt)
-        text_processor = TextProcessor(strategy)
-        row_processor = RowProcessor(
-            text_processor=text_processor,
-            expected_columns=expected_columns,
-            processed_marker=self.config.processed_marker,
-            error_marker=self.config.error_marker,
-            error_column=self.config.error_column
+        desc = ProgressManager.create_progress_description(
+            prepared_data.engine_label,
+            prepared_data.processed_count,
+            len(prepared_data.df_pandas)
         )
 
-        # Criar identificador e descrição do processamento
-        engine_label = self._create_engine_label(was_polars)
-        desc = ProgressManager.create_progress_description(engine_label, processed_count, len(df_pandas))
+        self._process_rows(prepared_data, desc)
 
-        # Processar linhas
-        self._process_rows(df_pandas, row_processor, status_column, start_pos, desc)
+    def _process_rows(self, prepared_data: PreparedData, desc: str) -> None:
+        """Executa o loop de processamento das linhas."""
+        df = prepared_data.df_pandas
 
-        return DataFrameTransformer.from_pandas(df_pandas, was_polars)
-
-    def _create_engine_label(self, was_polars: bool) -> str:
-        """Cria identificador do motor de processamento."""
-        engine_parts = [
-            'polars→pandas' if was_polars else 'pandas',
-            'openai' if self.config.use_openai else 'langchain'
-        ]
-        return '+'.join(engine_parts)
-
-    def _process_rows(self, df: pd.DataFrame, row_processor: RowProcessor,
-                     status_column: str, start_pos: int, desc: str) -> None:
-        """Processa as linhas do DataFrame usando RowProcessor especializado."""
         for i, (idx, row_data) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-            # Pular linhas já processadas
-            if i < start_pos or pd.notna(row_data[status_column]):
+            if i < prepared_data.start_pos or pd.notna(row_data[prepared_data.status_column]):
                 continue
 
-            # idx pode ser qualquer tipo hashable, mas RowProcessor espera int para compatibilidade
-            # Usar idx diretamente para indexação no DataFrame
-            row_processor.process_row(df, idx, str(row_data[self.config.text_column]), status_column)
+            text = str(row_data[prepared_data.text_column])
+            prepared_data.row_processor.process_row(df, idx, text, prepared_data.status_column)
 
