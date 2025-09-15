@@ -104,11 +104,6 @@ def dataframeit(
     processor = DataFrameProcessor(config)
     return processor.process(df, perguntas, prompt)
 
-
-# ============================================================================
-# NOVA ARQUITETURA REFATORADA
-# ============================================================================
-
 @dataclass
 class DataFrameConfiguration:
     """Configuração centralizada para processamento de DataFrame.
@@ -206,17 +201,6 @@ def create_langchain_chain(config: DataFrameConfiguration, perguntas, prompt: st
     llm = init_chat_model(config.model, **model_kwargs)
     return prompt_intermediario | llm
 
-
-# ============================================================================
-# STRATEGY PATTERN PARA LLM PROCESSING
-# ============================================================================
-
-
-
-# ============================================================================
-# STRATEGY PATTERN PARA LLM PROCESSING
-# ============================================================================
-
 class LLMStrategy(ABC):
     """Interface abstrata para estratégias de processamento de LLM.
     
@@ -236,8 +220,6 @@ class LLMStrategy(ABC):
             str: Resposta do LLM como string.
         """
         pass
-
-
 
 class OpenAIStrategy(LLMStrategy):
     """Estratégia para processamento usando OpenAI.
@@ -285,8 +267,6 @@ class OpenAIStrategy(LLMStrategy):
         )
         return response.choices[0].message.content
 
-
-
 class LangChainStrategy(LLMStrategy):
     """Estratégia para processamento usando LangChain.
     
@@ -319,8 +299,6 @@ class LangChainStrategy(LLMStrategy):
         """
         return self.chain.invoke({self.placeholder: text})
 
-
-
 class LLMStrategyFactory:
     """Factory para criar estratégias de LLM baseado na configuração.
     
@@ -347,9 +325,6 @@ class LLMStrategyFactory:
             return OpenAIStrategy(config, perguntas, prompt, placeholder)
         else:
             return LangChainStrategy(config, perguntas, prompt, placeholder)
-
-
-
 
 class ProgressManager:
     """Gerenciamento de progresso e colunas de status.
@@ -459,7 +434,6 @@ class ProgressManager:
         else:
             return f"Processando [{engine_label}]"
 
-
 class TextProcessor:
     """Processamento de texto usando LLMs com Strategy Pattern.
     
@@ -495,7 +469,6 @@ class TextProcessor:
         """
         response = self.strategy.process_text(text)
         return parse_json(response)
-
 
 class DataFrameProcessor:
     """Orquestração principal do processamento de DataFrame.
@@ -620,5 +593,3 @@ class DataFrameProcessor:
 
         # Converter de volta se necessário
         return convert_dataframe_back(df_pandas, was_polars)
-
-
