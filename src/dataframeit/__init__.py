@@ -1,3 +1,3 @@
-from .dataframeit import dataframeit
+from .core import dataframeit
 
-__version__ = "0.0.1" # Define a versão do pacote
+__version__ = "0.0.1"
