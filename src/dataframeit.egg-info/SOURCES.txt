@@ -3,8 +3,11 @@ README.md
 pyproject.toml
 src/dataframeit/__init__.py
 src/dataframeit/config.py
+src/dataframeit/core_new.py
 src/dataframeit/dataframeit.py
+src/dataframeit/llm_new.py
 src/dataframeit/utils.py
+src/dataframeit/utils_new.py
 src/dataframeit.egg-info/PKG-INFO
 src/dataframeit.egg-info/SOURCES.txt
 src/dataframeit.egg-info/dependency_links.txt
@@ -25,3 +28,4 @@ src/dataframeit/providers/openai/__init__.py
 src/dataframeit/providers/openai/client.py
 src/dataframeit/providers/openai/config.py
 src/dataframeit/providers/openai/strategy.py
+tests/test_regressions.py
