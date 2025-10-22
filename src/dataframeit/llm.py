@@ -4,9 +4,12 @@ from .utils import check_dependency, parse_json, retry_with_backoff
 
 # Imports opcionais
 try:
-    from langchain.output_parsers import PydanticOutputParser
+    from langchain_core.output_parsers import PydanticOutputParser
 except ImportError:
-    PydanticOutputParser = None
+    try:
+        from langchain.output_parsers import PydanticOutputParser
+    except ImportError:
+        PydanticOutputParser = None
 
 
 @dataclass
@@ -125,7 +128,10 @@ def _create_langchain_llm(model: str, provider: str, api_key: Optional[str]):
     try:
         from langchain.chat_models import init_chat_model
     except ImportError:
-        raise ImportError("LangChain não está disponível. Instale com: pip install langchain langchain-core")
+        try:
+            from langchain_core.chat_models import init_chat_model
+        except ImportError:
+            raise ImportError("LangChain não está disponível. Instale com: pip install langchain langchain-core")
 
     model_kwargs = {"model_provider": provider, "temperature": 0}
     if api_key:
