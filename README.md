@@ -17,6 +17,7 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 - **Retry automático** com backoff exponencial para resiliência
 - **Rate limiting** configurável para respeitar limites de APIs
 - **Rastreamento de erros** com coluna automática `error_details`
+- **Tracking de tokens** opcional para monitoramento de custos
 
 ## Instalação
 
@@ -166,6 +167,9 @@ df_resultado = dataframeit(
 - **`base_delay=1.0`**: Delay inicial em segundos para retry (cresce exponencialmente)
 - **`max_delay=30.0`**: Delay máximo em segundos entre tentativas
 - **`rate_limit_delay=0.0`**: Delay em segundos entre requisições para evitar rate limits
+
+### Parâmetros de Monitoramento
+- **`track_tokens=False`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
 ### Parâmetros LangChain
 - **`model='gemini-2.5-flash'`**: Modelo a ser usado
@@ -333,6 +337,64 @@ df = pd.read_excel('resultado_parcial.xlsx')
 df_resultado = dataframeit(df, SuaClasse, TEMPLATE, resume=True)
 df_resultado.to_excel('resultado_completo.xlsx', index=False)
 ```
+
+## Tracking de Tokens e Custos
+
+O DataFrameIt pode rastrear automaticamente o uso de tokens para monitoramento de custos (disponível com LangChain 1.0+).
+
+### Como Usar
+
+```python
+# Habilitar tracking de tokens
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    track_tokens=True  # Habilita tracking de tokens
+)
+
+# Ao final do processamento, exibe estatísticas:
+# ============================================================
+# 📊 ESTATÍSTICAS DE USO DE TOKENS
+# ============================================================
+# Modelo: gemini-2.5-flash
+# Total de tokens: 15,432
+#   • Input:  12,345 tokens
+#   • Output: 3,087 tokens
+# ============================================================
+```
+
+### Colunas Adicionadas ao DataFrame
+
+Quando `track_tokens=True`, o DataFrame incluirá automaticamente:
+
+- **`_input_tokens`**: Tokens de entrada (prompt) por linha
+- **`_output_tokens`**: Tokens de saída (resposta) por linha
+- **`_total_tokens`**: Total de tokens por linha
+
+### Analisando Custos
+
+```python
+# Processar com tracking
+df_resultado = dataframeit(df, SuaClasse, TEMPLATE, track_tokens=True)
+
+# Analisar uso por linha
+print(f"Linha mais cara: {df_resultado['_total_tokens'].max()} tokens")
+print(f"Média de tokens: {df_resultado['_total_tokens'].mean():.1f} tokens")
+
+# Calcular custo estimado (exemplo: Gemini 2.5 Flash)
+# Input: $0.075 por 1M tokens, Output: $0.30 por 1M tokens
+custo_input = df_resultado['_input_tokens'].sum() * 0.075 / 1_000_000
+custo_output = df_resultado['_output_tokens'].sum() * 0.30 / 1_000_000
+custo_total = custo_input + custo_output
+print(f"Custo estimado: ${custo_total:.4f}")
+```
+
+### Compatibilidade
+
+- ✅ **LangChain 1.0+** com `usage_metadata` (Gemini, Claude, GPT via LangChain)
+- ✅ **OpenAI** com `response.usage` (GPT-4, GPT-4o, etc.)
+- ⚠️ Versões anteriores do LangChain não incluem `usage_metadata`
 
 ## Exemplo Completo
 
