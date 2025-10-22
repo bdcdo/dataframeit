@@ -28,6 +28,7 @@ def dataframeit(
     base_delay=1.0,
     max_delay=30.0,
     rate_limit_delay=0.0,
+    track_tokens=False,
 ) -> Union[pd.DataFrame, Any]:
     """Processa textos em DataFrame usando LLMs para extrair informações estruturadas.
 
@@ -51,6 +52,7 @@ def dataframeit(
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
+        track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: False).
 
     Returns:
         DataFrame com colunas originais + extraídas.
@@ -89,7 +91,7 @@ def dataframeit(
         return from_pandas(df_pandas, was_polars)
 
     # Configurar colunas
-    _setup_columns(df_pandas, expected_columns, status_column, resume)
+    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens)
 
     # Determinar coluna de status
     status_col = status_column or '_dataframeit_status'
@@ -125,27 +127,28 @@ def dataframeit(
         start_pos,
         processed_count,
         was_polars,
+        track_tokens,
     )
 
     # Exibir estatísticas de tokens
-    if token_stats and any(token_stats.values()):
+    if track_tokens and token_stats and any(token_stats.values()):
         _print_token_stats(token_stats, model)
 
     # Retornar no formato original
     return from_pandas(df_pandas, was_polars)
 
 
-def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool):
+def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = 'error_details'
-    token_cols = ['_input_tokens', '_output_tokens', '_total_tokens']
+    token_cols = ['_input_tokens', '_output_tokens', '_total_tokens'] if track_tokens else []
 
     # Identificar colunas que precisam ser criadas
     new_cols = [col for col in expected_columns if col not in df.columns]
     needs_status = status_col not in df.columns
     needs_error = error_col not in df.columns
-    needs_tokens = [col for col in token_cols if col not in df.columns]
+    needs_tokens = [col for col in token_cols if col not in df.columns] if track_tokens else []
 
     if not new_cols and not needs_status and not needs_error and not needs_tokens:
         return
@@ -158,8 +161,9 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
             df[status_col] = None
         if needs_error:
             df[error_col] = None
-        for col in needs_tokens:
-            df[col] = None
+        if track_tokens:
+            for col in needs_tokens:
+                df[col] = None
 
 
 def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> tuple[int, int]:
@@ -212,6 +216,7 @@ def _process_rows(
     start_pos: int,
     processed_count: int,
     was_polars: bool,
+    track_tokens: bool,
 ) -> dict:
     """Processa cada linha do DataFrame.
 
@@ -258,8 +263,8 @@ def _process_rows(
                 if col in extracted:
                     df.at[idx, col] = extracted[col]
 
-            # Armazenar tokens no DataFrame
-            if usage:
+            # Armazenar tokens no DataFrame (se habilitado)
+            if track_tokens and usage:
                 df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
                 df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                 df.at[idx, '_total_tokens'] = usage.get('total_tokens', 0)
