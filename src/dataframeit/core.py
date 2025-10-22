@@ -190,6 +190,12 @@ def _process_rows(
     engine = 'polars→pandas' if was_polars else 'pandas'
     llm_engine = 'openai' if config.use_openai else 'langchain'
     desc = f"Processando [{engine}+{llm_engine}]"
+
+    # Adicionar info de rate limiting (se ativo)
+    if config.rate_limit_delay > 0:
+        req_per_min = int(60 / config.rate_limit_delay)
+        desc += f" [~{req_per_min} req/min]"
+
     if processed_count > 0:
         desc += f" (resumindo de {processed_count}/{len(df)})"
 
