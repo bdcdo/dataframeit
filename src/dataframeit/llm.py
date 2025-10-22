@@ -64,7 +64,7 @@ def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) 
         config: Configuração do LLM.
 
     Returns:
-        Dicionário com dados extraídos.
+        Dicionário com 'data' (dados extraídos) e 'usage' (metadata de uso de tokens).
     """
     check_dependency("openai", "openai")
 
@@ -84,7 +84,18 @@ def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) 
             reasoning={"effort": config.reasoning_effort},
             completion={"verbosity": config.verbosity},
         )
-        return parse_json(response.choices[0].message.content)
+
+        # Extrair dados e usage metadata
+        data = parse_json(response.choices[0].message.content)
+        usage = None
+        if hasattr(response, 'usage') and response.usage:
+            usage = {
+                'input_tokens': response.usage.prompt_tokens,
+                'output_tokens': response.usage.completion_tokens,
+                'total_tokens': response.usage.total_tokens
+            }
+
+        return {'data': data, 'usage': usage}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
@@ -99,7 +110,7 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
         config: Configuração do LLM.
 
     Returns:
-        Dicionário com dados extraídos.
+        Dicionário com 'data' (dados extraídos) e 'usage' (metadata de uso de tokens).
     """
     check_dependency("langchain", "langchain")
     check_dependency("langchain_core", "langchain-core")
@@ -110,7 +121,18 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     def _call():
         prompt = build_prompt(pydantic_model, user_prompt, text, config.placeholder)
         response = llm.invoke(prompt)
-        return parse_json(response)
+
+        # Extrair dados e usage metadata
+        data = parse_json(response)
+        usage = None
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage = {
+                'input_tokens': response.usage_metadata.get('input_tokens', 0),
+                'output_tokens': response.usage_metadata.get('output_tokens', 0),
+                'total_tokens': response.usage_metadata.get('total_tokens', 0)
+            }
+
+        return {'data': data, 'usage': usage}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 

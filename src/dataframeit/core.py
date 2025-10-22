@@ -114,7 +114,7 @@ def dataframeit(
     )
 
     # Processar linhas
-    _process_rows(
+    token_stats = _process_rows(
         df_pandas,
         questions,
         prompt,
@@ -127,6 +127,10 @@ def dataframeit(
         was_polars,
     )
 
+    # Exibir estatísticas de tokens
+    if token_stats and any(token_stats.values()):
+        _print_token_stats(token_stats, model)
+
     # Retornar no formato original
     return from_pandas(df_pandas, was_polars)
 
@@ -135,13 +139,15 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = 'error_details'
+    token_cols = ['_input_tokens', '_output_tokens', '_total_tokens']
 
     # Identificar colunas que precisam ser criadas
     new_cols = [col for col in expected_columns if col not in df.columns]
     needs_status = status_col not in df.columns
     needs_error = error_col not in df.columns
+    needs_tokens = [col for col in token_cols if col not in df.columns]
 
-    if not new_cols and not needs_status and not needs_error:
+    if not new_cols and not needs_status and not needs_error and not needs_tokens:
         return
 
     # Criar colunas
@@ -152,6 +158,8 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
             df[status_col] = None
         if needs_error:
             df[error_col] = None
+        for col in needs_tokens:
+            df[col] = None
 
 
 def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> tuple[int, int]:
@@ -173,6 +181,26 @@ def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> 
     return start_pos, processed_count
 
 
+def _print_token_stats(token_stats: dict, model: str):
+    """Exibe estatísticas de uso de tokens.
+
+    Args:
+        token_stats: Dict com contadores de tokens.
+        model: Nome do modelo usado.
+    """
+    if not token_stats or token_stats.get('total_tokens', 0) == 0:
+        return
+
+    print("\n" + "=" * 60)
+    print("📊 ESTATÍSTICAS DE USO DE TOKENS")
+    print("=" * 60)
+    print(f"Modelo: {model}")
+    print(f"Total de tokens: {token_stats['total_tokens']:,}")
+    print(f"  • Input:  {token_stats['input_tokens']:,} tokens")
+    print(f"  • Output: {token_stats['output_tokens']:,} tokens")
+    print("=" * 60 + "\n")
+
+
 def _process_rows(
     df: pd.DataFrame,
     pydantic_model,
@@ -184,8 +212,12 @@ def _process_rows(
     start_pos: int,
     processed_count: int,
     was_polars: bool,
-):
-    """Processa cada linha do DataFrame."""
+) -> dict:
+    """Processa cada linha do DataFrame.
+
+    Returns:
+        Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
+    """
     # Criar descrição para progresso
     engine = 'polars→pandas' if was_polars else 'pandas'
     llm_engine = 'openai' if config.use_openai else 'langchain'
@@ -199,6 +231,9 @@ def _process_rows(
     if processed_count > 0:
         desc += f" (resumindo de {processed_count}/{len(df)})"
 
+    # Inicializar contadores de tokens
+    token_stats = {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
+
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
         # Pular linhas já processadas
@@ -210,14 +245,29 @@ def _process_rows(
         try:
             # Chamar LLM apropriado
             if config.use_openai:
-                extracted = call_openai(text, pydantic_model, user_prompt, config)
+                result = call_openai(text, pydantic_model, user_prompt, config)
             else:
-                extracted = call_langchain(text, pydantic_model, user_prompt, config)
+                result = call_langchain(text, pydantic_model, user_prompt, config)
+
+            # Extrair dados e usage metadata
+            extracted = result.get('data', result)  # Retrocompatibilidade
+            usage = result.get('usage')
 
             # Atualizar DataFrame com dados extraídos
             for col in expected_columns:
                 if col in extracted:
                     df.at[idx, col] = extracted[col]
+
+            # Armazenar tokens no DataFrame
+            if usage:
+                df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
+                df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
+                df.at[idx, '_total_tokens'] = usage.get('total_tokens', 0)
+
+                # Acumular estatísticas
+                token_stats['input_tokens'] += usage.get('input_tokens', 0)
+                token_stats['output_tokens'] += usage.get('output_tokens', 0)
+                token_stats['total_tokens'] += usage.get('total_tokens', 0)
 
             df.at[idx, status_col] = 'processed'
 
@@ -230,3 +280,5 @@ def _process_rows(
             warnings.warn(f"Falha ao processar linha {idx}. {error_msg}")
             df.at[idx, status_col] = 'error'
             df.at[idx, 'error_details'] = error_msg
+
+    return token_stats
