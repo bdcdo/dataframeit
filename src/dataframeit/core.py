@@ -1,4 +1,5 @@
 import warnings
+import time
 from typing import Union, Any, Optional
 import pandas as pd
 from tqdm import tqdm
@@ -26,6 +27,7 @@ def dataframeit(
     max_retries=3,
     base_delay=1.0,
     max_delay=30.0,
+    rate_limit_delay=0.0,
 ) -> Union[pd.DataFrame, Any]:
     """Processa textos em DataFrame usando LLMs para extrair informações estruturadas.
 
@@ -48,6 +50,7 @@ def dataframeit(
         max_retries: Número máximo de tentativas.
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
+        rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
 
     Returns:
         DataFrame com colunas originais + extraídas.
@@ -107,6 +110,7 @@ def dataframeit(
         base_delay=base_delay,
         max_delay=max_delay,
         placeholder=placeholder,
+        rate_limit_delay=rate_limit_delay,
     )
 
     # Processar linhas
@@ -210,6 +214,10 @@ def _process_rows(
                     df.at[idx, col] = extracted[col]
 
             df.at[idx, status_col] = 'processed'
+
+            # Rate limiting: aguardar antes da próxima requisição
+            if config.rate_limit_delay > 0:
+                time.sleep(config.rate_limit_delay)
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
