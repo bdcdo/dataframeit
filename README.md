@@ -15,6 +15,7 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 - Suporte para Polars e Pandas
 - Processamento incremental com resumo automático
 - **Retry automático** com backoff exponencial para resiliência
+- **Rate limiting** configurável para respeitar limites de APIs
 - **Rastreamento de erros** com coluna automática `error_details`
 
 ## Instalação
@@ -164,6 +165,7 @@ df_resultado = dataframeit(
 - **`max_retries=3`**: Número máximo de tentativas em caso de erro
 - **`base_delay=1.0`**: Delay inicial em segundos para retry (cresce exponencialmente)
 - **`max_delay=30.0`**: Delay máximo em segundos entre tentativas
+- **`rate_limit_delay=0.0`**: Delay em segundos entre requisições para evitar rate limits
 
 ### Parâmetros LangChain
 - **`model='gemini-2.5-flash'`**: Modelo a ser usado
@@ -226,6 +228,96 @@ df_resultado = dataframeit(
 ```
 
 A espera entre tentativas cresce exponencialmente: 2s → 4s → 8s → 16s → 32s (limitado a 60s).
+
+## Rate Limiting
+
+O DataFrameIt oferece controle proativo de rate limiting para evitar atingir limites de requisições das APIs.
+
+### Por que usar Rate Limiting?
+
+- **Prevenir erros**: Evita atingir limites de requisições antes de acontecer
+- **Eficiência**: Reduz desperdício de retries em datasets grandes
+- **Economia**: Algumas APIs cobram por tentativa, mesmo as que falham
+- **Complementar ao Retry**: O rate limiting PREVINE erros, o retry TRATA erros
+
+### Quando usar?
+
+Use `rate_limit_delay` quando:
+- Processar datasets grandes (> 100 linhas)
+- Conhecer os limites da API (ex: 60 req/min)
+- Fazer processamento em lote
+- Quiser economizar retries para erros reais
+
+### Exemplos Práticos
+
+```python
+# Google Gemini: 60 requisições por minuto (free tier)
+# Solução: 1 requisição por segundo = 60 req/min
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    rate_limit_delay=1.0
+)
+
+# OpenAI GPT-4: limite de 500 req/min (tier 1)
+# Solução: ~0.15 segundos entre requisições = ~400 req/min (margem de segurança)
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    use_openai=True,
+    model='gpt-4o-mini',
+    rate_limit_delay=0.15
+)
+
+# Anthropic Claude: limite de 50 req/min (free tier)
+# Solução: 1.2 segundos entre requisições = 50 req/min
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    provider='anthropic',
+    model='claude-3-5-sonnet-20241022',
+    rate_limit_delay=1.2
+)
+
+# Dataset pequeno: não precisa de rate limiting
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    rate_limit_delay=0.0  # Padrão: sem delay
+)
+```
+
+### Como calcular o delay ideal?
+
+```
+rate_limit_delay = 60 / limite_de_requisições_por_minuto
+
+Exemplos:
+- 60 req/min  → delay = 60/60  = 1.0 segundo
+- 500 req/min → delay = 60/500 = 0.12 segundos
+- 50 req/min  → delay = 60/50  = 1.2 segundos
+```
+
+### Rate Limiting + Retry: Dupla Proteção
+
+```python
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    # Rate limiting proativo
+    rate_limit_delay=1.0,      # Previne rate limits
+
+    # Retry reativo
+    max_retries=3,             # Trata erros inesperados
+    base_delay=2.0,
+    max_delay=30.0
+)
+```
 
 ## Processamento Incremental
 

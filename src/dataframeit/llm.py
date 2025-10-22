@@ -26,6 +26,7 @@ class LLMConfig:
     base_delay: float
     max_delay: float
     placeholder: str
+    rate_limit_delay: float
 
 
 def build_prompt(pydantic_model, user_prompt: str, text: str, placeholder: str) -> str:
