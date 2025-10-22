@@ -4,7 +4,14 @@ version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ['langchain', 'pandas', 'pydantic', 'tqdm', 'langchain-google-genai']
+dependencies = [
+    'langchain>=1.0.0',
+    'langchain-core>=1.0.0',
+    'langchain-google-genai>=3.0.0',
+    'pandas',
+    'pydantic>=2.0',
+    'tqdm'
+]
 
 [project.optional-dependencies]
 polars = ["polars>=0.20"]
