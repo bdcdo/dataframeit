@@ -78,11 +78,11 @@ def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) 
     def _call():
         prompt = build_prompt(pydantic_model, user_prompt, text, config.placeholder)
 
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=config.model,
-            messages=[{"role": "user", "content": prompt}],
+            input=prompt,
             reasoning={"effort": config.reasoning_effort},
-            completion={"verbosity": config.verbosity},
+            text={"verbosity": config.verbosity},
         )
 
         # Extrair dados e usage metadata
