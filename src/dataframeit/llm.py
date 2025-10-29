@@ -2,6 +2,39 @@ from dataclasses import dataclass
 from typing import Optional, Any
 from .utils import check_dependency, parse_json, retry_with_backoff
 
+def _extract_response_text(response: Any) -> str:
+    """Extrai texto útil do objeto de resposta da API Responses."""
+    # Handler direto para propriedade auxiliar introduzida pelo SDK
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return output_text
+
+    # Tentar percorrer a lista `output`
+    output = getattr(response, "output", None)
+    if output:
+        texts = []
+        for block in output:
+            # Objetos do SDK expõem atributos e/ou model_dump()
+            content = getattr(block, "content", None)
+            if content is None and hasattr(block, "model_dump"):
+                content = block.model_dump().get("content")
+
+            if not content:
+                continue
+
+            for item in content:
+                text = getattr(item, "text", None)
+                if text is None and hasattr(item, "model_dump"):
+                    text = item.model_dump().get("text")
+                if text:
+                    texts.append(text)
+
+        if texts:
+            return "\n".join(texts)
+
+    # Fallback: delegar para representação em string (último recurso)
+    return str(response)
+
 # Imports opcionais
 try:
     from langchain_core.output_parsers import PydanticOutputParser
@@ -78,15 +111,19 @@ def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) 
     def _call():
         prompt = build_prompt(pydantic_model, user_prompt, text, config.placeholder)
 
-        response = client.responses.create(
-            model=config.model,
-            input=prompt,
-            reasoning={"effort": config.reasoning_effort},
-            text={"verbosity": config.verbosity},
-        )
+        request_kwargs = {
+            "model": config.model,
+            "input": prompt,
+        }
+        if config.reasoning_effort:
+            request_kwargs["reasoning"] = {"effort": config.reasoning_effort}
+        if config.verbosity:
+            request_kwargs["text"] = {"verbosity": config.verbosity}
+
+        response = client.responses.create(**request_kwargs)
 
         # Extrair dados e usage metadata
-        data = parse_json(response.choices[0].message.content)
+        data = parse_json(_extract_response_text(response))
         usage = None
         if hasattr(response, 'usage') and response.usage:
             usage = {
