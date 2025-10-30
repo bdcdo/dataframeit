@@ -122,15 +122,20 @@ def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) 
 
         response = client.responses.create(**request_kwargs)
 
-        # Extrair dados e usage metadata
+        # Extrair dados e usage metadata (Responses API)
         data = parse_json(_extract_response_text(response))
         usage = None
-        if hasattr(response, 'usage') and response.usage:
-            usage = {
-                'input_tokens': response.usage.prompt_tokens,
-                'output_tokens': response.usage.completion_tokens,
-                'total_tokens': response.usage.total_tokens
-            }
+        if getattr(response, "usage", None):
+            u = response.usage
+            input_tokens = getattr(u, "input_tokens", None)
+            output_tokens = getattr(u, "output_tokens", None)
+            total_tokens = getattr(u, "total_tokens", None)
+            if any(v is not None for v in (input_tokens, output_tokens, total_tokens)):
+                usage = {
+                    "input_tokens": input_tokens or 0,
+                    "output_tokens": output_tokens or 0,
+                    "total_tokens": total_tokens or 0,
+                }
 
         return {'data': data, 'usage': usage}
 
