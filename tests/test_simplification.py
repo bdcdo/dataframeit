@@ -37,7 +37,7 @@ def test_basic_functionality():
     from src.dataframeit.core import _setup_columns
     df_test = df.copy()
     expected_cols = list(TestModel.model_fields.keys())
-    _setup_columns(df_test, expected_cols, None, False)
+    _setup_columns(df_test, expected_cols, None, False, False)
 
     print("\nColunas após setup:", list(df_test.columns))
     assert 'campo1' in df_test.columns
@@ -77,7 +77,8 @@ def test_llm_config():
         max_retries=3,
         base_delay=1.0,
         max_delay=30.0,
-        placeholder='documento'
+        placeholder='documento',
+        rate_limit_delay=0.0
     )
 
     print("\nConfig criado:")
@@ -122,18 +123,15 @@ def test_prompt_building():
     """Testa construção de prompts."""
     from src.dataframeit.llm import build_prompt
 
-    template = "Analise: {documento}\n{format}"
+    template = "Analise: {documento}"
     text = "Este é um texto de teste"
 
-    try:
-        prompt = build_prompt(TestModel, template, text, 'documento')
-        print("\nPrompt construído:")
-        print(prompt[:200], "...")
-        assert 'Este é um texto de teste' in prompt
-        assert '{formato}' not in prompt  # Não deve ter placeholder não substituído
-        print("✅ Construção de prompt OK!")
-    except ImportError as e:
-        print(f"⚠️  Pulando teste de prompt (langchain não disponível): {e}")
+    prompt = build_prompt(template, text, 'documento')
+    print("\nPrompt construído:")
+    print(prompt)
+    assert 'Este é um texto de teste' in prompt
+    assert '{documento}' not in prompt  # Placeholder deve ter sido substituído
+    print("✅ Construção de prompt OK!")
 
 
 if __name__ == '__main__':

@@ -21,26 +21,28 @@ def test_setup_columns_no_settingwithcopywarning_on_copy():
     # Não deve haver SettingWithCopyWarning ao configurar colunas em uma cópia
     with warnings.catch_warnings():
         warnings.simplefilter("error", SettingWithCopyWarning)
-        _setup_columns(df_copy, expected_columns=["campo1", "campo2"], status_column=None, resume=False)
+        _setup_columns(df_copy, expected_columns=["campo1", "campo2"], status_column=None, resume=False, track_tokens=False)
 
 
-def test_promptbuilder_format_prompt_does_not_interpret_other_placeholders(monkeypatch):
-    # Monkeypatch para evitar dependência real do LangChain e simular {format} nas instruções
-    class FakePydanticOutputParser:
-        def __init__(self, pydantic_object):
-            self._obj = pydantic_object
-
-        def get_format_instructions(self):
-            # Simula instruções que incluem um placeholder {format} (causa do KeyError no passado)
-            return "Use {format} ao responder."
-
-    # Substitui a classe utilizada internamente
-    monkeypatch.setattr(llm_module, "PydanticOutputParser", FakePydanticOutputParser, raising=True)
-
-    # Testa build_prompt sem depender do LangChain real
+def test_build_prompt_replaces_placeholder():
+    """Testa que build_prompt substitui corretamente o placeholder."""
     user_prompt = "Responda às perguntas sobre: {documento}"
-    formatted = llm_module.build_prompt(object(), user_prompt, "TEXTO_DE_TESTE", "documento")
+    formatted = llm_module.build_prompt(user_prompt, "TEXTO_DE_TESTE", "documento")
 
-    # Deve substituir apenas {documento}, preservando {format} nas instruções, sem levantar KeyError
+    # Deve substituir apenas {documento}
     assert "TEXTO_DE_TESTE" in formatted
-    assert "{format}" in formatted
+    assert "{documento}" not in formatted
+
+
+def test_build_prompt_warns_on_format_placeholder():
+    """Testa que build_prompt emite warning quando {format} está presente."""
+    user_prompt = "Analise: {documento}\n{format}"
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        formatted = llm_module.build_prompt(user_prompt, "TEXTO", "documento")
+
+        # Deve emitir DeprecationWarning
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "{format}" in str(w[0].message)

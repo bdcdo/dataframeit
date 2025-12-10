@@ -81,7 +81,7 @@ def test_column_management():
     expected_cols = ['campo1', 'campo2']
 
     # Testar setup básico
-    _setup_columns(df, expected_cols, None, False)
+    _setup_columns(df, expected_cols, None, False, False)
     assert 'campo1' in df.columns
     assert 'campo2' in df.columns
     assert '_dataframeit_status' in df.columns
@@ -90,13 +90,13 @@ def test_column_management():
 
     # Testar que não cria duplicatas
     df2 = df.copy()
-    _setup_columns(df2, expected_cols, None, False)
+    _setup_columns(df2, expected_cols, None, False, False)
     assert list(df.columns) == list(df2.columns)
     print("✅ Não cria colunas duplicadas")
 
     # Testar status_column customizada
     df3 = pd.DataFrame({'texto': ['a', 'b'], 'id': [1, 2]})
-    _setup_columns(df3, expected_cols, 'meu_status', False)
+    _setup_columns(df3, expected_cols, 'meu_status', False, False)
     assert 'meu_status' in df3.columns
     print("✅ status_column customizada funciona")
 
