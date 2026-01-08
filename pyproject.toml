@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "dataframeit"
 version = "0.5.0"
-description = "Enriqueça DataFrames com análises de texto usando LLMs. Extraia informações estruturadas de textos com Pydantic e LangChain/OpenAI."
+description = "Enriqueça DataFrames com análises de texto usando LLMs. Extraia informações estruturadas de textos com Pydantic."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -22,11 +22,10 @@ keywords = [
     "pandas",
     "pydantic",
     "langchain",
-    "openai",
     "gemini",
     "text-extraction",
     "structured-output",
-    "data-enrichment"
+    "data-enrichment",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -44,37 +43,27 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
     "pandas",
     "pydantic>=2.0",
     "tqdm",
 ]
 
 [project.optional-dependencies]
-langchain = [
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
-]
 google = [
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
     "langchain-google-genai>=2.0.0",
 ]
 openai = [
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
     "langchain-openai>=0.3.0",
 ]
 anthropic = [
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
     "langchain-anthropic>=0.3.0",
 ]
 polars = [
     "polars>=0.20",
 ]
 all = [
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
