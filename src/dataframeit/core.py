@@ -124,6 +124,10 @@ def dataframeit(
     # Determinar coluna de status
     status_col = status_column or '_dataframeit_status'
 
+    # Se reprocessando colunas, limpar status para que resume funcione se travar
+    if reprocess_columns and status_col in df_pandas.columns:
+        df_pandas[status_col] = None
+
     # Determinar onde começar
     start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume, reprocess_columns)
 
