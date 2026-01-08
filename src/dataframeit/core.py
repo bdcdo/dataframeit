@@ -6,7 +6,8 @@ import pandas as pd
 from tqdm import tqdm
 
 from .llm import LLMConfig, call_openai, call_langchain
-from .utils import to_pandas, from_pandas, validate_provider_dependencies, get_friendly_error_message, is_recoverable_error
+from .utils import to_pandas, from_pandas
+from .errors import validate_provider_dependencies, get_friendly_error_message, is_recoverable_error
 
 
 # Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
