@@ -70,6 +70,25 @@ def dataframeit(
     if prompt is None:
         raise ValueError("Parâmetro 'prompt' é obrigatório")
 
+    # Validar presença do placeholder no template
+    placeholder_tag = f"{{{placeholder}}}"
+    if placeholder_tag not in prompt:
+        raise ValueError(
+            f"Placeholder '{placeholder_tag}' não encontrado no template do prompt. "
+            f"Adicione '{placeholder_tag}' ao seu template para indicar onde o texto será inserido. "
+            f"Exemplo: 'Analise o seguinte texto: {placeholder_tag}'"
+        )
+
+    # Warning de deprecation se {format} estiver presente no template
+    if '{format}' in prompt:
+        warnings.warn(
+            "O placeholder {format} está deprecated e será ignorado. "
+            "O método with_structured_output() agora gerencia o schema automaticamente. "
+            "Remova '{format}' do seu template para evitar este aviso.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
     # Converter para pandas se necessário
     df_pandas, was_polars = to_pandas(df)
 
