@@ -1,11 +1,18 @@
 import warnings
 import time
+import logging
 from typing import Union, Any, Optional
 import pandas as pd
 from tqdm import tqdm
 
 from .llm import LLMConfig, call_openai, call_langchain
 from .utils import to_pandas, from_pandas
+
+
+# Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
+logging.getLogger('langchain_google_genai').setLevel(logging.ERROR)
+logging.getLogger('langchain_core').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
 def dataframeit(
@@ -257,6 +264,7 @@ def _process_rows(
             # Extrair dados e usage metadata
             extracted = result.get('data', result)  # Retrocompatibilidade
             usage = result.get('usage')
+            retry_info = result.get('_retry_info', {})
 
             # Atualizar DataFrame com dados extraídos
             for col in expected_columns:
@@ -276,14 +284,21 @@ def _process_rows(
 
             df.at[idx, status_col] = 'processed'
 
+            # Registrar se houve retries (mesmo em caso de sucesso)
+            if retry_info.get('retries', 0) > 0:
+                df.at[idx, 'error_details'] = f"Sucesso após {retry_info['retries']} retry(s)"
+
             # Rate limiting: aguardar antes da próxima requisição
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
+            # Incluir informações de retry na mensagem de erro
+            retry_count = config.max_retries
+            error_details = f"[Falhou após {retry_count} tentativa(s)] {error_msg}"
             warnings.warn(f"Falha ao processar linha {idx}. {error_msg}")
             df.at[idx, status_col] = 'error'
-            df.at[idx, 'error_details'] = error_msg
+            df.at[idx, 'error_details'] = error_details
 
     return token_stats

@@ -7,8 +7,10 @@ analisar e recuperar de falhas no processamento.
 
 Conceitos demonstrados:
 - Sistema automático de retry com backoff exponencial
+- Classificação inteligente de erros (recuperáveis vs não-recuperáveis)
+- Warnings informativos durante retries
 - Coluna _dataframeit_status (processed, error, None)
-- Coluna error_details com detalhes de erros
+- Coluna error_details com detalhes de erros e contagem de retries
 - Configuração de retry customizado
 - Filtragem de linhas com erro
 - Estratégias de recuperação
@@ -227,7 +229,7 @@ print("=" * 80)
 
 print("""
 ✓ SEMPRE verificar _dataframeit_status após o processamento
-✓ Analisar error_details para entender falhas
+✓ Analisar error_details para entender falhas (inclui contagem de retries)
 ✓ Pré-processar dados (remover textos vazios, muito curtos, etc.)
 ✓ Usar resume=True para poder continuar após interrupções
 ✓ Começar com max_retries baixo (3) e aumentar se necessário
@@ -236,6 +238,10 @@ print("""
 ✗ NÃO ignorar erros sem análise
 ✗ NÃO usar retry infinito ou valores muito altos
 ✗ NÃO processar sem validar dados primeiro
+
+Tipos de erro detectados automaticamente:
+- Recuperáveis: Timeout, Rate Limit, 5xx - farão retry automaticamente
+- Não-recuperáveis: API key inválida, 401, 403 - falham imediatamente
 """)
 
 print("\n" + "=" * 80)

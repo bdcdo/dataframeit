@@ -3,6 +3,7 @@ import json
 import importlib
 import time
 import random
+import warnings
 from typing import Tuple, List, Union, Any
 import pandas as pd
 
@@ -72,7 +73,71 @@ def check_dependency(package: str, install_name: str = None):
         )
 
 
-def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0):
+# Erros considerados recuperáveis (transientes)
+RECOVERABLE_ERRORS = (
+    # Timeouts e deadlines
+    'DeadlineExceeded',
+    'Timeout',
+    'TimeoutError',
+    'ReadTimeout',
+    'ConnectTimeout',
+    # Rate limits
+    'RateLimitError',
+    'ResourceExhausted',
+    'TooManyRequests',
+    '429',
+    # Erros de servidor temporários
+    'ServiceUnavailable',
+    'InternalServerError',
+    '500',
+    '502',
+    '503',
+    '504',
+    # Erros de conexão
+    'ConnectionError',
+    'ConnectionReset',
+    'SSLError',
+)
+
+# Erros não-recuperáveis (não adianta tentar novamente)
+NON_RECOVERABLE_ERRORS = (
+    'AuthenticationError',
+    'InvalidAPIKey',
+    'PermissionDenied',
+    'InvalidArgument',
+    'NotFound',
+    '401',
+    '403',
+    '404',
+)
+
+
+def is_recoverable_error(error: Exception) -> bool:
+    """Verifica se um erro é recuperável (vale a pena fazer retry).
+
+    Args:
+        error: Exceção a ser analisada.
+
+    Returns:
+        True se o erro é recuperável, False caso contrário.
+    """
+    error_str = f"{type(error).__name__}: {error}"
+
+    # Verificar se é explicitamente não-recuperável
+    for pattern in NON_RECOVERABLE_ERRORS:
+        if pattern.lower() in error_str.lower():
+            return False
+
+    # Verificar se é explicitamente recuperável
+    for pattern in RECOVERABLE_ERRORS:
+        if pattern.lower() in error_str.lower():
+            return True
+
+    # Por padrão, tentar recuperar (comportamento original)
+    return True
+
+
+def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0) -> dict:
     """Executa função com retry e backoff exponencial.
 
     Args:
@@ -82,21 +147,57 @@ def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_
         max_delay: Delay máximo em segundos.
 
     Returns:
-        Resultado da função.
+        Dicionário com 'result' (resultado da função) e 'retry_info' (informações de retry).
 
     Raises:
-        Exception: Última exceção após esgotar tentativas.
+        Exception: Última exceção após esgotar tentativas ou erro não-recuperável.
     """
+    retry_info = {
+        'attempts': 0,
+        'retries': 0,
+        'errors': [],
+    }
+
     for attempt in range(max_retries):
+        retry_info['attempts'] = attempt + 1
         try:
-            return func()
+            result = func()
+            # Adicionar retry_info ao resultado se for dict
+            if isinstance(result, dict):
+                result['_retry_info'] = retry_info
+            return result
         except Exception as e:
+            error_name = type(e).__name__
+            error_msg = str(e)
+            retry_info['errors'].append(f"{error_name}: {error_msg[:100]}")
+
+            # Verificar se é erro não-recuperável
+            if not is_recoverable_error(e):
+                warnings.warn(
+                    f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
+                    stacklevel=3
+                )
+                raise
+
+            # Última tentativa - não fazer mais retry
             if attempt == max_retries - 1:
                 raise
 
+            # Calcular delay com backoff exponencial
             delay = min(base_delay * (2 ** attempt), max_delay)
             jitter = random.uniform(0, 0.1) * delay
-            time.sleep(delay + jitter)
+            total_delay = delay + jitter
+
+            retry_info['retries'] = attempt + 1
+
+            # Warning informativo sobre o retry
+            warnings.warn(
+                f"Tentativa {attempt + 1}/{max_retries} falhou ({error_name}). "
+                f"Aguardando {total_delay:.1f}s antes de tentar novamente...",
+                stacklevel=3
+            )
+
+            time.sleep(total_delay)
 
 
 def to_pandas(df) -> Tuple[pd.DataFrame, bool]:
