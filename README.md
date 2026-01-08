@@ -15,10 +15,11 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 - **Múltiplos tipos de dados**: DataFrames, Series, listas e dicionários
 - Suporte para Polars e Pandas
 - Processamento incremental com resumo automático
+- **Processamento paralelo** com auto-redução de workers em rate limits
 - **Retry automático** com backoff exponencial para resiliência
 - **Rate limiting** configurável para respeitar limites de APIs
 - **Rastreamento de erros** com coluna automática `_error_details`
-- **Tracking de tokens** opcional para monitoramento de custos
+- **Tracking de tokens** e métricas de throughput (RPM, TPM)
 
 ## Instalação
 
@@ -221,8 +222,13 @@ Extraia as informações solicitadas do documento acima.
 - **`max_delay=30.0`**: Delay máximo em segundos entre tentativas
 - **`rate_limit_delay=0.0`**: Delay em segundos entre requisições para evitar rate limits
 
+### Parâmetros de Paralelismo
+- **`parallel_requests=1`**: Número de requisições paralelas (1 = sequencial)
+  - Ao detectar erro 429 (rate limit), reduz automaticamente pela metade
+  - Métricas de throughput (RPM, TPM) são exibidas automaticamente
+
 ### Parâmetros de Monitoramento
-- **`track_tokens=False`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
+- **`track_tokens=True`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
 ### Parâmetros LangChain
 - **`model='gemini-3.0-flash'`**: Modelo a ser usado
@@ -375,6 +381,93 @@ df_resultado = dataframeit(
     max_delay=30.0
 )
 ```
+
+## Processamento Paralelo
+
+O DataFrameIt suporta processamento paralelo para acelerar o processamento de grandes datasets.
+
+### Parâmetro `parallel_requests`
+
+```python
+# Processar com 5 requisições paralelas
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    parallel_requests=5     # Número de workers paralelos
+)
+```
+
+### Métricas de Throughput
+
+O DataFrameIt exibe automaticamente métricas detalhadas ao final do processamento:
+
+```
+============================================================
+ESTATISTICAS DE USO
+============================================================
+Modelo: gemini-2.5-flash
+Total de tokens: 15,432
+  - Input:  12,345 tokens
+  - Output: 3,087 tokens
+------------------------------------------------------------
+METRICAS DE THROUGHPUT
+------------------------------------------------------------
+Tempo total: 45.2s
+Workers paralelos: 5
+Requisicoes: 100
+  - RPM (req/min): 132.7
+  - TPM (tokens/min): 20,478
+============================================================
+```
+
+Use essas métricas para calibrar o número ideal de `parallel_requests` para sua conta/tier.
+
+### Auto-redução de Workers em Rate Limits
+
+Quando um erro de rate limit (429) é detectado, o DataFrameIt **reduz automaticamente** o número de workers pela metade:
+
+```python
+# Começa com 10 workers
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    parallel_requests=10
+)
+
+# Se detectar rate limit:
+# - Workers são reduzidos: 10 → 5 → 2 → 1
+# - Você verá um aviso: "Rate limit detectado! Reduzindo workers de 10 para 5."
+# - Ao final, as estatísticas mostram a redução
+```
+
+**Importante**: Os workers são apenas **reduzidos**, nunca aumentados automaticamente. Isso evita custos inesperados para o usuário.
+
+### Combinando com Rate Limit Delay
+
+Para máxima estabilidade, combine `parallel_requests` com `rate_limit_delay`:
+
+```python
+# 5 workers paralelos, com 0.5s entre cada requisição por worker
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    parallel_requests=5,
+    rate_limit_delay=0.5     # Delay adicional por requisição
+)
+```
+
+### Dicas de Uso
+
+| Cenário | Configuração Recomendada |
+|---------|-------------------------|
+| Dataset pequeno (< 50 linhas) | `parallel_requests=1` (padrão) |
+| Dataset médio (50-500 linhas) | `parallel_requests=3` a `5` |
+| Dataset grande (> 500 linhas) | `parallel_requests=5` a `10` |
+| API com limite baixo | `parallel_requests=2` + `rate_limit_delay=1.0` |
+| Tier pago com limites altos | `parallel_requests=10` ou mais |
 
 ## Processamento Incremental
 
