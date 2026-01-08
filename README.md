@@ -80,15 +80,67 @@ df_resultado.to_excel('resultado.xlsx', index=False)
 ```python
 from dataframeit import dataframeit
 
-# Processe usando OpenAI via LangChain
+# Uso básico com OpenAI
 df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    provider='openai',      # Usa OpenAI via LangChain
-    model='gpt-4o-mini'     # Modelo OpenAI
+    provider='openai',
+    model='gpt-4o-mini'
+)
+
+# Com parâmetros extras (model_kwargs)
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    provider='openai',
+    model='gpt-4o-mini',
+    model_kwargs={
+        'temperature': 0.5,          # Controle de criatividade
+        'reasoning_effort': 'medium', # Para modelos com reasoning (o1, o3)
+    }
 )
 ```
+
+### Parâmetros Extras (model_kwargs)
+
+O parâmetro `model_kwargs` permite passar configurações específicas do provider para o LangChain:
+
+```python
+# OpenAI com reasoning (modelos o1, o3-mini)
+df_resultado = dataframeit(
+    df, Model, TEMPLATE,
+    provider='openai',
+    model='o3-mini',
+    model_kwargs={
+        'reasoning_effort': 'high',  # 'low', 'medium', 'high'
+    }
+)
+
+# Google Gemini com configurações extras
+df_resultado = dataframeit(
+    df, Model, TEMPLATE,
+    provider='google_genai',
+    model='gemini-3.0-flash',
+    model_kwargs={
+        'temperature': 0.2,
+        'top_p': 0.9,
+    }
+)
+
+# Anthropic Claude com configurações extras
+df_resultado = dataframeit(
+    df, Model, TEMPLATE,
+    provider='anthropic',
+    model='claude-3-5-sonnet-20241022',
+    model_kwargs={
+        'max_tokens': 4096,
+    }
+)
+```
+
+> **Nota**: Os parâmetros disponíveis em `model_kwargs` dependem do provider. Consulte a documentação do LangChain para cada provider.
 
 ## Tipos de Dados Suportados
 
@@ -215,9 +267,10 @@ Extraia as informações solicitadas do documento acima.
 - **`track_tokens=False`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
 ### Parâmetros do Modelo
-- **`model='gemini-2.5-flash'`**: Modelo a ser usado
+- **`model='gemini-3.0-flash'`**: Modelo a ser usado
 - **`provider='google_genai'`**: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc.)
 - **`api_key=None`**: Chave API específica (opcional, usa variáveis de ambiente se None)
+- **`model_kwargs=None`**: Parâmetros extras para o modelo (ex: `temperature`, `reasoning_effort`)
 
 ## Tratamento de Erros
 
@@ -393,7 +446,7 @@ df_resultado = dataframeit(
 # ============================================================
 # 📊 ESTATÍSTICAS DE USO DE TOKENS
 # ============================================================
-# Modelo: gemini-2.5-flash
+# Modelo: gemini-3.0-flash
 # Total de tokens: 15,432
 #   • Input:  12,345 tokens
 #   • Output: 3,087 tokens
@@ -418,7 +471,7 @@ df_resultado = dataframeit(df, SuaClasse, TEMPLATE, track_tokens=True)
 print(f"Linha mais cara: {df_resultado['_total_tokens'].max()} tokens")
 print(f"Média de tokens: {df_resultado['_total_tokens'].mean():.1f} tokens")
 
-# Calcular custo estimado (exemplo: Gemini 2.5 Flash)
+# Calcular custo estimado (exemplo: Gemini 3.0 Flash)
 # Input: $0.075 por 1M tokens, Output: $0.30 por 1M tokens
 custo_input = df_resultado['_input_tokens'].sum() * 0.075 / 1_000_000
 custo_output = df_resultado['_output_tokens'].sum() * 0.30 / 1_000_000

@@ -36,7 +36,7 @@ def test_api_compatibility():
     # 3. Parâmetros de configuração
     params = {
         'resume': True,
-        'model': 'gemini-2.5-flash',
+        'model': 'gemini-3.0-flash',
         'provider': 'google_genai',
         'status_column': 'custom_status',
         'text_column': 'texto',

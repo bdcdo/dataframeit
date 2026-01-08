@@ -31,7 +31,7 @@ def dataframeit(
     perguntas=None,  # Deprecated: use 'questions'
     resume=True,
     reprocess_columns=None,
-    model='gemini-2.5-flash',
+    model='gemini-3.0-flash',
     provider='google_genai',
     status_column=None,
     text_column: Optional[str] = None,
