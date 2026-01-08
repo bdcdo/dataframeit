@@ -110,42 +110,50 @@ df_resultado = dataframeit(
 
 ## Como Funciona o Template
 
-O sistema de templates do DataFrameIt usa dois tipos de placeholders:
+O template define as instruções para o LLM analisar cada texto. Use `{documento}` (ou um placeholder customizado) para indicar onde o texto será inserido.
 
-### 1. `{format}` - Instruções de Formatação (Automático)
-Este placeholder é **opcional** e será substituído automaticamente pelas instruções de formatação JSON geradas pelo Pydantic. Se você não incluir `{format}` no seu template, as instruções serão adicionadas ao final automaticamente.
+### Placeholder do Texto
 
-### 2. Placeholder do Texto (Configurável)
-Por padrão, use `{documento}` para indicar onde o texto da linha será inserido. Você pode customizar este nome com o parâmetro `placeholder`.
-
-### Exemplo de Template Completo
+Por padrão, use `{documento}` para indicar onde o texto de cada linha será inserido:
 
 ```python
 TEMPLATE = """
 Você é um analista especializado.
 Analise o documento a seguir e extraia as informações solicitadas.
 
-{format}
-
 Documento:
 {documento}
 """
 ```
 
-### Customizando o Placeholder
+**Nota:** Se você não incluir o placeholder no template, ele será adicionado automaticamente ao final. Isso permite templates simples como:
 
 ```python
-# Se preferir usar outro nome de placeholder
+# Template simples - o placeholder será adicionado automaticamente
+TEMPLATE = "Classifique o sentimento do texto a seguir."
+
+# Equivale a:
+# "Classifique o sentimento do texto a seguir.
+#
+# Texto a analisar:
+# {documento}"
+```
+
+### Customizando o Placeholder
+
+Se preferir usar outro nome de placeholder:
+
+```python
 TEMPLATE = """
-Analise o seguinte texto:
-{meu_texto}
+Analise o seguinte review:
+{review}
 """
 
 df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    placeholder='meu_texto'  # Customiza o placeholder
+    placeholder='review'  # Customiza o placeholder
 )
 ```
 

@@ -67,31 +67,12 @@ def build_prompt(user_prompt: str, text: str, placeholder: str) -> str:
 
     Returns:
         Prompt formatado pronto para envio ao LLM.
-
-    Raises:
-        ValueError: Se o placeholder não for encontrado no template.
     """
-    import warnings
-
     placeholder_tag = f"{{{placeholder}}}"
 
-    # Validar presença do placeholder no template
+    # Se o placeholder não estiver no template, adiciona automaticamente ao final
     if placeholder_tag not in user_prompt:
-        raise ValueError(
-            f"Placeholder '{placeholder_tag}' não encontrado no template do prompt. "
-            f"Adicione '{placeholder_tag}' ao seu template para indicar onde o texto será inserido. "
-            f"Exemplo: 'Analise o seguinte texto: {placeholder_tag}'"
-        )
-
-    # Warning de deprecation se {format} estiver presente
-    if '{format}' in user_prompt:
-        warnings.warn(
-            f"O placeholder {{format}} está deprecated e será ignorado. "
-            f"O método with_structured_output() agora gerencia o schema automaticamente. "
-            f"Remova '{{format}}' do seu template para evitar este aviso.",
-            DeprecationWarning,
-            stacklevel=2
-        )
+        user_prompt = user_prompt.rstrip() + f"\n\nTexto a analisar:\n{placeholder_tag}"
 
     return user_prompt.replace(placeholder_tag, text)
 
