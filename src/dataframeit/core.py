@@ -213,6 +213,17 @@ def dataframeit(
     if track_tokens and token_stats and any(token_stats.values()):
         _print_token_stats(token_stats, model, parallel_requests)
 
+    # Aviso de workers reduzidos (aparece SEMPRE, independente de track_tokens)
+    if token_stats.get('workers_reduced'):
+        print("\n" + "=" * 60)
+        print("AVISO: WORKERS REDUZIDOS POR RATE LIMIT")
+        print("=" * 60)
+        print(f"Workers iniciais: {token_stats['initial_workers']}")
+        print(f"Workers finais:   {token_stats['final_workers']}")
+        print(f"\nDica: Considere usar parallel_requests={token_stats['final_workers']} "
+              f"para evitar rate limits.")
+        print("=" * 60 + "\n")
+
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
     return from_pandas(df_pandas, conversion_info)
 
@@ -305,11 +316,6 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
 
         tpm = (token_stats['total_tokens'] / elapsed) * 60
         print(f"  - TPM (tokens/min): {tpm:,.0f}")
-
-        if token_stats.get('workers_reduced'):
-            print("-" * 60)
-            print(f"AVISO: Workers reduzidos de {token_stats['initial_workers']} para "
-                  f"{token_stats['final_workers']} devido a rate limits")
 
     print("=" * 60 + "\n")
 
