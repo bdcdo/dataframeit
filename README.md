@@ -16,7 +16,7 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 - Processamento incremental com resumo automático
 - **Retry automático** com backoff exponencial para resiliência
 - **Rate limiting** configurável para respeitar limites de APIs
-- **Rastreamento de erros** com coluna automática `error_details`
+- **Rastreamento de erros** com coluna automática `_error_details`
 - **Tracking de tokens** opcional para monitoramento de custos
 
 ## Instalação
@@ -167,7 +167,7 @@ O DataFrameIt possui um sistema robusto de tratamento de erros:
   - `'error'`: Linha falhou após todas as tentativas
   - `None/NaN`: Linha ainda não processada
 
-- **`error_details`**: Coluna automática com detalhes de erros
+- **`_error_details`**: Coluna automática com detalhes de erros
   - Contém mensagem de erro quando status é `'error'`
   - `None/NaN` quando processamento foi bem-sucedido
 
@@ -182,7 +182,7 @@ print(f"Total de erros: {len(linhas_com_erro)}")
 
 # Ver detalhes dos erros
 for idx, row in linhas_com_erro.iterrows():
-    print(f"Linha {idx}: {row['error_details']}")
+    print(f"Linha {idx}: {row['_error_details']}")
 
 # Salvar apenas linhas processadas com sucesso
 df_sucesso = df_resultado[df_resultado['_dataframeit_status'] == 'processed']

@@ -10,7 +10,7 @@ Conceitos demonstrados:
 - Classificação inteligente de erros (recuperáveis vs não-recuperáveis)
 - Warnings informativos durante retries
 - Coluna _dataframeit_status (processed, error, None)
-- Coluna error_details com detalhes de erros e contagem de retries
+- Coluna _error_details com detalhes de erros e contagem de retries
 - Configuração de retry customizado
 - Filtragem de linhas com erro
 - Estratégias de recuperação
@@ -146,7 +146,7 @@ if len(linhas_com_erro) > 0:
     for idx, row in linhas_com_erro.iterrows():
         print(f"Linha {row['id']}:")
         print(f"  Texto: '{row['texto']}'")
-        print(f"  Erro: {row['error_details']}")
+        print(f"  Erro: {row['_error_details']}")
         print()
 else:
     print("\n✓ Nenhum erro encontrado! Todas as linhas foram processadas com sucesso.")
@@ -229,7 +229,7 @@ print("=" * 80)
 
 print("""
 ✓ SEMPRE verificar _dataframeit_status após o processamento
-✓ Analisar error_details para entender falhas (inclui contagem de retries)
+✓ Analisar _error_details para entender falhas (inclui contagem de retries)
 ✓ Pré-processar dados (remover textos vazios, muito curtos, etc.)
 ✓ Usar resume=True para poder continuar após interrupções
 ✓ Começar com max_retries baixo (3) e aumentar se necessário

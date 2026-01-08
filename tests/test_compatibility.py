@@ -85,7 +85,7 @@ def test_column_management():
     assert 'campo1' in df.columns
     assert 'campo2' in df.columns
     assert '_dataframeit_status' in df.columns
-    assert 'error_details' in df.columns
+    assert '_error_details' in df.columns
     print("✅ Colunas criadas corretamente")
 
     # Testar que não cria duplicatas
