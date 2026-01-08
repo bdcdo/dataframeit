@@ -22,6 +22,7 @@ def dataframeit(
     prompt=None,
     perguntas=None,  # Deprecated: use 'questions'
     resume=True,
+    reprocess_columns=None,
     model='gemini-2.5-flash',
     provider='google_genai',
     status_column=None,
@@ -45,6 +46,8 @@ def dataframeit(
         prompt: Template do prompt (use {texto} para indicar onde inserir o texto).
         perguntas: (Deprecated) Use 'questions'.
         resume: Se True, continua de onde parou.
+        reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
+            atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM.
         provider: Provider do LangChain ('google_genai', etc).
         status_column: Coluna para rastrear progresso.
@@ -95,9 +98,21 @@ def dataframeit(
     if not expected_columns:
         raise ValueError("Modelo Pydantic não pode estar vazio")
 
+    # Validar reprocess_columns
+    if reprocess_columns is not None:
+        if not isinstance(reprocess_columns, (list, tuple)):
+            reprocess_columns = [reprocess_columns]
+        # Verificar que todas as colunas a reprocessar estão no modelo
+        invalid_cols = [col for col in reprocess_columns if col not in expected_columns]
+        if invalid_cols:
+            raise ValueError(
+                f"Colunas {invalid_cols} não estão no modelo Pydantic. "
+                f"Colunas disponíveis: {expected_columns}"
+            )
+
     # Verificar conflitos de colunas
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
-    if existing_cols and not resume:
+    if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
@@ -110,7 +125,7 @@ def dataframeit(
     status_col = status_column or '_dataframeit_status'
 
     # Determinar onde começar
-    start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume)
+    start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume, reprocess_columns)
 
     # Criar config do LLM
     config = LLMConfig(
@@ -140,6 +155,7 @@ def dataframeit(
         processed_count,
         was_polars,
         track_tokens,
+        reprocess_columns,
     )
 
     # Exibir estatísticas de tokens
@@ -178,8 +194,12 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
                 df[col] = None
 
 
-def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> tuple[int, int]:
-    """Retorna (posição inicial, contagem de processados)."""
+def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool, reprocess_columns=None) -> tuple[int, int]:
+    """Retorna (posição inicial, contagem de processados).
+
+    Nota: quando reprocess_columns está definido, start_pos é ignorado em _process_rows
+    pois todas as linhas são processadas (mas só atualiza colunas específicas nas já processadas).
+    """
     if not resume:
         return 0, 0
 
@@ -229,8 +249,13 @@ def _process_rows(
     processed_count: int,
     was_polars: bool,
     track_tokens: bool,
+    reprocess_columns=None,
 ) -> dict:
     """Processa cada linha do DataFrame.
+
+    Args:
+        reprocess_columns: Lista de colunas para forçar reprocessamento.
+            Se especificado, não pula linhas já processadas.
 
     Returns:
         Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
@@ -245,7 +270,9 @@ def _process_rows(
         req_per_min = int(60 / config.rate_limit_delay)
         desc += f" [~{req_per_min} req/min]"
 
-    if processed_count > 0:
+    if reprocess_columns:
+        desc += f" (reprocessando: {', '.join(reprocess_columns)})"
+    elif processed_count > 0:
         desc += f" (resumindo de {processed_count}/{len(df)})"
 
     # Inicializar contadores de tokens
@@ -253,9 +280,17 @@ def _process_rows(
 
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-        # Pular linhas já processadas
-        if i < start_pos or pd.notna(row[status_col]):
-            continue
+        # Verificar se linha já foi processada
+        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
+
+        # Decidir se deve processar esta linha
+        if reprocess_columns:
+            # Com reprocess_columns: processa todas as linhas
+            pass
+        else:
+            # Sem reprocess_columns: pula linhas já processadas (comportamento normal)
+            if i < start_pos or row_already_processed:
+                continue
 
         text = str(row[text_column])
 
@@ -272,9 +307,17 @@ def _process_rows(
             retry_info = result.get('_retry_info', {})
 
             # Atualizar DataFrame com dados extraídos
+            # Se linha já processada e reprocess_columns definido: só atualiza colunas especificadas
+            # Caso contrário: atualiza todas as colunas do modelo
             for col in expected_columns:
                 if col in extracted:
-                    df.at[idx, col] = extracted[col]
+                    if row_already_processed and reprocess_columns:
+                        # Linha já processada: só atualiza se col está em reprocess_columns
+                        if col in reprocess_columns:
+                            df.at[idx, col] = extracted[col]
+                    else:
+                        # Linha nova: atualiza tudo
+                        df.at[idx, col] = extracted[col]
 
             # Armazenar tokens no DataFrame (se habilitado)
             if track_tokens and usage:
