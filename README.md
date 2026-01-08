@@ -23,29 +23,19 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 
 ## Instalação
 
-### Dependências Base
 ```bash
-pip install dataframeit
-```
+# Com Google Gemini (provider padrão, recomendado)
+pip install dataframeit[google]
 
-### Instalando providers LangChain
-```bash
-# Dependências base do LangChain
-pip install dataframeit langchain langchain-core
+# Ou com outros providers
+pip install dataframeit[openai]     # GPT-4, GPT-4o
+pip install dataframeit[anthropic]  # Claude
 
-# Para Google Gemini (provider padrão)
-pip install langchain-google-genai
+# Com Polars (opcional)
+pip install dataframeit[google,polars]
 
-# Para outros providers (exemplos)
-pip install langchain-anthropic  # Claude
-pip install langchain-openai     # GPT-4, GPT-4o
-pip install langchain-mistralai  # Mistral
-pip install langchain-cohere     # Cohere
-```
-
-### Para usar Polars
-```bash
-pip install dataframeit[polars]
+# Tudo incluído
+pip install dataframeit[all]
 ```
 
 ## Uso Básico
