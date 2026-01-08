@@ -1,0 +1,112 @@
+site_name: DataFrameIt
+site_description: Enriqueça DataFrames com LLMs de forma simples e estruturada
+site_url: https://bdcdo.github.io/dataframeit
+repo_url: https://github.com/bdcdo/dataframeit
+repo_name: bdcdo/dataframeit
+
+theme:
+  name: material
+  language: pt-BR
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Modo escuro
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Modo claro
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang:
+        - pt
+        - en
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true
+      languages:
+        - locale: pt
+          default: true
+          name: Português
+          build: true
+        - locale: en
+          name: English
+          build: true
+          nav_translations:
+            Início: Home
+            Começando: Getting Started
+            Instalação: Installation
+            Início Rápido: Quickstart
+            Conceitos: Concepts
+            Guias: Guides
+            Uso Básico: Basic Usage
+            Saída Estruturada: Structured Output
+            Tratamento de Erros: Error Handling
+            Performance: Performance
+            Busca Web: Web Search
+            Provedores: Providers
+            Referência: Reference
+            API: API
+            Referência para LLMs: LLM Reference
+            Exemplos: Examples
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Início: index.md
+  - Começando:
+    - Instalação: getting-started/installation.md
+    - Início Rápido: getting-started/quickstart.md
+    - Conceitos: getting-started/concepts.md
+  - Guias:
+    - Uso Básico: guides/basic-usage.md
+    - Saída Estruturada: guides/structured-output.md
+    - Tratamento de Erros: guides/error-handling.md
+    - Performance: guides/performance.md
+    - Busca Web: guides/web-search.md
+    - Provedores: guides/providers.md
+  - Referência:
+    - API: reference/api.md
+    - Referência para LLMs: reference/llm-reference.md
+  - Exemplos: examples/index.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/bdcdo/dataframeit
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/dataframeit/
