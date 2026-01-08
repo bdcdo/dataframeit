@@ -6,7 +6,13 @@ import pandas as pd
 from tqdm import tqdm
 
 from .llm import LLMConfig, call_openai, call_langchain
-from .utils import to_pandas, from_pandas
+from .utils import (
+    to_pandas,
+    from_pandas,
+    DEFAULT_TEXT_COLUMN,
+    ORIGINAL_TYPE_PANDAS_DF,
+    ORIGINAL_TYPE_POLARS_DF,
+)
 from .errors import validate_provider_dependencies, get_friendly_error_message, is_recoverable_error
 
 
@@ -17,7 +23,7 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
 def dataframeit(
-    df,
+    data,
     questions=None,
     prompt=None,
     perguntas=None,  # Deprecated: use 'questions'
@@ -26,7 +32,7 @@ def dataframeit(
     model='gemini-2.5-flash',
     provider='google_genai',
     status_column=None,
-    text_column: str = 'texto',
+    text_column: Optional[str] = None,
     use_openai=False,
     openai_client=None,
     reasoning_effort='minimal',
@@ -37,11 +43,19 @@ def dataframeit(
     max_delay=30.0,
     rate_limit_delay=0.0,
     track_tokens=False,
-) -> Union[pd.DataFrame, Any]:
-    """Processa textos em DataFrame usando LLMs para extrair informações estruturadas.
+) -> Any:
+    """Processa textos usando LLMs para extrair informações estruturadas.
+
+    Suporta múltiplos tipos de entrada:
+    - pandas.DataFrame: Retorna DataFrame com colunas extraídas
+    - polars.DataFrame: Retorna DataFrame polars com colunas extraídas
+    - pandas.Series: Retorna DataFrame com resultados indexados
+    - polars.Series: Retorna DataFrame polars com resultados
+    - list: Retorna lista de dicionários com os resultados
+    - dict: Retorna dicionário {chave: {campos extraídos}}
 
     Args:
-        df: DataFrame pandas ou polars contendo textos.
+        data: Dados contendo textos (DataFrame, Series, list ou dict).
         questions: Modelo Pydantic definindo estrutura a extrair.
         prompt: Template do prompt (use {texto} para indicar onde inserir o texto).
         perguntas: (Deprecated) Use 'questions'.
@@ -51,7 +65,8 @@ def dataframeit(
         model: Nome do modelo LLM.
         provider: Provider do LangChain ('google_genai', etc).
         status_column: Coluna para rastrear progresso.
-        text_column: Nome da coluna com textos.
+        text_column: Nome da coluna com textos (obrigatório para DataFrames,
+                    automático para Series/list/dict).
         use_openai: Se True, usa OpenAI em vez de LangChain.
         openai_client: Cliente OpenAI customizado.
         reasoning_effort: Esforço de raciocínio OpenAI.
@@ -64,11 +79,11 @@ def dataframeit(
         track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: False).
 
     Returns:
-        DataFrame com colunas originais + extraídas.
+        Dados com informações extraídas no mesmo formato da entrada.
 
     Raises:
         ValueError: Se parâmetros obrigatórios faltarem.
-        TypeError: Se df não for pandas nem polars.
+        TypeError: Se tipo de dados não for suportado.
     """
     # Compatibilidade com API antiga
     if questions is None and perguntas is not None:
@@ -87,11 +102,23 @@ def dataframeit(
     validate_provider_dependencies(provider, use_openai)
 
     # Converter para pandas se necessário
-    df_pandas, was_polars = to_pandas(df)
+    df_pandas, conversion_info = to_pandas(data)
 
-    # Validar coluna de texto
-    if text_column not in df_pandas.columns:
-        raise ValueError(f"Coluna '{text_column}' não encontrada no DataFrame")
+    # Determinar coluna de texto
+    is_dataframe_type = conversion_info.original_type in (
+        ORIGINAL_TYPE_PANDAS_DF,
+        ORIGINAL_TYPE_POLARS_DF,
+    )
+
+    if is_dataframe_type:
+        # Para DataFrames, usa 'texto' como padrão se não especificado
+        if text_column is None:
+            text_column = 'texto'
+        if text_column not in df_pandas.columns:
+            raise ValueError(f"Coluna '{text_column}' não encontrada no DataFrame")
+    else:
+        # Para Series/list/dict, usa coluna interna
+        text_column = DEFAULT_TEXT_COLUMN
 
     # Extrair campos do modelo Pydantic
     expected_columns = list(questions.model_fields.keys())
@@ -116,7 +143,7 @@ def dataframeit(
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
-        return from_pandas(df_pandas, was_polars)
+        return from_pandas(df_pandas, conversion_info)
 
     # Configurar colunas
     _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens)
@@ -153,7 +180,7 @@ def dataframeit(
         config,
         start_pos,
         processed_count,
-        was_polars,
+        conversion_info,
         track_tokens,
         reprocess_columns,
     )
@@ -163,7 +190,7 @@ def dataframeit(
         _print_token_stats(token_stats, model)
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
-    return from_pandas(df_pandas, was_polars)
+    return from_pandas(df_pandas, conversion_info)
 
 
 def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool):
@@ -247,7 +274,7 @@ def _process_rows(
     config: LLMConfig,
     start_pos: int,
     processed_count: int,
-    was_polars: bool,
+    conversion_info,
     track_tokens: bool,
     reprocess_columns=None,
 ) -> dict:
@@ -261,7 +288,11 @@ def _process_rows(
         Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
     """
     # Criar descrição para progresso
-    engine = 'polars→pandas' if was_polars else 'pandas'
+    type_labels = {
+        ORIGINAL_TYPE_POLARS_DF: 'polars→pandas',
+        ORIGINAL_TYPE_PANDAS_DF: 'pandas',
+    }
+    engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     llm_engine = 'openai' if config.use_openai else 'langchain'
     desc = f"Processando [{engine}+{llm_engine}]"
 
