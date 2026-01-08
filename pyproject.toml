@@ -63,10 +63,14 @@ anthropic = [
 polars = [
     "polars>=0.20",
 ]
+search = [
+    "langchain-tavily>=0.1.0",
+]
 all = [
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
+    "langchain-tavily>=0.1.0",
     "polars>=0.20",
 ]
 dev = [

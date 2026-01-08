@@ -7,7 +7,7 @@ from typing import Union, Any, Optional
 import pandas as pd
 from tqdm import tqdm
 
-from .llm import LLMConfig, call_langchain
+from .llm import LLMConfig, SearchConfig, call_langchain
 from .utils import (
     to_pandas,
     from_pandas,
@@ -17,7 +17,7 @@ from .utils import (
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
 )
-from .errors import validate_provider_dependencies, get_friendly_error_message, is_recoverable_error, is_rate_limit_error
+from .errors import validate_provider_dependencies, validate_search_dependencies, get_friendly_error_message, is_recoverable_error, is_rate_limit_error
 
 
 # Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
@@ -45,6 +45,12 @@ def dataframeit(
     track_tokens=True,
     model_kwargs=None,
     parallel_requests=1,
+    # Parâmetros de busca web
+    use_search=False,
+    search_per_field=False,
+    max_results=5,
+    max_searches=3,
+    search_depth="basic",
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
@@ -80,6 +86,15 @@ def dataframeit(
             Se > 1, processa múltiplas linhas simultaneamente.
             Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
             Dica: use track_tokens=True para ver métricas de throughput (RPM, TPM) e calibrar.
+        use_search: Se True, habilita busca web via Tavily antes de processar.
+            Requer TAVILY_API_KEY configurada. Padrão: False.
+        search_per_field: Se True, executa um agente separado para cada campo do modelo Pydantic.
+            Útil quando o modelo tem muitos campos e um único contexto ficaria sobrecarregado.
+            Padrão: False (um agente responde todos os campos).
+        max_results: Número máximo de resultados por busca (1-20). Padrão: 5.
+        max_searches: Número máximo de buscas por linha/campo. Padrão: 3.
+        search_depth: Profundidade da busca - "basic" (1 crédito) ou "advanced" (2 créditos).
+            Padrão: "basic".
 
     Returns:
         Dados com informações extraídas no mesmo formato da entrada.
@@ -103,6 +118,27 @@ def dataframeit(
 
     # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
     validate_provider_dependencies(provider)
+
+    # Validar parâmetros de busca
+    if use_search:
+        if search_depth not in ("basic", "advanced"):
+            raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
+        if not 1 <= max_results <= 20:
+            raise ValueError("max_results deve estar entre 1 e 20")
+        if max_searches < 1:
+            raise ValueError("max_searches deve ser pelo menos 1")
+        validate_search_dependencies()
+
+    # Criar SearchConfig se busca habilitada
+    search_config = None
+    if use_search:
+        search_config = SearchConfig(
+            enabled=True,
+            per_field=search_per_field,
+            max_results=max_results,
+            max_searches=max_searches,
+            search_depth=search_depth,
+        )
 
     # Converter para pandas se necessário
     df_pandas, conversion_info = to_pandas(data)
@@ -149,7 +185,7 @@ def dataframeit(
         return from_pandas(df_pandas, conversion_info)
 
     # Configurar colunas
-    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens)
+    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens, search_config)
 
     # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
     # serializadas como strings JSON ao salvar/carregar de arquivos
@@ -173,6 +209,7 @@ def dataframeit(
         max_delay=max_delay,
         rate_limit_delay=rate_limit_delay,
         model_kwargs=model_kwargs or {},
+        search_config=search_config,
     )
 
     # Processar linhas (escolher entre sequencial e paralelo)
@@ -227,19 +264,21 @@ def dataframeit(
     return from_pandas(df_pandas, conversion_info)
 
 
-def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool):
+def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool, search_config: Optional[SearchConfig] = None):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
     token_cols = ['_input_tokens', '_output_tokens', '_total_tokens'] if track_tokens else []
+    search_cols = ['_search_credits', '_search_count'] if (search_config and search_config.enabled) else []
 
     # Identificar colunas que precisam ser criadas
     new_cols = [col for col in expected_columns if col not in df.columns]
     needs_status = status_col not in df.columns
     needs_error = error_col not in df.columns
     needs_tokens = [col for col in token_cols if col not in df.columns] if track_tokens else []
+    needs_search = [col for col in search_cols if col not in df.columns]
 
-    if not new_cols and not needs_status and not needs_error and not needs_tokens:
+    if not new_cols and not needs_status and not needs_error and not needs_tokens and not needs_search:
         return
 
     # Criar colunas
@@ -253,6 +292,8 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
         if track_tokens:
             for col in needs_tokens:
                 df[col] = None
+        for col in needs_search:
+            df[col] = None
 
 
 def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool, reprocess_columns=None) -> tuple[int, int]:
@@ -316,6 +357,14 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
         tpm = (token_stats['total_tokens'] / elapsed) * 60
         print(f"  - TPM (tokens/min): {tpm:,.0f}")
 
+    # Métricas de busca (se houver)
+    if token_stats.get('search_count', 0) > 0:
+        print("-" * 60)
+        print("METRICAS DE BUSCA (TAVILY)")
+        print("-" * 60)
+        print(f"Total de buscas: {token_stats['search_count']}")
+        print(f"Creditos usados: {token_stats['search_credits']}")
+
     print("=" * 60 + "\n")
 
 
@@ -348,7 +397,8 @@ def _process_rows(
         ORIGINAL_TYPE_PANDAS_DF: 'pandas',
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    desc = f"Processando [{engine}+langchain]"
+    search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
+    desc = f"Processando [{engine}+langchain{search_mode}]"
 
     # Adicionar info de rate limiting (se ativo)
     if config.rate_limit_delay > 0:
@@ -360,8 +410,14 @@ def _process_rows(
     elif processed_count > 0:
         desc += f" (resumindo de {processed_count}/{len(df)})"
 
-    # Inicializar contadores de tokens
-    token_stats = {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
+    # Inicializar contadores de tokens e busca
+    token_stats = {
+        'input_tokens': 0,
+        'output_tokens': 0,
+        'total_tokens': 0,
+        'search_credits': 0,
+        'search_count': 0,
+    }
 
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
@@ -380,8 +436,15 @@ def _process_rows(
         text = str(row[text_column])
 
         try:
-            # Chamar LLM via LangChain
-            result = call_langchain(text, pydantic_model, user_prompt, config)
+            # Chamar LLM ou agente com busca
+            if config.search_config and config.search_config.enabled:
+                from .agent import call_agent, call_agent_per_field
+                if config.search_config.per_field:
+                    result = call_agent_per_field(text, pydantic_model, user_prompt, config)
+                else:
+                    result = call_agent(text, pydantic_model, user_prompt, config)
+            else:
+                result = call_langchain(text, pydantic_model, user_prompt, config)
 
             # Extrair dados e usage metadata
             extracted = result.get('data', result)  # Retrocompatibilidade
@@ -411,6 +474,15 @@ def _process_rows(
                 token_stats['input_tokens'] += usage.get('input_tokens', 0)
                 token_stats['output_tokens'] += usage.get('output_tokens', 0)
                 token_stats['total_tokens'] += usage.get('total_tokens', 0)
+
+            # Armazenar métricas de busca (se habilitado)
+            if config.search_config and config.search_config.enabled and usage:
+                df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
+                df.at[idx, '_search_count'] = usage.get('search_count', 0)
+
+                # Acumular estatísticas de busca
+                token_stats['search_credits'] += usage.get('search_credits', 0)
+                token_stats['search_count'] += usage.get('search_count', 0)
 
             df.at[idx, status_col] = 'processed'
 
@@ -483,6 +555,8 @@ def _process_rows_parallel(
         'output_tokens': 0,
         'total_tokens': 0,
         'requests_completed': 0,
+        'search_credits': 0,
+        'search_count': 0,
     }
 
     # Criar descrição para progresso
@@ -491,8 +565,8 @@ def _process_rows_parallel(
         ORIGINAL_TYPE_PANDAS_DF: 'pandas',
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    llm_engine = 'openai' if config.use_openai else 'langchain'
-    desc = f"Processando [{engine}+{llm_engine}] [{parallel_requests} workers]"
+    search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
+    desc = f"Processando [{engine}+langchain{search_mode}] [{parallel_requests} workers]"
 
     if reprocess_columns:
         desc += f" (reprocessando: {', '.join(reprocess_columns)})"
@@ -526,9 +600,13 @@ def _process_rows_parallel(
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
 
         try:
-            # Chamar LLM apropriado
-            if config.use_openai:
-                result = call_openai(text, pydantic_model, user_prompt, config)
+            # Chamar LLM ou agente com busca
+            if config.search_config and config.search_config.enabled:
+                from .agent import call_agent, call_agent_per_field
+                if config.search_config.per_field:
+                    result = call_agent_per_field(text, pydantic_model, user_prompt, config)
+                else:
+                    result = call_agent(text, pydantic_model, user_prompt, config)
             else:
                 result = call_langchain(text, pydantic_model, user_prompt, config)
 
@@ -555,6 +633,14 @@ def _process_rows_parallel(
                     token_stats['input_tokens'] += usage.get('input_tokens', 0)
                     token_stats['output_tokens'] += usage.get('output_tokens', 0)
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
+
+                # Métricas de busca
+                if config.search_config and config.search_config.enabled and usage:
+                    df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
+                    df.at[idx, '_search_count'] = usage.get('search_count', 0)
+
+                    token_stats['search_credits'] += usage.get('search_credits', 0)
+                    token_stats['search_count'] += usage.get('search_count', 0)
 
                 token_stats['requests_completed'] += 1
                 df.at[idx, status_col] = 'processed'
