@@ -158,16 +158,23 @@ def test_utils_functions():
     print("✅ parse_json com texto extra")
 
     # Conversão pandas
+    from src.dataframeit.utils import ConversionInfo, ORIGINAL_TYPE_PANDAS_DF
     df = pd.DataFrame({'a': [1, 2, 3]})
-    df_result, was_polars = to_pandas(df)
+    df_result, conversion_info = to_pandas(df)
     assert isinstance(df_result, pd.DataFrame)
-    assert was_polars is False
+    assert isinstance(conversion_info, ConversionInfo)
+    assert conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF
     print("✅ to_pandas com DataFrame pandas")
 
-    # Conversão de volta
-    df_back = from_pandas(df_result, False)
+    # Conversão de volta (com ConversionInfo)
+    df_back = from_pandas(df_result, conversion_info)
     assert isinstance(df_back, pd.DataFrame)
-    print("✅ from_pandas mantém pandas quando was_polars=False")
+    print("✅ from_pandas mantém pandas com ConversionInfo")
+
+    # Retrocompatibilidade: from_pandas ainda aceita bool
+    df_back2 = from_pandas(df_result, False)
+    assert isinstance(df_back2, pd.DataFrame)
+    print("✅ from_pandas retrocompatível com was_polars=False")
 
 
 if __name__ == '__main__':

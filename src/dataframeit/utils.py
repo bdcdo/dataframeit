@@ -4,11 +4,13 @@ Este módulo contém funções utilitárias para:
 - Parse de JSON de respostas de LLM
 - Verificação de dependências
 - Conversão entre pandas e polars
+- Conversão de Series, listas e dicionários
 """
 import re
 import json
 import importlib
 from typing import Tuple, Union, Any
+from dataclasses import dataclass
 import pandas as pd
 
 # Import opcional de Polars
@@ -16,6 +18,26 @@ try:
     import polars as pl
 except ImportError:
     pl = None
+
+
+# Tipos de dados originais suportados
+ORIGINAL_TYPE_PANDAS_DF = 'pandas_dataframe'
+ORIGINAL_TYPE_POLARS_DF = 'polars_dataframe'
+ORIGINAL_TYPE_PANDAS_SERIES = 'pandas_series'
+ORIGINAL_TYPE_POLARS_SERIES = 'polars_series'
+ORIGINAL_TYPE_LIST = 'list'
+ORIGINAL_TYPE_DICT = 'dict'
+
+# Coluna padrão usada para dados convertidos
+DEFAULT_TEXT_COLUMN = '_texto'
+
+
+@dataclass
+class ConversionInfo:
+    """Informações sobre a conversão de dados para pandas DataFrame."""
+    original_type: str
+    original_index: Any = None  # Guarda índice/chaves originais para reconversão
+    series_name: str = None  # Nome original da Series (se aplicável)
 
 
 def parse_json(resposta: str) -> dict:
@@ -77,39 +99,93 @@ def check_dependency(package: str, install_name: str = None):
         )
 
 
-def to_pandas(df) -> Tuple[pd.DataFrame, bool]:
-    """Converte DataFrame para pandas se necessário.
+def to_pandas(data) -> Tuple[pd.DataFrame, ConversionInfo]:
+    """Converte dados para pandas DataFrame.
+
+    Suporta:
+    - pandas.DataFrame
+    - polars.DataFrame
+    - pandas.Series
+    - polars.Series
+    - list (de strings)
+    - dict (valores são os textos)
 
     Args:
-        df: DataFrame pandas ou polars.
+        data: Dados a serem convertidos.
 
     Returns:
-        Tupla (DataFrame pandas, flag se era polars).
+        Tupla (DataFrame pandas, ConversionInfo com metadados da conversão).
 
     Raises:
-        TypeError: Se não for pandas nem polars DataFrame.
+        TypeError: Se o tipo não for suportado.
     """
-    if pl is not None and isinstance(df, pl.DataFrame):
-        return df.to_pandas(), True
-    elif isinstance(df, pd.DataFrame):
-        return df, False
-    else:
-        raise TypeError("df deve ser pandas.DataFrame ou polars.DataFrame")
+    # pandas DataFrame
+    if isinstance(data, pd.DataFrame):
+        return data, ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF)
+
+    # polars DataFrame
+    if pl is not None and isinstance(data, pl.DataFrame):
+        return data.to_pandas(), ConversionInfo(original_type=ORIGINAL_TYPE_POLARS_DF)
+
+    # pandas Series
+    if isinstance(data, pd.Series):
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: data})
+        return df, ConversionInfo(
+            original_type=ORIGINAL_TYPE_PANDAS_SERIES,
+            original_index=data.index.copy(),
+            series_name=data.name,
+        )
+
+    # polars Series
+    if pl is not None and isinstance(data, pl.Series):
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: data.to_list()})
+        return df, ConversionInfo(
+            original_type=ORIGINAL_TYPE_POLARS_SERIES,
+            series_name=data.name,
+        )
+
+    # list
+    if isinstance(data, list):
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: data})
+        return df, ConversionInfo(original_type=ORIGINAL_TYPE_LIST)
+
+    # dict
+    if isinstance(data, dict):
+        keys = list(data.keys())
+        values = list(data.values())
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=keys)
+        return df, ConversionInfo(
+            original_type=ORIGINAL_TYPE_DICT,
+            original_index=keys,
+        )
+
+    raise TypeError(
+        f"Tipo não suportado: {type(data).__name__}. "
+        "Use pandas.DataFrame, polars.DataFrame, pandas.Series, polars.Series, list ou dict."
+    )
 
 
-def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
-    """Converte de volta para polars se necessário.
+def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) -> Any:
+    """Converte DataFrame pandas de volta para o formato original.
 
     Remove automaticamente as colunas internas de controle (_dataframeit_status
     e _error_details) se não houver erros no processamento.
 
     Args:
-        df: DataFrame pandas.
-        was_polars: Se o DataFrame original era polars.
+        df: DataFrame pandas processado.
+        conversion_info: ConversionInfo com metadados da conversão original,
+                        ou bool para retrocompatibilidade (True = era polars).
 
     Returns:
-        DataFrame no formato original.
+        Dados no formato original (DataFrame, Series, list ou dict).
     """
+    # Retrocompatibilidade: aceita bool (was_polars)
+    if isinstance(conversion_info, bool):
+        was_polars = conversion_info
+        conversion_info = ConversionInfo(
+            original_type=ORIGINAL_TYPE_POLARS_DF if was_polars else ORIGINAL_TYPE_PANDAS_DF
+        )
+
     # Colunas internas de controle (não usar esses nomes em seus dados!)
     status_col = '_dataframeit_status'
     error_col = '_error_details'
@@ -123,6 +199,46 @@ def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
             cols_to_drop = [c for c in [status_col, error_col] if c in df.columns]
             df = df.drop(columns=cols_to_drop)
 
-    if was_polars and pl is not None:
-        return pl.from_pandas(df)
+    # pandas DataFrame
+    if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF:
+        return df
+
+    # polars DataFrame
+    if conversion_info.original_type == ORIGINAL_TYPE_POLARS_DF:
+        if pl is not None:
+            return pl.from_pandas(df)
+        return df
+
+    # pandas Series - retorna todas as colunas extraídas como DataFrame
+    # (não faz sentido retornar Series quando temos múltiplas colunas de resultado)
+    if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_SERIES:
+        # Remove a coluna de texto original se existir
+        if DEFAULT_TEXT_COLUMN in df.columns:
+            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
+        # Restaurar índice original
+        if conversion_info.original_index is not None:
+            df.index = conversion_info.original_index
+        return df
+
+    # polars Series - similar ao pandas Series
+    if conversion_info.original_type == ORIGINAL_TYPE_POLARS_SERIES:
+        if DEFAULT_TEXT_COLUMN in df.columns:
+            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
+        if pl is not None:
+            return pl.from_pandas(df)
+        return df
+
+    # list - tratar como Series, retorna DataFrame
+    if conversion_info.original_type == ORIGINAL_TYPE_LIST:
+        if DEFAULT_TEXT_COLUMN in df.columns:
+            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
+        return df
+
+    # dict - tratar como DataFrame, retorna DataFrame com chaves como índice
+    if conversion_info.original_type == ORIGINAL_TYPE_DICT:
+        if DEFAULT_TEXT_COLUMN in df.columns:
+            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
+        return df
+
+    # Fallback
     return df
