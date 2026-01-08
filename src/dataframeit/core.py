@@ -44,7 +44,7 @@ def dataframeit(
     base_delay=1.0,
     max_delay=30.0,
     rate_limit_delay=0.0,
-    track_tokens=False,
+    track_tokens=True,
     parallel_requests=1,
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
@@ -79,7 +79,7 @@ def dataframeit(
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
-        track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: False).
+        track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
             Se > 1, processa múltiplas linhas simultaneamente.
             Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.

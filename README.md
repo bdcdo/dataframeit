@@ -228,7 +228,7 @@ Extraia as informações solicitadas do documento acima.
   - Use `track_tokens=True` para ver métricas de throughput (RPM, TPM)
 
 ### Parâmetros de Monitoramento
-- **`track_tokens=False`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
+- **`track_tokens=True`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
 ### Parâmetros LangChain
 - **`model='gemini-2.5-flash'`**: Modelo a ser usado
