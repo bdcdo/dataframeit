@@ -9,6 +9,8 @@ from .llm import LLMConfig, call_openai, call_langchain
 from .utils import (
     to_pandas,
     from_pandas,
+    get_complex_fields,
+    normalize_complex_columns,
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
@@ -147,6 +149,12 @@ def dataframeit(
 
     # Configurar colunas
     _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens)
+
+    # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
+    # serializadas como strings JSON ao salvar/carregar de arquivos
+    complex_fields = get_complex_fields(questions)
+    if complex_fields and resume:
+        normalize_complex_columns(df_pandas, complex_fields)
 
     # Determinar coluna de status
     status_col = status_column or '_dataframeit_status'

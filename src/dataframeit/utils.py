@@ -5,11 +5,13 @@ Este módulo contém funções utilitárias para:
 - Verificação de dependências
 - Conversão entre pandas e polars
 - Conversão de Series, listas e dicionários
+- Normalização de estruturas Python (listas, dicionários, tuplas)
 """
 import re
 import json
 import importlib
-from typing import Tuple, Union, Any
+import types
+from typing import Tuple, Union, Any, get_origin, get_args
 from dataclasses import dataclass
 import pandas as pd
 
@@ -242,3 +244,221 @@ def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) 
 
     # Fallback
     return df
+
+
+# =============================================================================
+# NORMALIZAÇÃO DE ESTRUTURAS PYTHON (listas, dicts, tuples)
+# =============================================================================
+
+def is_complex_type(field_type) -> bool:
+    """Verifica se um tipo é complexo (list, dict, tuple).
+
+    Args:
+        field_type: Tipo a verificar (pode ser tipo simples ou genérico).
+
+    Returns:
+        True se o tipo for list, dict ou tuple.
+    """
+    origin = get_origin(field_type)
+
+    # Tipos genéricos: list[str], dict[str, int], tuple[int, str], etc.
+    if origin in (list, dict, tuple):
+        return True
+
+    # Union types (Optional, Union) - verificar os argumentos internos
+    # typing.Union para sintaxe Union[X, Y] e Optional[X]
+    if origin is Union:
+        args = get_args(field_type)
+        return any(is_complex_type(arg) for arg in args if arg is not type(None))
+
+    # types.UnionType para sintaxe X | Y (Python 3.10+)
+    if isinstance(field_type, types.UnionType):
+        args = get_args(field_type)
+        return any(is_complex_type(arg) for arg in args if arg is not type(None))
+
+    # Tipos diretos
+    if field_type in (list, dict, tuple):
+        return True
+
+    return False
+
+
+def get_complex_fields(pydantic_model) -> set:
+    """Retorna os nomes dos campos que são tipos complexos (list, dict, tuple).
+
+    Args:
+        pydantic_model: Modelo Pydantic a analisar.
+
+    Returns:
+        Set com nomes dos campos complexos.
+    """
+    complex_fields = set()
+
+    for field_name, field_info in pydantic_model.model_fields.items():
+        if is_complex_type(field_info.annotation):
+            complex_fields.add(field_name)
+
+    return complex_fields
+
+
+def normalize_value(value: Any) -> Any:
+    """Normaliza um valor, convertendo strings JSON para estruturas Python.
+
+    Esta função garante que valores que deveriam ser listas, dicionários ou
+    tuplas sejam tratados como tal, mesmo que tenham sido armazenados como
+    strings JSON (comum ao salvar/carregar de Excel/CSV).
+
+    Args:
+        value: Valor a normalizar.
+
+    Returns:
+        Valor normalizado (estrutura Python se era JSON string válido,
+        ou o valor original caso contrário).
+
+    Examples:
+        >>> normalize_value('[1, 2, 3]')
+        [1, 2, 3]
+        >>> normalize_value('{"a": 1}')
+        {'a': 1}
+        >>> normalize_value('texto normal')
+        'texto normal'
+        >>> normalize_value([1, 2, 3])  # já é lista
+        [1, 2, 3]
+    """
+    # Se já é estrutura Python, retorna como está
+    if isinstance(value, (list, dict, tuple)):
+        return value
+
+    # Se é None ou não é string, retorna como está
+    if value is None or not isinstance(value, str):
+        return value
+
+    # Tenta fazer parse de JSON
+    stripped = value.strip()
+    if not stripped:
+        return value
+
+    # Verifica se parece com JSON (começa com [ ou {)
+    if stripped.startswith(('[', '{')):
+        try:
+            parsed = json.loads(stripped)
+            return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return value
+
+
+def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None:
+    """Normaliza colunas complexas no DataFrame, convertendo strings JSON.
+
+    Modifica o DataFrame in-place.
+
+    Args:
+        df: DataFrame a normalizar.
+        complex_fields: Set com nomes das colunas a normalizar.
+    """
+    for col in complex_fields:
+        if col in df.columns:
+            df[col] = df[col].apply(normalize_value)
+
+
+def read_df(
+    path: str,
+    model=None,
+    normalize: bool = True,
+    **kwargs
+) -> pd.DataFrame:
+    """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
+
+    Esta função é útil para carregar dados que foram previamente processados
+    pelo dataframeit e salvos em arquivo. Ela converte automaticamente strings
+    JSON de volta para listas, dicionários e outras estruturas Python.
+
+    Args:
+        path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
+        model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
+               correspondem a campos complexos do modelo serão normalizadas.
+        normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
+                   Se False, não faz nenhuma normalização.
+        **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
+
+    Returns:
+        DataFrame com estruturas Python normalizadas.
+
+    Raises:
+        ValueError: Se o formato do arquivo não for suportado.
+        FileNotFoundError: Se o arquivo não existir.
+
+    Examples:
+        >>> # Uso simples - normaliza automaticamente
+        >>> df = read_df('resultados.xlsx')
+        >>> print(df['lista_itens'][0])  # ['item1', 'item2']
+
+        >>> # Com modelo Pydantic (mais preciso)
+        >>> df = read_df('resultados.xlsx', MeuModelo)
+
+        >>> # Sem normalização
+        >>> df = read_df('dados.csv', normalize=False)
+    """
+    import os
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Arquivo não encontrado: {path}")
+
+    # Detectar formato pelo sufixo
+    _, ext = os.path.splitext(path.lower())
+
+    # Carregar DataFrame baseado na extensão
+    if ext in ('.xlsx', '.xls'):
+        df = pd.read_excel(path, **kwargs)
+    elif ext == '.csv':
+        df = pd.read_csv(path, **kwargs)
+    elif ext == '.parquet':
+        df = pd.read_parquet(path, **kwargs)
+    elif ext == '.json':
+        df = pd.read_json(path, **kwargs)
+    else:
+        raise ValueError(
+            f"Formato '{ext}' não suportado. "
+            "Use: .xlsx, .xls, .csv, .parquet ou .json"
+        )
+
+    # Normalizar colunas
+    if not normalize:
+        return df
+
+    if model is not None:
+        # Usar modelo Pydantic para identificar colunas complexas
+        complex_fields = get_complex_fields(model)
+        if complex_fields:
+            normalize_complex_columns(df, complex_fields)
+    else:
+        # Normalizar todas as colunas que parecem ter JSON
+        _normalize_all_json_columns(df)
+
+    return df
+
+
+def _normalize_all_json_columns(df: pd.DataFrame) -> None:
+    """Normaliza todas as colunas do DataFrame que parecem conter JSON.
+
+    Modifica o DataFrame in-place.
+
+    Args:
+        df: DataFrame a normalizar.
+    """
+    for col in df.columns:
+        # Pular colunas não-string
+        if df[col].dtype != 'object':
+            continue
+
+        # Verificar se algum valor parece JSON
+        sample = df[col].dropna().head(10)
+        has_json = any(
+            isinstance(v, str) and v.strip().startswith(('[', '{'))
+            for v in sample
+        )
+
+        if has_json:
+            df[col] = df[col].apply(normalize_value)
