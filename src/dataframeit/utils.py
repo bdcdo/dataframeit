@@ -73,6 +73,71 @@ def check_dependency(package: str, install_name: str = None):
         )
 
 
+def validate_provider_dependencies(provider: str, use_openai: bool = False):
+    """Valida se as dependências do provider estão instaladas ANTES de iniciar.
+
+    Args:
+        provider: Nome do provider (google_genai, openai, anthropic).
+        use_openai: Se True, valida dependências do OpenAI direto.
+
+    Raises:
+        ImportError: Com mensagem amigável se dependência não estiver instalada.
+    """
+    # Se usar OpenAI diretamente
+    if use_openai:
+        try:
+            importlib.import_module('openai')
+        except ImportError:
+            raise ImportError(_get_missing_package_message('openai', 'openai', 'OpenAI'))
+
+    # Validar LangChain base
+    try:
+        importlib.import_module('langchain')
+    except ImportError:
+        raise ImportError(_get_missing_package_message('langchain', 'langchain', 'LangChain'))
+
+    try:
+        importlib.import_module('langchain_core')
+    except ImportError:
+        raise ImportError(_get_missing_package_message('langchain_core', 'langchain-core', 'LangChain Core'))
+
+    # Validar provider específico
+    provider_data = PROVIDER_INFO.get(provider)
+    if provider_data:
+        package = provider_data['package']
+        install = provider_data['install']
+        name = provider_data['name']
+        try:
+            importlib.import_module(package)
+        except ImportError:
+            raise ImportError(_get_missing_package_message(package, install, name))
+
+
+def _get_missing_package_message(package: str, install_name: str, friendly_name: str) -> str:
+    """Gera mensagem amigável para pacote não instalado."""
+    return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  BIBLIOTECA NÃO INSTALADA                                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  A biblioteca '{package}' é necessária para usar {friendly_name}.            ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║                                                                              ║
+║  Execute o seguinte comando no terminal:                                     ║
+║                                                                              ║
+║      pip install {install_name:<62} ║
+║                                                                              ║
+║  Ou, para instalar todas as dependências recomendadas:                       ║
+║                                                                              ║
+║      pip install dataframeit[all]                                            ║
+║                                                                              ║
+║  Após instalar, execute seu código novamente.                                ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+
 # Erros considerados recuperáveis (transientes)
 RECOVERABLE_ERRORS = (
     # Timeouts e deadlines
@@ -110,6 +175,187 @@ NON_RECOVERABLE_ERRORS = (
     '403',
     '404',
 )
+
+# Mapeamento de provedores para nomes de pacotes e variáveis de ambiente
+PROVIDER_INFO = {
+    'google_genai': {
+        'package': 'langchain_google_genai',
+        'install': 'langchain-google-genai',
+        'env_var': 'GOOGLE_API_KEY',
+        'name': 'Google Gemini',
+        'get_key_url': 'https://aistudio.google.com/app/apikey',
+    },
+    'openai': {
+        'package': 'langchain_openai',
+        'install': 'langchain-openai',
+        'env_var': 'OPENAI_API_KEY',
+        'name': 'OpenAI',
+        'get_key_url': 'https://platform.openai.com/api-keys',
+    },
+    'anthropic': {
+        'package': 'langchain_anthropic',
+        'install': 'langchain-anthropic',
+        'env_var': 'ANTHROPIC_API_KEY',
+        'name': 'Anthropic Claude',
+        'get_key_url': 'https://console.anthropic.com/settings/keys',
+    },
+}
+
+
+def get_friendly_error_message(error: Exception, provider: str = None) -> str:
+    """Converte erro técnico em mensagem amigável para usuários iniciantes.
+
+    Args:
+        error: Exceção original.
+        provider: Nome do provider (google_genai, openai, etc).
+
+    Returns:
+        Mensagem de erro amigável com instruções de como resolver.
+    """
+    error_str = f"{type(error).__name__}: {error}".lower()
+    error_name = type(error).__name__
+
+    # Obter informações do provider
+    provider_data = PROVIDER_INFO.get(provider, {})
+    provider_name = provider_data.get('name', provider or 'LLM')
+    env_var = provider_data.get('env_var', 'API_KEY')
+    get_key_url = provider_data.get('get_key_url', '')
+
+    # === ERROS DE AUTENTICAÇÃO ===
+    if any(p in error_str for p in ['authenticationerror', 'invalidapikey', '401', 'api_key', 'api key']):
+        msg = f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE AUTENTICAÇÃO - Chave de API inválida ou não configurada             ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  O {provider_name} não aceitou sua chave de API.                             ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║                                                                              ║
+║  1. Obtenha uma chave de API em: {get_key_url:<43} ║
+║                                                                              ║
+║  2. Configure a chave no terminal (antes de executar seu código):            ║
+║                                                                              ║
+║     No Linux/Mac:                                                            ║
+║     export {env_var}="sua-chave-aqui"                                        ║
+║                                                                              ║
+║     No Windows (PowerShell):                                                 ║
+║     $env:{env_var}="sua-chave-aqui"                                          ║
+║                                                                              ║
+║  3. OU passe diretamente no código:                                          ║
+║     dataframeit(..., api_key="sua-chave-aqui")                               ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+        return msg.strip()
+
+    # === ERROS DE PERMISSÃO ===
+    if any(p in error_str for p in ['permissiondenied', '403', 'forbidden']):
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE PERMISSÃO - Sua chave não tem acesso a este recurso                 ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Sua chave de API do {provider_name} não tem permissão para usar este modelo.║
+║                                                                              ║
+║  POSSÍVEIS CAUSAS:                                                           ║
+║  • A chave é de uma conta gratuita com acesso limitado                       ║
+║  • O modelo solicitado requer um plano pago                                  ║
+║  • A chave foi revogada ou expirou                                           ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Verifique seu plano em: {get_key_url:<43} ║
+║  2. Tente usar um modelo diferente (ex: gemini-1.5-flash)                    ║
+║  3. Gere uma nova chave de API                                               ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERROS DE RATE LIMIT ===
+    if any(p in error_str for p in ['ratelimit', 'resourceexhausted', 'toomanyrequests', '429']):
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você fez muitas requisições em pouco tempo para o {provider_name}.          ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Aguarde alguns minutos e tente novamente                                 ║
+║  2. Use o parâmetro rate_limit_delay para espaçar as requisições:            ║
+║                                                                              ║
+║     dataframeit(..., rate_limit_delay=1.0)  # 1 segundo entre requisições    ║
+║                                                                              ║
+║  3. Considere atualizar seu plano para limites maiores                       ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERROS DE TIMEOUT ===
+    if any(p in error_str for p in ['timeout', 'deadlineexceeded', '504']):
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  TEMPO ESGOTADO (TIMEOUT)                                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  O {provider_name} demorou muito para responder.                             ║
+║                                                                              ║
+║  POSSÍVEIS CAUSAS:                                                           ║
+║  • Servidor do {provider_name} sobrecarregado                                ║
+║  • Conexão de internet instável                                              ║
+║  • Texto muito longo para processar                                          ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. O sistema já tentou automaticamente várias vezes                         ║
+║  2. Use resume=True para continuar de onde parou:                            ║
+║                                                                              ║
+║     df = dataframeit(df, ..., resume=True)                                   ║
+║                                                                              ║
+║  3. Tente novamente em alguns minutos                                        ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERROS DE CONEXÃO ===
+    if any(p in error_str for p in ['connectionerror', 'connectionreset', 'sslerror', 'network']):
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE CONEXÃO                                                             ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Não foi possível conectar ao {provider_name}.                               ║
+║                                                                              ║
+║  POSSÍVEIS CAUSAS:                                                           ║
+║  • Sem conexão com a internet                                                ║
+║  • Firewall ou proxy bloqueando a conexão                                    ║
+║  • Servidor do {provider_name} temporariamente indisponível                  ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Verifique sua conexão com a internet                                     ║
+║  2. Tente acessar {get_key_url} no navegador                                 ║
+║  3. Se estiver em rede corporativa, consulte o suporte de TI                 ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERRO GENÉRICO ===
+    return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO NO PROCESSAMENTO                                                       ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Tipo: {error_name:<70} ║
+║                                                                              ║
+║  Detalhes: {str(error)[:66]:<66} ║
+║                                                                              ║
+║  Se este erro persistir, você pode:                                          ║
+║  1. Verificar se suas credenciais estão corretas                             ║
+║  2. Tentar novamente com resume=True                                         ║
+║  3. Reportar o problema em:                                                  ║
+║     https://github.com/bdcdo/dataframeit/issues                              ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
 
 
 def is_recoverable_error(error: Exception) -> bool:

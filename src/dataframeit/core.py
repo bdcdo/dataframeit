@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from .llm import LLMConfig, call_openai, call_langchain
-from .utils import to_pandas, from_pandas
+from .utils import to_pandas, from_pandas, validate_provider_dependencies, get_friendly_error_message, is_recoverable_error
 
 
 # Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
@@ -76,6 +76,9 @@ def dataframeit(
 
     if prompt is None:
         raise ValueError("Parâmetro 'prompt' é obrigatório")
+
+    # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
+    validate_provider_dependencies(provider, use_openai)
 
     # Converter para pandas se necessário
     df_pandas, was_polars = to_pandas(df)
@@ -294,10 +297,20 @@ def _process_rows(
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            # Incluir informações de retry na mensagem de erro
-            retry_count = config.max_retries
-            error_details = f"[Falhou após {retry_count} tentativa(s)] {error_msg}"
-            warnings.warn(f"Falha ao processar linha {idx}. {error_msg}")
+
+            # Determinar se foi erro recuperável ou não para mensagem correta
+            if is_recoverable_error(e):
+                # Erro recuperável que esgotou tentativas
+                error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
+            else:
+                # Erro não-recuperável (não fez retry)
+                error_details = f"[Erro não-recuperável] {error_msg}"
+
+            # Exibir mensagem amigável para o usuário
+            friendly_msg = get_friendly_error_message(e, config.provider)
+            print(f"\n{friendly_msg}\n")
+
+            warnings.warn(f"Falha ao processar linha {idx}.")
             df.at[idx, status_col] = 'error'
             df.at[idx, 'error_details'] = error_details
 
