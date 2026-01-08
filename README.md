@@ -4,14 +4,14 @@ Uma biblioteca Python para enriquecer DataFrames com análises de texto usando M
 
 ## Descrição
 
-DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFrame e extrair informações estruturadas usando LLMs. A biblioteca suporta tanto **LangChain** quanto **OpenAI** como provedores de modelos. Pandas é utilizado para manipulação de dados, com suporte para Polars via conversão interna.
+DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFrame e extrair informações estruturadas usando LLMs. A biblioteca usa **LangChain** para suportar múltiplos provedores de modelos (Gemini, OpenAI, Anthropic, etc.). Pandas é utilizado para manipulação de dados, com suporte para Polars via conversão interna.
 
 ## Funcionalidades
 
 - Processar cada linha de um DataFrame que contenha textos
 - Utilizar prompt templates para análise específica de domínio
 - Extrair informações estruturadas usando modelos Pydantic
-- **Suporte híbrido**: LangChain (Gemini, etc.) ou OpenAI (GPT-4, etc.)
+- **Múltiplos providers**: Gemini, OpenAI, Anthropic, Cohere, Mistral, etc. via LangChain
 - **Múltiplos tipos de dados**: DataFrames, Series, listas e dicionários
 - Suporte para Polars e Pandas
 - Processamento incremental com resumo automático
@@ -23,32 +23,19 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 
 ## Instalação
 
-### Dependências Base
 ```bash
-pip install dataframeit
-```
+# Com Google Gemini (provider padrão, recomendado)
+pip install dataframeit[google]
 
-### Para usar OpenAI
-```bash
-pip install dataframeit openai
-```
+# Ou com outros providers
+pip install dataframeit[openai]     # GPT-4, GPT-4o
+pip install dataframeit[anthropic]  # Claude
 
-### Para usar LangChain
-```bash
-# Dependências base do LangChain
-pip install dataframeit langchain langchain-core
+# Com Polars (opcional)
+pip install dataframeit[google,polars]
 
-# Para Google Gemini (provider padrão)
-pip install langchain-google-genai
-
-# Para outros providers (exemplos)
-pip install langchain-anthropic  # Claude
-pip install langchain-openai     # GPT via LangChain
-```
-
-### Para usar Polars
-```bash
-pip install dataframeit[polars]
+# Tudo incluído
+pip install dataframeit[all]
 ```
 
 ## Uso Básico
@@ -79,27 +66,72 @@ df_resultado = dataframeit(df, SuaClasse, TEMPLATE)
 df_resultado.to_excel('resultado.xlsx', index=False)
 ```
 
-### Com OpenAI
+### Com OpenAI (via LangChain)
 
 ```python
-from openai import OpenAI
 from dataframeit import dataframeit
 
-# Configure seu cliente OpenAI (opcional)
-client = OpenAI(api_key="sua-chave-aqui")
-
-# Processe usando OpenAI
+# Uso básico com OpenAI
 df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    use_openai=True,                    # Ativa o provider OpenAI
-    model='gpt-4o-mini',                # Modelo OpenAI
-    openai_client=client,               # Cliente customizado (opcional)
-    reasoning_effort='minimal',         # 'minimal', 'low', 'medium', 'high'
-    verbosity='low'                     # 'low', 'medium', 'high'
+    provider='openai',
+    model='gpt-4o-mini'
+)
+
+# Com parâmetros extras (model_kwargs)
+df_resultado = dataframeit(
+    df,
+    SuaClasse,
+    TEMPLATE,
+    provider='openai',
+    model='gpt-4o-mini',
+    model_kwargs={
+        'temperature': 0.5,          # Controle de criatividade
+        'reasoning_effort': 'medium', # Para modelos com reasoning (o1, o3)
+    }
 )
 ```
+
+### Parâmetros Extras (model_kwargs)
+
+O parâmetro `model_kwargs` permite passar configurações específicas do provider para o LangChain:
+
+```python
+# OpenAI com reasoning (modelos o1, o3-mini)
+df_resultado = dataframeit(
+    df, Model, TEMPLATE,
+    provider='openai',
+    model='o3-mini',
+    model_kwargs={
+        'reasoning_effort': 'high',  # 'low', 'medium', 'high'
+    }
+)
+
+# Google Gemini com configurações extras
+df_resultado = dataframeit(
+    df, Model, TEMPLATE,
+    provider='google_genai',
+    model='gemini-3.0-flash',
+    model_kwargs={
+        'temperature': 0.2,
+        'top_p': 0.9,
+    }
+)
+
+# Anthropic Claude com configurações extras
+df_resultado = dataframeit(
+    df, Model, TEMPLATE,
+    provider='anthropic',
+    model='claude-3-5-sonnet-20241022',
+    model_kwargs={
+        'max_tokens': 4096,
+    }
+)
+```
+
+> **Nota**: Os parâmetros disponíveis em `model_kwargs` dependem do provider. Consulte a documentação do LangChain para cada provider.
 
 ## Tipos de Dados Suportados
 
@@ -230,17 +262,11 @@ Extraia as informações solicitadas do documento acima.
 ### Parâmetros de Monitoramento
 - **`track_tokens=True`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
-### Parâmetros LangChain
+### Parâmetros do Modelo
 - **`model='gemini-3.0-flash'`**: Modelo a ser usado
-- **`provider='google_genai'`**: Provider do LangChain ('google_genai', 'anthropic', 'openai', etc.)
+- **`provider='google_genai'`**: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc.)
 - **`api_key=None`**: Chave API específica (opcional, usa variáveis de ambiente se None)
-
-### Parâmetros OpenAI
-- **`use_openai=False`**: Ativa o uso da OpenAI em vez de LangChain
-- **`openai_client=None`**: Cliente OpenAI customizado (usa padrão se None)
-- **`model='gpt-4o-mini'`**: Modelo OpenAI (quando `use_openai=True`)
-- **`reasoning_effort='minimal'`**: Nível de raciocínio ('minimal', 'low', 'medium', 'high')
-- **`verbosity='low'`**: Verbosidade das respostas ('low', 'medium', 'high')
+- **`model_kwargs=None`**: Parâmetros extras para o modelo (ex: `temperature`, `reasoning_effort`)
 
 ## Tratamento de Erros
 
@@ -329,7 +355,7 @@ df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    use_openai=True,
+    provider='openai',
     model='gpt-4o-mini',
     rate_limit_delay=0.15
 )
@@ -539,7 +565,6 @@ print(f"Custo estimado: ${custo_total:.4f}")
 ### Compatibilidade
 
 - ✅ **LangChain 1.0+** com `usage_metadata` (Gemini, Claude, GPT via LangChain)
-- ✅ **OpenAI** com `response.usage` (GPT-4, GPT-4o, etc.)
 - ⚠️ Versões anteriores do LangChain não incluem `usage_metadata`
 
 ## Exemplo Completo

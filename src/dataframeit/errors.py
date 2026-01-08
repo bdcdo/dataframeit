@@ -119,23 +119,15 @@ def _get_missing_package_message(package: str, install_name: str, friendly_name:
 """.strip()
 
 
-def validate_provider_dependencies(provider: str, use_openai: bool = False):
+def validate_provider_dependencies(provider: str):
     """Valida se as dependências do provider estão instaladas ANTES de iniciar.
 
     Args:
         provider: Nome do provider (google_genai, openai, anthropic, etc).
-        use_openai: Se True, valida dependências do OpenAI direto.
 
     Raises:
         ImportError: Com mensagem amigável se dependência não estiver instalada.
     """
-    # Se usar OpenAI diretamente
-    if use_openai:
-        try:
-            importlib.import_module('openai')
-        except ImportError:
-            raise ImportError(_get_missing_package_message('openai', 'openai', 'OpenAI'))
-
     # Validar LangChain base
     try:
         importlib.import_module('langchain')

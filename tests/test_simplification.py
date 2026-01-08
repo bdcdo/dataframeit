@@ -69,23 +69,16 @@ def test_llm_config():
     config = LLMConfig(
         model='gemini-3.0-flash',
         provider='google_genai',
-        use_openai=False,
         api_key=None,
-        openai_client=None,
-        reasoning_effort='minimal',
-        verbosity='low',
         max_retries=3,
         base_delay=1.0,
         max_delay=30.0,
-        placeholder='documento',
         rate_limit_delay=0.0
     )
 
     print("\nConfig criado:")
     print(f"  Model: {config.model}")
     print(f"  Provider: {config.provider}")
-    print(f"  Use OpenAI: {config.use_openai}")
-    print(f"  Placeholder: {config.placeholder}")
 
     assert config.model == 'gemini-3.0-flash'
     assert config.provider == 'google_genai'
@@ -162,14 +155,14 @@ def test_prompt_building():
     """Testa construção de prompts."""
     from src.dataframeit.llm import build_prompt
 
-    template = "Analise: {documento}"
+    template = "Analise: {texto}"
     text = "Este é um texto de teste"
 
-    prompt = build_prompt(template, text, 'documento')
+    prompt = build_prompt(template, text)
     print("\nPrompt construído:")
     print(prompt)
     assert 'Este é um texto de teste' in prompt
-    assert '{documento}' not in prompt  # Placeholder deve ter sido substituído
+    assert '{texto}' not in prompt  # Placeholder deve ter sido substituído
     print("✅ Construção de prompt OK!")
 
 

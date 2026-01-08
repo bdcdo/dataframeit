@@ -7,7 +7,7 @@ from typing import Union, Any, Optional
 import pandas as pd
 from tqdm import tqdm
 
-from .llm import LLMConfig, call_openai, call_langchain
+from .llm import LLMConfig, call_langchain
 from .utils import (
     to_pandas,
     from_pandas,
@@ -37,16 +37,13 @@ def dataframeit(
     provider='google_genai',
     status_column=None,
     text_column: Optional[str] = None,
-    use_openai=False,
-    openai_client=None,
-    reasoning_effort='minimal',
-    verbosity='low',
     api_key=None,
     max_retries=3,
     base_delay=1.0,
     max_delay=30.0,
     rate_limit_delay=0.0,
     track_tokens=True,
+    model_kwargs=None,
     parallel_requests=1,
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
@@ -68,20 +65,17 @@ def dataframeit(
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM.
-        provider: Provider do LangChain ('google_genai', etc).
+        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc).
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos (obrigatório para DataFrames,
                     automático para Series/list/dict).
-        use_openai: Se True, usa OpenAI em vez de LangChain.
-        openai_client: Cliente OpenAI customizado.
-        reasoning_effort: Esforço de raciocínio OpenAI.
-        verbosity: Verbosidade OpenAI.
         api_key: Chave API específica.
         max_retries: Número máximo de tentativas.
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
         track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
+        model_kwargs: Parâmetros extras para o modelo LangChain (ex: temperature, reasoning_effort).
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
             Se > 1, processa múltiplas linhas simultaneamente.
             Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
@@ -108,7 +102,7 @@ def dataframeit(
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
 
     # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
-    validate_provider_dependencies(provider, use_openai)
+    validate_provider_dependencies(provider)
 
     # Converter para pandas se necessário
     df_pandas, conversion_info = to_pandas(data)
@@ -173,15 +167,12 @@ def dataframeit(
     config = LLMConfig(
         model=model,
         provider=provider,
-        use_openai=use_openai,
         api_key=api_key,
-        openai_client=openai_client,
-        reasoning_effort=reasoning_effort,
-        verbosity=verbosity,
         max_retries=max_retries,
         base_delay=base_delay,
         max_delay=max_delay,
         rate_limit_delay=rate_limit_delay,
+        model_kwargs=model_kwargs or {},
     )
 
     # Processar linhas (escolher entre sequencial e paralelo)
@@ -357,8 +348,7 @@ def _process_rows(
         ORIGINAL_TYPE_PANDAS_DF: 'pandas',
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    llm_engine = 'openai' if config.use_openai else 'langchain'
-    desc = f"Processando [{engine}+{llm_engine}]"
+    desc = f"Processando [{engine}+langchain]"
 
     # Adicionar info de rate limiting (se ativo)
     if config.rate_limit_delay > 0:
@@ -390,11 +380,8 @@ def _process_rows(
         text = str(row[text_column])
 
         try:
-            # Chamar LLM apropriado
-            if config.use_openai:
-                result = call_openai(text, pydantic_model, user_prompt, config)
-            else:
-                result = call_langchain(text, pydantic_model, user_prompt, config)
+            # Chamar LLM via LangChain
+            result = call_langchain(text, pydantic_model, user_prompt, config)
 
             # Extrair dados e usage metadata
             extracted = result.get('data', result)  # Retrocompatibilidade

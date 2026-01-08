@@ -130,11 +130,9 @@ def exemplo_openai_gpt():
         df,
         AnaliseTexto,
         TEMPLATE,
-        use_openai=True,
+        provider='openai',
         model='gpt-4o-mini',
-        rate_limit_delay=0.15,  # ~400 req/min (margem de segurança)
-        reasoning_effort='minimal',
-        verbosity='low'
+        rate_limit_delay=0.15  # ~400 req/min (margem de segurança)
     )
 
     print("\n✓ Processamento concluído com rate limiting otimizado!")

@@ -1,41 +1,7 @@
-from dataclasses import dataclass
-from typing import Optional, Any
-from .utils import check_dependency, parse_json
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
+from .utils import check_dependency
 from .errors import retry_with_backoff
-
-def _extract_response_text(response: Any) -> str:
-    """Extrai texto útil do objeto de resposta da API Responses."""
-    # Handler direto para propriedade auxiliar introduzida pelo SDK
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return output_text
-
-    # Tentar percorrer a lista `output`
-    output = getattr(response, "output", None)
-    if output:
-        texts = []
-        for block in output:
-            # Objetos do SDK expõem atributos e/ou model_dump()
-            content = getattr(block, "content", None)
-            if content is None and hasattr(block, "model_dump"):
-                content = block.model_dump().get("content")
-
-            if not content:
-                continue
-
-            for item in content:
-                text = getattr(item, "text", None)
-                if text is None and hasattr(item, "model_dump"):
-                    text = item.model_dump().get("text")
-                if text:
-                    texts.append(text)
-
-        if texts:
-            return "\n".join(texts)
-
-    # Fallback: delegar para representação em string (último recurso)
-    return str(response)
-
 
 
 @dataclass
@@ -43,15 +9,12 @@ class LLMConfig:
     """Configuração para chamadas de LLM."""
     model: str
     provider: str
-    use_openai: bool
     api_key: Optional[str]
-    openai_client: Optional[Any]
-    reasoning_effort: str
-    verbosity: str
     max_retries: int
     base_delay: float
     max_delay: float
     rate_limit_delay: float
+    model_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_prompt(user_prompt: str, text: str) -> str:
@@ -65,61 +28,6 @@ def build_prompt(user_prompt: str, text: str) -> str:
         Prompt formatado pronto para envio ao LLM.
     """
     return user_prompt.replace('{texto}', text)
-
-
-def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
-    """Processa texto usando OpenAI API.
-
-    Args:
-        text: Texto a ser processado.
-        pydantic_model: Modelo Pydantic para estruturar resposta.
-        user_prompt: Template do prompt do usuário.
-        config: Configuração do LLM.
-
-    Returns:
-        Dicionário com 'data' (dados extraídos) e 'usage' (metadata de uso de tokens).
-    """
-    check_dependency("openai", "openai")
-
-    # Criar ou usar cliente fornecido
-    if config.openai_client is None:
-        from openai import OpenAI
-        client = OpenAI(api_key=config.api_key) if config.api_key else OpenAI()
-    else:
-        client = config.openai_client
-
-    def _call():
-        prompt = build_prompt(user_prompt, text)
-
-        request_kwargs = {
-            "model": config.model,
-            "input": prompt,
-        }
-        if config.reasoning_effort:
-            request_kwargs["reasoning"] = {"effort": config.reasoning_effort}
-        if config.verbosity:
-            request_kwargs["text"] = {"verbosity": config.verbosity}
-
-        response = client.responses.create(**request_kwargs)
-
-        # Extrair dados e usage metadata (Responses API)
-        data = parse_json(_extract_response_text(response))
-        usage = None
-        if getattr(response, "usage", None):
-            u = response.usage
-            input_tokens = getattr(u, "input_tokens", None)
-            output_tokens = getattr(u, "output_tokens", None)
-            total_tokens = getattr(u, "total_tokens", None)
-            if any(v is not None for v in (input_tokens, output_tokens, total_tokens)):
-                usage = {
-                    "input_tokens": input_tokens or 0,
-                    "output_tokens": output_tokens or 0,
-                    "total_tokens": total_tokens or 0,
-                }
-
-        return {'data': data, 'usage': usage}
-
-    return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
 def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
@@ -138,7 +46,7 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     check_dependency("langchain_core", "langchain-core")
 
     # Criar LLM base
-    llm = _create_langchain_llm(config.model, config.provider, config.api_key)
+    llm = _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
 
     # Usar with_structured_output com include_raw=True para manter usage_metadata
     # method="json_schema" é o padrão e mais confiável
@@ -175,13 +83,14 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
-def _create_langchain_llm(model: str, provider: str, api_key: Optional[str]):
+def _create_langchain_llm(model: str, provider: str, api_key: Optional[str], extra_kwargs: Optional[Dict[str, Any]] = None):
     """Cria instância de LLM do LangChain baseado no provider.
 
     Args:
         model: Nome do modelo.
         provider: Nome do provider ('google_genai', etc).
         api_key: Chave de API (opcional).
+        extra_kwargs: Parâmetros extras para o modelo (reasoning_effort, use_responses_api, etc).
 
     Returns:
         Instância do LLM configurado.
@@ -194,8 +103,12 @@ def _create_langchain_llm(model: str, provider: str, api_key: Optional[str]):
         except ImportError:
             raise ImportError("LangChain não está disponível. Instale com: pip install langchain langchain-core")
 
-    model_kwargs = {"model_provider": provider, "temperature": 0}
+    kwargs = {"model_provider": provider, "temperature": 0}
     if api_key:
-        model_kwargs["api_key"] = api_key
+        kwargs["api_key"] = api_key
 
-    return init_chat_model(model, **model_kwargs)
+    # Adicionar parâmetros extras do usuário
+    if extra_kwargs:
+        kwargs.update(extra_kwargs)
+
+    return init_chat_model(model, **kwargs)
