@@ -67,7 +67,7 @@ def test_llm_config():
     from src.dataframeit.llm import LLMConfig
 
     config = LLMConfig(
-        model='gemini-2.5-flash',
+        model='gemini-3.0-flash',
         provider='google_genai',
         use_openai=False,
         api_key=None,
@@ -87,7 +87,7 @@ def test_llm_config():
     print(f"  Use OpenAI: {config.use_openai}")
     print(f"  Placeholder: {config.placeholder}")
 
-    assert config.model == 'gemini-2.5-flash'
+    assert config.model == 'gemini-3.0-flash'
     assert config.provider == 'google_genai'
     print("✅ Config OK!")
 
