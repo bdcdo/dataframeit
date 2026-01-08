@@ -131,7 +131,7 @@ resultado = dataframeit(
     Sentimento,
     "Analise o sentimento.",
     provider='openai',
-    model='gpt-4o-mini',
+    model='gpt-5.2-mini',
     parallel_requests=5,
     rate_limit_delay=0.5,
     max_retries=5

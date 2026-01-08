@@ -153,22 +153,22 @@ resultado = dataframeit(df, Model, PROMPT)
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='gpt-4o-mini'
+    model='gpt-5.2-mini'
 )
 
 # Anthropic
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='anthropic',
-    model='claude-3-5-sonnet-20241022'
+    model='claude-sonnet-4.5'
 )
 
 # Com parâmetros extras
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='o3-mini',
-    model_kwargs={'reasoning_effort': 'medium'}
+    model='gpt-5.2-mini',
+    model_kwargs={'temperature': 0.2}
 )
 ```
 

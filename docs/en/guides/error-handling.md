@@ -157,6 +157,6 @@ If the text is ambiguous, classify as neutral with low confidence.
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
-    model='gemini-1.5-pro'  # More capable than flash
+    model='gemini-2.5-pro'  # More capable than flash
 )
 ```

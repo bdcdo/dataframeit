@@ -119,14 +119,14 @@ resultado = dataframeit(df, Model, PROMPT)
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='gpt-4o-mini'
+    model='gpt-5.2-mini'
 )
 
 # Anthropic Claude
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='anthropic',
-    model='claude-3-5-sonnet-20241022'
+    model='claude-sonnet-4.5'
 )
 ```
 

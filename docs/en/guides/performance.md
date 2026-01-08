@@ -102,7 +102,7 @@ result = dataframeit(
 # ============================================================
 # TOKEN USAGE STATISTICS
 # ============================================================
-# Model: gemini-2.0-flash
+# Model: gemini-3.0-flash
 # Total tokens: 15,432
 #   • Input:  12,345 tokens
 #   • Output: 3,087 tokens
@@ -194,7 +194,7 @@ result = dataframeit(
     text_column='text',
     parallel_requests=1,      # Sequential
     rate_limit_delay=1.5,     # High delay
-    model='gemini-2.0-flash', # Cheap model
+    model='gemini-3.0-flash', # Cheap model
     track_tokens=True
 )
 ```

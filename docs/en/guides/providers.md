@@ -7,7 +7,7 @@ Configure different LLM providers via LangChain.
 | Provider | Identifier | Current Models (2025) |
 |----------|------------|----------------------|
 | Google | `google_genai` | gemini-3.0-flash, gemini-2.5-flash, gemini-2.5-pro |
-| OpenAI | `openai` | gpt-5, gpt-5-mini, gpt-4.1, o3, o4-mini |
+| OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
 | Anthropic | `anthropic` | claude-sonnet-4.5, claude-opus-4.5, claude-haiku-4.5 |
 | Cohere | `cohere` | command-r, command-r-plus |
 | Mistral | `mistral` | mistral-large, mistral-small |
@@ -64,17 +64,17 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='openai',
-    model='gpt-5-mini'
+    model='gpt-5.2-mini'
 )
 
-# With reasoning (o3, o4 models)
+# With advanced model
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='openai',
-    model='o4-mini',
+    model='gpt-5.2',
     model_kwargs={
-        'reasoning_effort': 'medium'  # 'low', 'medium', 'high'
+        'temperature': 0.2
     }
 )
 ```
@@ -83,11 +83,9 @@ result = dataframeit(
 
 | Model | Use | Cost |
 |-------|-----|------|
-| `gpt-5-mini` | General use, economical | Low |
-| `gpt-5` | Maximum quality | High |
+| `gpt-5.2-mini` | General use, economical | Low |
+| `gpt-5.2` | Maximum quality | High |
 | `gpt-4.1` | Coding, precise instructions | Medium |
-| `o4-mini` | Reasoning, STEM | Medium |
-| `o3` | Advanced reasoning | High |
 
 ## Anthropic Claude
 
@@ -162,8 +160,8 @@ result = dataframeit(
 |----------|-------|-------------------|-------------------|
 | Google | gemini-3.0-flash | $0.50 | $3.00 |
 | Google | gemini-2.5-pro | $1.25 | $5.00 |
-| OpenAI | gpt-5-mini | $0.30 | $1.20 |
-| OpenAI | gpt-5 | $5.00 | $15.00 |
+| OpenAI | gpt-5.2-mini | $0.30 | $1.20 |
+| OpenAI | gpt-5.2 | $5.00 | $15.00 |
 | Anthropic | claude-sonnet-4.5 | $3.00 | $15.00 |
 | Anthropic | claude-haiku-4.5 | $1.00 | $5.00 |
 
@@ -179,7 +177,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='openai',
-    model='gpt-5-mini',
+    model='gpt-5.2-mini',
     api_key='sk-...'  # Your key directly
 )
 ```
@@ -194,4 +192,3 @@ result = dataframeit(
 | `temperature` | Creativity (0-1) | All |
 | `top_p` | Nucleus sampling | All |
 | `max_tokens` | Output limit | All |
-| `reasoning_effort` | Reasoning effort | OpenAI (o3, o4) |

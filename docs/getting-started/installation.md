@@ -10,7 +10,7 @@ O DataFrameIt usa [LangChain](https://langchain.com/) para suportar múltiplos p
     pip install dataframeit[google]
     ```
 
-    Modelos: `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash`
+    Modelos: `gemini-3.0-flash`, `gemini-2.5-flash`, `gemini-2.5-pro`
 
 === "OpenAI"
 
@@ -18,7 +18,7 @@ O DataFrameIt usa [LangChain](https://langchain.com/) para suportar múltiplos p
     pip install dataframeit[openai]
     ```
 
-    Modelos: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o3-mini`
+    Modelos: `gpt-5.2`, `gpt-5.2-mini`, `gpt-4.1`
 
 === "Anthropic"
 
@@ -26,7 +26,7 @@ O DataFrameIt usa [LangChain](https://langchain.com/) para suportar múltiplos p
     pip install dataframeit[anthropic]
     ```
 
-    Modelos: `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`
+    Modelos: `claude-sonnet-4.5`, `claude-opus-4.5`, `claude-haiku-4.5`
 
 === "Todos os Providers"
 

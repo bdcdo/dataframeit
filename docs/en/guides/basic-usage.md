@@ -121,7 +121,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='openai',
-    model='gpt-4o-mini'
+    model='gpt-5.2-mini'
 )
 
 # Anthropic Claude
@@ -129,7 +129,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-3-5-sonnet-20241022'
+    model='claude-sonnet-4.5'
 )
 ```
 
