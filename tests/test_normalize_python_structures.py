@@ -389,8 +389,8 @@ def test_read_dataframe_csv_with_model():
         os.unlink(temp_path)
 
 
-def test_read_dataframe_csv_normalize_all():
-    """Testa leitura de CSV normalizando todas as colunas."""
+def test_read_dataframe_csv_auto_normalize():
+    """Testa leitura de CSV com normalização automática (padrão)."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
         f.write('col1,col2,col3\n')
         f.write('"[1, 2]","texto normal",100\n')
@@ -398,11 +398,11 @@ def test_read_dataframe_csv_normalize_all():
         temp_path = f.name
 
     try:
-        df = read_dataframe(temp_path, normalize_all=True)
+        df = read_dataframe(temp_path)  # Sem argumentos - normaliza por padrão
         assert df['col1'].iloc[0] == [1, 2]
         assert df['col2'].iloc[0] == 'texto normal'  # Não alterado
         assert df['col3'].iloc[0] == 100  # Não alterado
-        print("✅ read_dataframe CSV normalize_all funciona")
+        print("✅ read_dataframe CSV normaliza automaticamente")
     finally:
         os.unlink(temp_path)
 
@@ -454,17 +454,17 @@ def test_read_dataframe_unsupported_format():
 
 
 def test_read_dataframe_without_normalization():
-    """Testa leitura sem normalização (sem modelo e normalize_all=False)."""
+    """Testa leitura sem normalização (normalize=False)."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
         f.write('col1,col2\n')
         f.write('"[1, 2]","texto"\n')
         temp_path = f.name
 
     try:
-        df = read_dataframe(temp_path)  # Sem modelo e normalize_all=False
+        df = read_dataframe(temp_path, normalize=False)
         # Deve manter como string
         assert df['col1'].iloc[0] == '[1, 2]'
-        print("✅ read_dataframe sem normalização mantém strings")
+        print("✅ read_dataframe com normalize=False mantém strings")
     finally:
         os.unlink(temp_path)
 
@@ -545,7 +545,7 @@ if __name__ == '__main__':
 
     print("\n--- Testes read_dataframe ---")
     test_read_dataframe_csv_with_model()
-    test_read_dataframe_csv_normalize_all()
+    test_read_dataframe_csv_auto_normalize()
     test_read_dataframe_excel_with_model()
     test_read_dataframe_file_not_found()
     test_read_dataframe_unsupported_format()

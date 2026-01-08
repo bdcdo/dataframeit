@@ -246,7 +246,7 @@ def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
 def read_dataframe(
     path: str,
     model=None,
-    normalize_all: bool = False,
+    normalize: bool = True,
     **kwargs
 ) -> pd.DataFrame:
     """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
@@ -259,9 +259,8 @@ def read_dataframe(
         path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
-               Se não fornecido, usa normalize_all para decidir o comportamento.
-        normalize_all: Se True e model não for fornecido, tenta normalizar
-                       todas as colunas que parecem conter JSON. Padrão: False.
+        normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
+                   Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
 
     Returns:
@@ -272,15 +271,15 @@ def read_dataframe(
         FileNotFoundError: Se o arquivo não existir.
 
     Examples:
-        >>> # Com modelo Pydantic (recomendado)
-        >>> df = read_dataframe('resultados.xlsx', MeuModelo)
+        >>> # Uso simples - normaliza automaticamente
+        >>> df = read_dataframe('resultados.xlsx')
         >>> print(df['lista_itens'][0])  # ['item1', 'item2']
 
-        >>> # Sem modelo, normalizando todas as colunas
-        >>> df = read_dataframe('dados.csv', normalize_all=True)
+        >>> # Com modelo Pydantic (mais preciso)
+        >>> df = read_dataframe('resultados.xlsx', MeuModelo)
 
-        >>> # Passando argumentos para pandas
-        >>> df = read_dataframe('dados.csv', model=MeuModelo, encoding='utf-8')
+        >>> # Sem normalização
+        >>> df = read_dataframe('dados.csv', normalize=False)
     """
     import os
 
@@ -306,13 +305,16 @@ def read_dataframe(
         )
 
     # Normalizar colunas
+    if not normalize:
+        return df
+
     if model is not None:
         # Usar modelo Pydantic para identificar colunas complexas
         complex_fields = get_complex_fields(model)
         if complex_fields:
             normalize_complex_columns(df, complex_fields)
-    elif normalize_all:
-        # Tentar normalizar todas as colunas que parecem ter JSON
+    else:
+        # Normalizar todas as colunas que parecem ter JSON
         _normalize_all_json_columns(df)
 
     return df
