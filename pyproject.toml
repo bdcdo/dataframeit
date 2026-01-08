@@ -60,7 +60,9 @@ google = [
     "langchain-google-genai>=2.0.0",
 ]
 openai = [
-    "openai>=1.0.0",
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.3.0",
 ]
 anthropic = [
     "langchain>=0.3.0",
@@ -74,8 +76,8 @@ all = [
     "langchain>=0.3.0",
     "langchain-core>=0.3.0",
     "langchain-google-genai>=2.0.0",
+    "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
-    "openai>=1.0.0",
     "polars>=0.20",
 ]
 dev = [
