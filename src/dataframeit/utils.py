@@ -243,7 +243,7 @@ def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
     return df
 
 
-def read_dataframe(
+def read_df(
     path: str,
     model=None,
     normalize: bool = True,
