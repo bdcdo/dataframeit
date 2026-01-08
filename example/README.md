@@ -15,7 +15,7 @@ Clique nos badges abaixo para abrir os notebooks diretamente no Google Colab:
 | [05_advanced_legal.ipynb](05_advanced_legal.ipynb) | Análise jurídica avançada | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/05_advanced_legal.ipynb) |
 | [06_polars.ipynb](06_polars.ipynb) | Usando Polars DataFrame | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/06_polars.ipynb) |
 | [07_multiple_data_types.ipynb](07_multiple_data_types.ipynb) | Listas, dicts e Series | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/07_multiple_data_types.ipynb) |
-| [rate_limiting.ipynb](rate_limiting.ipynb) | Rate limiting e proteção | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/rate_limiting.ipynb) |
+| [08_rate_limiting.ipynb](08_rate_limiting.ipynb) | Rate limiting e proteção | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/08_rate_limiting.ipynb) |
 
 ## Scripts Python
 
@@ -121,7 +121,7 @@ pip install dataframeit[google,polars]
 5. **05_advanced_legal** - Veja um caso real complexo
 6. **06_polars** - Use com Polars se preferir
 7. **07_multiple_data_types** - Conheça a flexibilidade de entrada
-8. **rate_limiting** - Configure proteção contra rate limits
+8. **08_rate_limiting** - Configure proteção contra rate limits
 
 ## Dados de Exemplo
 
