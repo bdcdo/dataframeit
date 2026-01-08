@@ -12,6 +12,7 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 - Utilizar prompt templates para análise específica de domínio
 - Extrair informações estruturadas usando modelos Pydantic
 - **Suporte híbrido**: LangChain (Gemini, etc.) ou OpenAI (GPT-4, etc.)
+- **Múltiplos tipos de dados**: DataFrames, Series, listas e dicionários
 - Suporte para Polars e Pandas
 - Processamento incremental com resumo automático
 - **Retry automático** com backoff exponencial para resiliência
@@ -99,6 +100,80 @@ df_resultado = dataframeit(
 )
 ```
 
+## Tipos de Dados Suportados
+
+Além de DataFrames, o DataFrameIt aceita outros tipos de dados para facilitar o uso em diferentes cenários.
+
+### Com Lista de Textos
+
+```python
+from dataframeit import dataframeit
+
+textos = [
+    "Ótimo produto! Chegou rápido.",
+    "Péssimo atendimento.",
+    "Produto ok, nada de especial."
+]
+
+# Não precisa especificar text_column para listas
+resultado = dataframeit(textos, SuaClasse, TEMPLATE)
+
+# Retorna DataFrame com índice numérico + colunas extraídas
+#   | sentimento | confianca
+# 0 | positivo   | alta
+# 1 | negativo   | alta
+# 2 | neutro     | media
+```
+
+### Com Dicionário
+
+```python
+documentos = {
+    'doc_001': 'Texto do primeiro documento...',
+    'doc_002': 'Texto do segundo documento...',
+    'doc_003': 'Texto do terceiro documento...',
+}
+
+resultado = dataframeit(documentos, SuaClasse, TEMPLATE)
+
+# Retorna DataFrame com chaves como índice
+#         | sentimento | confianca
+# doc_001 | positivo   | alta
+# doc_002 | negativo   | media
+# doc_003 | neutro     | baixa
+```
+
+### Com pandas.Series
+
+```python
+import pandas as pd
+
+series = pd.Series(
+    ['Texto A', 'Texto B', 'Texto C'],
+    index=['review_1', 'review_2', 'review_3'],
+    name='avaliacoes'
+)
+
+resultado = dataframeit(series, SuaClasse, TEMPLATE)
+
+# Retorna DataFrame preservando o índice original
+#          | sentimento | confianca
+# review_1 | positivo   | alta
+# review_2 | negativo   | media
+# review_3 | neutro     | baixa
+```
+
+### Resumo dos Tipos
+
+| Tipo de Entrada | `text_column` | Tipo de Retorno |
+|-----------------|---------------|-----------------|
+| `pd.DataFrame` | Obrigatório (padrão: `'texto'`) | `pd.DataFrame` com colunas originais + extraídas |
+| `pl.DataFrame` | Obrigatório (padrão: `'texto'`) | `pl.DataFrame` com colunas originais + extraídas |
+| `list` | Automático | `pd.DataFrame` (índice numérico) |
+| `dict` | Automático | `pd.DataFrame` (chaves como índice) |
+| `pd.Series` | Automático | `pd.DataFrame` (índice preservado) |
+| `pl.Series` | Automático | `pl.DataFrame` |
+
 ## Como Funciona o Template
 
 O template define as instruções para o LLM analisar cada texto. Basta escrever suas instruções:
@@ -127,10 +202,14 @@ Extraia as informações solicitadas do documento acima.
 ## Parâmetros
 
 ### Parâmetros Gerais
-- **`df`**: DataFrame pandas ou polars contendo os textos
+- **`data`**: Dados contendo os textos. Aceita:
+  - `pandas.DataFrame` ou `polars.DataFrame`
+  - `pandas.Series` ou `polars.Series`
+  - `list` (lista de strings)
+  - `dict` (dicionário onde valores são os textos)
 - **`questions`**: Modelo Pydantic definindo a estrutura dos dados a extrair
 - **`prompt`**: Template do prompt (use `{texto}` para controlar onde o texto aparece)
-- **`text_column='texto'`**: Nome da coluna que contém os textos a serem analisados
+- **`text_column`**: Nome da coluna com os textos (obrigatório para DataFrames, padrão: `'texto'`; automático para Series/list/dict)
 
 ### Parâmetros de Processamento
 - **`resume=True`**: Continua processamento de onde parou (útil para grandes datasets)
