@@ -49,7 +49,6 @@ def dataframeit(
     use_search=False,
     search_per_field=False,
     max_results=5,
-    max_searches=3,
     search_depth="basic",
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
@@ -92,7 +91,6 @@ def dataframeit(
             Útil quando o modelo tem muitos campos e um único contexto ficaria sobrecarregado.
             Padrão: False (um agente responde todos os campos).
         max_results: Número máximo de resultados por busca (1-20). Padrão: 5.
-        max_searches: Número máximo de buscas por linha/campo. Padrão: 3.
         search_depth: Profundidade da busca - "basic" (1 crédito) ou "advanced" (2 créditos).
             Padrão: "basic".
 
@@ -125,8 +123,6 @@ def dataframeit(
             raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
         if not 1 <= max_results <= 20:
             raise ValueError("max_results deve estar entre 1 e 20")
-        if max_searches < 1:
-            raise ValueError("max_searches deve ser pelo menos 1")
         validate_search_dependencies()
 
     # Criar SearchConfig se busca habilitada
@@ -136,7 +132,6 @@ def dataframeit(
             enabled=True,
             per_field=search_per_field,
             max_results=max_results,
-            max_searches=max_searches,
             search_depth=search_depth,
         )
 

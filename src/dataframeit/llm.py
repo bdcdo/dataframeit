@@ -10,7 +10,6 @@ class SearchConfig:
     enabled: bool = False
     per_field: bool = False  # Um agente por campo
     max_results: int = 5
-    max_searches: int = 3
     search_depth: str = "basic"  # "basic" ou "advanced"
 
 

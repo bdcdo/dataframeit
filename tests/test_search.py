@@ -54,15 +54,6 @@ def test_max_results_default():
     assert sig.parameters['max_results'].default == 5
 
 
-def test_max_searches_default():
-    """Verifica que max_searches=3 é o padrão."""
-    from dataframeit.core import dataframeit
-    import inspect
-
-    sig = inspect.signature(dataframeit)
-    assert sig.parameters['max_searches'].default == 3
-
-
 def test_search_depth_default():
     """Verifica que search_depth='basic' é o padrão."""
     from dataframeit.core import dataframeit
@@ -130,25 +121,6 @@ def test_use_search_validates_max_results_max():
     assert "max_results" in str(exc_info.value)
 
 
-def test_use_search_validates_max_searches():
-    """Verifica que max_searches < 1 gera erro."""
-    from dataframeit.core import dataframeit
-
-    df = pd.DataFrame({"texto": ["Paracetamol"]})
-
-    with patch('dataframeit.core.validate_provider_dependencies'):
-        with pytest.raises(ValueError) as exc_info:
-            dataframeit(
-                df,
-                questions=MedicamentoInfo,
-                prompt="Pesquise sobre {texto}",
-                use_search=True,
-                max_searches=0,
-            )
-
-    assert "max_searches" in str(exc_info.value)
-
-
 # =============================================================================
 # Testes de validação de dependências
 # =============================================================================
@@ -210,14 +182,12 @@ def test_search_config_creation():
         enabled=True,
         per_field=True,
         max_results=10,
-        max_searches=5,
         search_depth="advanced",
     )
 
     assert config.enabled is True
     assert config.per_field is True
     assert config.max_results == 10
-    assert config.max_searches == 5
     assert config.search_depth == "advanced"
 
 
@@ -230,7 +200,6 @@ def test_search_config_defaults():
     assert config.enabled is False
     assert config.per_field is False
     assert config.max_results == 5
-    assert config.max_searches == 3
     assert config.search_depth == "basic"
 
 

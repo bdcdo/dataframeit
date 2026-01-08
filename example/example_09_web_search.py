@@ -112,7 +112,6 @@ df_resultado = dataframeit(
     # Configuracao de busca
     use_search=True,              # Ativa busca web via Tavily
     max_results=5,                # Resultados por busca (1-20)
-    max_searches=3,               # Max buscas por linha
     search_depth="basic",         # "basic" (1 credito) ou "advanced" (2 creditos)
     # Configuracao do LLM
     model='gpt-4o-mini',          # Modelo recomendado para agentes
