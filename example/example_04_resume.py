@@ -181,7 +181,7 @@ df_parcial['tipo'] = None
 df_parcial['prioridade'] = None
 df_parcial['requer_resposta'] = None
 df_parcial['_dataframeit_status'] = None
-df_parcial['error_details'] = None
+df_parcial['_error_details'] = None
 
 # Marcar primeiros 10 como processados (simulação)
 df_parcial.loc[:9, '_dataframeit_status'] = 'processed'

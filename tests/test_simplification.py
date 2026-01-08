@@ -43,7 +43,7 @@ def test_basic_functionality():
     assert 'campo1' in df_test.columns
     assert 'campo2' in df_test.columns
     assert '_dataframeit_status' in df_test.columns
-    assert 'error_details' in df_test.columns
+    assert '_error_details' in df_test.columns
 
     # Verificar índices de processamento
     from src.dataframeit.core import _get_processing_indices
@@ -119,6 +119,45 @@ def test_utils():
     print("✅ Parse JSON markdown OK!")
 
 
+def test_hide_error_columns_when_no_errors():
+    """Testa que colunas de erro são ocultadas quando não há erros."""
+    from src.dataframeit.utils import from_pandas
+
+    # Caso 1: Sem erros - colunas devem ser removidas
+    df_no_errors = pd.DataFrame({
+        'texto': ['a', 'b', 'c'],
+        '_dataframeit_status': ['processed', 'processed', 'processed'],
+        '_error_details': [None, None, None],
+    })
+    result = from_pandas(df_no_errors, False)
+    assert '_dataframeit_status' not in result.columns
+    assert '_error_details' not in result.columns
+    assert 'texto' in result.columns
+    print("✅ Colunas de erro ocultadas quando não há erros!")
+
+    # Caso 2: Com erros - colunas devem ser mantidas
+    df_with_errors = pd.DataFrame({
+        'texto': ['a', 'b', 'c'],
+        '_dataframeit_status': ['processed', 'error', 'processed'],
+        '_error_details': [None, 'Erro de teste', None],
+    })
+    result = from_pandas(df_with_errors, False)
+    assert '_dataframeit_status' in result.columns
+    assert '_error_details' in result.columns
+    print("✅ Colunas de erro mantidas quando há erros!")
+
+    # Caso 3: Com retry info (_error_details preenchido mas sem status='error')
+    df_with_retries = pd.DataFrame({
+        'texto': ['a', 'b'],
+        '_dataframeit_status': ['processed', 'processed'],
+        '_error_details': [None, 'Sucesso após 2 retry(s)'],
+    })
+    result = from_pandas(df_with_retries, False)
+    assert '_dataframeit_status' in result.columns
+    assert '_error_details' in result.columns
+    print("✅ Colunas mantidas quando há info de retries!")
+
+
 def test_prompt_building():
     """Testa construção de prompts."""
     from src.dataframeit.llm import build_prompt
@@ -144,6 +183,8 @@ if __name__ == '__main__':
     test_llm_config()
     print()
     test_utils()
+    print()
+    test_hide_error_columns_when_no_errors()
     print()
     test_prompt_building()
 

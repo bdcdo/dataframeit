@@ -100,6 +100,9 @@ def to_pandas(df) -> Tuple[pd.DataFrame, bool]:
 def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
     """Converte de volta para polars se necessário.
 
+    Remove automaticamente as colunas internas de controle (_dataframeit_status
+    e _error_details) se não houver erros no processamento.
+
     Args:
         df: DataFrame pandas.
         was_polars: Se o DataFrame original era polars.
@@ -107,6 +110,19 @@ def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
     Returns:
         DataFrame no formato original.
     """
+    # Colunas internas de controle (não usar esses nomes em seus dados!)
+    status_col = '_dataframeit_status'
+    error_col = '_error_details'
+
+    # Remover colunas de status/erro se não houver erros
+    if status_col in df.columns:
+        has_errors = (df[status_col] == 'error').any()
+        has_error_details = error_col in df.columns and df[error_col].notna().any()
+
+        if not has_errors and not has_error_details:
+            cols_to_drop = [c for c in [status_col, error_col] if c in df.columns]
+            df = df.drop(columns=cols_to_drop)
+
     if was_polars and pl is not None:
         return pl.from_pandas(df)
     return df

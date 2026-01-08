@@ -22,7 +22,7 @@ Este diretório contém exemplos práticos de uso do DataFrameIt, organizados po
 #### ⚠️ [example_03_error_handling.py](example_03_error_handling.py) - Tratamento de Erros
 **Conceitos**: Resiliência, retry, error tracking
 - Verificação de status de processamento
-- Análise de erros com `error_details`
+- Análise de erros com `_error_details`
 - Configuração de retry customizado
 - Filtragem de linhas com erro
 

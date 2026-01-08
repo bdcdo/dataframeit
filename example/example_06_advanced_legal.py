@@ -280,7 +280,7 @@ if len(linhas_erro) > 0:
     print(f"\n{len(linhas_erro)} linha(s) com erro:")
     for idx, row in linhas_erro.iterrows():
         print(f"\nLinha {idx}:")
-        print(f"  Erro: {row['error_details']}")
+        print(f"  Erro: {row['_error_details']}")
 
 # ============================================================================
 # 8. EXEMPLO DE RESULTADO DETALHADO
