@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from .llm import LLMConfig, call_openai, call_langchain
-from .utils import to_pandas, from_pandas
+from .utils import to_pandas, from_pandas, get_complex_fields, normalize_complex_columns
 from .errors import validate_provider_dependencies, get_friendly_error_message, is_recoverable_error
 
 
@@ -105,6 +105,12 @@ def dataframeit(
 
     # Configurar colunas
     _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens)
+
+    # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
+    # serializadas como strings JSON ao salvar/carregar de arquivos
+    complex_fields = get_complex_fields(questions)
+    if complex_fields and resume:
+        normalize_complex_columns(df_pandas, complex_fields)
 
     # Determinar coluna de status
     status_col = status_column or '_dataframeit_status'

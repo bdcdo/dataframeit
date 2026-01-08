@@ -4,11 +4,13 @@ Este módulo contém funções utilitárias para:
 - Parse de JSON de respostas de LLM
 - Verificação de dependências
 - Conversão entre pandas e polars
+- Normalização de estruturas Python (listas, dicionários, tuplas)
 """
 import re
 import json
 import importlib
-from typing import Tuple, Union, Any
+import types
+from typing import Tuple, Union, Any, get_origin, get_args
 import pandas as pd
 
 # Import opcional de Polars
@@ -56,6 +58,119 @@ def parse_json(resposta: str) -> dict:
         return json.loads(json_string)
     except json.JSONDecodeError as e:
         raise ValueError(f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'...")
+
+
+def is_complex_type(field_type) -> bool:
+    """Verifica se um tipo é complexo (list, dict, tuple).
+
+    Args:
+        field_type: Tipo a verificar (pode ser tipo simples ou genérico).
+
+    Returns:
+        True se o tipo for list, dict ou tuple.
+    """
+    origin = get_origin(field_type)
+
+    # Tipos genéricos: list[str], dict[str, int], tuple[int, str], etc.
+    if origin in (list, dict, tuple):
+        return True
+
+    # Union types (Optional, Union) - verificar os argumentos internos
+    # typing.Union para sintaxe Union[X, Y] e Optional[X]
+    if origin is Union:
+        args = get_args(field_type)
+        return any(is_complex_type(arg) for arg in args if arg is not type(None))
+
+    # types.UnionType para sintaxe X | Y (Python 3.10+)
+    if isinstance(field_type, types.UnionType):
+        args = get_args(field_type)
+        return any(is_complex_type(arg) for arg in args if arg is not type(None))
+
+    # Tipos diretos
+    if field_type in (list, dict, tuple):
+        return True
+
+    return False
+
+
+def get_complex_fields(pydantic_model) -> set:
+    """Retorna os nomes dos campos que são tipos complexos (list, dict, tuple).
+
+    Args:
+        pydantic_model: Modelo Pydantic a analisar.
+
+    Returns:
+        Set com nomes dos campos complexos.
+    """
+    complex_fields = set()
+
+    for field_name, field_info in pydantic_model.model_fields.items():
+        if is_complex_type(field_info.annotation):
+            complex_fields.add(field_name)
+
+    return complex_fields
+
+
+def normalize_value(value: Any) -> Any:
+    """Normaliza um valor, convertendo strings JSON para estruturas Python.
+
+    Esta função garante que valores que deveriam ser listas, dicionários ou
+    tuplas sejam tratados como tal, mesmo que tenham sido armazenados como
+    strings JSON (comum ao salvar/carregar de Excel/CSV).
+
+    Args:
+        value: Valor a normalizar.
+
+    Returns:
+        Valor normalizado (estrutura Python se era JSON string válido,
+        ou o valor original caso contrário).
+
+    Examples:
+        >>> normalize_value('[1, 2, 3]')
+        [1, 2, 3]
+        >>> normalize_value('{"a": 1}')
+        {'a': 1}
+        >>> normalize_value('texto normal')
+        'texto normal'
+        >>> normalize_value([1, 2, 3])  # já é lista
+        [1, 2, 3]
+    """
+    # Se já é estrutura Python, retorna como está
+    if isinstance(value, (list, dict, tuple)):
+        return value
+
+    # Se é None ou não é string, retorna como está
+    if value is None or not isinstance(value, str):
+        return value
+
+    # Tenta fazer parse de JSON
+    stripped = value.strip()
+    if not stripped:
+        return value
+
+    # Verifica se parece com JSON (começa com [ ou {)
+    if stripped.startswith(('[', '{')):
+        try:
+            parsed = json.loads(stripped)
+            return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return value
+
+
+def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None:
+    """Normaliza colunas complexas no DataFrame, convertendo strings JSON.
+
+    Modifica o DataFrame in-place.
+
+    Args:
+        df: DataFrame a normalizar.
+        complex_fields: Set com nomes das colunas a normalizar.
+    """
+    for col in complex_fields:
+        if col in df.columns:
+            df[col] = df[col].apply(normalize_value)
 
 
 def check_dependency(package: str, install_name: str = None):
