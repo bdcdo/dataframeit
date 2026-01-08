@@ -1,95 +1,68 @@
 # Exemplos do DataFrameIt
 
-Este diretório contém exemplos práticos de uso do DataFrameIt, organizados por nível de complexidade e funcionalidade.
+Este diretório contém exemplos práticos de uso do DataFrameIt em notebooks Jupyter prontos para rodar no Google Colab.
 
-## Índice de Exemplos
+## Notebooks
 
-### Exemplos Básicos
+Clique nos badges abaixo para abrir os notebooks diretamente no Google Colab:
 
-#### 📝 [example_01_basic.py](example_01_basic.py) - Exemplo Básico
-**Conceitos**: Fundamentos, análise de sentimento
-- Criação de modelo Pydantic simples
-- Template de prompt básico
-- Processamento de dados sintéticos
-- **Ideal para começar!**
+| Notebook | Descrição | Colab |
+|----------|-----------|-------|
+| [01_basic.ipynb](01_basic.ipynb) | Uso básico e análise de sentimento | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/01_basic.ipynb) |
+| [02_error_handling.ipynb](02_error_handling.ipynb) | Tratamento de erros e retry | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/02_error_handling.ipynb) |
+| [03_resume.ipynb](03_resume.ipynb) | Processamento incremental | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/03_resume.ipynb) |
+| [04_custom_placeholder.ipynb](04_custom_placeholder.ipynb) | Placeholder customizado | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/04_custom_placeholder.ipynb) |
+| [05_advanced_legal.ipynb](05_advanced_legal.ipynb) | Análise jurídica avançada | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/05_advanced_legal.ipynb) |
+| [06_polars.ipynb](06_polars.ipynb) | Usando Polars DataFrame | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/06_polars.ipynb) |
+| [07_multiple_data_types.ipynb](07_multiple_data_types.ipynb) | Listas, dicts e Series | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/07_multiple_data_types.ipynb) |
+| [08_rate_limiting.ipynb](08_rate_limiting.ipynb) | Rate limiting e proteção | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/08_rate_limiting.ipynb) |
 
-#### ⚠️ [example_03_error_handling.py](example_03_error_handling.py) - Tratamento de Erros
-**Conceitos**: Resiliência, retry, error tracking
-- Verificação de status de processamento
-- Análise de erros com `_error_details`
-- Configuração de retry customizado
-- Filtragem de linhas com erro
+## Como Executar
 
-#### 🔄 [example_04_resume.py](example_04_resume.py) - Processamento Incremental
-**Conceitos**: Resume, datasets grandes, interrupção e retomada
-- Uso de `resume=True`
-- Salvamento de progresso
-- Continuação de processamento interrompido
+### No Google Colab (Recomendado)
 
-#### 🔧 [example_05_custom_placeholder.py](example_05_custom_placeholder.py) - Placeholder Customizado
-**Conceitos**: Configuração avançada de template
-- Uso de placeholder customizado (ex: `{meu_texto}` ao invés de `{documento}`)
-- Parâmetro `placeholder`
+1. Clique no badge "Open in Colab" do notebook desejado
+2. Configure sua API key no Colab Secrets (recomendado) ou diretamente no código
+3. Execute as células em ordem
 
-### Exemplos Avançados
-
-#### ⚖️ [example_06_advanced_legal.py](example_06_advanced_legal.py) - Análise Jurídica Complexa
-**Conceitos**: Modelo complexo, classes aninhadas, domínio específico
-- Modelo Pydantic com classes aninhadas
-- Campos opcionais e condicionais
-- Listas, tuplas e tipos Literal
-- Template detalhado para domínio jurídico
-- **Exemplo de caso real de uso**
-
-#### 🐻 [example_07_polars.py](example_07_polars.py) - Usando Polars
-**Conceitos**: Integração com Polars DataFrame
-- Conversão automática Polars ↔ Pandas
-- Mesmas funcionalidades com Polars
-
-## Como Executar os Exemplos
-
-### Pré-requisitos
+### Localmente
 
 ```bash
 # Instalar DataFrameIt
-pip install dataframeit
+pip install dataframeit[google]
 
-# Para LangChain/Gemini (provider padrão)
-pip install langchain langchain-core langchain-google-genai
-
-# Para outros providers
-pip install langchain-openai     # OpenAI
-pip install langchain-anthropic  # Anthropic
-
-# Para exemplo com Polars
-pip install polars
-```
-
-### Configurar Variáveis de Ambiente
-
-```bash
-# Para exemplos com Gemini (LangChain)
+# Configurar variável de ambiente
 export GOOGLE_API_KEY="sua-chave-google"
 
-# Para exemplos com OpenAI
-export OPENAI_API_KEY="sua-chave-openai"
+# Abrir Jupyter
+jupyter notebook
 ```
 
-### Executar um Exemplo
+### Para outros providers
 
 ```bash
-cd example/
-python3 example_01_basic.py
+# OpenAI
+pip install dataframeit[openai]
+export OPENAI_API_KEY="sua-chave-openai"
+
+# Anthropic
+pip install dataframeit[anthropic]
+export ANTHROPIC_API_KEY="sua-chave-anthropic"
+
+# Polars (opcional)
+pip install dataframeit[google,polars]
 ```
 
 ## Ordem Sugerida de Aprendizado
 
-1. **example_01_basic.py** - Entenda os fundamentos
-2. **example_03_error_handling.py** - Domine o tratamento de erros
-3. **example_04_resume.py** - Aprenda a trabalhar com datasets grandes
-4. **example_05_custom_placeholder.py** - Personalize seus templates
-5. **example_06_advanced_legal.py** - Veja um caso real complexo
-6. **example_07_polars.py** - Use com Polars se preferir
+1. **01_basic** - Entenda os fundamentos
+2. **02_error_handling** - Domine o tratamento de erros
+3. **03_resume** - Aprenda a trabalhar com datasets grandes
+4. **04_custom_placeholder** - Personalize seus templates
+5. **05_advanced_legal** - Veja um caso real complexo
+6. **06_polars** - Use com Polars se preferir
+7. **07_multiple_data_types** - Conheça a flexibilidade de entrada
+8. **08_rate_limiting** - Configure proteção contra rate limits
 
 ## Dados de Exemplo
 
