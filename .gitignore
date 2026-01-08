@@ -55,3 +55,4 @@ htmlcov/
 
 # Project specific
 *.log
+site/

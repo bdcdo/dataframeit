@@ -78,10 +78,15 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
 ]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocs-static-i18n>=1.2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/bdcdo/dataframeit"
-Documentation = "https://github.com/bdcdo/dataframeit#readme"
+Documentation = "https://bdcdo.github.io/dataframeit"
 Repository = "https://github.com/bdcdo/dataframeit.git"
 Issues = "https://github.com/bdcdo/dataframeit/issues"
 Changelog = "https://github.com/bdcdo/dataframeit/releases"
