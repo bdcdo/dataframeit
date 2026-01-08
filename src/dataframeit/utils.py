@@ -1,9 +1,14 @@
+"""Utilitários gerais para DataFrameIt.
+
+Este módulo contém funções utilitárias para:
+- Parse de JSON de respostas de LLM
+- Verificação de dependências
+- Conversão entre pandas e polars
+"""
 import re
 import json
 import importlib
-import time
-import random
-from typing import Tuple, List, Union, Any
+from typing import Tuple, Union, Any
 import pandas as pd
 
 # Import opcional de Polars
@@ -70,33 +75,6 @@ def check_dependency(package: str, install_name: str = None):
         raise ImportError(
             f"'{package}' não instalado. Instale com: pip install {install_name}"
         )
-
-
-def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0):
-    """Executa função com retry e backoff exponencial.
-
-    Args:
-        func: Função a ser executada.
-        max_retries: Número máximo de tentativas.
-        base_delay: Delay base em segundos.
-        max_delay: Delay máximo em segundos.
-
-    Returns:
-        Resultado da função.
-
-    Raises:
-        Exception: Última exceção após esgotar tentativas.
-    """
-    for attempt in range(max_retries):
-        try:
-            return func()
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-
-            delay = min(base_delay * (2 ** attempt), max_delay)
-            jitter = random.uniform(0, 0.1) * delay
-            time.sleep(delay + jitter)
 
 
 def to_pandas(df) -> Tuple[pd.DataFrame, bool]:

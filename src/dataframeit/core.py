@@ -1,11 +1,19 @@
 import warnings
 import time
+import logging
 from typing import Union, Any, Optional
 import pandas as pd
 from tqdm import tqdm
 
 from .llm import LLMConfig, call_openai, call_langchain
 from .utils import to_pandas, from_pandas
+from .errors import validate_provider_dependencies, get_friendly_error_message, is_recoverable_error
+
+
+# Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
+logging.getLogger('langchain_google_genai').setLevel(logging.ERROR)
+logging.getLogger('langchain_core').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
 def dataframeit(
@@ -71,6 +79,9 @@ def dataframeit(
     # Se {texto} não estiver no template, adiciona automaticamente ao final
     if '{texto}' not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
+
+    # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
+    validate_provider_dependencies(provider, use_openai)
 
     # Converter para pandas se necessário
     df_pandas, was_polars = to_pandas(df)
@@ -258,6 +269,7 @@ def _process_rows(
             # Extrair dados e usage metadata
             extracted = result.get('data', result)  # Retrocompatibilidade
             usage = result.get('usage')
+            retry_info = result.get('_retry_info', {})
 
             # Atualizar DataFrame com dados extraídos
             for col in expected_columns:
@@ -277,14 +289,31 @@ def _process_rows(
 
             df.at[idx, status_col] = 'processed'
 
+            # Registrar se houve retries (mesmo em caso de sucesso)
+            if retry_info.get('retries', 0) > 0:
+                df.at[idx, 'error_details'] = f"Sucesso após {retry_info['retries']} retry(s)"
+
             # Rate limiting: aguardar antes da próxima requisição
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            warnings.warn(f"Falha ao processar linha {idx}. {error_msg}")
+
+            # Determinar se foi erro recuperável ou não para mensagem correta
+            if is_recoverable_error(e):
+                # Erro recuperável que esgotou tentativas
+                error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
+            else:
+                # Erro não-recuperável (não fez retry)
+                error_details = f"[Erro não-recuperável] {error_msg}"
+
+            # Exibir mensagem amigável para o usuário
+            friendly_msg = get_friendly_error_message(e, config.provider)
+            print(f"\n{friendly_msg}\n")
+
+            warnings.warn(f"Falha ao processar linha {idx}.")
             df.at[idx, status_col] = 'error'
-            df.at[idx, 'error_details'] = error_msg
+            df.at[idx, 'error_details'] = error_details
 
     return token_stats

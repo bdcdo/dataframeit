@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, Any
-from .utils import check_dependency, parse_json, retry_with_backoff
+from .utils import check_dependency, parse_json
+from .errors import retry_with_backoff
 
 def _extract_response_text(response: Any) -> str:
     """Extrai texto útil do objeto de resposta da API Responses."""
