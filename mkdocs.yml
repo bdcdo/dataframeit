@@ -1,38 +1,51 @@
 site_name: DataFrameIt
 site_description: Enriqueça DataFrames com LLMs de forma simples e estruturada
-site_url: https://bdcdo.github.io/dataframeit
+site_url: https://brunodcdo.com.br/dataframeit
 repo_url: https://github.com/bdcdo/dataframeit
 repo_name: bdcdo/dataframeit
 
 theme:
   name: material
   language: pt-BR
+  custom_dir: docs/overrides
   palette:
-    - scheme: default
-      primary: indigo
-      accent: indigo
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
       toggle:
-        icon: material/brightness-7
+        icon: material/weather-night
         name: Modo escuro
-    - scheme: slate
-      primary: indigo
-      accent: indigo
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
       toggle:
-        icon: material/brightness-4
+        icon: material/weather-sunny
         name: Modo claro
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
     - navigation.instant
+    - navigation.instant.prefetch
     - navigation.tracking
     - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
-    - navigation.expand
     - navigation.top
+    - navigation.footer
     - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
     - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+    - announce.dismiss
   icon:
     repo: fontawesome/brands/github
+    logo: material/database-sync
 
 plugins:
   - search:
@@ -78,10 +91,14 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - admonition
   - pymdownx.details
   - attr_list
   - md_in_html
+  - def_list
   - tables
   - toc:
       permalink: true
@@ -110,3 +127,10 @@ extra:
       link: https://github.com/bdcdo/dataframeit
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/dataframeit/
+  generator: false
+  analytics:
+    provider: google
+    property: !ENV GOOGLE_ANALYTICS_KEY
+
+extra_css:
+  - stylesheets/extra.css

@@ -154,6 +154,6 @@ Se o texto for ambíguo, classifique como neutro com confiança baixa.
 # Se erros persistem, tente um modelo mais capaz
 resultado = dataframeit(
     df, Model, PROMPT,
-    model='gemini-1.5-pro'  # Mais capaz que flash
+    model='gemini-2.5-pro'  # Mais capaz que flash
 )
 ```

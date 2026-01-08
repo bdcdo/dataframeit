@@ -4,11 +4,11 @@ Configure diferentes provedores de LLM via LangChain.
 
 ## Providers Suportados
 
-| Provider | Identificador | Modelos Populares |
-|----------|---------------|-------------------|
-| Google | `google_genai` | gemini-2.0-flash, gemini-1.5-pro |
-| OpenAI | `openai` | gpt-4o, gpt-4o-mini, o1, o3-mini |
-| Anthropic | `anthropic` | claude-3-5-sonnet, claude-3-opus |
+| Provider | Identificador | Modelos Atuais (2025/2026) |
+|----------|---------------|----------------------|
+| Google | `google_genai` | gemini-3.0-flash, gemini-2.5-flash, gemini-2.5-pro |
+| OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
+| Anthropic | `anthropic` | claude-sonnet-4.5, claude-opus-4.5, claude-haiku-4.5 |
 | Cohere | `cohere` | command-r, command-r-plus |
 | Mistral | `mistral` | mistral-large, mistral-small |
 
@@ -27,14 +27,14 @@ resultado = dataframeit(df, Model, PROMPT)
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='google_genai',
-    model='gemini-2.0-flash'
+    model='gemini-3.0-flash'
 )
 
 # Com parâmetros extras
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='google_genai',
-    model='gemini-1.5-pro',
+    model='gemini-2.5-pro',
     model_kwargs={
         'temperature': 0.2,
         'top_p': 0.9
@@ -46,9 +46,9 @@ resultado = dataframeit(
 
 | Modelo | Uso | Custo |
 |--------|-----|-------|
-| `gemini-2.0-flash` | Uso geral, rápido | Baixo |
-| `gemini-1.5-flash` | Uso geral, estável | Baixo |
-| `gemini-1.5-pro` | Tarefas complexas | Médio |
+| `gemini-3.0-flash` | Uso geral, mais recente | Baixo |
+| `gemini-2.5-flash` | Uso geral, rápido | Baixo |
+| `gemini-2.5-pro` | Tarefas complexas, reasoning | Médio |
 
 ## OpenAI
 
@@ -61,16 +61,16 @@ export OPENAI_API_KEY="sua-chave"
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='gpt-4o-mini'
+    model='gpt-5.2-mini'
 )
 
-# Com reasoning (modelos o1, o3)
+# Com modelo mais avançado
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='o3-mini',
+    model='gpt-5.2',
     model_kwargs={
-        'reasoning_effort': 'medium'  # 'low', 'medium', 'high'
+        'temperature': 0.2
     }
 )
 ```
@@ -79,9 +79,9 @@ resultado = dataframeit(
 
 | Modelo | Uso | Custo |
 |--------|-----|-------|
-| `gpt-4o-mini` | Uso geral, econômico | Baixo |
-| `gpt-4o` | Alta qualidade | Alto |
-| `o3-mini` | Reasoning, problemas complexos | Médio |
+| `gpt-5.2-mini` | Uso geral, econômico | Baixo |
+| `gpt-5.2` | Máxima qualidade | Alto |
+| `gpt-4.1` | Coding, instruções precisas | Médio |
 
 ## Anthropic Claude
 
@@ -94,14 +94,14 @@ export ANTHROPIC_API_KEY="sua-chave"
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='anthropic',
-    model='claude-3-5-sonnet-20241022'
+    model='claude-sonnet-4.5'
 )
 
 # Com max_tokens
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='anthropic',
-    model='claude-3-5-sonnet-20241022',
+    model='claude-opus-4.5',
     model_kwargs={
         'max_tokens': 4096
     }
@@ -112,9 +112,9 @@ resultado = dataframeit(
 
 | Modelo | Uso | Custo |
 |--------|-----|-------|
-| `claude-3-5-sonnet-20241022` | Uso geral, excelente qualidade | Médio |
-| `claude-3-opus-20240229` | Máxima qualidade | Alto |
-| `claude-3-haiku-20240307` | Rápido, econômico | Baixo |
+| `claude-sonnet-4.5` | Uso geral, excelente qualidade | Médio |
+| `claude-opus-4.5` | Máxima qualidade, agentic | Alto |
+| `claude-haiku-4.5` | Rápido, econômico | Baixo |
 
 ## Cohere
 
@@ -146,16 +146,16 @@ resultado = dataframeit(
 )
 ```
 
-## Comparação de Preços (Aproximado)
+## Comparação de Preços (Aproximado - 2025)
 
 | Provider | Modelo | Input (1M tokens) | Output (1M tokens) |
 |----------|--------|-------------------|-------------------|
-| Google | gemini-2.0-flash | $0.075 | $0.30 |
-| Google | gemini-1.5-pro | $1.25 | $5.00 |
-| OpenAI | gpt-4o-mini | $0.15 | $0.60 |
-| OpenAI | gpt-4o | $2.50 | $10.00 |
-| Anthropic | claude-3-5-sonnet | $3.00 | $15.00 |
-| Anthropic | claude-3-haiku | $0.25 | $1.25 |
+| Google | gemini-3.0-flash | $0.50 | $3.00 |
+| Google | gemini-2.5-pro | $1.25 | $5.00 |
+| OpenAI | gpt-5.2-mini | $0.30 | $1.20 |
+| OpenAI | gpt-5.2 | $5.00 | $15.00 |
+| Anthropic | claude-sonnet-4.5 | $3.00 | $15.00 |
+| Anthropic | claude-haiku-4.5 | $1.00 | $5.00 |
 
 !!! note "Preços mudam"
     Verifique os preços atuais nos sites oficiais dos providers.
@@ -168,7 +168,7 @@ Se preferir não usar variáveis de ambiente:
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='gpt-4o-mini',
+    model='gpt-5.2-mini',
     api_key='sk-...'  # Sua chave diretamente
 )
 ```
@@ -183,4 +183,3 @@ resultado = dataframeit(
 | `temperature` | Criatividade (0-1) | Todos |
 | `top_p` | Nucleus sampling | Todos |
 | `max_tokens` | Limite de saída | Todos |
-| `reasoning_effort` | Esforço de reasoning | OpenAI (o1, o3) |
