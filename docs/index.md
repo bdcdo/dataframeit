@@ -1,91 +1,140 @@
+<div class="hero" markdown>
+
 # DataFrameIt
 
-**Enriqueça DataFrames com LLMs de forma simples e estruturada.**
+<p class="tagline">Enriqueça DataFrames com LLMs de forma simples e estruturada</p>
 
-DataFrameIt é uma biblioteca Python que permite processar textos em DataFrames e extrair informações estruturadas usando Modelos de Linguagem (LLMs). Defina o que você quer extrair com Pydantic, e a biblioteca cuida do resto.
+<div class="badges">
+  <a href="https://pypi.org/project/dataframeit/"><img src="https://badge.fury.io/py/dataframeit.svg" alt="PyPI version"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</div>
 
-## Por que usar?
+<div class="cta-buttons">
+  <a href="getting-started/quickstart/" class="cta-button primary">
+    :material-rocket-launch: Começar Agora
+  </a>
+  <a href="reference/llm-reference/" class="cta-button secondary">
+    :material-robot: Referência para LLMs
+  </a>
+</div>
 
-- **Simples**: Uma função, um modelo Pydantic, um prompt. Pronto.
-- **Estruturado**: Saídas validadas automaticamente com Pydantic
-- **Resiliente**: Retry automático, rate limiting, processamento paralelo
-- **Flexível**: Suporta Gemini, OpenAI, Anthropic, Cohere, Mistral e mais
+</div>
 
-## Instalação Rápida
+## O que é?
 
-```bash
-pip install dataframeit[google]  # Para usar Google Gemini (recomendado)
-```
-
-## Exemplo em 30 Segundos
+DataFrameIt processa textos em DataFrames usando **Modelos de Linguagem (LLMs)** e extrai informações estruturadas definidas por **modelos Pydantic**. Uma função, um modelo, um prompt — pronto.
 
 ```python
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Literal
 import pandas as pd
 from dataframeit import dataframeit
 
-# 1. Defina o que você quer extrair
 class Sentimento(BaseModel):
     sentimento: Literal['positivo', 'negativo', 'neutro']
     confianca: Literal['alta', 'media', 'baixa']
 
-# 2. Seus dados
-df = pd.DataFrame({
-    'texto': [
-        'Produto excelente! Superou expectativas.',
-        'Péssimo atendimento, nunca mais compro.',
-        'Entrega ok, produto mediano.'
-    ]
-})
-
-# 3. Processe!
+df = pd.DataFrame({'texto': ['Produto excelente!', 'Péssimo serviço.']})
 resultado = dataframeit(df, Sentimento, "Analise o sentimento do texto.")
-print(resultado)
 ```
 
-**Saída:**
+## Funcionalidades
 
-| texto | sentimento | confianca |
-|-------|------------|-----------|
-| Produto excelente! Superou expectativas. | positivo | alta |
-| Péssimo atendimento, nunca mais compro. | negativo | alta |
-| Entrega ok, produto mediano. | neutro | media |
+<div class="feature-grid" markdown>
+
+<div class="feature-card" markdown>
+<div class="icon">:material-cloud-sync:</div>
+
+### Múltiplos Providers
+
+Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — todos via LangChain.
+</div>
+
+<div class="feature-card" markdown>
+<div class="icon">:material-check-decagram:</div>
+
+### Saída Estruturada
+
+Validação automática com Pydantic. Defina campos, tipos e descrições — o LLM respeita.
+</div>
+
+<div class="feature-card" markdown>
+<div class="icon">:material-shield-refresh:</div>
+
+### Resiliência
+
+Retry automático com backoff exponencial. Rate limiting configurável. Nunca perde progresso.
+</div>
+
+<div class="feature-card" markdown>
+<div class="icon">:material-rocket-launch:</div>
+
+### Performance
+
+Processamento paralelo com auto-ajuste. Métricas de throughput em tempo real.
+</div>
+
+<div class="feature-card" markdown>
+<div class="icon">:material-web:</div>
+
+### Busca Web
+
+Integração com Tavily para enriquecer dados com informações da internet.
+</div>
+
+<div class="feature-card" markdown>
+<div class="icon">:material-format-list-bulleted-type:</div>
+
+### Múltiplas Entradas
+
+DataFrame, Series, lista, dicionário — tudo funciona. Polars incluído.
+</div>
+
+</div>
+
+## Instalação Rápida
+
+```bash
+pip install dataframeit[google]  # Google Gemini 3 (recomendado)
+pip install dataframeit[openai]  # OpenAI GPT-5
+pip install dataframeit[anthropic]  # Anthropic Claude 4.5
+```
 
 ## Próximos Passos
 
-<div class="grid cards" markdown>
+<div class="nav-grid" markdown>
 
--   :material-download:{ .lg .middle } **Instalação**
+<a href="getting-started/installation/" class="nav-card">
+  <div class="nav-icon">:material-download:</div>
+  <div class="nav-content">
+    <h4>Instalação</h4>
+    <p>Configure com seu provider preferido</p>
+  </div>
+</a>
 
-    ---
+<a href="getting-started/quickstart/" class="nav-card">
+  <div class="nav-icon">:material-rocket-launch:</div>
+  <div class="nav-content">
+    <h4>Início Rápido</h4>
+    <p>Primeiro projeto em 5 minutos</p>
+  </div>
+</a>
 
-    Configure a biblioteca com seu provider preferido
+<a href="guides/basic-usage/" class="nav-card">
+  <div class="nav-icon">:material-book-open-variant:</div>
+  <div class="nav-content">
+    <h4>Guias</h4>
+    <p>Paralelismo, retry, busca web</p>
+  </div>
+</a>
 
-    [:octicons-arrow-right-24: Guia de instalação](getting-started/installation.md)
-
--   :material-rocket-launch:{ .lg .middle } **Início Rápido**
-
-    ---
-
-    Crie seu primeiro projeto em 5 minutos
-
-    [:octicons-arrow-right-24: Quickstart](getting-started/quickstart.md)
-
--   :material-book-open-variant:{ .lg .middle } **Guias**
-
-    ---
-
-    Aprenda recursos avançados como paralelismo e retry
-
-    [:octicons-arrow-right-24: Ver guias](guides/basic-usage.md)
-
--   :material-robot:{ .lg .middle } **Referência para LLMs**
-
-    ---
-
-    Documentação compacta otimizada para assistentes de código
-
-    [:octicons-arrow-right-24: LLM Reference](reference/llm-reference.md)
+<a href="reference/llm-reference/" class="nav-card">
+  <div class="nav-icon">:material-robot:</div>
+  <div class="nav-content">
+    <h4>Referência para LLMs</h4>
+    <p>Documentação compacta para assistentes de código</p>
+  </div>
+</a>
 
 </div>
