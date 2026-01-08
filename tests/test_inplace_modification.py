@@ -67,8 +67,8 @@ def test_inplace_modification():
             df_teste,
             TestModel,
             TEMPLATE,
-            model='gpt-3.5-turbo',  # Modelo mais rápido para teste
-            use_openai=True
+            model='gpt-4o-mini',  # Modelo rápido para teste
+            provider='openai'  # Usa OpenAI via LangChain
         )
     except KeyboardInterrupt:
         print("\n⚠️  Processamento interrompido!")
@@ -97,8 +97,8 @@ def test_inplace_modification():
             TestModel,
             TEMPLATE,
             # resume=True é o padrão, não precisa especificar
-            model='gpt-3.5-turbo',
-            use_openai=True
+            model='gpt-4o-mini',
+            provider='openai'
         )
         
         print("\n✅ Processamento concluído!")
@@ -141,10 +141,10 @@ def test_no_warnings():
             # Processar o slice
             df_resultado = dataframeit(
                 df_slice,
-                TestModel, 
+                TestModel,
                 TEMPLATE,
-                model='gpt-3.5-turbo',
-                use_openai=True,
+                model='gpt-4o-mini',
+                provider='openai',
                 max_retries=1  # Reduzir tentativas para teste rápido
             )
             

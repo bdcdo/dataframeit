@@ -13,12 +13,6 @@ Este diretório contém exemplos práticos de uso do DataFrameIt, organizados po
 - Processamento de dados sintéticos
 - **Ideal para começar!**
 
-#### 🤖 [example_02_openai.py](example_02_openai.py) - Usando OpenAI
-**Conceitos**: Provider OpenAI, configurações específicas
-- Configuração do cliente OpenAI
-- Parâmetros `reasoning_effort` e `verbosity`
-- Comparação com LangChain
-
 #### ⚠️ [example_03_error_handling.py](example_03_error_handling.py) - Tratamento de Erros
 **Conceitos**: Resiliência, retry, error tracking
 - Verificação de status de processamento
@@ -60,11 +54,12 @@ Este diretório contém exemplos práticos de uso do DataFrameIt, organizados po
 # Instalar DataFrameIt
 pip install dataframeit
 
-# Para exemplos com OpenAI
-pip install openai
-
-# Para exemplo com LangChain/Gemini
+# Para LangChain/Gemini (provider padrão)
 pip install langchain langchain-core langchain-google-genai
+
+# Para outros providers
+pip install langchain-openai     # OpenAI
+pip install langchain-anthropic  # Anthropic
 
 # Para exemplo com Polars
 pip install polars
@@ -90,12 +85,11 @@ python3 example_01_basic.py
 ## Ordem Sugerida de Aprendizado
 
 1. **example_01_basic.py** - Entenda os fundamentos
-2. **example_02_openai.py** - Aprenda sobre diferentes providers
-3. **example_03_error_handling.py** - Domine o tratamento de erros
-4. **example_04_resume.py** - Aprenda a trabalhar com datasets grandes
-5. **example_05_custom_placeholder.py** - Personalize seus templates
-6. **example_06_advanced_legal.py** - Veja um caso real complexo
-7. **example_07_polars.py** - Use com Polars se preferir
+2. **example_03_error_handling.py** - Domine o tratamento de erros
+3. **example_04_resume.py** - Aprenda a trabalhar com datasets grandes
+4. **example_05_custom_placeholder.py** - Personalize seus templates
+5. **example_06_advanced_legal.py** - Veja um caso real complexo
+6. **example_07_polars.py** - Use com Polars se preferir
 
 ## Dados de Exemplo
 

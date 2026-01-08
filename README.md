@@ -4,14 +4,14 @@ Uma biblioteca Python para enriquecer DataFrames com análises de texto usando M
 
 ## Descrição
 
-DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFrame e extrair informações estruturadas usando LLMs. A biblioteca suporta tanto **LangChain** quanto **OpenAI** como provedores de modelos. Pandas é utilizado para manipulação de dados, com suporte para Polars via conversão interna.
+DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFrame e extrair informações estruturadas usando LLMs. A biblioteca usa **LangChain** para suportar múltiplos provedores de modelos (Gemini, OpenAI, Anthropic, etc.). Pandas é utilizado para manipulação de dados, com suporte para Polars via conversão interna.
 
 ## Funcionalidades
 
 - Processar cada linha de um DataFrame que contenha textos
 - Utilizar prompt templates para análise específica de domínio
 - Extrair informações estruturadas usando modelos Pydantic
-- **Suporte híbrido**: LangChain (Gemini, etc.) ou OpenAI (GPT-4, etc.)
+- **Múltiplos providers**: Gemini, OpenAI, Anthropic, Cohere, Mistral, etc. via LangChain
 - **Múltiplos tipos de dados**: DataFrames, Series, listas e dicionários
 - Suporte para Polars e Pandas
 - Processamento incremental com resumo automático
@@ -27,12 +27,7 @@ DataFrameIt é uma ferramenta que permite processar textos contidos em um DataFr
 pip install dataframeit
 ```
 
-### Para usar OpenAI
-```bash
-pip install dataframeit openai
-```
-
-### Para usar LangChain
+### Instalando providers LangChain
 ```bash
 # Dependências base do LangChain
 pip install dataframeit langchain langchain-core
@@ -42,7 +37,9 @@ pip install langchain-google-genai
 
 # Para outros providers (exemplos)
 pip install langchain-anthropic  # Claude
-pip install langchain-openai     # GPT via LangChain
+pip install langchain-openai     # GPT-4, GPT-4o
+pip install langchain-mistralai  # Mistral
+pip install langchain-cohere     # Cohere
 ```
 
 ### Para usar Polars
@@ -78,25 +75,18 @@ df_resultado = dataframeit(df, SuaClasse, TEMPLATE)
 df_resultado.to_excel('resultado.xlsx', index=False)
 ```
 
-### Com OpenAI
+### Com OpenAI (via LangChain)
 
 ```python
-from openai import OpenAI
 from dataframeit import dataframeit
 
-# Configure seu cliente OpenAI (opcional)
-client = OpenAI(api_key="sua-chave-aqui")
-
-# Processe usando OpenAI
+# Processe usando OpenAI via LangChain
 df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    use_openai=True,                    # Ativa o provider OpenAI
-    model='gpt-4o-mini',                # Modelo OpenAI
-    openai_client=client,               # Cliente customizado (opcional)
-    reasoning_effort='minimal',         # 'minimal', 'low', 'medium', 'high'
-    verbosity='low'                     # 'low', 'medium', 'high'
+    provider='openai',      # Usa OpenAI via LangChain
+    model='gpt-4o-mini'     # Modelo OpenAI
 )
 ```
 
@@ -224,17 +214,10 @@ Extraia as informações solicitadas do documento acima.
 ### Parâmetros de Monitoramento
 - **`track_tokens=False`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
-### Parâmetros LangChain
+### Parâmetros do Modelo
 - **`model='gemini-2.5-flash'`**: Modelo a ser usado
-- **`provider='google_genai'`**: Provider do LangChain ('google_genai', 'anthropic', 'openai', etc.)
+- **`provider='google_genai'`**: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc.)
 - **`api_key=None`**: Chave API específica (opcional, usa variáveis de ambiente se None)
-
-### Parâmetros OpenAI
-- **`use_openai=False`**: Ativa o uso da OpenAI em vez de LangChain
-- **`openai_client=None`**: Cliente OpenAI customizado (usa padrão se None)
-- **`model='gpt-4o-mini'`**: Modelo OpenAI (quando `use_openai=True`)
-- **`reasoning_effort='minimal'`**: Nível de raciocínio ('minimal', 'low', 'medium', 'high')
-- **`verbosity='low'`**: Verbosidade das respostas ('low', 'medium', 'high')
 
 ## Tratamento de Erros
 
@@ -323,7 +306,7 @@ df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    use_openai=True,
+    provider='openai',
     model='gpt-4o-mini',
     rate_limit_delay=0.15
 )
@@ -446,7 +429,6 @@ print(f"Custo estimado: ${custo_total:.4f}")
 ### Compatibilidade
 
 - ✅ **LangChain 1.0+** com `usage_metadata` (Gemini, Claude, GPT via LangChain)
-- ✅ **OpenAI** com `response.usage` (GPT-4, GPT-4o, etc.)
 - ⚠️ Versões anteriores do LangChain não incluem `usage_metadata`
 
 ## Exemplo Completo
