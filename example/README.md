@@ -1,8 +1,8 @@
 # Exemplos do DataFrameIt
 
-Este diretório contém exemplos práticos de uso do DataFrameIt, disponíveis tanto como scripts Python quanto como notebooks Jupyter prontos para rodar no Google Colab.
+Este diretório contém exemplos práticos de uso do DataFrameIt em notebooks Jupyter prontos para rodar no Google Colab.
 
-## Notebooks (Google Colab)
+## Notebooks
 
 Clique nos badges abaixo para abrir os notebooks diretamente no Google Colab:
 
@@ -16,64 +16,6 @@ Clique nos badges abaixo para abrir os notebooks diretamente no Google Colab:
 | [06_polars.ipynb](06_polars.ipynb) | Usando Polars DataFrame | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/06_polars.ipynb) |
 | [07_multiple_data_types.ipynb](07_multiple_data_types.ipynb) | Listas, dicts e Series | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/07_multiple_data_types.ipynb) |
 | [08_rate_limiting.ipynb](08_rate_limiting.ipynb) | Rate limiting e proteção | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/08_rate_limiting.ipynb) |
-
-## Scripts Python
-
-Os mesmos exemplos estão disponíveis como scripts Python para execução local:
-
-### Exemplos Básicos
-
-#### 📝 [example_01_basic.py](example_01_basic.py) - Exemplo Básico
-**Conceitos**: Fundamentos, análise de sentimento
-- Criação de modelo Pydantic simples
-- Template de prompt básico
-- Processamento de dados sintéticos
-- **Ideal para começar!**
-
-#### ⚠️ [example_03_error_handling.py](example_03_error_handling.py) - Tratamento de Erros
-**Conceitos**: Resiliência, retry, error tracking
-- Verificação de status de processamento
-- Análise de erros com `_error_details`
-- Configuração de retry customizado
-- Filtragem de linhas com erro
-
-#### 🔄 [example_04_resume.py](example_04_resume.py) - Processamento Incremental
-**Conceitos**: Resume, datasets grandes, interrupção e retomada
-- Uso de `resume=True`
-- Salvamento de progresso
-- Continuação de processamento interrompido
-
-#### 🔧 [example_05_custom_placeholder.py](example_05_custom_placeholder.py) - Placeholder Customizado
-**Conceitos**: Configuração avançada de template
-- Uso de placeholder customizado (ex: `{meu_texto}` ao invés de `{texto}`)
-- Parâmetro `placeholder`
-
-### Exemplos Avançados
-
-#### ⚖️ [example_06_advanced_legal.py](example_06_advanced_legal.py) - Análise Jurídica Complexa
-**Conceitos**: Modelo complexo, classes aninhadas, domínio específico
-- Modelo Pydantic com classes aninhadas
-- Campos opcionais e condicionais
-- Listas, tuplas e tipos Literal
-- Template detalhado para domínio jurídico
-- **Exemplo de caso real de uso**
-
-#### 🐻 [example_07_polars.py](example_07_polars.py) - Usando Polars
-**Conceitos**: Integração com Polars DataFrame
-- Conversão automática Polars ↔ Pandas
-- Mesmas funcionalidades com Polars
-
-#### 📊 [example_08_multiple_data_types.py](example_08_multiple_data_types.py) - Múltiplos Tipos de Dados
-**Conceitos**: Flexibilidade de entrada
-- Processamento de listas de textos
-- Processamento de dicionários
-- Processamento de Series
-
-#### ⏱️ [example_rate_limiting.py](example_rate_limiting.py) - Rate Limiting
-**Conceitos**: Controle de taxa de requisições
-- Configuração de `rate_limit_delay`
-- Proteção contra rate limits
-- Combinação com retry
 
 ## Como Executar
 
@@ -92,9 +34,8 @@ pip install dataframeit[google]
 # Configurar variável de ambiente
 export GOOGLE_API_KEY="sua-chave-google"
 
-# Executar um exemplo
-cd example/
-python3 example_01_basic.py
+# Abrir Jupyter
+jupyter notebook
 ```
 
 ### Para outros providers
