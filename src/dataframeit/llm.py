@@ -50,31 +50,20 @@ class LLMConfig:
     max_retries: int
     base_delay: float
     max_delay: float
-    placeholder: str
     rate_limit_delay: float
 
 
-def build_prompt(user_prompt: str, text: str, placeholder: str) -> str:
-    """Substitui placeholder pelo texto.
-
-    Format instructions não são mais necessárias pois with_structured_output
-    gerencia o schema automaticamente.
+def build_prompt(user_prompt: str, text: str) -> str:
+    """Substitui {texto} pelo texto a ser analisado.
 
     Args:
-        user_prompt: Template do prompt do usuário.
+        user_prompt: Template do prompt (já com {texto} incluído).
         text: Texto a ser processado.
-        placeholder: Nome do placeholder no template.
 
     Returns:
         Prompt formatado pronto para envio ao LLM.
     """
-    placeholder_tag = f"{{{placeholder}}}"
-
-    # Se o placeholder não estiver no template, adiciona automaticamente ao final
-    if placeholder_tag not in user_prompt:
-        user_prompt = user_prompt.rstrip() + f"\n\nTexto a analisar:\n{placeholder_tag}"
-
-    return user_prompt.replace(placeholder_tag, text)
+    return user_prompt.replace('{texto}', text)
 
 
 def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
@@ -99,7 +88,7 @@ def call_openai(text: str, pydantic_model, user_prompt: str, config: LLMConfig) 
         client = config.openai_client
 
     def _call():
-        prompt = build_prompt(user_prompt, text, config.placeholder)
+        prompt = build_prompt(user_prompt, text)
 
         request_kwargs = {
             "model": config.model,
@@ -155,7 +144,7 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     structured_llm = llm.with_structured_output(pydantic_model, include_raw=True)
 
     def _call():
-        prompt = build_prompt(user_prompt, text, config.placeholder)
+        prompt = build_prompt(user_prompt, text)
         result = structured_llm.invoke(prompt)
 
         # Verificar erros de parsing

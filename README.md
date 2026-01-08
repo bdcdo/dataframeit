@@ -65,19 +65,10 @@ class SuaClasse(BaseModel):
     campo2: Literal['opcao1', 'opcao2'] = Field(..., description="Descrição do campo 2")
 
 # Defina seu template de prompt
-# IMPORTANTE: Use {documento} como placeholder (ou customize com o parâmetro 'placeholder')
-TEMPLATE = """
-Instruções para o modelo de linguagem...
+TEMPLATE = "Classifique o texto conforme as categorias definidas."
 
-Texto a ser analisado:
-{documento}
-"""
-
-# Carregue seus dados
+# Carregue seus dados (a coluna de texto deve se chamar 'texto' por padrão)
 df = pd.read_excel('seu_arquivo.xlsx')
-
-# IMPORTANTE: Sua coluna de texto deve se chamar 'texto' por padrão
-# ou use text_column='nome_da_coluna' para especificar outra coluna
 
 # Processe os dados (usa LangChain por padrão)
 df_resultado = dataframeit(df, SuaClasse, TEMPLATE)
@@ -110,51 +101,27 @@ df_resultado = dataframeit(
 
 ## Como Funciona o Template
 
-O template define as instruções para o LLM analisar cada texto. Use `{documento}` (ou um placeholder customizado) para indicar onde o texto será inserido.
+O template define as instruções para o LLM analisar cada texto. Basta escrever suas instruções:
 
-### Placeholder do Texto
+```python
+TEMPLATE = "Classifique o sentimento do texto."
+```
 
-Por padrão, use `{documento}` para indicar onde o texto de cada linha será inserido:
+O texto de cada linha do DataFrame será adicionado automaticamente ao final do prompt.
+
+### Controlando a Posição do Texto (Opcional)
+
+Se preferir controlar onde o texto aparece no prompt, use `{texto}`:
 
 ```python
 TEMPLATE = """
 Você é um analista especializado.
-Analise o documento a seguir e extraia as informações solicitadas.
 
 Documento:
-{documento}
+{texto}
+
+Extraia as informações solicitadas do documento acima.
 """
-```
-
-**Nota:** Se você não incluir o placeholder no template, ele será adicionado automaticamente ao final. Isso permite templates simples como:
-
-```python
-# Template simples - o placeholder será adicionado automaticamente
-TEMPLATE = "Classifique o sentimento do texto a seguir."
-
-# Equivale a:
-# "Classifique o sentimento do texto a seguir.
-#
-# Texto a analisar:
-# {documento}"
-```
-
-### Customizando o Placeholder
-
-Se preferir usar outro nome de placeholder:
-
-```python
-TEMPLATE = """
-Analise o seguinte review:
-{review}
-"""
-
-df_resultado = dataframeit(
-    df,
-    SuaClasse,
-    TEMPLATE,
-    placeholder='review'  # Customiza o placeholder
-)
 ```
 
 ## Parâmetros
@@ -162,13 +129,12 @@ df_resultado = dataframeit(
 ### Parâmetros Gerais
 - **`df`**: DataFrame pandas ou polars contendo os textos
 - **`questions`**: Modelo Pydantic definindo a estrutura dos dados a extrair
-- **`prompt`**: Template do prompt com placeholder para o texto
+- **`prompt`**: Template do prompt (use `{texto}` para controlar onde o texto aparece)
 - **`text_column='texto'`**: Nome da coluna que contém os textos a serem analisados
 
 ### Parâmetros de Processamento
 - **`resume=True`**: Continua processamento de onde parou (útil para grandes datasets)
 - **`status_column=None`**: Nome customizado para coluna de status (padrão: `_dataframeit_status`)
-- **`placeholder='documento'`**: Nome do placeholder no template que será substituído pelo texto
 
 ### Parâmetros de Resiliência
 - **`max_retries=3`**: Número máximo de tentativas em caso de erro

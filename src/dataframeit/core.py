@@ -18,7 +18,6 @@ def dataframeit(
     provider='google_genai',
     status_column=None,
     text_column: str = 'texto',
-    placeholder: str = 'documento',
     use_openai=False,
     openai_client=None,
     reasoning_effort='minimal',
@@ -35,14 +34,13 @@ def dataframeit(
     Args:
         df: DataFrame pandas ou polars contendo textos.
         questions: Modelo Pydantic definindo estrutura a extrair.
-        prompt: Template do prompt com placeholder para texto.
+        prompt: Template do prompt (use {texto} para indicar onde inserir o texto).
         perguntas: (Deprecated) Use 'questions'.
         resume: Se True, continua de onde parou.
         model: Nome do modelo LLM.
         provider: Provider do LangChain ('google_genai', etc).
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos.
-        placeholder: Nome do placeholder no prompt.
         use_openai: Se True, usa OpenAI em vez de LangChain.
         openai_client: Cliente OpenAI customizado.
         reasoning_effort: Esforço de raciocínio OpenAI.
@@ -70,10 +68,9 @@ def dataframeit(
     if prompt is None:
         raise ValueError("Parâmetro 'prompt' é obrigatório")
 
-    # Se o placeholder não estiver no template, adiciona automaticamente ao final
-    placeholder_tag = f"{{{placeholder}}}"
-    if placeholder_tag not in prompt:
-        prompt = prompt.rstrip() + f"\n\nTexto a analisar:\n{placeholder_tag}"
+    # Se {texto} não estiver no template, adiciona automaticamente ao final
+    if '{texto}' not in prompt:
+        prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
 
     # Converter para pandas se necessário
     df_pandas, was_polars = to_pandas(df)
@@ -116,7 +113,6 @@ def dataframeit(
         max_retries=max_retries,
         base_delay=base_delay,
         max_delay=max_delay,
-        placeholder=placeholder,
         rate_limit_delay=rate_limit_delay,
     )
 
