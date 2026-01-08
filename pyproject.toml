@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dataframeit"
-version = "0.5.0"
+version = "0.5.1"
 description = "Enriqueça DataFrames com análises de texto usando LLMs. Extraia informações estruturadas de textos com Pydantic."
 readme = "README.md"
 license = "MIT"
@@ -63,10 +63,14 @@ anthropic = [
 polars = [
     "polars>=0.20",
 ]
+search = [
+    "langchain-tavily>=0.1.0",
+]
 all = [
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
+    "langchain-tavily>=0.1.0",
     "polars>=0.20",
 ]
 dev = [

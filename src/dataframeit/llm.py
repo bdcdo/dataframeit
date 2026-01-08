@@ -5,6 +5,16 @@ from .errors import retry_with_backoff
 
 
 @dataclass
+class SearchConfig:
+    """Configuração para busca web via Tavily."""
+    enabled: bool = False
+    per_field: bool = False  # Um agente por campo
+    max_results: int = 5
+    max_searches: int = 3
+    search_depth: str = "basic"  # "basic" ou "advanced"
+
+
+@dataclass
 class LLMConfig:
     """Configuração para chamadas de LLM."""
     model: str
@@ -15,6 +25,7 @@ class LLMConfig:
     max_delay: float
     rate_limit_delay: float
     model_kwargs: Dict[str, Any] = field(default_factory=dict)
+    search_config: Optional[SearchConfig] = None
 
 
 def build_prompt(user_prompt: str, text: str) -> str:

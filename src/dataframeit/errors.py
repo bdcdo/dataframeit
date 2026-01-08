@@ -36,6 +36,8 @@ RECOVERABLE_ERRORS = (
     'ConnectionError',
     'ConnectionReset',
     'SSLError',
+    # Tavily - rate limit/quota
+    'UsageLimitExceededError',
 )
 
 # Erros não-recuperáveis (não adianta tentar novamente)
@@ -48,6 +50,10 @@ NON_RECOVERABLE_ERRORS = (
     '401',
     '403',
     '404',
+    # Tavily - erros de autenticação e argumentos
+    'MissingAPIKeyError',
+    'InvalidAPIKeyError',
+    'BadRequestError',
 )
 
 
@@ -149,6 +155,51 @@ def validate_provider_dependencies(provider: str):
             importlib.import_module(package)
         except ImportError:
             raise ImportError(_get_missing_package_message(package, install, name))
+
+
+def validate_search_dependencies():
+    """Valida se as dependências do Tavily estão instaladas e API key configurada.
+
+    Raises:
+        ImportError: Com mensagem amigável se langchain-tavily não estiver instalado.
+        ValueError: Com mensagem amigável se TAVILY_API_KEY não estiver configurada.
+    """
+    import os
+
+    # Validar langchain-tavily
+    try:
+        importlib.import_module('langchain_tavily')
+    except ImportError:
+        raise ImportError(_get_missing_package_message(
+            'langchain_tavily',
+            'langchain-tavily',
+            'Tavily Search'
+        ))
+
+    # Validar API key
+    if not os.environ.get('TAVILY_API_KEY'):
+        raise ValueError("""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  CHAVE DE API DO TAVILY NÃO CONFIGURADA                                      ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Para usar busca web, você precisa de uma chave de API do Tavily.            ║
+║                                                                              ║
+║  COMO OBTER:                                                                 ║
+║  1. Acesse https://app.tavily.com                                            ║
+║  2. Crie uma conta (gratuita - 1000 buscas/mês)                              ║
+║  3. Copie sua API key                                                        ║
+║                                                                              ║
+║  COMO CONFIGURAR:                                                            ║
+║                                                                              ║
+║  No Linux/Mac:                                                               ║
+║      export TAVILY_API_KEY="sua-chave-aqui"                                  ║
+║                                                                              ║
+║  No Windows (PowerShell):                                                    ║
+║      $env:TAVILY_API_KEY="sua-chave-aqui"                                    ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip())
 
 
 def get_friendly_error_message(error: Exception, provider: str = None) -> str:
@@ -282,6 +333,40 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 ║  1. Verifique sua conexão com a internet                                     ║
 ║  2. Tente acessar google.com no navegador                                    ║
 ║  3. Se estiver em rede corporativa, consulte o suporte de TI                 ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERROS TAVILY ===
+    if 'tavily' in error_str and any(p in error_str for p in ['apikey', 'api_key', 'missing', 'invalid']):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE AUTENTICAÇÃO TAVILY                                                 ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Sua chave de API do Tavily está inválida ou não configurada.                ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Acesse https://app.tavily.com e obtenha sua API key                      ║
+║  2. Configure a variável de ambiente:                                        ║
+║                                                                              ║
+║     export TAVILY_API_KEY="sua-chave-aqui"                                   ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    if 'usagelimitexceeded' in error_str or ('tavily' in error_str and 'limit' in error_str):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você atingiu o limite de buscas do seu plano Tavily.                        ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Aguarde até o próximo mês (plano gratuito renova mensalmente)            ║
+║  2. Ou faça upgrade do plano em https://tavily.com/pricing                   ║
+║  3. Ou continue sem busca web (use_search=False)                             ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
