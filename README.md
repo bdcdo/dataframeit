@@ -225,7 +225,7 @@ Extraia as informações solicitadas do documento acima.
 ### Parâmetros de Paralelismo
 - **`parallel_requests=1`**: Número de requisições paralelas (1 = sequencial)
   - Ao detectar erro 429 (rate limit), reduz automaticamente pela metade
-  - Use `track_tokens=True` para ver métricas de throughput (RPM, TPM)
+  - Métricas de throughput (RPM, TPM) são exibidas automaticamente
 
 ### Parâmetros de Monitoramento
 - **`track_tokens=True`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
@@ -394,14 +394,13 @@ df_resultado = dataframeit(
     df,
     SuaClasse,
     TEMPLATE,
-    parallel_requests=5,     # Número de workers paralelos
-    track_tokens=True        # Recomendado: ver métricas de throughput
+    parallel_requests=5     # Número de workers paralelos
 )
 ```
 
 ### Métricas de Throughput
 
-Quando `track_tokens=True` é usado com processamento paralelo, o DataFrameIt exibe métricas detalhadas:
+O DataFrameIt exibe automaticamente métricas detalhadas ao final do processamento:
 
 ```
 ============================================================
@@ -466,7 +465,7 @@ df_resultado = dataframeit(
 |---------|-------------------------|
 | Dataset pequeno (< 50 linhas) | `parallel_requests=1` (padrão) |
 | Dataset médio (50-500 linhas) | `parallel_requests=3` a `5` |
-| Dataset grande (> 500 linhas) | `parallel_requests=5` a `10` + `track_tokens=True` |
+| Dataset grande (> 500 linhas) | `parallel_requests=5` a `10` |
 | API com limite baixo | `parallel_requests=2` + `rate_limit_delay=1.0` |
 | Tier pago com limites altos | `parallel_requests=10` ou mais |
 
