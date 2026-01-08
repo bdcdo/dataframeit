@@ -77,7 +77,7 @@ def validate_provider_dependencies(provider: str, use_openai: bool = False):
     """Valida se as dependências do provider estão instaladas ANTES de iniciar.
 
     Args:
-        provider: Nome do provider (google_genai, openai, anthropic).
+        provider: Nome do provider (google_genai, openai, anthropic, etc).
         use_openai: Se True, valida dependências do OpenAI direto.
 
     Raises:
@@ -101,9 +101,9 @@ def validate_provider_dependencies(provider: str, use_openai: bool = False):
     except ImportError:
         raise ImportError(_get_missing_package_message('langchain_core', 'langchain-core', 'LangChain Core'))
 
-    # Validar provider específico
-    provider_data = PROVIDER_INFO.get(provider)
-    if provider_data:
+    # Validar provider específico (inferir dinamicamente)
+    if provider:
+        provider_data = _infer_provider_info(provider)
         package = provider_data['package']
         install = provider_data['install']
         name = provider_data['name']
@@ -176,30 +176,48 @@ NON_RECOVERABLE_ERRORS = (
     '404',
 )
 
-# Mapeamento de provedores para nomes de pacotes e variáveis de ambiente
-PROVIDER_INFO = {
-    'google_genai': {
-        'package': 'langchain_google_genai',
-        'install': 'langchain-google-genai',
-        'env_var': 'GOOGLE_API_KEY',
-        'name': 'Google Gemini',
-        'get_key_url': 'https://aistudio.google.com/app/apikey',
-    },
-    'openai': {
-        'package': 'langchain_openai',
-        'install': 'langchain-openai',
-        'env_var': 'OPENAI_API_KEY',
-        'name': 'OpenAI',
-        'get_key_url': 'https://platform.openai.com/api-keys',
-    },
-    'anthropic': {
-        'package': 'langchain_anthropic',
-        'install': 'langchain-anthropic',
-        'env_var': 'ANTHROPIC_API_KEY',
-        'name': 'Anthropic Claude',
-        'get_key_url': 'https://console.anthropic.com/settings/keys',
-    },
-}
+
+def _infer_provider_info(provider: str) -> dict:
+    """Infere informações do provider dinamicamente.
+
+    Args:
+        provider: Nome do provider (google_genai, openai, anthropic, etc).
+
+    Returns:
+        Dict com package, install, env_var e name inferidos.
+    """
+    if not provider:
+        return {'package': None, 'install': None, 'env_var': 'API_KEY', 'name': 'LLM'}
+
+    # Inferir nome do pacote: provider -> langchain_{provider}
+    package = f"langchain_{provider}"
+    # Inferir nome para pip: langchain_{provider} -> langchain-{provider}
+    install = package.replace('_', '-')
+
+    # Inferir variável de ambiente
+    # google_genai -> GOOGLE_API_KEY, openai -> OPENAI_API_KEY
+    provider_upper = provider.replace('_genai', '').replace('_ai', '').upper()
+    env_var = f"{provider_upper}_API_KEY"
+
+    # Nome amigável
+    name_map = {
+        'google_genai': 'Google Gemini',
+        'openai': 'OpenAI',
+        'anthropic': 'Anthropic Claude',
+        'cohere': 'Cohere',
+        'mistralai': 'Mistral AI',
+        'fireworks': 'Fireworks AI',
+        'together': 'Together AI',
+        'groq': 'Groq',
+    }
+    name = name_map.get(provider, provider.replace('_', ' ').title())
+
+    return {
+        'package': package,
+        'install': install,
+        'env_var': env_var,
+        'name': name,
+    }
 
 
 def get_friendly_error_message(error: Exception, provider: str = None) -> str:
@@ -215,11 +233,10 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
     error_str = f"{type(error).__name__}: {error}".lower()
     error_name = type(error).__name__
 
-    # Obter informações do provider
-    provider_data = PROVIDER_INFO.get(provider, {})
-    provider_name = provider_data.get('name', provider or 'LLM')
-    env_var = provider_data.get('env_var', 'API_KEY')
-    get_key_url = provider_data.get('get_key_url', '')
+    # Obter informações do provider dinamicamente
+    provider_data = _infer_provider_info(provider)
+    provider_name = provider_data['name']
+    env_var = provider_data['env_var']
 
     # === ERROS DE AUTENTICAÇÃO ===
     if any(p in error_str for p in ['authenticationerror', 'invalidapikey', '401', 'api_key', 'api key']):
@@ -232,7 +249,7 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
 ║                                                                              ║
-║  1. Obtenha uma chave de API em: {get_key_url:<43} ║
+║  1. Obtenha uma chave de API no site/console do {provider_name}              ║
 ║                                                                              ║
 ║  2. Configure a chave no terminal (antes de executar seu código):            ║
 ║                                                                              ║
@@ -264,8 +281,8 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 ║  • A chave foi revogada ou expirou                                           ║
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
-║  1. Verifique seu plano em: {get_key_url:<43} ║
-║  2. Tente usar um modelo diferente (ex: gemini-1.5-flash)                    ║
+║  1. Verifique seu plano no site/console do {provider_name}                   ║
+║  2. Tente usar um modelo mais básico                                         ║
 ║  3. Gere uma nova chave de API                                               ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -332,7 +349,7 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
 ║  1. Verifique sua conexão com a internet                                     ║
-║  2. Tente acessar {get_key_url} no navegador                                 ║
+║  2. Tente acessar google.com no navegador                                    ║
 ║  3. Se estiver em rede corporativa, consulte o suporte de TI                 ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
