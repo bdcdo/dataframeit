@@ -241,3 +241,102 @@ def from_pandas(df: pd.DataFrame, was_polars: bool) -> Union[pd.DataFrame, Any]:
     if was_polars and pl is not None:
         return pl.from_pandas(df)
     return df
+
+
+def read_dataframe(
+    path: str,
+    model=None,
+    normalize_all: bool = False,
+    **kwargs
+) -> pd.DataFrame:
+    """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
+
+    Esta função é útil para carregar dados que foram previamente processados
+    pelo dataframeit e salvos em arquivo. Ela converte automaticamente strings
+    JSON de volta para listas, dicionários e outras estruturas Python.
+
+    Args:
+        path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
+        model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
+               correspondem a campos complexos do modelo serão normalizadas.
+               Se não fornecido, usa normalize_all para decidir o comportamento.
+        normalize_all: Se True e model não for fornecido, tenta normalizar
+                       todas as colunas que parecem conter JSON. Padrão: False.
+        **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
+
+    Returns:
+        DataFrame com estruturas Python normalizadas.
+
+    Raises:
+        ValueError: Se o formato do arquivo não for suportado.
+        FileNotFoundError: Se o arquivo não existir.
+
+    Examples:
+        >>> # Com modelo Pydantic (recomendado)
+        >>> df = read_dataframe('resultados.xlsx', MeuModelo)
+        >>> print(df['lista_itens'][0])  # ['item1', 'item2']
+
+        >>> # Sem modelo, normalizando todas as colunas
+        >>> df = read_dataframe('dados.csv', normalize_all=True)
+
+        >>> # Passando argumentos para pandas
+        >>> df = read_dataframe('dados.csv', model=MeuModelo, encoding='utf-8')
+    """
+    import os
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Arquivo não encontrado: {path}")
+
+    # Detectar formato pelo sufixo
+    _, ext = os.path.splitext(path.lower())
+
+    # Carregar DataFrame baseado na extensão
+    if ext in ('.xlsx', '.xls'):
+        df = pd.read_excel(path, **kwargs)
+    elif ext == '.csv':
+        df = pd.read_csv(path, **kwargs)
+    elif ext == '.parquet':
+        df = pd.read_parquet(path, **kwargs)
+    elif ext == '.json':
+        df = pd.read_json(path, **kwargs)
+    else:
+        raise ValueError(
+            f"Formato '{ext}' não suportado. "
+            "Use: .xlsx, .xls, .csv, .parquet ou .json"
+        )
+
+    # Normalizar colunas
+    if model is not None:
+        # Usar modelo Pydantic para identificar colunas complexas
+        complex_fields = get_complex_fields(model)
+        if complex_fields:
+            normalize_complex_columns(df, complex_fields)
+    elif normalize_all:
+        # Tentar normalizar todas as colunas que parecem ter JSON
+        _normalize_all_json_columns(df)
+
+    return df
+
+
+def _normalize_all_json_columns(df: pd.DataFrame) -> None:
+    """Normaliza todas as colunas do DataFrame que parecem conter JSON.
+
+    Modifica o DataFrame in-place.
+
+    Args:
+        df: DataFrame a normalizar.
+    """
+    for col in df.columns:
+        # Pular colunas não-string
+        if df[col].dtype != 'object':
+            continue
+
+        # Verificar se algum valor parece JSON
+        sample = df[col].dropna().head(10)
+        has_json = any(
+            isinstance(v, str) and v.strip().startswith(('[', '{'))
+            for v in sample
+        )
+
+        if has_json:
+            df[col] = df[col].apply(normalize_value)

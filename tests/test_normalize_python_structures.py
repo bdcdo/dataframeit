@@ -9,12 +9,15 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
 import sys
+import tempfile
+import os
 sys.path.insert(0, '/home/user/dataframeit')
 from src.dataframeit.utils import (
     normalize_value,
     normalize_complex_columns,
     get_complex_fields,
     is_complex_type,
+    read_dataframe,
 )
 
 
@@ -364,6 +367,136 @@ def test_integration_complex_model_fields():
 
 
 # =============================================================================
+# TESTES PARA read_dataframe
+# =============================================================================
+
+def test_read_dataframe_csv_with_model():
+    """Testa leitura de CSV com modelo Pydantic."""
+    # Criar arquivo temporário
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        f.write('nome,itens,quantidade\n')
+        f.write('teste1,"[""a"", ""b""]",2\n')
+        f.write('teste2,"[""c"", ""d"", ""e""]",3\n')
+        temp_path = f.name
+
+    try:
+        df = read_dataframe(temp_path, ModelWithList)
+        assert df['itens'].iloc[0] == ['a', 'b']
+        assert df['itens'].iloc[1] == ['c', 'd', 'e']
+        assert df['quantidade'].iloc[0] == 2
+        print("✅ read_dataframe CSV com modelo funciona")
+    finally:
+        os.unlink(temp_path)
+
+
+def test_read_dataframe_csv_normalize_all():
+    """Testa leitura de CSV normalizando todas as colunas."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        f.write('col1,col2,col3\n')
+        f.write('"[1, 2]","texto normal",100\n')
+        f.write('"[3, 4]","outro texto",200\n')
+        temp_path = f.name
+
+    try:
+        df = read_dataframe(temp_path, normalize_all=True)
+        assert df['col1'].iloc[0] == [1, 2]
+        assert df['col2'].iloc[0] == 'texto normal'  # Não alterado
+        assert df['col3'].iloc[0] == 100  # Não alterado
+        print("✅ read_dataframe CSV normalize_all funciona")
+    finally:
+        os.unlink(temp_path)
+
+
+def test_read_dataframe_excel_with_model():
+    """Testa leitura de Excel com modelo Pydantic."""
+    # Criar DataFrame e salvar como Excel
+    df_original = pd.DataFrame({
+        'nome': ['a', 'b'],
+        'dados': ['{"x": 1}', '{"y": 2}'],
+    })
+
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        temp_path = f.name
+
+    try:
+        df_original.to_excel(temp_path, index=False)
+        df = read_dataframe(temp_path, ModelWithDict)
+        assert df['dados'].iloc[0] == {'x': 1}
+        assert df['dados'].iloc[1] == {'y': 2}
+        print("✅ read_dataframe Excel com modelo funciona")
+    finally:
+        os.unlink(temp_path)
+
+
+def test_read_dataframe_file_not_found():
+    """Testa erro quando arquivo não existe."""
+    try:
+        read_dataframe('/caminho/inexistente/arquivo.csv')
+        assert False, "Deveria ter lançado FileNotFoundError"
+    except FileNotFoundError:
+        print("✅ read_dataframe lança FileNotFoundError corretamente")
+
+
+def test_read_dataframe_unsupported_format():
+    """Testa erro com formato não suportado."""
+    with tempfile.NamedTemporaryFile(suffix='.xyz', delete=False) as f:
+        f.write(b'conteudo qualquer')
+        temp_path = f.name
+
+    try:
+        read_dataframe(temp_path)
+        assert False, "Deveria ter lançado ValueError"
+    except ValueError as e:
+        assert '.xyz' in str(e)
+        print("✅ read_dataframe lança ValueError para formato não suportado")
+    finally:
+        os.unlink(temp_path)
+
+
+def test_read_dataframe_without_normalization():
+    """Testa leitura sem normalização (sem modelo e normalize_all=False)."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        f.write('col1,col2\n')
+        f.write('"[1, 2]","texto"\n')
+        temp_path = f.name
+
+    try:
+        df = read_dataframe(temp_path)  # Sem modelo e normalize_all=False
+        # Deve manter como string
+        assert df['col1'].iloc[0] == '[1, 2]'
+        print("✅ read_dataframe sem normalização mantém strings")
+    finally:
+        os.unlink(temp_path)
+
+
+def test_read_dataframe_complex_model():
+    """Testa leitura com modelo complexo (múltiplos campos)."""
+    df_original = pd.DataFrame({
+        'nome': ['paciente1'],
+        'status': ['ativo'],
+        'condicoes_de_saude': ['["diabetes", "hipertensão"]'],
+        'tratamentos': ['[{"nome": "insulina"}]'],
+        'danos_morais': ['["sim", 50000.0]'],
+    })
+
+    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+        temp_path = f.name
+
+    try:
+        df_original.to_csv(temp_path, index=False)
+        df = read_dataframe(temp_path, ComplexModel)
+
+        assert df['condicoes_de_saude'].iloc[0] == ['diabetes', 'hipertensão']
+        assert df['tratamentos'].iloc[0] == [{'nome': 'insulina'}]
+        assert df['danos_morais'].iloc[0] == ['sim', 50000.0]
+        assert df['nome'].iloc[0] == 'paciente1'  # Não alterado
+        assert df['status'].iloc[0] == 'ativo'  # Não alterado
+        print("✅ read_dataframe com modelo complexo funciona")
+    finally:
+        os.unlink(temp_path)
+
+
+# =============================================================================
 # EXECUTAR TESTES
 # =============================================================================
 
@@ -409,6 +542,15 @@ if __name__ == '__main__':
     print("\n--- Testes de Integração ---")
     test_integration_save_load_simulation()
     test_integration_complex_model_fields()
+
+    print("\n--- Testes read_dataframe ---")
+    test_read_dataframe_csv_with_model()
+    test_read_dataframe_csv_normalize_all()
+    test_read_dataframe_excel_with_model()
+    test_read_dataframe_file_not_found()
+    test_read_dataframe_unsupported_format()
+    test_read_dataframe_without_normalization()
+    test_read_dataframe_complex_model()
 
     print("\n" + "=" * 60)
     print("TODOS OS TESTES PASSARAM!")
