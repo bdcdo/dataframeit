@@ -124,10 +124,6 @@ def dataframeit(
     # Determinar coluna de status
     status_col = status_column or '_dataframeit_status'
 
-    # Se reprocessando colunas, limpar status para que resume funcione se travar
-    if reprocess_columns and status_col in df_pandas.columns:
-        df_pandas[status_col] = None
-
     # Determinar onde começar
     start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume, reprocess_columns)
 
@@ -201,12 +197,9 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
 def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool, reprocess_columns=None) -> tuple[int, int]:
     """Retorna (posição inicial, contagem de processados).
 
-    Se reprocess_columns for especificado, processa todas as linhas (start_pos=0).
+    Nota: quando reprocess_columns está definido, start_pos é ignorado em _process_rows
+    pois todas as linhas são processadas (mas só atualiza colunas específicas nas já processadas).
     """
-    # Se está reprocessando colunas específicas, processar todas as linhas
-    if reprocess_columns:
-        return 0, 0
-
     if not resume:
         return 0, 0
 
@@ -287,9 +280,17 @@ def _process_rows(
 
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-        # Pular linhas já processadas (exceto se estiver reprocessando colunas)
-        if not reprocess_columns and (i < start_pos or pd.notna(row[status_col])):
-            continue
+        # Verificar se linha já foi processada
+        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
+
+        # Decidir se deve processar esta linha
+        if reprocess_columns:
+            # Com reprocess_columns: processa todas as linhas
+            pass
+        else:
+            # Sem reprocess_columns: pula linhas já processadas (comportamento normal)
+            if i < start_pos or row_already_processed:
+                continue
 
         text = str(row[text_column])
 
@@ -306,9 +307,17 @@ def _process_rows(
             retry_info = result.get('_retry_info', {})
 
             # Atualizar DataFrame com dados extraídos
+            # Se linha já processada e reprocess_columns definido: só atualiza colunas especificadas
+            # Caso contrário: atualiza todas as colunas do modelo
             for col in expected_columns:
                 if col in extracted:
-                    df.at[idx, col] = extracted[col]
+                    if row_already_processed and reprocess_columns:
+                        # Linha já processada: só atualiza se col está em reprocess_columns
+                        if col in reprocess_columns:
+                            df.at[idx, col] = extracted[col]
+                    else:
+                        # Linha nova: atualiza tudo
+                        df.at[idx, col] = extracted[col]
 
             # Armazenar tokens no DataFrame (se habilitado)
             if track_tokens and usage:

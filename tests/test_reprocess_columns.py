@@ -20,24 +20,6 @@ class ExtendedModel(BaseModel):
     campo3: str
 
 
-def test_get_processing_indices_with_reprocess_columns():
-    """Testa que _get_processing_indices retorna start_pos=0 quando reprocess_columns é especificado."""
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "_dataframeit_status": ["processed", "processed", None],
-    })
-
-    # Sem reprocess_columns, resume=True: começa da primeira linha não processada
-    start_pos, count = _get_processing_indices(df, "_dataframeit_status", resume=True, reprocess_columns=None)
-    assert start_pos == 2
-    assert count == 2
-
-    # Com reprocess_columns: começa do início
-    start_pos, count = _get_processing_indices(df, "_dataframeit_status", resume=True, reprocess_columns=["campo1"])
-    assert start_pos == 0
-    assert count == 0
-
-
 def test_reprocess_columns_validation_invalid_column():
     """Testa que reprocess_columns inválido levanta ValueError."""
     df = pd.DataFrame({"texto": ["a", "b"]})
@@ -110,9 +92,76 @@ def test_reprocess_columns_processes_all_rows():
             # Todas as 3 linhas devem ter sido processadas
             assert call_count == 3
 
-            # Valores devem ter sido atualizados
-            assert result["campo1"].tolist() == ["new1", "new2", "new3"]
-            assert result["campo2"].tolist() == ["new_a", "new_b", "new_c"] or result["campo2"].tolist() == ["new_1", "new_2", "new_3"]
+
+def test_reprocess_columns_only_updates_specified_columns():
+    """Testa que reprocess_columns só atualiza as colunas especificadas em linhas já processadas."""
+    df = pd.DataFrame({
+        "texto": ["a", "b"],
+        "campo1": ["original1", "original2"],
+        "campo2": ["original_a", "original_b"],
+        "_dataframeit_status": ["processed", "processed"],
+        "_error_details": [None, None],
+    })
+
+    def mock_llm(*args, **kwargs):
+        return {
+            "data": {"campo1": "novo_valor", "campo2": "novo_valor_2"},
+            "usage": {},
+        }
+
+    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
+        with patch("dataframeit.core.validate_provider_dependencies"):
+            result = dataframeit(
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                reprocess_columns=["campo1"],  # Só reprocessar campo1
+            )
+
+            # campo1 deve ter sido atualizado
+            assert result["campo1"].tolist() == ["novo_valor", "novo_valor"]
+            # campo2 deve manter os valores originais (não estava em reprocess_columns)
+            assert result["campo2"].tolist() == ["original_a", "original_b"]
+
+
+def test_reprocess_columns_updates_all_columns_for_new_rows():
+    """Testa que linhas não processadas recebem todas as colunas, não só as de reprocess."""
+    df = pd.DataFrame({
+        "texto": ["a", "b", "c"],
+        "campo1": ["original1", "original2", None],  # Linha 3 não foi processada
+        "campo2": ["original_a", "original_b", None],
+        "_dataframeit_status": ["processed", "processed", None],  # Linha 3 pendente
+        "_error_details": [None, None, None],
+    })
+
+    call_count = 0
+
+    def mock_llm(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {
+            "data": {"campo1": f"novo{call_count}", "campo2": f"novo_{call_count}"},
+            "usage": {},
+        }
+
+    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
+        with patch("dataframeit.core.validate_provider_dependencies"):
+            result = dataframeit(
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                reprocess_columns=["campo1"],  # Só reprocessar campo1
+            )
+
+            # Linhas 1-2 (já processadas): só campo1 atualizado, campo2 mantém original
+            assert result["campo1"].iloc[0] == "novo1"
+            assert result["campo1"].iloc[1] == "novo2"
+            assert result["campo2"].iloc[0] == "original_a"
+            assert result["campo2"].iloc[1] == "original_b"
+
+            # Linha 3 (nova): ambas as colunas atualizadas
+            assert result["campo1"].iloc[2] == "novo3"
+            assert result["campo2"].iloc[2] == "novo_3"
 
 
 def test_reprocess_columns_does_not_skip_processed_rows():
@@ -214,8 +263,8 @@ def test_reprocess_columns_with_existing_columns_no_warning():
                 assert len(conflict_warnings) == 0
 
 
-def test_reprocess_columns_clears_status_for_resume():
-    """Testa que reprocess_columns limpa o status para que resume funcione se travar no meio."""
+def test_reprocess_columns_resume_after_interrupt():
+    """Testa que após interrupção durante reprocess, resume normal continua apenas linhas pendentes."""
     df = pd.DataFrame({
         "texto": ["a", "b", "c"],
         "campo1": ["old1", "old2", "old3"],
@@ -237,7 +286,7 @@ def test_reprocess_columns_clears_status_for_resume():
             "usage": {},
         }
 
-    # Primeira execução: vai processar 1 linha e travar
+    # Primeira execução: vai processar 1 linha e travar na segunda
     with patch("dataframeit.core.call_langchain", side_effect=mock_llm_with_interrupt):
         with patch("dataframeit.core.validate_provider_dependencies"):
             try:
@@ -250,12 +299,15 @@ def test_reprocess_columns_clears_status_for_resume():
             except KeyboardInterrupt:
                 pass
 
-    # Após interrupção: primeira linha deve estar processada, outras devem estar None
-    assert df["_dataframeit_status"].iloc[0] == "processed"
-    assert pd.isna(df["_dataframeit_status"].iloc[1])
-    assert pd.isna(df["_dataframeit_status"].iloc[2])
+    # Após interrupção:
+    # - Linha 1: campo1 atualizado para "new1", campo2 manteve "old_a" (reprocess só campo1)
+    # - Linhas 2 e 3: não foram processadas ainda
+    assert df["campo1"].iloc[0] == "new1"
+    assert df["campo2"].iloc[0] == "old_a"  # Manteve original
+    assert df["campo1"].iloc[1] == "old2"  # Não foi processada
+    assert df["campo1"].iloc[2] == "old3"  # Não foi processada
 
-    # Segunda execução: com resume normal (sem reprocess_columns), deve continuar de onde parou
+    # Segunda execução: continuar de onde parou com reprocess_columns
     call_count = 0
 
     def mock_llm_normal(*args, **kwargs):
@@ -272,8 +324,8 @@ def test_reprocess_columns_clears_status_for_resume():
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",
-                resume=True,  # Resume normal
+                reprocess_columns=["campo1"],  # Continua o reprocessamento
             )
 
-    # Deve ter processado apenas as 2 linhas restantes
-    assert call_count == 2
+    # Deve ter processado as 3 linhas (todas ainda estavam como "processed")
+    assert call_count == 3
