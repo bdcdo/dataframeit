@@ -225,7 +225,7 @@ Extraia as informações solicitadas do documento acima.
 - **`track_tokens=False`**: Rastreia uso de tokens e exibe estatísticas ao final (requer LangChain 1.0+)
 
 ### Parâmetros LangChain
-- **`model='gemini-2.5-flash'`**: Modelo a ser usado
+- **`model='gemini-3.0-flash'`**: Modelo a ser usado
 - **`provider='google_genai'`**: Provider do LangChain ('google_genai', 'anthropic', 'openai', etc.)
 - **`api_key=None`**: Chave API específica (opcional, usa variáveis de ambiente se None)
 
@@ -410,7 +410,7 @@ df_resultado = dataframeit(
 # ============================================================
 # 📊 ESTATÍSTICAS DE USO DE TOKENS
 # ============================================================
-# Modelo: gemini-2.5-flash
+# Modelo: gemini-3.0-flash
 # Total de tokens: 15,432
 #   • Input:  12,345 tokens
 #   • Output: 3,087 tokens
@@ -435,7 +435,7 @@ df_resultado = dataframeit(df, SuaClasse, TEMPLATE, track_tokens=True)
 print(f"Linha mais cara: {df_resultado['_total_tokens'].max()} tokens")
 print(f"Média de tokens: {df_resultado['_total_tokens'].mean():.1f} tokens")
 
-# Calcular custo estimado (exemplo: Gemini 2.5 Flash)
+# Calcular custo estimado (exemplo: Gemini 3.0 Flash)
 # Input: $0.075 por 1M tokens, Output: $0.30 por 1M tokens
 custo_input = df_resultado['_input_tokens'].sum() * 0.075 / 1_000_000
 custo_output = df_resultado['_output_tokens'].sum() * 0.30 / 1_000_000
