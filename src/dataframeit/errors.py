@@ -331,6 +331,20 @@ def is_recoverable_error(error: Exception) -> bool:
     return True
 
 
+def is_rate_limit_error(error: Exception) -> bool:
+    """Verifica se um erro é especificamente de rate limit.
+
+    Args:
+        error: Exceção a ser analisada.
+
+    Returns:
+        True se o erro é de rate limit, False caso contrário.
+    """
+    error_str = f"{type(error).__name__}: {error}".lower()
+    rate_limit_patterns = ('ratelimit', 'resourceexhausted', 'toomanyrequests', '429')
+    return any(pattern in error_str for pattern in rate_limit_patterns)
+
+
 def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0) -> dict:
     """Executa função com retry e backoff exponencial.
 
