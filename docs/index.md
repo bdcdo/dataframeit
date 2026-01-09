@@ -10,11 +10,11 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </div>
 
-<div class="cta-buttons">
-  <a href="getting-started/quickstart/" class="cta-button primary">
+<div class="cta-buttons" markdown>
+  <a href="getting-started/quickstart/" class="cta-button primary" markdown>
     :material-rocket-launch: Começar Agora
   </a>
-  <a href="reference/llm-reference/" class="cta-button secondary">
+  <a href="reference/llm-reference/" class="cta-button secondary" markdown>
     :material-robot: Referência para LLMs
   </a>
 </div>
@@ -105,7 +105,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 
 <div class="nav-grid" markdown>
 
-<a href="getting-started/installation/" class="nav-card">
+<a href="getting-started/installation/" class="nav-card" markdown>
   <div class="nav-icon" markdown>:material-download:</div>
   <div class="nav-content">
     <h4>Instalação</h4>
@@ -113,7 +113,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
   </div>
 </a>
 
-<a href="getting-started/quickstart/" class="nav-card">
+<a href="getting-started/quickstart/" class="nav-card" markdown>
   <div class="nav-icon" markdown>:material-rocket-launch:</div>
   <div class="nav-content">
     <h4>Início Rápido</h4>
@@ -121,7 +121,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
   </div>
 </a>
 
-<a href="guides/basic-usage/" class="nav-card">
+<a href="guides/basic-usage/" class="nav-card" markdown>
   <div class="nav-icon" markdown>:material-book-open-variant:</div>
   <div class="nav-content">
     <h4>Guias</h4>
@@ -129,7 +129,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
   </div>
 </a>
 
-<a href="reference/llm-reference/" class="nav-card">
+<a href="reference/llm-reference/" class="nav-card" markdown>
   <div class="nav-icon" markdown>:material-robot:</div>
   <div class="nav-content">
     <h4>Referência para LLMs</h4>
