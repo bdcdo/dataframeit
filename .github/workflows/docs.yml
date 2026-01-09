@@ -37,6 +37,9 @@ jobs:
       - name: Build documentation
         run: mkdocs build
 
+      - name: Copy sitemap to EN folder
+        run: cp site/sitemap.xml site/en/sitemap.xml
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
