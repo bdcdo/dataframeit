@@ -11,12 +11,11 @@
 </div>
 
 <div class="cta-buttons" markdown>
-  <a href="getting-started/quickstart/" class="cta-button primary" markdown>
-    :material-rocket-launch: Começar Agora
-  </a>
-  <a href="reference/llm-reference/" class="cta-button secondary" markdown>
-    :material-robot: Referência para LLMs
-  </a>
+
+[:material-rocket-launch: Começar Agora](getting-started/quickstart/){ .cta-button .primary }
+
+[:material-robot: Referência para LLMs](reference/llm-reference/){ .cta-button .secondary }
+
 </div>
 
 </div>
@@ -105,36 +104,24 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 
 <div class="nav-grid" markdown>
 
-<a href="getting-started/installation/" class="nav-card" markdown>
-  <div class="nav-icon" markdown>:material-download:</div>
-  <div class="nav-content">
-    <h4>Instalação</h4>
-    <p>Configure com seu provider preferido</p>
-  </div>
-</a>
+<div class="nav-card" markdown>
+### :material-download: [Instalação](getting-started/installation/)
+Configure com seu provider preferido
+</div>
 
-<a href="getting-started/quickstart/" class="nav-card" markdown>
-  <div class="nav-icon" markdown>:material-rocket-launch:</div>
-  <div class="nav-content">
-    <h4>Início Rápido</h4>
-    <p>Primeiro projeto em 5 minutos</p>
-  </div>
-</a>
+<div class="nav-card" markdown>
+### :material-rocket-launch: [Início Rápido](getting-started/quickstart/)
+Primeiro projeto em 5 minutos
+</div>
 
-<a href="guides/basic-usage/" class="nav-card" markdown>
-  <div class="nav-icon" markdown>:material-book-open-variant:</div>
-  <div class="nav-content">
-    <h4>Guias</h4>
-    <p>Paralelismo, retry, busca web</p>
-  </div>
-</a>
+<div class="nav-card" markdown>
+### :material-book-open-variant: [Guias](guides/basic-usage/)
+Paralelismo, retry, busca web
+</div>
 
-<a href="reference/llm-reference/" class="nav-card" markdown>
-  <div class="nav-icon" markdown>:material-robot:</div>
-  <div class="nav-content">
-    <h4>Referência para LLMs</h4>
-    <p>Documentação compacta para assistentes de código</p>
-  </div>
-</a>
+<div class="nav-card" markdown>
+### :material-robot: [Referência para LLMs](reference/llm-reference/)
+Documentação compacta para assistentes de código
+</div>
 
 </div>
