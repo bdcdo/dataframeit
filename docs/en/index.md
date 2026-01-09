@@ -44,7 +44,7 @@ result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.", text_c
 <div class="feature-grid" markdown>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-cloud-sync:</div>
+<div class="icon" markdown>:material-cloud-sync:</div>
 
 ### Multiple Providers
 
@@ -52,7 +52,7 @@ Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — all via L
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-check-decagram:</div>
+<div class="icon" markdown>:material-check-decagram:</div>
 
 ### Structured Output
 
@@ -60,7 +60,7 @@ Automatic validation with Pydantic. Define fields, types, and descriptions — t
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-shield-refresh:</div>
+<div class="icon" markdown>:material-shield-refresh:</div>
 
 ### Resilience
 
@@ -68,7 +68,7 @@ Automatic retry with exponential backoff. Configurable rate limiting. Never lose
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-rocket-launch:</div>
+<div class="icon" markdown>:material-rocket-launch:</div>
 
 ### Performance
 
@@ -76,7 +76,7 @@ Parallel processing with auto-adjustment. Real-time throughput metrics.
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-web:</div>
+<div class="icon" markdown>:material-web:</div>
 
 ### Web Search
 
@@ -84,7 +84,7 @@ Tavily integration to enrich data with information from the internet.
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-format-list-bulleted-type:</div>
+<div class="icon" markdown>:material-format-list-bulleted-type:</div>
 
 ### Multiple Inputs
 
@@ -106,7 +106,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 <div class="nav-grid" markdown>
 
 <a href="getting-started/installation/" class="nav-card">
-  <div class="nav-icon">:material-download:</div>
+  <div class="nav-icon" markdown>:material-download:</div>
   <div class="nav-content">
     <h4>Installation</h4>
     <p>Set up with your preferred provider</p>
@@ -114,7 +114,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 </a>
 
 <a href="getting-started/quickstart/" class="nav-card">
-  <div class="nav-icon">:material-rocket-launch:</div>
+  <div class="nav-icon" markdown>:material-rocket-launch:</div>
   <div class="nav-content">
     <h4>Quickstart</h4>
     <p>First project in 5 minutes</p>
@@ -122,7 +122,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 </a>
 
 <a href="guides/basic-usage/" class="nav-card">
-  <div class="nav-icon">:material-book-open-variant:</div>
+  <div class="nav-icon" markdown>:material-book-open-variant:</div>
   <div class="nav-content">
     <h4>Guides</h4>
     <p>Parallelism, retry, web search</p>
@@ -130,7 +130,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 </a>
 
 <a href="reference/llm-reference/" class="nav-card">
-  <div class="nav-icon">:material-robot:</div>
+  <div class="nav-icon" markdown>:material-robot:</div>
   <div class="nav-content">
     <h4>LLM Reference</h4>
     <p>Compact docs for code assistants</p>

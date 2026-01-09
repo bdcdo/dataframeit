@@ -44,7 +44,7 @@ resultado = dataframeit(df, Sentimento, "Analise o sentimento do texto.")
 <div class="feature-grid" markdown>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-cloud-sync:</div>
+<div class="icon" markdown>:material-cloud-sync:</div>
 
 ### Múltiplos Providers
 
@@ -52,7 +52,7 @@ Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — todos via
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-check-decagram:</div>
+<div class="icon" markdown>:material-check-decagram:</div>
 
 ### Saída Estruturada
 
@@ -60,7 +60,7 @@ Validação automática com Pydantic. Defina campos, tipos e descrições — o 
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-shield-refresh:</div>
+<div class="icon" markdown>:material-shield-refresh:</div>
 
 ### Resiliência
 
@@ -68,7 +68,7 @@ Retry automático com backoff exponencial. Rate limiting configurável. Nunca pe
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-rocket-launch:</div>
+<div class="icon" markdown>:material-rocket-launch:</div>
 
 ### Performance
 
@@ -76,7 +76,7 @@ Processamento paralelo com auto-ajuste. Métricas de throughput em tempo real.
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-web:</div>
+<div class="icon" markdown>:material-web:</div>
 
 ### Busca Web
 
@@ -84,7 +84,7 @@ Integração com Tavily para enriquecer dados com informações da internet.
 </div>
 
 <div class="feature-card" markdown>
-<div class="icon">:material-format-list-bulleted-type:</div>
+<div class="icon" markdown>:material-format-list-bulleted-type:</div>
 
 ### Múltiplas Entradas
 
@@ -106,7 +106,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 <div class="nav-grid" markdown>
 
 <a href="getting-started/installation/" class="nav-card">
-  <div class="nav-icon">:material-download:</div>
+  <div class="nav-icon" markdown>:material-download:</div>
   <div class="nav-content">
     <h4>Instalação</h4>
     <p>Configure com seu provider preferido</p>
@@ -114,7 +114,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 </a>
 
 <a href="getting-started/quickstart/" class="nav-card">
-  <div class="nav-icon">:material-rocket-launch:</div>
+  <div class="nav-icon" markdown>:material-rocket-launch:</div>
   <div class="nav-content">
     <h4>Início Rápido</h4>
     <p>Primeiro projeto em 5 minutos</p>
@@ -122,7 +122,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 </a>
 
 <a href="guides/basic-usage/" class="nav-card">
-  <div class="nav-icon">:material-book-open-variant:</div>
+  <div class="nav-icon" markdown>:material-book-open-variant:</div>
   <div class="nav-content">
     <h4>Guias</h4>
     <p>Paralelismo, retry, busca web</p>
@@ -130,7 +130,7 @@ pip install dataframeit[anthropic]  # Anthropic Claude 4.5
 </a>
 
 <a href="reference/llm-reference/" class="nav-card">
-  <div class="nav-icon">:material-robot:</div>
+  <div class="nav-icon" markdown>:material-robot:</div>
   <div class="nav-content">
     <h4>Referência para LLMs</h4>
     <p>Documentação compacta para assistentes de código</p>
