@@ -8,11 +8,18 @@ import pandas as pd
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
-import sys
 import tempfile
 import os
-sys.path.insert(0, '/home/user/dataframeit')
-from src.dataframeit.utils import (
+import pytest
+
+# Verificar se openpyxl está instalado
+try:
+    import openpyxl
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
+
+from dataframeit.utils import (
     normalize_value,
     normalize_complex_columns,
     get_complex_fields,
@@ -407,6 +414,7 @@ def test_read_df_csv_auto_normalize():
         os.unlink(temp_path)
 
 
+@pytest.mark.skipif(not HAS_OPENPYXL, reason="openpyxl não instalado")
 def test_read_df_excel_with_model():
     """Testa leitura de Excel com modelo Pydantic."""
     # Criar DataFrame e salvar como Excel

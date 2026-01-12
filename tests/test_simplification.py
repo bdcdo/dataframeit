@@ -4,8 +4,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 from typing import Literal
 
-# Importar a versão nova
-from src.dataframeit.core import dataframeit
+from dataframeit.core import dataframeit
 
 
 class TestModel(BaseModel):
@@ -34,7 +33,7 @@ def test_basic_functionality():
     print("Template:", template[:50], "...")
 
     # Verificar que as colunas são configuradas corretamente
-    from src.dataframeit.core import _setup_columns
+    from dataframeit.core import _setup_columns
     df_test = df.copy()
     expected_cols = list(TestModel.model_fields.keys())
     _setup_columns(df_test, expected_cols, None, False, False)
@@ -46,7 +45,7 @@ def test_basic_functionality():
     assert '_error_details' in df_test.columns
 
     # Verificar índices de processamento
-    from src.dataframeit.core import _get_processing_indices
+    from dataframeit.core import _get_processing_indices
     start, count = _get_processing_indices(df_test, '_dataframeit_status', False)
     print(f"Processamento: start={start}, processed={count}")
     assert start == 0
@@ -64,7 +63,7 @@ def test_basic_functionality():
 
 def test_llm_config():
     """Testa criação de config do LLM."""
-    from src.dataframeit.llm import LLMConfig
+    from dataframeit.llm import LLMConfig
 
     config = LLMConfig(
         model='gemini-3.0-flash',
@@ -87,13 +86,13 @@ def test_llm_config():
 
 def test_utils():
     """Testa funções de utilidade."""
-    from src.dataframeit.utils import to_pandas, from_pandas, parse_json
+    from dataframeit.utils import to_pandas, from_pandas, parse_json, ORIGINAL_TYPE_PANDAS_DF
 
     # Testar conversão pandas
     df_pd = pd.DataFrame({'a': [1, 2, 3]})
-    result, was_polars = to_pandas(df_pd)
+    result, conversion_info = to_pandas(df_pd)
     assert isinstance(result, pd.DataFrame)
-    assert was_polars is False
+    assert conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF
     print("✅ Conversão pandas OK!")
 
     # Testar parse_json
@@ -114,7 +113,7 @@ def test_utils():
 
 def test_hide_error_columns_when_no_errors():
     """Testa que colunas de erro são ocultadas quando não há erros."""
-    from src.dataframeit.utils import from_pandas
+    from dataframeit.utils import from_pandas
 
     # Caso 1: Sem erros - colunas devem ser removidas
     df_no_errors = pd.DataFrame({
@@ -153,7 +152,7 @@ def test_hide_error_columns_when_no_errors():
 
 def test_prompt_building():
     """Testa construção de prompts."""
-    from src.dataframeit.llm import build_prompt
+    from dataframeit.llm import build_prompt
 
     template = "Analise: {texto}"
     text = "Este é um texto de teste"

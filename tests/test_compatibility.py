@@ -14,7 +14,7 @@ def test_api_compatibility():
     """Testa que a API pública é 100% compatível."""
 
     # Importar versão nova
-    from src.dataframeit.core import dataframeit as dataframeit_new
+    from dataframeit.core import dataframeit as dataframeit_new
 
     # Criar DataFrame de teste
     df = pd.DataFrame({
@@ -70,7 +70,7 @@ def test_api_compatibility():
 
 def test_column_management():
     """Testa gerenciamento de colunas."""
-    from src.dataframeit.core import _setup_columns
+    from dataframeit.core import _setup_columns
 
     df = pd.DataFrame({'texto': ['a', 'b'], 'id': [1, 2]})
     expected_cols = ['campo1', 'campo2']
@@ -98,7 +98,7 @@ def test_column_management():
 
 def test_resume_functionality():
     """Testa funcionalidade de resume."""
-    from src.dataframeit.core import _get_processing_indices
+    from dataframeit.core import _get_processing_indices
 
     df = pd.DataFrame({
         'texto': ['a', 'b', 'c', 'd'],
@@ -135,7 +135,7 @@ def test_resume_functionality():
 
 def test_utils_functions():
     """Testa funções de utilidade."""
-    from src.dataframeit.utils import parse_json, to_pandas, from_pandas
+    from dataframeit.utils import parse_json, to_pandas, from_pandas
 
     # Parse JSON básico
     result = parse_json('{"a": 1, "b": "test"}')
@@ -153,7 +153,7 @@ def test_utils_functions():
     print("✅ parse_json com texto extra")
 
     # Conversão pandas
-    from src.dataframeit.utils import ConversionInfo, ORIGINAL_TYPE_PANDAS_DF
+    from dataframeit.utils import ConversionInfo, ORIGINAL_TYPE_PANDAS_DF
     df = pd.DataFrame({'a': [1, 2, 3]})
     df_result, conversion_info = to_pandas(df)
     assert isinstance(df_result, pd.DataFrame)

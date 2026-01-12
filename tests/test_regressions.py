@@ -25,24 +25,21 @@ def test_setup_columns_no_settingwithcopywarning_on_copy():
 
 
 def test_build_prompt_replaces_placeholder():
-    """Testa que build_prompt substitui corretamente o placeholder."""
-    user_prompt = "Responda às perguntas sobre: {documento}"
-    formatted = llm_module.build_prompt(user_prompt, "TEXTO_DE_TESTE", "documento")
+    """Testa que build_prompt substitui corretamente o placeholder {texto}."""
+    user_prompt = "Responda às perguntas sobre: {texto}"
+    formatted = llm_module.build_prompt(user_prompt, "TEXTO_DE_TESTE")
 
-    # Deve substituir apenas {documento}
+    # Deve substituir {texto}
     assert "TEXTO_DE_TESTE" in formatted
-    assert "{documento}" not in formatted
+    assert "{texto}" not in formatted
 
 
-def test_build_prompt_warns_on_format_placeholder():
-    """Testa que build_prompt emite warning quando {format} está presente."""
-    user_prompt = "Analise: {documento}\n{format}"
+def test_build_prompt_preserves_other_placeholders():
+    """Testa que build_prompt preserva outros placeholders."""
+    user_prompt = "Analise: {texto}\nOutro: {outro}"
+    formatted = llm_module.build_prompt(user_prompt, "TEXTO")
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        formatted = llm_module.build_prompt(user_prompt, "TEXTO", "documento")
-
-        # Deve emitir DeprecationWarning
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "{format}" in str(w[0].message)
+    # Deve substituir apenas {texto}
+    assert "TEXTO" in formatted
+    assert "{texto}" not in formatted
+    assert "{outro}" in formatted  # Preserva outros placeholders

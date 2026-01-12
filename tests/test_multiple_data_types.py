@@ -16,7 +16,7 @@ try:
 except ImportError:
     HAS_POLARS = False
 
-from src.dataframeit.utils import (
+from dataframeit.utils import (
     to_pandas,
     from_pandas,
     ConversionInfo,
