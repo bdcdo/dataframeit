@@ -3,7 +3,7 @@
 from typing import Any, Dict
 from pydantic import create_model
 
-from .llm import LLMConfig, build_prompt
+from .llm import LLMConfig, build_prompt, _create_langchain_llm
 from .errors import retry_with_backoff
 
 
@@ -34,14 +34,14 @@ def call_agent(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -
         include_answer=False,
     )
 
+    # Criar modelo LLM inicializado
+    llm = _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
+
     # Criar agente com structured output
     agent = create_agent(
-        model=config.model,
-        model_provider=config.provider,
+        model=llm,
         tools=[tavily_tool],
         response_format=ToolStrategy(pydantic_model),
-        api_key=config.api_key,
-        **config.model_kwargs,
     )
 
     def _call():
