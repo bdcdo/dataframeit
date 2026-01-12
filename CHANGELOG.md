@@ -9,6 +9,26 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
+- **`save_trace` - Salvar trace do raciocínio do agente** (#64): Novo parâmetro que salva o trace completo do agente em colunas do DataFrame, permitindo debug e auditoria.
+
+  ```python
+  result = dataframeit(
+      df, Model, PROMPT,
+      use_search=True,
+      save_trace=True  # ou "full" ou "minimal"
+  )
+
+  # Acessar trace
+  import json
+  trace = json.loads(result['_trace'].iloc[0])
+  print(trace['search_queries'])  # Queries realizadas
+  print(trace['duration_seconds'])  # Tempo de execução
+  ```
+
+  - **Modos**: `True`/`"full"` (trace completo) ou `"minimal"` (apenas queries, sem conteúdo de busca)
+  - **Colunas**: `_trace` (agente único) ou `_trace_{campo}` (per-field)
+  - **Estrutura**: messages, search_queries, total_tool_calls, duration_seconds, model
+
 - **Configuração per-field via `json_schema_extra`**: Permite configurar prompts e parâmetros de busca específicos para cada campo do modelo Pydantic quando usando `search_per_field=True`.
 
   ```python
@@ -47,7 +67,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - **Validação**: Erro informativo quando `json_schema_extra` com configurações de prompt/busca é usado sem `search_per_field=True`
 
-- **19 novos testes** para a funcionalidade de configuração per-field
+- **29 novos testes**: 19 para configuração per-field + 10 para save_trace
 
 ### Alterado
 
