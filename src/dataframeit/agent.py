@@ -1,10 +1,97 @@
 """Processamento baseado em agente com busca web via Tavily."""
 
+from copy import copy
 from typing import Any, Dict
+
 from pydantic import create_model
 
 from .llm import LLMConfig, build_prompt, _create_langchain_llm
 from .errors import retry_with_backoff
+
+
+def _get_field_config(extra: dict) -> dict:
+    """Extrai configurações relevantes do json_schema_extra.
+
+    Args:
+        extra: Dicionário json_schema_extra do campo Pydantic.
+
+    Returns:
+        Dicionário com configurações extraídas (prompt, prompt_append,
+        search_depth, max_results).
+    """
+    return {
+        'prompt': extra.get('prompt') or extra.get('prompt_replace'),
+        'prompt_append': extra.get('prompt_append'),
+        'search_depth': extra.get('search_depth'),
+        'max_results': extra.get('max_results'),
+    }
+
+
+def _build_field_prompt(
+    user_prompt: str,
+    field_name: str,
+    field_description: str | None,
+    field_config: dict
+) -> str:
+    """Constrói o prompt para um campo específico.
+
+    Args:
+        user_prompt: Template do prompt base do usuário.
+        field_name: Nome do campo sendo processado.
+        field_description: Descrição do campo (opcional).
+        field_config: Configurações extraídas do json_schema_extra.
+
+    Returns:
+        Prompt construído para o campo.
+    """
+    prompt_replace = field_config.get('prompt')
+    prompt_append = field_config.get('prompt_append')
+
+    if prompt_replace:
+        # Substitui completamente o prompt
+        return prompt_replace
+
+    # Base: prompt original + instrução do campo
+    base_prompt = f"{user_prompt}\n\nResponda APENAS o campo: {field_name}"
+    if field_description:
+        base_prompt += f" ({field_description})"
+
+    if prompt_append:
+        # Adiciona texto customizado
+        base_prompt += f"\n\n{prompt_append}"
+
+    return base_prompt
+
+
+def _apply_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
+    """Cria novo LLMConfig com overrides do campo (se houver).
+
+    Args:
+        config: Configuração base do LLM.
+        field_config: Configurações extraídas do json_schema_extra.
+
+    Returns:
+        LLMConfig original se não há overrides, ou novo LLMConfig com
+        parâmetros de busca sobrescritos.
+    """
+    search_depth = field_config.get('search_depth')
+    max_results = field_config.get('max_results')
+
+    # Se não há overrides, retorna config original
+    if not search_depth and not max_results:
+        return config
+
+    # Criar nova SearchConfig com overrides
+    new_config = copy(config)
+    new_search_config = copy(config.search_config)
+
+    if search_depth:
+        new_search_config.search_depth = search_depth
+    if max_results:
+        new_search_config.max_results = max_results
+
+    new_config.search_config = new_search_config
+    return new_config
 
 
 def call_agent(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
@@ -96,13 +183,20 @@ def call_agent_per_field(text: str, pydantic_model, user_prompt: str, config: LL
             **{field_name: (field_info.annotation, field_info)}
         )
 
-        # Prompt focado no campo específico
-        field_prompt = f"{user_prompt}\n\nResponda APENAS o campo: {field_name}"
-        if field_info.description:
-            field_prompt += f" ({field_info.description})"
+        # Extrair configurações do campo (opcional)
+        extra = field_info.json_schema_extra
+        field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+        # Construir prompt para este campo
+        field_prompt = _build_field_prompt(
+            user_prompt, field_name, field_info.description, field_config
+        )
+
+        # Criar config com overrides do campo (se houver)
+        effective_config = _apply_field_overrides(config, field_config)
 
         # Chamar agente para este campo
-        result = call_agent(text, SingleFieldModel, field_prompt, config)
+        result = call_agent(text, SingleFieldModel, field_prompt, effective_config)
 
         # Combinar resultado
         combined_data[field_name] = result['data'].get(field_name)

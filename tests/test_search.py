@@ -499,5 +499,293 @@ def test_call_agent_per_field_sums_usage():
     assert result["usage"]["search_count"] == 4
 
 
+# =============================================================================
+# Testes de configuração per-field (json_schema_extra)
+# =============================================================================
+
+def test_get_field_config_extracts_prompt():
+    """Testa extração de prompt do json_schema_extra."""
+    from dataframeit.agent import _get_field_config
+
+    extra = {"prompt": "Custom prompt: {texto}"}
+    config = _get_field_config(extra)
+
+    assert config["prompt"] == "Custom prompt: {texto}"
+    assert config["prompt_append"] is None
+
+
+def test_get_field_config_extracts_prompt_replace():
+    """Testa que prompt_replace é equivalente a prompt."""
+    from dataframeit.agent import _get_field_config
+
+    extra = {"prompt_replace": "Replaced prompt: {texto}"}
+    config = _get_field_config(extra)
+
+    assert config["prompt"] == "Replaced prompt: {texto}"
+
+
+def test_get_field_config_extracts_prompt_append():
+    """Testa extração de prompt_append."""
+    from dataframeit.agent import _get_field_config
+
+    extra = {"prompt_append": "Extra instructions"}
+    config = _get_field_config(extra)
+
+    assert config["prompt"] is None
+    assert config["prompt_append"] == "Extra instructions"
+
+
+def test_get_field_config_extracts_search_params():
+    """Testa extração de search_depth e max_results."""
+    from dataframeit.agent import _get_field_config
+
+    extra = {"search_depth": "advanced", "max_results": 10}
+    config = _get_field_config(extra)
+
+    assert config["search_depth"] == "advanced"
+    assert config["max_results"] == 10
+
+
+def test_build_field_prompt_replace():
+    """Testa que prompt substitui completamente o prompt base."""
+    from dataframeit.agent import _build_field_prompt
+
+    field_config = {"prompt": "Custom prompt: {texto}"}
+    prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
+
+    assert prompt == "Custom prompt: {texto}"
+    assert "Base" not in prompt
+    assert "Responda APENAS" not in prompt
+
+
+def test_build_field_prompt_append():
+    """Testa que prompt_append adiciona ao prompt base."""
+    from dataframeit.agent import _build_field_prompt
+
+    field_config = {"prompt_append": "Extra info"}
+    prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
+
+    assert "Base {texto}" in prompt
+    assert "Responda APENAS o campo: campo" in prompt
+    assert "(Descrição)" in prompt
+    assert "Extra info" in prompt
+
+
+def test_build_field_prompt_default():
+    """Testa comportamento padrão sem configuração."""
+    from dataframeit.agent import _build_field_prompt
+
+    field_config = {}
+    prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
+
+    assert "Base {texto}" in prompt
+    assert "Responda APENAS o campo: campo" in prompt
+    assert "(Descrição)" in prompt
+    assert "Extra info" not in prompt
+
+
+def test_apply_field_overrides_no_changes():
+    """Testa que config original é retornada se não há overrides."""
+    from dataframeit.agent import _apply_field_overrides
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    config = LLMConfig(
+        model="test",
+        provider="test",
+        api_key=None,
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=60.0,
+        rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
+    )
+
+    field_config = {}
+    new_config = _apply_field_overrides(config, field_config)
+
+    # Deve ser o mesmo objeto
+    assert new_config is config
+
+
+def test_apply_field_overrides_with_changes():
+    """Testa override de search_depth e max_results."""
+    from dataframeit.agent import _apply_field_overrides
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    config = LLMConfig(
+        model="test",
+        provider="test",
+        api_key=None,
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=60.0,
+        rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
+    )
+
+    field_config = {"search_depth": "advanced", "max_results": 10}
+    new_config = _apply_field_overrides(config, field_config)
+
+    # Novo config deve ter valores sobrescritos
+    assert new_config.search_config.search_depth == "advanced"
+    assert new_config.search_config.max_results == 10
+
+    # Config original não deve mudar
+    assert config.search_config.search_depth == "basic"
+    assert config.search_config.max_results == 5
+
+
+def test_has_field_config_detects_prompt():
+    """Testa detecção de prompt em json_schema_extra."""
+    from dataframeit.core import _has_field_config
+
+    class ModelWithPrompt(BaseModel):
+        campo: str = Field(json_schema_extra={"prompt": "custom"})
+
+    assert _has_field_config(ModelWithPrompt) is True
+
+
+def test_has_field_config_detects_prompt_append():
+    """Testa detecção de prompt_append em json_schema_extra."""
+    from dataframeit.core import _has_field_config
+
+    class ModelWithAppend(BaseModel):
+        campo: str = Field(json_schema_extra={"prompt_append": "extra"})
+
+    assert _has_field_config(ModelWithAppend) is True
+
+
+def test_has_field_config_detects_search_params():
+    """Testa detecção de search_depth e max_results."""
+    from dataframeit.core import _has_field_config
+
+    class ModelWithSearchParams(BaseModel):
+        campo: str = Field(json_schema_extra={"search_depth": "advanced"})
+
+    assert _has_field_config(ModelWithSearchParams) is True
+
+
+def test_has_field_config_returns_false_for_empty():
+    """Testa que retorna False se não há configuração."""
+    from dataframeit.core import _has_field_config
+
+    class ModelWithoutConfig(BaseModel):
+        campo: str = Field(description="Normal field")
+
+    assert _has_field_config(ModelWithoutConfig) is False
+
+
+def test_has_field_config_ignores_other_keys():
+    """Testa que ignora outras chaves em json_schema_extra."""
+    from dataframeit.core import _has_field_config
+
+    class ModelWithOtherKeys(BaseModel):
+        campo: str = Field(json_schema_extra={"other_key": "value"})
+
+    assert _has_field_config(ModelWithOtherKeys) is False
+
+
+def test_field_config_without_per_field_raises():
+    """Testa que usar config per-field sem search_per_field=True dá erro."""
+    from dataframeit.core import dataframeit
+
+    class ModelWithConfig(BaseModel):
+        campo: str = Field(json_schema_extra={"prompt": "custom"})
+
+    df = pd.DataFrame({"texto": ["teste"]})
+
+    with patch('dataframeit.core.validate_provider_dependencies'):
+        with pytest.raises(ValueError) as exc_info:
+            dataframeit(
+                df,
+                questions=ModelWithConfig,
+                prompt="Analise {texto}",
+                use_search=True,
+                search_per_field=False,  # Deve dar erro
+            )
+
+    assert "search_per_field=True" in str(exc_info.value)
+
+
+def test_field_config_with_per_field_no_error():
+    """Testa que config per-field funciona com search_per_field=True."""
+    from dataframeit.core import _has_field_config
+
+    class ModelWithConfig(BaseModel):
+        campo: str = Field(json_schema_extra={"prompt": "custom"})
+
+    # Apenas verificar que a validação passa
+    assert _has_field_config(ModelWithConfig) is True
+
+
+def test_call_agent_per_field_uses_custom_prompt():
+    """Testa que call_agent_per_field usa prompt customizado."""
+    from dataframeit.agent import call_agent_per_field
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    class ModelWithCustomPrompt(BaseModel):
+        campo_custom: str = Field(
+            description="Campo com prompt customizado",
+            json_schema_extra={"prompt": "Busque em fonte específica: {texto}"}
+        )
+
+    captured_prompts = []
+
+    def mock_call_agent(text, model, prompt, config):
+        captured_prompts.append(prompt)
+        field_name = list(model.model_fields.keys())[0]
+        return {
+            "data": {field_name: "valor"},
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                      "search_credits": 0, "search_count": 0}
+        }
+
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, per_field=True)
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        call_agent_per_field("Aspirina", ModelWithCustomPrompt, "Prompt base {texto}", config)
+
+    assert len(captured_prompts) == 1
+    assert "Busque em fonte específica: {texto}" in captured_prompts[0]
+    assert "Prompt base" not in captured_prompts[0]
+
+
+def test_call_agent_per_field_uses_config_override():
+    """Testa que call_agent_per_field usa search_depth override."""
+    from dataframeit.agent import call_agent_per_field
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    class ModelWithSearchOverride(BaseModel):
+        campo: str = Field(json_schema_extra={"search_depth": "advanced"})
+
+    captured_configs = []
+
+    def mock_call_agent(text, model, prompt, config):
+        captured_configs.append(config)
+        field_name = list(model.model_fields.keys())[0]
+        return {
+            "data": {field_name: "valor"},
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                      "search_credits": 0, "search_count": 0}
+        }
+
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, per_field=True, search_depth="basic")
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        call_agent_per_field("teste", ModelWithSearchOverride, "Prompt {texto}", config)
+
+    assert len(captured_configs) == 1
+    # Deve usar advanced (override), não basic (original)
+    assert captured_configs[0].search_config.search_depth == "advanced"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

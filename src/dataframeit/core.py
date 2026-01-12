@@ -25,6 +25,26 @@ logging.getLogger('langchain_google_genai').setLevel(logging.ERROR)
 logging.getLogger('langchain_core').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
+# Chaves de configuração per-field reconhecidas em json_schema_extra
+_FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
+
+
+def _has_field_config(pydantic_model) -> bool:
+    """Verifica se algum campo tem configuração customizada em json_schema_extra.
+
+    Args:
+        pydantic_model: Modelo Pydantic a ser verificado.
+
+    Returns:
+        True se algum campo tiver configuração per-field, False caso contrário.
+    """
+    for field_info in pydantic_model.model_fields.values():
+        extra = field_info.json_schema_extra
+        if isinstance(extra, dict):
+            if any(k in extra for k in _FIELD_CONFIG_KEYS):
+                return True
+    return False
+
 
 def dataframeit(
     data,
@@ -206,6 +226,14 @@ def dataframeit(
         model_kwargs=model_kwargs or {},
         search_config=search_config,
     )
+
+    # Validar: campos com json_schema_extra requerem search_per_field=True
+    if _has_field_config(questions):
+        if not (config.search_config and config.search_config.per_field):
+            raise ValueError(
+                "Campos com configuração em json_schema_extra (prompt, prompt_append, "
+                "search_depth, max_results) requerem search_per_field=True"
+            )
 
     # Processar linhas (escolher entre sequencial e paralelo)
     if parallel_requests > 1:

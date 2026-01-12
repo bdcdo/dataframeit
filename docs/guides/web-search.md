@@ -101,6 +101,93 @@ resultado = dataframeit(
 )
 ```
 
+## Configuração Per-Field (v0.5.2+)
+
+A partir da versão 0.5.2, você pode configurar prompts e parâmetros de busca específicos para cada campo usando `json_schema_extra` do Pydantic.
+
+### Opções Disponíveis
+
+| Opção | Descrição |
+|-------|-----------|
+| `prompt` ou `prompt_replace` | Substitui completamente o prompt base para este campo |
+| `prompt_append` | Adiciona texto ao prompt base |
+| `search_depth` | Override de profundidade: `"basic"` ou `"advanced"` |
+| `max_results` | Override de número de resultados (1-20) |
+
+!!! note "Requer search_per_field=True"
+    A configuração per-field só funciona quando `search_per_field=True`. Se você usar `json_schema_extra` com configurações de prompt ou busca sem habilitar `search_per_field`, um erro será levantado.
+
+### Exemplo: Prompt Customizado
+
+```python
+from pydantic import BaseModel, Field
+
+class MedicamentoInfo(BaseModel):
+    # Campo com comportamento padrão
+    principio_ativo: str = Field(description="Princípio ativo do medicamento")
+
+    # Campo com prompt completamente substituído
+    doenca_rara: str = Field(
+        description="Classificação de doença rara",
+        json_schema_extra={
+            "prompt": "Busque em Orphanet (orpha.net) e FDA Orphan Drug Database. Analise: {texto}"
+        }
+    )
+
+    # Campo com prompt adicional (append)
+    avaliacao_conitec: str = Field(
+        description="Avaliação da CONITEC",
+        json_schema_extra={
+            "prompt_append": "Busque APENAS no site da CONITEC (gov.br/conitec)."
+        }
+    )
+
+resultado = dataframeit(
+    df,
+    MedicamentoInfo,
+    "Analise o medicamento: {texto}",
+    use_search=True,
+    search_per_field=True,  # Obrigatório para usar json_schema_extra
+)
+```
+
+### Exemplo: Parâmetros de Busca Por Campo
+
+```python
+class PesquisaDetalhada(BaseModel):
+    resumo_rapido: str = Field(
+        description="Resumo em 2 linhas",
+        json_schema_extra={
+            "search_depth": "basic",
+            "max_results": 3
+        }
+    )
+
+    analise_profunda: str = Field(
+        description="Análise detalhada com fontes",
+        json_schema_extra={
+            "prompt_append": "Inclua citações das fontes encontradas.",
+            "search_depth": "advanced",
+            "max_results": 10
+        }
+    )
+```
+
+### Combinando Prompt e Parâmetros
+
+Você pode combinar configurações de prompt e parâmetros de busca:
+
+```python
+estudos_clinicos: str = Field(
+    description="Estudos clínicos relevantes",
+    json_schema_extra={
+        "prompt_append": "Busque por ensaios clínicos recentes (2020-2024).",
+        "search_depth": "advanced",
+        "max_results": 15
+    }
+)
+```
+
 ## Caso de Uso: Verificação de Fatos
 
 ```python

@@ -68,6 +68,63 @@ print(resultado)
 - **Performance**: Processamento paralelo, rate limiting configurável
 - **Busca web**: Integração com Tavily para enriquecer dados
 - **Tracking**: Monitoramento de tokens e métricas de throughput
+- **Configuração per-field**: Prompts e parâmetros de busca personalizados por campo (v0.5.2+)
+
+## Configuração Per-Field (Novo em v0.5.2)
+
+Configure prompts e parâmetros de busca específicos para cada campo usando `json_schema_extra`:
+
+```python
+from pydantic import BaseModel, Field
+
+class MedicamentoInfo(BaseModel):
+    # Campo com prompt padrão
+    principio_ativo: str = Field(description="Princípio ativo do medicamento")
+
+    # Campo com prompt customizado (substitui o prompt base)
+    doenca_rara: str = Field(
+        description="Classificação de doença rara",
+        json_schema_extra={
+            "prompt": "Busque em Orphanet (orpha.net). Analise: {texto}"
+        }
+    )
+
+    # Campo com prompt adicional (append ao prompt base)
+    avaliacao_conitec: str = Field(
+        description="Avaliação da CONITEC",
+        json_schema_extra={
+            "prompt_append": "Busque APENAS no site da CONITEC (gov.br/conitec)."
+        }
+    )
+
+    # Campo com parâmetros de busca customizados
+    estudos_clinicos: str = Field(
+        description="Estudos clínicos relevantes",
+        json_schema_extra={
+            "prompt_append": "Busque estudos clínicos recentes.",
+            "search_depth": "advanced",
+            "max_results": 10
+        }
+    )
+
+# Requer search_per_field=True
+resultado = dataframeit(
+    df,
+    MedicamentoInfo,
+    "Analise o medicamento: {texto}",
+    use_search=True,
+    search_per_field=True,
+)
+```
+
+**Opções disponíveis em `json_schema_extra`:**
+
+| Opção | Descrição |
+|-------|-----------|
+| `prompt` ou `prompt_replace` | Substitui completamente o prompt base |
+| `prompt_append` | Adiciona texto ao prompt base |
+| `search_depth` | `"basic"` ou `"advanced"` (override per-field) |
+| `max_results` | Número de resultados de busca (1-20) |
 
 ## Documentação
 
