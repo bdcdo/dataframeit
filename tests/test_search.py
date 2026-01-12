@@ -6,6 +6,8 @@ from typing import Literal
 import pytest
 from unittest.mock import patch, MagicMock
 import os
+import sys
+import types
 
 
 class MedicamentoInfo(BaseModel):
@@ -201,6 +203,54 @@ def test_search_config_defaults():
     assert config.per_field is False
     assert config.max_results == 5
     assert config.search_depth == "basic"
+
+
+def test_search_agent_uses_initialized_model(monkeypatch):
+    """Garante que create_agent recebe um LLM, sem model_provider."""
+    from dataframeit.agent import call_agent
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    class TestOutput(BaseModel):
+        result: str
+
+    class DummyAgent:
+        def invoke(self, _payload):
+            return {"structured_response": TestOutput(result="ok"), "messages": []}
+
+    class DummyTavily:
+        def __init__(self, *args, **kwargs):
+            self.name = "tavily"
+
+    dummy_llm = object()
+    captured = {}
+
+    def fake_create_agent(*, model, tools, response_format, **kwargs):
+        captured["model"] = model
+        captured["kwargs"] = kwargs
+        return DummyAgent()
+
+    monkeypatch.setattr("dataframeit.agent._create_langchain_llm", lambda *args, **kwargs: dummy_llm)
+    monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
+    monkeypatch.setitem(sys.modules, "langchain_tavily", types.SimpleNamespace(TavilySearch=DummyTavily))
+
+    config = LLMConfig(
+        model="gpt-4o-mini",
+        provider="openai",
+        api_key=None,
+        max_retries=1,
+        base_delay=0.0,
+        max_delay=0.0,
+        rate_limit_delay=0.0,
+        model_kwargs={},
+        search_config=SearchConfig(enabled=True),
+    )
+
+    result = call_agent("teste", TestOutput, "Responda {texto}", config)
+
+    assert captured["model"] is dummy_llm
+    assert "model_provider" not in captured["kwargs"]
+    assert "api_key" not in captured["kwargs"]
+    assert result["data"]["result"] == "ok"
 
 
 def test_llm_config_with_search():
