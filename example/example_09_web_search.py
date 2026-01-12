@@ -180,6 +180,41 @@ Nota: search_per_field aumenta o numero de buscas e tokens,
 mas melhora a qualidade para modelos complexos.
 """)
 
+# ============================================================================
+# 8. EXEMPLO AVANCADO: SALVAR TRACE DO AGENTE
+# ============================================================================
+print("\n")
+print("=" * 80)
+print("EXEMPLO AVANCADO: SALVAR TRACE DO AGENTE (save_trace)")
+print("=" * 80)
+print("""
+Para debugar e auditar o raciocinio do agente, use save_trace=True.
+Isso salva o trace completo em uma coluna _trace (JSON), incluindo:
+- Todas as mensagens da conversa (human, ai, tool)
+- Queries de busca realizadas
+- Contagem de tool calls
+- Duracao e modelo usado
+
+Exemplo:
+    df_resultado = dataframeit(
+        df,
+        MedicamentoInfo,
+        TEMPLATE,
+        use_search=True,
+        save_trace=True,     # Trace completo
+        # ou save_trace="minimal"  # Apenas queries, sem conteudo de busca
+    )
+
+    # Acessar trace da primeira linha
+    import json
+    trace = json.loads(df_resultado['_trace'].iloc[0])
+    print(f"Buscas realizadas: {trace['search_queries']}")
+    print(f"Duracao: {trace['duration_seconds']}s")
+    print(f"Modelo: {trace['model']}")
+
+Com search_per_field=True, gera colunas _trace_{campo} para cada campo.
+""")
+
 print("\n" + "=" * 80)
 print("EXEMPLO CONCLUIDO!")
 print("=" * 80)

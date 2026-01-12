@@ -65,6 +65,7 @@ resultado = dataframeit(
 | `search_per_field` | bool | `False` | Executa busca separada para cada campo do modelo |
 | `max_results` | int | `5` | Resultados por busca (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` (1 crédito) ou `'advanced'` (2 créditos) |
+| `save_trace` | bool/str | `None` | Salva trace do agente: `True`/`"full"` ou `"minimal"` |
 
 ## Exemplos
 
@@ -186,6 +187,88 @@ estudos_clinicos: str = Field(
         "max_results": 15
     }
 )
+```
+
+## Debug: Salvar Trace do Agente (v0.5.3+)
+
+Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
+
+### Parâmetros
+
+| Valor | Descrição |
+|-------|-----------|
+| `False` / `None` | Desabilitado (padrão) |
+| `True` / `"full"` | Trace completo com conteúdo das mensagens |
+| `"minimal"` | Apenas queries e contagens, sem conteúdo de resultados de busca |
+
+### Colunas Geradas
+
+- **Agente único**: `_trace`
+- **Per-field**: `_trace_{nome_do_campo}` para cada campo
+
+### Estrutura do Trace
+
+```python
+{
+    "messages": [
+        {"type": "human", "content": "Analise o medicamento..."},
+        {"type": "ai", "content": "", "tool_calls": [...]},
+        {"type": "tool", "content": "[resultados da busca]", "tool_call_id": "..."}
+    ],
+    "search_queries": ["query1", "query2"],
+    "total_tool_calls": 2,
+    "duration_seconds": 3.45,
+    "model": "gpt-4o-mini"
+}
+```
+
+### Exemplo: Trace Completo
+
+```python
+import json
+
+resultado = dataframeit(
+    df,
+    MedicamentoInfo,
+    PROMPT,
+    use_search=True,
+    save_trace=True  # ou "full"
+)
+
+# Acessar trace da primeira linha
+trace = json.loads(resultado['_trace'].iloc[0])
+print(f"Queries realizadas: {trace['search_queries']}")
+print(f"Duração: {trace['duration_seconds']}s")
+print(f"Modelo: {trace['model']}")
+```
+
+### Exemplo: Trace Minimal
+
+Para auditorias onde só importa saber o que foi buscado:
+
+```python
+resultado = dataframeit(
+    df, Model, PROMPT,
+    use_search=True,
+    save_trace="minimal"  # Não inclui conteúdo das buscas
+)
+```
+
+### Exemplo: Trace Per-Field
+
+```python
+resultado = dataframeit(
+    df,
+    MedicamentoInfo,
+    PROMPT,
+    use_search=True,
+    search_per_field=True,
+    save_trace="full"
+)
+
+# Cada campo tem seu próprio trace
+trace_principio = json.loads(resultado['_trace_principio_ativo'].iloc[0])
+trace_indicacao = json.loads(resultado['_trace_indicacao'].iloc[0])
 ```
 
 ## Caso de Uso: Verificação de Fatos

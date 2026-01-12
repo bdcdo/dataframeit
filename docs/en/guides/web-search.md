@@ -66,6 +66,7 @@ result = dataframeit(
 | `search_per_field` | bool | `False` | Execute separate search for each model field |
 | `max_results` | int | `5` | Results per search (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` (1 credit) or `'advanced'` (2 credits) |
+| `save_trace` | bool/str | `None` | Save agent trace: `True`/`"full"` or `"minimal"` |
 
 ## Examples
 
@@ -103,6 +104,88 @@ result = dataframeit(
     search_depth='advanced',
     max_results=10
 )
+```
+
+## Debug: Save Agent Trace (v0.5.3+)
+
+To debug and audit agent reasoning, use the `save_trace` parameter.
+
+### Parameters
+
+| Value | Description |
+|-------|-------------|
+| `False` / `None` | Disabled (default) |
+| `True` / `"full"` | Complete trace with message content |
+| `"minimal"` | Only queries and counts, without search result content |
+
+### Generated Columns
+
+- **Single agent**: `_trace`
+- **Per-field**: `_trace_{field_name}` for each field
+
+### Trace Structure
+
+```python
+{
+    "messages": [
+        {"type": "human", "content": "Analyze the medication..."},
+        {"type": "ai", "content": "", "tool_calls": [...]},
+        {"type": "tool", "content": "[search results]", "tool_call_id": "..."}
+    ],
+    "search_queries": ["query1", "query2"],
+    "total_tool_calls": 2,
+    "duration_seconds": 3.45,
+    "model": "gpt-4o-mini"
+}
+```
+
+### Example: Full Trace
+
+```python
+import json
+
+result = dataframeit(
+    df,
+    MedicationInfo,
+    PROMPT,
+    use_search=True,
+    save_trace=True  # or "full"
+)
+
+# Access trace from first row
+trace = json.loads(result['_trace'].iloc[0])
+print(f"Queries performed: {trace['search_queries']}")
+print(f"Duration: {trace['duration_seconds']}s")
+print(f"Model: {trace['model']}")
+```
+
+### Example: Minimal Trace
+
+For audits where only the search queries matter:
+
+```python
+result = dataframeit(
+    df, Model, PROMPT,
+    use_search=True,
+    save_trace="minimal"  # Excludes search result content
+)
+```
+
+### Example: Per-Field Trace
+
+```python
+result = dataframeit(
+    df,
+    MedicationInfo,
+    PROMPT,
+    use_search=True,
+    search_per_field=True,
+    save_trace="full"
+)
+
+# Each field has its own trace
+trace_ingredient = json.loads(result['_trace_active_ingredient'].iloc[0])
+trace_indication = json.loads(result['_trace_indication'].iloc[0])
 ```
 
 ## Use Case: Fact Checking
