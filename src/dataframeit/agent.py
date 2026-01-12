@@ -1,7 +1,8 @@
 """Processamento baseado em agente com busca web via Tavily."""
 
+import time
 from copy import copy
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import create_model
 
@@ -94,7 +95,13 @@ def _apply_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
     return new_config
 
 
-def call_agent(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
+def call_agent(
+    text: str,
+    pydantic_model,
+    user_prompt: str,
+    config: LLMConfig,
+    save_trace: Optional[str] = None
+) -> dict:
     """Processa texto usando agente LangChain com busca Tavily.
 
     Args:
@@ -102,10 +109,11 @@ def call_agent(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -
         pydantic_model: Modelo Pydantic para estruturar resposta.
         user_prompt: Template do prompt do usuário.
         config: Configuração do LLM incluindo SearchConfig.
+        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
 
     Returns:
-        Dicionário com 'data' (dados extraídos) e 'usage' (metadata incluindo
-        search_credits e search_count).
+        Dicionário com 'data' (dados extraídos), 'usage' (metadata incluindo
+        search_credits e search_count) e 'trace' (se save_trace habilitado).
     """
     from langchain.agents import create_agent
     from langchain.agents.structured_output import ToolStrategy
@@ -133,7 +141,11 @@ def call_agent(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -
 
     def _call():
         prompt = build_prompt(user_prompt, text)
+
+        # Medir tempo de execução
+        start_time = time.perf_counter()
         result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+        duration = time.perf_counter() - start_time
 
         # Extrair resposta estruturada
         structured = result.get("structured_response")
@@ -145,12 +157,24 @@ def call_agent(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -
         # Calcular usage (tokens + search credits)
         usage = _extract_usage(result, search_config.search_depth)
 
-        return {'data': data, 'usage': usage}
+        response = {'data': data, 'usage': usage}
+
+        # Extrair trace se habilitado
+        if save_trace:
+            response['trace'] = _extract_trace(result, config.model, duration, save_trace)
+
+        return response
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
-def call_agent_per_field(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
+def call_agent_per_field(
+    text: str,
+    pydantic_model,
+    user_prompt: str,
+    config: LLMConfig,
+    save_trace: Optional[str] = None
+) -> dict:
     """Processa cada campo do modelo Pydantic com agente separado.
 
     Útil quando o modelo tem muitos campos e um único contexto ficaria
@@ -161,10 +185,11 @@ def call_agent_per_field(text: str, pydantic_model, user_prompt: str, config: LL
         pydantic_model: Modelo Pydantic completo.
         user_prompt: Template do prompt do usuário.
         config: Configuração do LLM.
+        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
 
     Returns:
-        Dicionário com 'data' (todos os campos combinados) e 'usage' (soma
-        de todos os tokens e créditos).
+        Dicionário com 'data' (todos os campos combinados), 'usage' (soma
+        de todos os tokens e créditos) e 'traces' (dict por campo, se habilitado).
     """
     combined_data = {}
     total_usage = {
@@ -174,6 +199,7 @@ def call_agent_per_field(text: str, pydantic_model, user_prompt: str, config: LL
         'search_credits': 0,
         'search_count': 0,
     }
+    traces = {} if save_trace else None
 
     # Iterar por cada campo do modelo Pydantic
     for field_name, field_info in pydantic_model.model_fields.items():
@@ -196,7 +222,7 @@ def call_agent_per_field(text: str, pydantic_model, user_prompt: str, config: LL
         effective_config = _apply_field_overrides(config, field_config)
 
         # Chamar agente para este campo
-        result = call_agent(text, SingleFieldModel, field_prompt, effective_config)
+        result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
 
         # Combinar resultado
         combined_data[field_name] = result['data'].get(field_name)
@@ -206,7 +232,15 @@ def call_agent_per_field(text: str, pydantic_model, user_prompt: str, config: LL
             for key in total_usage:
                 total_usage[key] += result['usage'].get(key, 0)
 
-    return {'data': combined_data, 'usage': total_usage}
+        # Coletar trace por campo
+        if save_trace and result.get('trace'):
+            traces[field_name] = result['trace']
+
+    response = {'data': combined_data, 'usage': total_usage}
+    if save_trace:
+        response['traces'] = traces
+
+    return response
 
 
 def _extract_usage(agent_result: dict, search_depth: str) -> Dict[str, Any]:
@@ -248,3 +282,59 @@ def _extract_usage(agent_result: dict, search_depth: str) -> Dict[str, Any]:
     usage['search_credits'] = usage['search_count'] * depth_cost
 
     return usage
+
+
+def _extract_trace(agent_result: dict, model: str, duration: float, mode: str) -> dict:
+    """Extrai trace do resultado do agente LangChain.
+
+    Args:
+        agent_result: Resultado de agent.invoke().
+        model: Nome do modelo usado.
+        duration: Tempo de execução em segundos.
+        mode: "full" ou "minimal".
+
+    Returns:
+        Dicionário com trace estruturado.
+    """
+    messages = agent_result.get("messages", [])
+    trace = {
+        "messages": [],
+        "search_queries": [],
+        "total_tool_calls": 0,
+        "duration_seconds": round(duration, 3),
+        "model": model,
+    }
+
+    for msg in messages:
+        msg_data = {"type": msg.type}
+
+        # Content - omite para tool messages em modo minimal
+        if msg.type == "tool" and mode == "minimal":
+            msg_data["content"] = "[omitted]"
+        else:
+            msg_data["content"] = msg.content
+
+        # Tool calls (AIMessage)
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            msg_data["tool_calls"] = []
+            for tc in msg.tool_calls:
+                msg_data["tool_calls"].append({
+                    "name": tc.get("name", ""),
+                    "args": tc.get("args", {}),
+                    "id": tc.get("id", ""),
+                    "type": tc.get("type", "tool_call"),
+                })
+                # Track search queries
+                if "search" in tc.get("name", "").lower():
+                    query = tc.get("args", {}).get("query", "")
+                    if query:
+                        trace["search_queries"].append(query)
+                    trace["total_tool_calls"] += 1
+
+        # Tool call reference (ToolMessage)
+        if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+            msg_data["tool_call_id"] = msg.tool_call_id
+
+        trace["messages"].append(msg_data)
+
+    return trace

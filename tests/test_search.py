@@ -407,7 +407,7 @@ def test_call_agent_per_field_iterates_fields():
     # Contar quantas vezes call_agent é chamado
     call_count = 0
 
-    def mock_call_agent(text, model, prompt, config):
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
         nonlocal call_count
         call_count += 1
 
@@ -458,7 +458,7 @@ def test_call_agent_per_field_sums_usage():
     from dataframeit.agent import call_agent_per_field
     from dataframeit.llm import LLMConfig, SearchConfig
 
-    def mock_call_agent(text, model, prompt, config):
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
         field_name = list(model.model_fields.keys())[0]
         return {
             "data": {field_name: f"valor_{field_name}"},
@@ -731,7 +731,7 @@ def test_call_agent_per_field_uses_custom_prompt():
 
     captured_prompts = []
 
-    def mock_call_agent(text, model, prompt, config):
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
         captured_prompts.append(prompt)
         field_name = list(model.model_fields.keys())[0]
         return {
@@ -764,7 +764,7 @@ def test_call_agent_per_field_uses_config_override():
 
     captured_configs = []
 
-    def mock_call_agent(text, model, prompt, config):
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
         captured_configs.append(config)
         field_name = list(model.model_fields.keys())[0]
         return {

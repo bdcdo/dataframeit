@@ -1,9 +1,10 @@
+import json
 import warnings
 import time
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Union, Any, Optional
+from typing import Union, Any, Optional, Literal
 import pandas as pd
 from tqdm import tqdm
 
@@ -70,6 +71,7 @@ def dataframeit(
     search_per_field=False,
     max_results=5,
     search_depth="basic",
+    save_trace: Optional[Union[bool, Literal["full", "minimal"]]] = None,
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
@@ -113,6 +115,11 @@ def dataframeit(
         max_results: Número máximo de resultados por busca (1-20). Padrão: 5.
         search_depth: Profundidade da busca - "basic" (1 crédito) ou "advanced" (2 créditos).
             Padrão: "basic".
+        save_trace: Salva o trace completo do raciocínio do agente. Requer use_search=True.
+            - None/False: Desabilitado (padrão)
+            - True/"full": Trace completo com conteúdo das mensagens
+            - "minimal": Apenas queries e contagens, sem conteúdo de tool results
+            Colunas geradas: "_trace" (agente único) ou "_trace_{campo}" (per_field).
 
     Returns:
         Dados com informações extraídas no mesmo formato da entrada.
@@ -144,6 +151,18 @@ def dataframeit(
         if not 1 <= max_results <= 20:
             raise ValueError("max_results deve estar entre 1 e 20")
         validate_search_dependencies()
+
+    # Validar e normalizar save_trace
+    trace_mode = None
+    if save_trace:
+        if not use_search:
+            raise ValueError("save_trace requer use_search=True")
+        if save_trace is True:
+            trace_mode = "full"
+        elif save_trace in ("full", "minimal"):
+            trace_mode = save_trace
+        else:
+            raise ValueError("save_trace deve ser True, 'full' ou 'minimal'")
 
     # Criar SearchConfig se busca habilitada
     search_config = None
@@ -200,7 +219,7 @@ def dataframeit(
         return from_pandas(df_pandas, conversion_info)
 
     # Configurar colunas
-    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens, search_config)
+    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens, search_config, trace_mode, questions)
 
     # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
     # serializadas como strings JSON ao salvar/carregar de arquivos
@@ -251,6 +270,7 @@ def dataframeit(
             track_tokens,
             reprocess_columns,
             parallel_requests,
+            trace_mode,
         )
     else:
         token_stats = _process_rows(
@@ -266,6 +286,7 @@ def dataframeit(
             conversion_info,
             track_tokens,
             reprocess_columns,
+            trace_mode,
         )
 
     # Exibir estatísticas de tokens e throughput
@@ -287,12 +308,22 @@ def dataframeit(
     return from_pandas(df_pandas, conversion_info)
 
 
-def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool, search_config: Optional[SearchConfig] = None):
+def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool, search_config: Optional[SearchConfig] = None, trace_mode: Optional[str] = None, pydantic_model=None):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
     token_cols = ['_input_tokens', '_output_tokens', '_total_tokens'] if track_tokens else []
     search_cols = ['_search_credits', '_search_count'] if (search_config and search_config.enabled) else []
+
+    # Colunas de trace
+    trace_cols = []
+    if trace_mode:
+        if search_config and search_config.per_field and pydantic_model:
+            # Uma coluna por campo
+            trace_cols = [f'_trace_{field}' for field in pydantic_model.model_fields.keys()]
+        else:
+            # Coluna única
+            trace_cols = ['_trace']
 
     # Identificar colunas que precisam ser criadas
     new_cols = [col for col in expected_columns if col not in df.columns]
@@ -300,8 +331,9 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
     needs_error = error_col not in df.columns
     needs_tokens = [col for col in token_cols if col not in df.columns] if track_tokens else []
     needs_search = [col for col in search_cols if col not in df.columns]
+    needs_trace = [col for col in trace_cols if col not in df.columns]
 
-    if not new_cols and not needs_status and not needs_error and not needs_tokens and not needs_search:
+    if not new_cols and not needs_status and not needs_error and not needs_tokens and not needs_search and not needs_trace:
         return
 
     # Criar colunas
@@ -316,6 +348,8 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
             for col in needs_tokens:
                 df[col] = None
         for col in needs_search:
+            df[col] = None
+        for col in needs_trace:
             df[col] = None
 
 
@@ -404,12 +438,14 @@ def _process_rows(
     conversion_info,
     track_tokens: bool,
     reprocess_columns=None,
+    trace_mode: Optional[str] = None,
 ) -> dict:
     """Processa cada linha do DataFrame.
 
     Args:
         reprocess_columns: Lista de colunas para forçar reprocessamento.
             Se especificado, não pula linhas já processadas.
+        trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
 
     Returns:
         Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
@@ -463,9 +499,9 @@ def _process_rows(
             if config.search_config and config.search_config.enabled:
                 from .agent import call_agent, call_agent_per_field
                 if config.search_config.per_field:
-                    result = call_agent_per_field(text, pydantic_model, user_prompt, config)
+                    result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
                 else:
-                    result = call_agent(text, pydantic_model, user_prompt, config)
+                    result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
             else:
                 result = call_langchain(text, pydantic_model, user_prompt, config)
 
@@ -506,6 +542,19 @@ def _process_rows(
                 # Acumular estatísticas de busca
                 token_stats['search_credits'] += usage.get('search_credits', 0)
                 token_stats['search_count'] += usage.get('search_count', 0)
+
+            # Armazenar traces (se habilitado)
+            if trace_mode:
+                if config.search_config and config.search_config.per_field:
+                    # Traces por campo
+                    traces = result.get('traces', {})
+                    for field_name, trace in traces.items():
+                        df.at[idx, f'_trace_{field_name}'] = json.dumps(trace, ensure_ascii=False)
+                else:
+                    # Trace único
+                    trace = result.get('trace')
+                    if trace:
+                        df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
 
             df.at[idx, status_col] = 'processed'
 
@@ -553,12 +602,14 @@ def _process_rows_parallel(
     track_tokens: bool,
     reprocess_columns,
     parallel_requests: int,
+    trace_mode: Optional[str] = None,
 ) -> dict:
     """Processa linhas do DataFrame em paralelo com auto-redução de workers.
 
     Args:
         parallel_requests: Número inicial de workers paralelos.
             Será reduzido automaticamente se detectar erros de rate limit (429).
+        trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
 
     Returns:
         Dict com estatísticas de tokens e métricas de throughput.
@@ -627,9 +678,9 @@ def _process_rows_parallel(
             if config.search_config and config.search_config.enabled:
                 from .agent import call_agent, call_agent_per_field
                 if config.search_config.per_field:
-                    result = call_agent_per_field(text, pydantic_model, user_prompt, config)
+                    result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
                 else:
-                    result = call_agent(text, pydantic_model, user_prompt, config)
+                    result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
             else:
                 result = call_langchain(text, pydantic_model, user_prompt, config)
 
@@ -664,6 +715,19 @@ def _process_rows_parallel(
 
                     token_stats['search_credits'] += usage.get('search_credits', 0)
                     token_stats['search_count'] += usage.get('search_count', 0)
+
+                # Armazenar traces (se habilitado)
+                if trace_mode:
+                    if config.search_config and config.search_config.per_field:
+                        # Traces por campo
+                        traces = result.get('traces', {})
+                        for field_name, trace in traces.items():
+                            df.at[idx, f'_trace_{field_name}'] = json.dumps(trace, ensure_ascii=False)
+                    else:
+                        # Trace único
+                        trace = result.get('trace')
+                        if trace:
+                            df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
 
                 token_stats['requests_completed'] += 1
                 df.at[idx, status_col] = 'processed'
