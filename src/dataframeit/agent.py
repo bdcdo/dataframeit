@@ -1,8 +1,11 @@
 """Processamento baseado em agente com busca web via Tavily."""
 
+import logging
 import time
 from copy import copy
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from pydantic import create_model
 
@@ -263,11 +266,51 @@ def _extract_usage(agent_result: dict, search_depth: str) -> Dict[str, Any]:
 
     # Extrair token usage das mensagens
     messages = agent_result.get("messages", [])
+
+    # Diagnóstico: logar detalhes de cada mensagem (ativado com logging.DEBUG)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"[token_tracking] Total messages in agent result: {len(messages)}")
+        for i, msg in enumerate(messages):
+            msg_type = getattr(msg, 'type', type(msg).__name__)
+            has_metadata = hasattr(msg, 'usage_metadata') and msg.usage_metadata is not None
+            has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
+
+            metadata_info = ""
+            if has_metadata:
+                meta = msg.usage_metadata
+                # Suportar tanto dict quanto objeto com atributos
+                if isinstance(meta, dict):
+                    metadata_info = f"in={meta.get('input_tokens', 0)}, out={meta.get('output_tokens', 0)}"
+                else:
+                    metadata_info = f"in={getattr(meta, 'input_tokens', 0)}, out={getattr(meta, 'output_tokens', 0)}"
+
+            tool_info = ""
+            if has_tool_calls:
+                tool_names = []
+                for tc in msg.tool_calls:
+                    name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
+                    tool_names.append(name)
+                tool_info = f", tools={tool_names}"
+
+            logger.debug(
+                f"[token_tracking]   [{i}] {msg_type}: "
+                f"has_usage_metadata={has_metadata}"
+                f"{f', {metadata_info}' if metadata_info else ''}"
+                f"{tool_info}"
+            )
+
     for msg in messages:
         if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
-            usage['input_tokens'] += msg.usage_metadata.get('input_tokens', 0)
-            usage['output_tokens'] += msg.usage_metadata.get('output_tokens', 0)
-            usage['total_tokens'] += msg.usage_metadata.get('total_tokens', 0)
+            meta = msg.usage_metadata
+            # Suportar tanto dict quanto objeto com atributos
+            if isinstance(meta, dict):
+                usage['input_tokens'] += meta.get('input_tokens', 0)
+                usage['output_tokens'] += meta.get('output_tokens', 0)
+                usage['total_tokens'] += meta.get('total_tokens', 0)
+            else:
+                usage['input_tokens'] += getattr(meta, 'input_tokens', 0)
+                usage['output_tokens'] += getattr(meta, 'output_tokens', 0)
+                usage['total_tokens'] += getattr(meta, 'total_tokens', 0)
 
     # Contar chamadas de busca (tool calls)
     depth_cost = 2 if search_depth == "advanced" else 1
@@ -280,6 +323,9 @@ def _extract_usage(agent_result: dict, search_depth: str) -> Dict[str, Any]:
                     usage['search_count'] += 1
 
     usage['search_credits'] = usage['search_count'] * depth_cost
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"[token_tracking] Final usage: {usage}")
 
     return usage
 
