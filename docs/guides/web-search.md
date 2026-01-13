@@ -332,3 +332,77 @@ resultado = dataframeit(
 2. Prefira `search_depth='basic'`
 3. Filtre seu DataFrame antes de processar
 4. Use `search_per_field=False` quando possível
+
+## Rate Limits e Processamento Paralelo
+
+!!! danger "Erros HTTP 429"
+    Ao usar `parallel_requests` com busca web, você pode exceder os limites de taxa do Tavily (~100 requisições/minuto). Isso faz com que buscas falhem silenciosamente e retornem dados incompletos.
+
+### Como as Queries são Calculadas
+
+| Configuração | Queries por Linha | Exemplo (100 linhas, 4 campos) |
+|--------------|-------------------|--------------------------------|
+| `search_per_field=False` | 1 | 100 queries |
+| `search_per_field=True` | 1 por campo | 400 queries |
+
+Com `parallel_requests=20` e `search_per_field=True`, você pode enviar até **80 queries concorrentes** (20 workers × 4 campos), o que excede os limites do Tavily.
+
+### Configurações Recomendadas
+
+| Cenário | `parallel_requests` | `rate_limit_delay` |
+|---------|--------------------|--------------------|
+| `search_per_field=False` | 5-10 | 0.5s |
+| `search_per_field=True` (2-3 campos) | 3-5 | 0.5s |
+| `search_per_field=True` (4+ campos) | 2-3 | 1.0s |
+
+### Exemplo de Configuração Segura
+
+```python
+# Configurações seguras para busca com múltiplos campos
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    text_column='texto',
+    use_search=True,
+    search_per_field=True,
+    parallel_requests=3,      # Baixo paralelismo
+    rate_limit_delay=0.5      # Delay entre requisições
+)
+```
+
+### Aviso Automático
+
+O DataFrameIt avisa automaticamente quando sua configuração pode exceder rate limits:
+
+```
+============================================================
+AVISO: Configuração pode exceder rate limits de busca
+============================================================
+Configuração atual:
+  - Linhas a processar: 100
+  - Campos no modelo: 4
+  - parallel_requests: 20
+  - search_per_field: True
+  - rate_limit_delay: 0.0s
+  - Total de queries estimadas: 400
+
+Problemas detectados:
+- Queries concorrentes estimadas: 80 (limite recomendado: 10)
+- Taxa estimada: ~4800 queries/min (limite Tavily: ~100/min)
+
+Recomendações para evitar HTTP 429 (rate limit):
+  dataframeit(..., parallel_requests=2, rate_limit_delay=1.7)
+============================================================
+```
+
+### Auto-Recuperação
+
+Quando um erro 429 é detectado, o DataFrameIt automaticamente reduz workers:
+
+```
+Rate limit detectado! Reduzindo workers de 10 para 5.
+Rate limit detectado! Reduzindo workers de 5 para 2.
+```
+
+No entanto, é melhor configurar corretamente desde o início para evitar queries falhadas.

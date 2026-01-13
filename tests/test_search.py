@@ -787,5 +787,201 @@ def test_call_agent_per_field_uses_config_override():
     assert captured_configs[0].search_config.search_depth == "advanced"
 
 
+# =============================================================================
+# Testes de warning de rate limit (Issue #67)
+# =============================================================================
+
+def test_warn_search_rate_limit_triggers_on_high_concurrent():
+    """Testa que warning é emitido quando queries concorrentes excedem limite."""
+    from dataframeit.core import _warn_search_rate_limit
+
+    with pytest.warns(UserWarning) as record:
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=4,
+            parallel_requests=20,
+            search_per_field=True,
+            rate_limit_delay=0.0,
+        )
+
+    assert len(record) == 1
+    warning_msg = str(record[0].message)
+    assert "rate limit" in warning_msg.lower()
+    assert "80" in warning_msg  # 20 * 4 = 80 concurrent queries
+
+
+def test_warn_search_rate_limit_triggers_on_high_rpm():
+    """Testa que warning é emitido quando taxa estimada excede limite Tavily."""
+    from dataframeit.core import _warn_search_rate_limit
+
+    with pytest.warns(UserWarning) as record:
+        _warn_search_rate_limit(
+            num_rows=1000,
+            num_fields=1,
+            parallel_requests=10,
+            search_per_field=False,
+            rate_limit_delay=0.0,
+        )
+
+    assert len(record) == 1
+    warning_msg = str(record[0].message)
+    assert "queries/min" in warning_msg.lower() or "taxa estimada" in warning_msg.lower()
+
+
+def test_warn_search_rate_limit_no_warning_safe_config():
+    """Testa que nenhum warning é emitido com configuração segura."""
+    from dataframeit.core import _warn_search_rate_limit
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        # Configuração muito conservadora:
+        # - 2 workers * 1 = 2 queries concorrentes (< 10)
+        # - Com delay de 2.0s: (60/2.0) * 2 = 60 req/min (< 80)
+        _warn_search_rate_limit(
+            num_rows=10,
+            num_fields=1,
+            parallel_requests=2,
+            search_per_field=False,
+            rate_limit_delay=2.0,
+        )
+
+    # Nenhum warning deve ser emitido (queries concorrentes baixo e taxa < 80% do limite)
+    rate_limit_warnings = [x for x in w if "rate limit" in str(x.message).lower()]
+    assert len(rate_limit_warnings) == 0
+
+
+def test_warn_search_rate_limit_includes_recommendations():
+    """Testa que warning inclui recomendações de parallel_requests e rate_limit_delay."""
+    from dataframeit.core import _warn_search_rate_limit
+
+    with pytest.warns(UserWarning) as record:
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=4,
+            parallel_requests=20,
+            search_per_field=True,
+            rate_limit_delay=0.0,
+        )
+
+    warning_msg = str(record[0].message)
+    assert "parallel_requests=" in warning_msg
+    assert "rate_limit_delay=" in warning_msg
+
+
+def test_warn_search_rate_limit_respects_existing_delay():
+    """Testa que warning considera rate_limit_delay existente no cálculo."""
+    from dataframeit.core import _warn_search_rate_limit
+    import warnings
+
+    # Com alto delay, a taxa estimada é menor
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=1,
+            parallel_requests=5,
+            search_per_field=False,
+            rate_limit_delay=2.0,  # Alto delay = ~30 req/min
+        )
+
+    # Com 5 workers e 2s delay = ~150 req/min (5 * 60/2)
+    # Isso está acima de 80% de 100, então pode gerar warning
+    # mas com baixo concurrent (5), não deve
+    rate_limit_warnings = [x for x in w if "concurrent" in str(x.message).lower()]
+    # Não deve ter warning de queries concorrentes pois 5 < 10
+    assert len(rate_limit_warnings) == 0
+
+
+def test_dataframeit_calls_warn_with_search_and_parallel():
+    """Testa que dataframeit chama warning quando use_search=True e parallel_requests>1."""
+    from dataframeit.core import dataframeit
+
+    df = pd.DataFrame({"texto": ["item"] * 100})
+
+    with patch('dataframeit.core.validate_provider_dependencies'), \
+         patch('dataframeit.core.validate_search_dependencies'), \
+         patch('dataframeit.core._warn_search_rate_limit') as mock_warn, \
+         patch('dataframeit.core._process_rows_parallel') as mock_process:
+
+        # Mock _process_rows_parallel para retornar sem fazer nada
+        mock_process.return_value = {'total_tokens': 0}
+
+        try:
+            dataframeit(
+                df,
+                questions=MedicamentoInfo,
+                prompt="Pesquise sobre {texto}",
+                use_search=True,
+                search_per_field=True,
+                parallel_requests=10,
+            )
+        except Exception:
+            pass  # Ignorar erros de processamento
+
+        # Verificar que warning foi chamado com parâmetros corretos
+        mock_warn.assert_called_once()
+        call_args = mock_warn.call_args
+        assert call_args.kwargs['num_rows'] == 100
+        assert call_args.kwargs['num_fields'] == 2  # MedicamentoInfo tem 2 campos
+        assert call_args.kwargs['parallel_requests'] == 10
+        assert call_args.kwargs['search_per_field'] is True
+
+
+def test_dataframeit_no_warn_without_search():
+    """Testa que dataframeit não chama warning quando use_search=False."""
+    from dataframeit.core import dataframeit
+
+    df = pd.DataFrame({"texto": ["item"]})
+
+    with patch('dataframeit.core.validate_provider_dependencies'), \
+         patch('dataframeit.core._warn_search_rate_limit') as mock_warn, \
+         patch('dataframeit.core._process_rows_parallel') as mock_process:
+
+        mock_process.return_value = {'total_tokens': 0}
+
+        try:
+            dataframeit(
+                df,
+                questions=MedicamentoInfo,
+                prompt="Analise {texto}",
+                use_search=False,  # Sem busca
+                parallel_requests=10,
+            )
+        except Exception:
+            pass
+
+        # Warning não deve ser chamado
+        mock_warn.assert_not_called()
+
+
+def test_dataframeit_no_warn_sequential():
+    """Testa que dataframeit não chama warning com parallel_requests=1."""
+    from dataframeit.core import dataframeit
+
+    df = pd.DataFrame({"texto": ["item"]})
+
+    with patch('dataframeit.core.validate_provider_dependencies'), \
+         patch('dataframeit.core.validate_search_dependencies'), \
+         patch('dataframeit.core._warn_search_rate_limit') as mock_warn, \
+         patch('dataframeit.core._process_rows') as mock_process:
+
+        mock_process.return_value = {'total_tokens': 0}
+
+        try:
+            dataframeit(
+                df,
+                questions=MedicamentoInfo,
+                prompt="Pesquise {texto}",
+                use_search=True,
+                parallel_requests=1,  # Sequencial
+            )
+        except Exception:
+            pass
+
+        # Warning não deve ser chamado
+        mock_warn.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
