@@ -332,3 +332,112 @@ resultado = dataframeit(
 2. Prefira `search_depth='basic'`
 3. Filtre seu DataFrame antes de processar
 4. Use `search_per_field=False` quando possível
+
+## Rate Limits e Processamento Paralelo
+
+!!! danger "Erros HTTP 429"
+    Ao usar `parallel_requests` com busca web, você pode exceder os limites de taxa do provedor de busca. Isso faz com que buscas falhem silenciosamente e retornem dados incompletos.
+
+### Limites de Taxa por Provedor
+
+| Provedor | Limite de Taxa | Notas |
+|----------|---------------|-------|
+| Tavily | ~100 req/min | Plano padrão |
+| Exa | ~300 req/min | Baseado em ~5 QPS |
+
+!!! tip "Exa para Alto Volume"
+    Se você precisa de maior throughput, considere usar `search_provider="exa"` que tem limites 3x maiores que o Tavily.
+
+### Como as Queries são Calculadas
+
+| Configuração | Queries por Linha | Exemplo (100 linhas, 4 campos) |
+|--------------|-------------------|--------------------------------|
+| `search_per_field=False` | 1 | 100 queries |
+| `search_per_field=True` | 1 por campo | 400 queries |
+
+Com `parallel_requests=20` e `search_per_field=True`, você pode enviar até **80 queries concorrentes** (20 workers × 4 campos), o que excede os limites de ambos os provedores.
+
+### Configurações Recomendadas por Provedor
+
+**Tavily (padrão):**
+
+| Cenário | `parallel_requests` | `rate_limit_delay` |
+|---------|--------------------|--------------------|
+| `search_per_field=False` | 5-10 | 0.5s |
+| `search_per_field=True` (2-3 campos) | 3-5 | 0.5s |
+| `search_per_field=True` (4+ campos) | 2-3 | 1.0s |
+
+**Exa (limites maiores):**
+
+| Cenário | `parallel_requests` | `rate_limit_delay` |
+|---------|--------------------|--------------------|
+| `search_per_field=False` | 10-15 | 0.3s |
+| `search_per_field=True` (2-3 campos) | 5-8 | 0.3s |
+| `search_per_field=True` (4+ campos) | 3-5 | 0.5s |
+
+### Exemplo de Configuração Segura
+
+```python
+# Configurações seguras para Tavily com múltiplos campos
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    text_column='texto',
+    use_search=True,
+    search_provider="tavily",
+    search_per_field=True,
+    parallel_requests=3,      # Baixo paralelismo
+    rate_limit_delay=0.5      # Delay entre requisições
+)
+
+# Maior throughput com Exa
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    text_column='texto',
+    use_search=True,
+    search_provider="exa",    # Use Exa para limites maiores
+    search_per_field=True,
+    parallel_requests=5,      # Pode usar mais workers com Exa
+    rate_limit_delay=0.3
+)
+```
+
+### Aviso Automático
+
+O DataFrameIt avisa automaticamente quando sua configuração pode exceder rate limits do provedor selecionado:
+
+```
+============================================================
+AVISO: Configuração pode exceder rate limits de busca (Tavily)
+============================================================
+Configuração atual:
+  - Provedor de busca: tavily
+  - Linhas a processar: 100
+  - Campos no modelo: 4
+  - parallel_requests: 20
+  - search_per_field: True
+  - rate_limit_delay: 0.0s
+  - Total de queries estimadas: 400
+
+Problemas detectados:
+- Queries concorrentes estimadas: 80 (limite recomendado: 10)
+- Taxa estimada: ~4800 queries/min (limite Tavily: ~100/min)
+
+Recomendações para evitar HTTP 429 (rate limit):
+  dataframeit(..., parallel_requests=2, rate_limit_delay=1.7)
+============================================================
+```
+
+### Auto-Recuperação
+
+Quando um erro 429 é detectado, o DataFrameIt automaticamente reduz workers:
+
+```
+Rate limit detectado! Reduzindo workers de 10 para 5.
+Rate limit detectado! Reduzindo workers de 5 para 2.
+```
+
+No entanto, é melhor configurar corretamente desde o início para evitar queries falhadas.

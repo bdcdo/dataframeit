@@ -5,6 +5,36 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Adicionado
+
+- **Aviso de rate limit para busca web com suporte a múltiplos provedores** (#67): O DataFrameIt agora emite um warning quando a configuração de `parallel_requests` combinada com `use_search=True` pode exceder os limites de taxa do provedor de busca selecionado.
+
+  **Rate limits por provedor:**
+  - Tavily: ~100 req/min
+  - Exa: ~300 req/min (3x maior que Tavily)
+
+  ```
+  ============================================================
+  AVISO: Configuração pode exceder rate limits de busca (Tavily)
+  ============================================================
+  Configuração atual:
+    - Provedor de busca: tavily
+    - parallel_requests: 20
+    - search_per_field: True
+    - Total de queries estimadas: 400
+
+  Recomendações para evitar HTTP 429:
+    dataframeit(..., parallel_requests=2, rate_limit_delay=1.7)
+  ============================================================
+  ```
+
+  - O warning inclui recomendações específicas de `parallel_requests` e `rate_limit_delay`
+  - Calcula queries concorrentes considerando `search_per_field`
+  - Usa limites específicos para cada provedor (Tavily vs Exa)
+  - Documentação atualizada com tabela de configurações recomendadas por provedor
+
 ## [0.5.2] - 2025-01-12
 
 ### Adicionado

@@ -251,3 +251,112 @@ result = dataframeit(
 2. Prefer `search_depth='basic'`
 3. Filter your DataFrame before processing
 4. Use `search_per_field=False` when possible
+
+## Rate Limits and Parallel Processing
+
+!!! danger "HTTP 429 Errors"
+    When using `parallel_requests` with web search, you may hit the search provider's rate limits. This causes searches to fail silently and return incomplete data.
+
+### Provider Rate Limits
+
+| Provider | Rate Limit | Notes |
+|----------|-----------|-------|
+| Tavily | ~100 req/min | Standard plan |
+| Exa | ~300 req/min | Based on ~5 QPS |
+
+!!! tip "Exa for High Volume"
+    If you need higher throughput, consider using `search_provider="exa"` which has 3x higher rate limits than Tavily.
+
+### How Queries are Calculated
+
+| Configuration | Queries per Row | Example (100 rows, 4 fields) |
+|--------------|----------------|------------------------------|
+| `search_per_field=False` | 1 | 100 queries |
+| `search_per_field=True` | 1 per field | 400 queries |
+
+With `parallel_requests=20` and `search_per_field=True`, you can send up to **80 concurrent queries** (20 workers × 4 fields), which exceeds both providers' limits.
+
+### Recommended Settings by Provider
+
+**Tavily (default):**
+
+| Scenario | `parallel_requests` | `rate_limit_delay` |
+|----------|--------------------|--------------------|
+| `search_per_field=False` | 5-10 | 0.5s |
+| `search_per_field=True` (2-3 fields) | 3-5 | 0.5s |
+| `search_per_field=True` (4+ fields) | 2-3 | 1.0s |
+
+**Exa (higher limits):**
+
+| Scenario | `parallel_requests` | `rate_limit_delay` |
+|----------|--------------------|--------------------|
+| `search_per_field=False` | 10-15 | 0.3s |
+| `search_per_field=True` (2-3 fields) | 5-8 | 0.3s |
+| `search_per_field=True` (4+ fields) | 3-5 | 0.5s |
+
+### Safe Configuration Example
+
+```python
+# Safe settings for Tavily with multiple fields
+result = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    text_column='text',
+    use_search=True,
+    search_provider="tavily",
+    search_per_field=True,
+    parallel_requests=3,      # Low parallelism
+    rate_limit_delay=0.5      # Add delay between requests
+)
+
+# Higher throughput with Exa
+result = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    text_column='text',
+    use_search=True,
+    search_provider="exa",    # Use Exa for higher rate limits
+    search_per_field=True,
+    parallel_requests=5,      # Can use more workers with Exa
+    rate_limit_delay=0.3
+)
+```
+
+### Automatic Warning
+
+DataFrameIt automatically warns when your configuration may exceed rate limits for the selected provider:
+
+```
+============================================================
+WARNING: Configuration may exceed search rate limits (Tavily)
+============================================================
+Current configuration:
+  - Search provider: tavily
+  - Rows to process: 100
+  - Fields in model: 4
+  - parallel_requests: 20
+  - search_per_field: True
+  - rate_limit_delay: 0.0s
+  - Total estimated queries: 400
+
+Problems detected:
+- Estimated concurrent queries: 80 (recommended limit: 10)
+- Estimated rate: ~4800 queries/min (Tavily limit: ~100/min)
+
+Recommendations to avoid HTTP 429 (rate limit):
+  dataframeit(..., parallel_requests=2, rate_limit_delay=1.7)
+============================================================
+```
+
+### Auto-Recovery
+
+When a 429 error is detected, DataFrameIt automatically reduces workers:
+
+```
+Rate limit detected! Reducing workers from 10 to 5.
+Rate limit detected! Reducing workers from 5 to 2.
+```
+
+However, it's better to configure properly from the start to avoid failed queries.
