@@ -200,6 +200,7 @@ def test_search_config_defaults():
     config = SearchConfig()
 
     assert config.enabled is False
+    assert config.provider == "tavily"
     assert config.per_field is False
     assert config.max_results == 5
     assert config.search_depth == "basic"
@@ -349,6 +350,11 @@ def test_tavily_friendly_error_messages():
 def test_call_agent_returns_expected_structure():
     """Verifica que call_agent retorna estrutura esperada."""
     from dataframeit.agent import _extract_usage
+    from dataframeit.search import TavilyProvider
+    from dataframeit.llm import SearchConfig
+
+    provider = TavilyProvider()
+    search_config = SearchConfig(enabled=True, provider="tavily")
 
     # Simular resultado do agente
     mock_result = {
@@ -365,20 +371,27 @@ def test_call_agent_returns_expected_structure():
         "structured_response": MagicMock(),
     }
 
-    usage = _extract_usage(mock_result, "basic")
+    usage = _extract_usage(mock_result, provider, search_config)
 
     assert "input_tokens" in usage
     assert "output_tokens" in usage
     assert "total_tokens" in usage
     assert "search_credits" in usage
     assert "search_count" in usage
+    assert "search_provider" in usage
     assert usage["search_count"] == 1  # Uma tool call de busca
     assert usage["search_credits"] == 1  # basic = 1 crédito
+    assert usage["search_provider"] == "tavily"
 
 
 def test_extract_usage_advanced_depth():
     """Verifica cálculo de créditos com search_depth='advanced'."""
     from dataframeit.agent import _extract_usage
+    from dataframeit.search import TavilyProvider
+    from dataframeit.llm import SearchConfig
+
+    provider = TavilyProvider()
+    search_config = SearchConfig(enabled=True, provider="tavily", search_depth="advanced")
 
     mock_result = {
         "messages": [
@@ -389,7 +402,7 @@ def test_extract_usage_advanced_depth():
         ],
     }
 
-    usage = _extract_usage(mock_result, "advanced")
+    usage = _extract_usage(mock_result, provider, search_config)
 
     assert usage["search_count"] == 2
     assert usage["search_credits"] == 4  # advanced = 2 créditos × 2 buscas
@@ -695,14 +708,15 @@ def test_field_config_without_per_field_raises():
     df = pd.DataFrame({"texto": ["teste"]})
 
     with patch('dataframeit.core.validate_provider_dependencies'):
-        with pytest.raises(ValueError) as exc_info:
-            dataframeit(
-                df,
-                questions=ModelWithConfig,
-                prompt="Analise {texto}",
-                use_search=True,
-                search_per_field=False,  # Deve dar erro
-            )
+        with patch('dataframeit.core.validate_search_dependencies'):
+            with pytest.raises(ValueError) as exc_info:
+                dataframeit(
+                    df,
+                    questions=ModelWithConfig,
+                    prompt="Analise {texto}",
+                    use_search=True,
+                    search_per_field=False,  # Deve dar erro
+                )
 
     assert "search_per_field=True" in str(exc_info.value)
 

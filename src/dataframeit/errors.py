@@ -157,49 +157,86 @@ def validate_provider_dependencies(provider: str):
             raise ImportError(_get_missing_package_message(package, install, name))
 
 
-def validate_search_dependencies():
-    """Valida se as dependências do Tavily estão instaladas e API key configurada.
+def validate_search_dependencies(search_provider: str = "tavily"):
+    """Valida se as dependências do provedor de busca estão instaladas e API key configurada.
+
+    Args:
+        search_provider: Nome do provedor de busca ("tavily" ou "exa").
 
     Raises:
-        ImportError: Com mensagem amigável se langchain-tavily não estiver instalado.
-        ValueError: Com mensagem amigável se TAVILY_API_KEY não estiver configurada.
+        ImportError: Com mensagem amigável se pacote do provedor não estiver instalado.
+        ValueError: Com mensagem amigável se API key não estiver configurada.
     """
     import os
 
-    # Validar langchain-tavily
+    # Configurações dos provedores suportados
+    providers_config = {
+        'tavily': {
+            'package': 'langchain_tavily',
+            'install': 'langchain-tavily',
+            'friendly_name': 'Tavily Search',
+            'env_var': 'TAVILY_API_KEY',
+            'signup_url': 'https://app.tavily.com',
+            'free_tier': '1000 buscas/mês',
+        },
+        'exa': {
+            'package': 'langchain_exa',
+            'install': 'langchain-exa',
+            'friendly_name': 'Exa Search',
+            'env_var': 'EXA_API_KEY',
+            'signup_url': 'https://exa.ai',
+            'free_tier': 'plano pago',
+        },
+    }
+
+    if search_provider not in providers_config:
+        available = list(providers_config.keys())
+        raise ValueError(
+            f"Provedor de busca '{search_provider}' não suportado. "
+            f"Provedores disponíveis: {available}"
+        )
+
+    config = providers_config[search_provider]
+
+    # Validar pacote do provedor
     try:
-        importlib.import_module('langchain_tavily')
+        importlib.import_module(config['package'])
     except ImportError:
         raise ImportError(_get_missing_package_message(
-            'langchain_tavily',
-            'langchain-tavily',
-            'Tavily Search'
+            config['package'],
+            config['install'],
+            config['friendly_name']
         ))
 
     # Validar API key
-    if not os.environ.get('TAVILY_API_KEY'):
-        raise ValueError("""
+    if not os.environ.get(config['env_var']):
+        raise ValueError(_get_missing_search_api_key_message(config))
+
+
+def _get_missing_search_api_key_message(config: dict) -> str:
+    """Gera mensagem amigável para API key de busca não configurada."""
+    return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  CHAVE DE API DO TAVILY NÃO CONFIGURADA                                      ║
+║  CHAVE DE API DO {config['friendly_name'].upper()} NÃO CONFIGURADA                                      ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
-║  Para usar busca web, você precisa de uma chave de API do Tavily.            ║
+║  Para usar busca web com {config['friendly_name']}, você precisa de uma API key.           ║
 ║                                                                              ║
 ║  COMO OBTER:                                                                 ║
-║  1. Acesse https://app.tavily.com                                            ║
-║  2. Crie uma conta (gratuita - 1000 buscas/mês)                              ║
+║  1. Acesse {config['signup_url']:<58} ║
+║  2. Crie uma conta ({config['free_tier']})                                          ║
 ║  3. Copie sua API key                                                        ║
 ║                                                                              ║
 ║  COMO CONFIGURAR:                                                            ║
 ║                                                                              ║
 ║  No Linux/Mac:                                                               ║
-║      export TAVILY_API_KEY="sua-chave-aqui"                                  ║
+║      export {config['env_var']}="sua-chave-aqui"                                   ║
 ║                                                                              ║
 ║  No Windows (PowerShell):                                                    ║
-║      $env:TAVILY_API_KEY="sua-chave-aqui"                                    ║
+║      $env:{config['env_var']}="sua-chave-aqui"                                     ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip())
+""".strip()
 
 
 def get_friendly_error_message(error: Exception, provider: str = None) -> str:
@@ -367,6 +404,42 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 ║  1. Aguarde até o próximo mês (plano gratuito renova mensalmente)            ║
 ║  2. Ou faça upgrade do plano em https://tavily.com/pricing                   ║
 ║  3. Ou continue sem busca web (use_search=False)                             ║
+║  4. Ou mude para outro provedor (search_provider="exa")                      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERROS EXA ===
+    if 'exa' in error_str and any(p in error_str for p in ['apikey', 'api_key', 'missing', 'invalid', 'unauthorized']):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE AUTENTICAÇÃO EXA                                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Sua chave de API do Exa está inválida ou não configurada.                   ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Acesse https://exa.ai e obtenha sua API key                              ║
+║  2. Configure a variável de ambiente:                                        ║
+║                                                                              ║
+║     export EXA_API_KEY="sua-chave-aqui"                                      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    if 'exa' in error_str and any(p in error_str for p in ['limit', 'quota', 'exceeded']):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE USO EXA EXCEDIDO                                                  ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você atingiu o limite de buscas do seu plano Exa.                           ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Verifique seu saldo em https://exa.ai                                    ║
+║  2. Adicione créditos à sua conta                                            ║
+║  3. Ou continue sem busca web (use_search=False)                             ║
+║  4. Ou mude para outro provedor (search_provider="tavily")                   ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()

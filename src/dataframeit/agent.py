@@ -1,4 +1,9 @@
-"""Processamento baseado em agente com busca web via Tavily."""
+"""Processamento baseado em agente com busca web.
+
+Suporta múltiplos provedores de busca:
+- Tavily: Motor de busca otimizado para IA
+- Exa: Motor de busca semântico
+"""
 
 import time
 from copy import copy
@@ -8,6 +13,7 @@ from pydantic import create_model
 
 from .llm import LLMConfig, build_prompt, _create_langchain_llm
 from .errors import retry_with_backoff
+from .search import get_provider
 
 
 def _get_field_config(extra: dict) -> dict:
@@ -102,7 +108,7 @@ def call_agent(
     config: LLMConfig,
     save_trace: Optional[str] = None
 ) -> dict:
-    """Processa texto usando agente LangChain com busca Tavily.
+    """Processa texto usando agente LangChain com busca web.
 
     Args:
         text: Texto a ser processado (ex: nome do medicamento, país, etc.).
@@ -117,16 +123,14 @@ def call_agent(
     """
     from langchain.agents import create_agent
     from langchain.agents.structured_output import ToolStrategy
-    from langchain_tavily import TavilySearch
 
     search_config = config.search_config
 
-    # Criar ferramenta de busca Tavily
-    tavily_tool = TavilySearch(
+    # Criar ferramenta de busca via factory (suporta Tavily, Exa, etc.)
+    provider = get_provider(search_config.provider)
+    search_tool = provider.create_tool(
         max_results=search_config.max_results,
         search_depth=search_config.search_depth,
-        include_raw_content=False,
-        include_answer=False,
     )
 
     # Criar modelo LLM inicializado
@@ -135,7 +139,7 @@ def call_agent(
     # Criar agente com structured output
     agent = create_agent(
         model=llm,
-        tools=[tavily_tool],
+        tools=[search_tool],
         response_format=ToolStrategy(pydantic_model),
     )
 
@@ -154,14 +158,14 @@ def call_agent(
 
         data = structured.model_dump() if hasattr(structured, 'model_dump') else structured
 
-        # Calcular usage (tokens + search credits)
-        usage = _extract_usage(result, search_config.search_depth)
+        # Calcular usage (tokens + search credits via provider)
+        usage = _extract_usage(result, provider, search_config)
 
         response = {'data': data, 'usage': usage}
 
         # Extrair trace se habilitado
         if save_trace:
-            response['trace'] = _extract_trace(result, config.model, duration, save_trace)
+            response['trace'] = _extract_trace(result, config.model, duration, save_trace, provider)
 
         return response
 
@@ -192,6 +196,7 @@ def call_agent_per_field(
         de todos os tokens e créditos) e 'traces' (dict por campo, se habilitado).
     """
     combined_data = {}
+    search_provider = config.search_config.provider if config.search_config else None
     total_usage = {
         'input_tokens': 0,
         'output_tokens': 0,
@@ -227,7 +232,7 @@ def call_agent_per_field(
         # Combinar resultado
         combined_data[field_name] = result['data'].get(field_name)
 
-        # Somar usage de todas as chamadas
+        # Somar usage de todas as chamadas (exceto campos não numéricos)
         if result.get('usage'):
             for key in total_usage:
                 total_usage[key] += result['usage'].get(key, 0)
@@ -236,6 +241,9 @@ def call_agent_per_field(
         if save_trace and result.get('trace'):
             traces[field_name] = result['trace']
 
+    # Adicionar search_provider ao usage
+    total_usage['search_provider'] = search_provider
+
     response = {'data': combined_data, 'usage': total_usage}
     if save_trace:
         response['traces'] = traces
@@ -243,22 +251,26 @@ def call_agent_per_field(
     return response
 
 
-def _extract_usage(agent_result: dict, search_depth: str) -> Dict[str, Any]:
+def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 
     Args:
         agent_result: Resultado retornado pelo agent.invoke().
-        search_depth: Profundidade da busca ("basic" ou "advanced").
+        provider: Instância do SearchProvider usado.
+        search_config: Configuração de busca (SearchConfig).
 
     Returns:
         Dicionário com tokens e créditos de busca.
     """
+    from .search import SearchProvider
+
     usage = {
         'input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
         'search_credits': 0,
         'search_count': 0,
+        'search_provider': provider.name,
     }
 
     # Extrair token usage das mensagens
@@ -269,22 +281,27 @@ def _extract_usage(agent_result: dict, search_depth: str) -> Dict[str, Any]:
             usage['output_tokens'] += msg.usage_metadata.get('output_tokens', 0)
             usage['total_tokens'] += msg.usage_metadata.get('total_tokens', 0)
 
-    # Contar chamadas de busca (tool calls)
-    depth_cost = 2 if search_depth == "advanced" else 1
+    # Contar chamadas de busca (tool calls) usando padrão do provider
+    tool_pattern = provider.get_tool_name_pattern()
     for msg in messages:
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
             for tc in msg.tool_calls:
-                # TavilySearch tool name pode variar
                 tool_name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
-                if 'tavily' in tool_name.lower() or 'search' in tool_name.lower():
+                # Identificar tool calls do provider ou genéricos de busca
+                if tool_pattern in tool_name.lower() or 'search' in tool_name.lower():
                     usage['search_count'] += 1
 
-    usage['search_credits'] = usage['search_count'] * depth_cost
+    # Calcular créditos usando método do provider
+    usage['search_credits'] = provider.calculate_credits(
+        search_count=usage['search_count'],
+        search_depth=search_config.search_depth,
+        max_results=search_config.max_results,
+    )
 
     return usage
 
 
-def _extract_trace(agent_result: dict, model: str, duration: float, mode: str) -> dict:
+def _extract_trace(agent_result: dict, model: str, duration: float, mode: str, provider=None) -> dict:
     """Extrai trace do resultado do agente LangChain.
 
     Args:
@@ -292,6 +309,7 @@ def _extract_trace(agent_result: dict, model: str, duration: float, mode: str) -
         model: Nome do modelo usado.
         duration: Tempo de execução em segundos.
         mode: "full" ou "minimal".
+        provider: Instância do SearchProvider usado (opcional).
 
     Returns:
         Dicionário com trace estruturado.
@@ -303,6 +321,7 @@ def _extract_trace(agent_result: dict, model: str, duration: float, mode: str) -
         "total_tool_calls": 0,
         "duration_seconds": round(duration, 3),
         "model": model,
+        "search_provider": provider.name if provider else None,
     }
 
     for msg in messages:

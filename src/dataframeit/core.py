@@ -180,6 +180,7 @@ def dataframeit(
     parallel_requests=1,
     # Parâmetros de busca web
     use_search=False,
+    search_provider="tavily",
     search_per_field=False,
     max_results=5,
     search_depth="basic",
@@ -219,14 +220,18 @@ def dataframeit(
             Se > 1, processa múltiplas linhas simultaneamente.
             Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
             Dica: use track_tokens=True para ver métricas de throughput (RPM, TPM) e calibrar.
-        use_search: Se True, habilita busca web via Tavily antes de processar.
-            Requer TAVILY_API_KEY configurada. Padrão: False.
+        use_search: Se True, habilita busca web antes de processar. Padrão: False.
+        search_provider: Provedor de busca web a usar. Opções:
+            - "tavily": Motor de busca otimizado para IA (padrão). Requer TAVILY_API_KEY.
+              Melhor para volume baixo-médio (<2667 buscas/mês) ou quando precisa >25 resultados.
+            - "exa": Motor de busca semântico. Requer EXA_API_KEY.
+              Mais econômico para alto volume (>2667 buscas/mês com 1-25 resultados).
         search_per_field: Se True, executa um agente separado para cada campo do modelo Pydantic.
             Útil quando o modelo tem muitos campos e um único contexto ficaria sobrecarregado.
             Padrão: False (um agente responde todos os campos).
         max_results: Número máximo de resultados por busca (1-20). Padrão: 5.
         search_depth: Profundidade da busca - "basic" (1 crédito) ou "advanced" (2 créditos).
-            Padrão: "basic".
+            Apenas para Tavily. Padrão: "basic".
         save_trace: Salva o trace completo do raciocínio do agente. Requer use_search=True.
             - None/False: Desabilitado (padrão)
             - True/"full": Trace completo com conteúdo das mensagens
@@ -258,11 +263,13 @@ def dataframeit(
 
     # Validar parâmetros de busca
     if use_search:
-        if search_depth not in ("basic", "advanced"):
+        if search_provider not in ("tavily", "exa"):
+            raise ValueError("search_provider deve ser 'tavily' ou 'exa'")
+        if search_provider == "tavily" and search_depth not in ("basic", "advanced"):
             raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
         if not 1 <= max_results <= 20:
             raise ValueError("max_results deve estar entre 1 e 20")
-        validate_search_dependencies()
+        validate_search_dependencies(search_provider)
 
     # Validar e normalizar save_trace
     trace_mode = None
@@ -281,6 +288,7 @@ def dataframeit(
     if use_search:
         search_config = SearchConfig(
             enabled=True,
+            provider=search_provider,
             per_field=search_per_field,
             max_results=max_results,
             search_depth=search_depth,

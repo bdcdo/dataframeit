@@ -6,11 +6,17 @@ from .errors import retry_with_backoff
 
 @dataclass
 class SearchConfig:
-    """Configuração para busca web via Tavily."""
+    """Configuração para busca web.
+
+    Suporta múltiplos provedores de busca:
+    - tavily: Motor de busca otimizado para IA (default)
+    - exa: Motor de busca semântico, mais econômico para alto volume
+    """
     enabled: bool = False
+    provider: str = "tavily"  # "tavily" ou "exa"
     per_field: bool = False  # Um agente por campo
     max_results: int = 5
-    search_depth: str = "basic"  # "basic" ou "advanced"
+    search_depth: str = "basic"  # "basic" ou "advanced" (apenas Tavily)
 
 
 @dataclass

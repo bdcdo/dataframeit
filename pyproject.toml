@@ -66,11 +66,19 @@ polars = [
 search = [
     "langchain-tavily>=0.1.0",
 ]
+search-exa = [
+    "langchain-exa>=0.2.0",
+]
+search-all = [
+    "langchain-tavily>=0.1.0",
+    "langchain-exa>=0.2.0",
+]
 all = [
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
     "langchain-tavily>=0.1.0",
+    "langchain-exa>=0.2.0",
     "polars>=0.20",
 ]
 dev = [
