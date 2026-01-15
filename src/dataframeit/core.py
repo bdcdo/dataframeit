@@ -214,7 +214,8 @@ def dataframeit(
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
-            f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
+            f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
+            stacklevel=2
         )
         return from_pandas(df_pandas, conversion_info)
 
@@ -581,7 +582,7 @@ def _process_rows(
             friendly_msg = get_friendly_error_message(e, config.provider)
             print(f"\n{friendly_msg}\n")
 
-            warnings.warn(f"Falha ao processar linha {idx}.")
+            warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=3)
             df.at[idx, status_col] = 'error'
             df.at[idx, '_error_details'] = error_details
 
@@ -753,7 +754,7 @@ def _process_rows_parallel(
                         workers_reduced = True
                         warnings.warn(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            stacklevel=2
+                            stacklevel=3
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo
@@ -769,7 +770,7 @@ def _process_rows_parallel(
                 friendly_msg = get_friendly_error_message(e, config.provider)
                 print(f"\n{friendly_msg}\n")
 
-                warnings.warn(f"Falha ao processar linha {idx}.")
+                warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=3)
                 df.at[idx, status_col] = 'error'
                 df.at[idx, '_error_details'] = error_details
 
@@ -799,7 +800,7 @@ def _process_rows_parallel(
                     except Exception as e:
                         pbar.update(1)
                         completed += 1
-                        warnings.warn(f"Erro inesperado no executor: {e}")
+                        warnings.warn(f"Erro inesperado no executor: {e}", stacklevel=3)
 
     # Calcular métricas finais
     elapsed = time.time() - start_time

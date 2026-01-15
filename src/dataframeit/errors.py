@@ -468,7 +468,7 @@ def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_
             if not is_recoverable_error(e):
                 warnings.warn(
                     f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
-                    stacklevel=3
+                    stacklevel=5
                 )
                 raise
 
@@ -487,7 +487,7 @@ def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_
             warnings.warn(
                 f"Tentativa {attempt + 1}/{max_retries} falhou ({error_name}). "
                 f"Aguardando {total_delay:.1f}s antes de tentar novamente...",
-                stacklevel=3
+                stacklevel=5
             )
 
             time.sleep(total_delay)
