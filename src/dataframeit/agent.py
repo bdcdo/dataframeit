@@ -21,13 +21,15 @@ def _get_field_config(extra: dict) -> dict:
 
     Returns:
         Dicionário com configurações extraídas (prompt, prompt_append,
-        search_depth, max_results).
+        search_depth, max_results, depends_on, condition).
     """
     return {
         'prompt': extra.get('prompt') or extra.get('prompt_replace'),
         'prompt_append': extra.get('prompt_append'),
         'search_depth': extra.get('search_depth'),
         'max_results': extra.get('max_results'),
+        'depends_on': extra.get('depends_on', []),
+        'condition': extra.get('condition'),
     }
 
 
@@ -183,6 +185,10 @@ def call_agent_per_field(
     Útil quando o modelo tem muitos campos e um único contexto ficaria
     sobrecarregado com informações de múltiplas buscas.
 
+    Suporta execução condicional de campos baseada em:
+    - depends_on: lista de campos que devem ser processados primeiro
+    - condition: condição para executar o campo (baseado em valores de outros campos)
+
     Args:
         text: Texto a ser processado.
         pydantic_model: Modelo Pydantic completo.
@@ -193,7 +199,12 @@ def call_agent_per_field(
     Returns:
         Dicionário com 'data' (todos os campos combinados), 'usage' (soma
         de todos os tokens e créditos) e 'traces' (dict por campo, se habilitado).
+
+    Raises:
+        ValueError: Se há dependências circulares ou inválidas.
     """
+    from .conditional import get_field_execution_order, should_skip_field
+
     combined_data = {}
     total_usage = {
         'input_tokens': 0,
@@ -204,17 +215,39 @@ def call_agent_per_field(
     }
     traces = {} if save_trace else None
 
-    # Iterar por cada campo do modelo Pydantic
+    # Extrair configurações de todos os campos
+    field_configs = {}
     for field_name, field_info in pydantic_model.model_fields.items():
+        extra = field_info.json_schema_extra
+        field_configs[field_name] = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+    # Determinar ordem de execução baseada em dependências
+    try:
+        execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
+    except ValueError as e:
+        logger.error(f"Erro ao determinar ordem de execução: {e}")
+        raise
+
+    logger.debug(f"Ordem de execução de campos: {execution_order}")
+    if any(dependencies.values()):
+        logger.debug(f"Mapa de dependências: {dependencies}")
+
+    # Processar campos na ordem determinada
+    for field_name in execution_order:
+        field_info = pydantic_model.model_fields[field_name]
+        field_config = field_configs[field_name]
+
+        # Verificar se o campo deve ser pulado (condição não satisfeita)
+        if should_skip_field(field_name, field_config, combined_data):
+            logger.info(f"Campo '{field_name}' pulado (condição não satisfeita)")
+            combined_data[field_name] = None
+            continue
+
         # Criar modelo temporário com apenas este campo
         SingleFieldModel = create_model(
             f'{pydantic_model.__name__}_{field_name}',
             **{field_name: (field_info.annotation, field_info)}
         )
-
-        # Extrair configurações do campo (opcional)
-        extra = field_info.json_schema_extra
-        field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
 
         # Construir prompt para este campo
         field_prompt = _build_field_prompt(
