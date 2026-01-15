@@ -408,6 +408,79 @@ def test_extract_usage_advanced_depth():
     assert usage["search_credits"] == 4  # advanced = 2 créditos × 2 buscas
 
 
+def test_extract_usage_with_object_metadata():
+    """Verifica extração de tokens quando usage_metadata é um objeto (não dict)."""
+    from dataframeit.agent import _extract_usage
+
+    # Criar objeto mock que usa atributos ao invés de dict
+    metadata_obj = MagicMock()
+    metadata_obj.input_tokens = 150
+    metadata_obj.output_tokens = 75
+    metadata_obj.total_tokens = 225
+    # Simular que não é um dict
+    type(metadata_obj).__iter__ = MagicMock(side_effect=TypeError)
+
+    mock_result = {
+        "messages": [
+            MagicMock(
+                type="ai",
+                usage_metadata=metadata_obj,
+                tool_calls=None
+            ),
+        ],
+    }
+
+    usage = _extract_usage(mock_result, "basic")
+
+    assert usage["input_tokens"] == 150
+    assert usage["output_tokens"] == 75
+    assert usage["total_tokens"] == 225
+
+
+def test_extract_usage_with_debug_logging(caplog):
+    """Verifica que logging de diagnóstico funciona sem erros."""
+    import logging
+    from dataframeit.agent import _extract_usage
+
+    mock_result = {
+        "messages": [
+            MagicMock(
+                type="human",
+                usage_metadata=None,
+                tool_calls=None
+            ),
+            MagicMock(
+                type="ai",
+                usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+                tool_calls=[{"name": "tavily_search"}]
+            ),
+            MagicMock(
+                type="tool",
+                usage_metadata=None,
+                tool_calls=None
+            ),
+            MagicMock(
+                type="ai",
+                usage_metadata={"input_tokens": 200, "output_tokens": 100, "total_tokens": 300},
+                tool_calls=None
+            ),
+        ],
+    }
+
+    # Ativar logging de debug
+    with caplog.at_level(logging.DEBUG, logger="dataframeit.agent"):
+        usage = _extract_usage(mock_result, "basic")
+
+    # Verificar que os tokens foram extraídos corretamente
+    assert usage["input_tokens"] == 300  # 100 + 200
+    assert usage["output_tokens"] == 150  # 50 + 100
+    assert usage["search_count"] == 1
+
+    # Verificar que o logging foi gerado
+    assert "[token_tracking]" in caplog.text
+    assert "Total messages in agent result: 4" in caplog.text
+
+
 # =============================================================================
 # Testes de call_agent_per_field
 # =============================================================================
