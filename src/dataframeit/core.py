@@ -50,6 +50,7 @@ def _has_field_config(pydantic_model) -> bool:
 # Limites de rate limit conhecidos (requests por minuto) para provedores de busca
 _SEARCH_PROVIDER_RATE_LIMITS = {
     'tavily': 100,  # ~100 requests/minute no plano gratuito/básico
+    'exa': 300,     # ~5 QPS (queries/segundo) = ~300/min no plano padrão
 }
 
 # Número máximo de queries simultâneas recomendado para evitar rate limits
@@ -62,6 +63,7 @@ def _warn_search_rate_limit(
     parallel_requests: int,
     search_per_field: bool,
     rate_limit_delay: float,
+    search_provider: str = "tavily",
 ) -> None:
     """Emite warning se a configuração pode exceder rate limits de busca.
 
@@ -71,14 +73,19 @@ def _warn_search_rate_limit(
         parallel_requests: Número de workers paralelos.
         search_per_field: Se True, executa uma busca por campo.
         rate_limit_delay: Delay entre requisições configurado.
+        search_provider: Provedor de busca ('tavily' ou 'exa').
     """
     # Calcular queries estimadas
     queries_per_row = num_fields if search_per_field else 1
     total_queries = num_rows * queries_per_row
     concurrent_queries = parallel_requests * queries_per_row
 
-    # Verificar se pode exceder rate limits
-    tavily_limit = _SEARCH_PROVIDER_RATE_LIMITS['tavily']
+    # Obter limite do provedor (usa tavily como fallback)
+    provider_limit = _SEARCH_PROVIDER_RATE_LIMITS.get(
+        search_provider,
+        _SEARCH_PROVIDER_RATE_LIMITS['tavily']
+    )
+    provider_name = search_provider.capitalize()
 
     # Condições para warning:
     # 1. Muitas queries concorrentes (podem sobrecarregar a API instantaneamente)
@@ -106,11 +113,11 @@ def _warn_search_rate_limit(
     if search_per_field:
         estimated_rpm *= num_fields
 
-    if estimated_rpm > tavily_limit * 0.8:  # 80% do limite como margem de segurança
+    if estimated_rpm > provider_limit * 0.8:  # 80% do limite como margem de segurança
         should_warn = True
         warning_reasons.append(
             f"- Taxa estimada: ~{estimated_rpm:.0f} queries/min "
-            f"(limite Tavily: ~{tavily_limit}/min)"
+            f"(limite {provider_name}: ~{provider_limit}/min)"
         )
 
     if not should_warn:
@@ -123,10 +130,10 @@ def _warn_search_rate_limit(
         # Calcular delay necessário para ficar abaixo do limite
         # queries/min = (60 / delay) * parallel * fields
         # delay = (60 * parallel * fields) / queries_limit
-        recommended_delay = (60 * recommended_parallel * num_fields) / (tavily_limit * 0.7)
+        recommended_delay = (60 * recommended_parallel * num_fields) / (provider_limit * 0.7)
     else:
         recommended_parallel = min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES)
-        recommended_delay = (60 * recommended_parallel) / (tavily_limit * 0.7)
+        recommended_delay = (60 * recommended_parallel) / (provider_limit * 0.7)
 
     recommended_delay = max(0.5, round(recommended_delay, 1))
     recommended_parallel = max(1, recommended_parallel)
@@ -138,9 +145,10 @@ def _warn_search_rate_limit(
     # Emitir warning
     warning_msg = (
         f"\n{'='*60}\n"
-        f"AVISO: Configuração pode exceder rate limits de busca\n"
+        f"AVISO: Configuração pode exceder rate limits de busca ({provider_name})\n"
         f"{'='*60}\n"
         f"Configuração atual:\n"
+        f"  - Provedor de busca: {search_provider}\n"
         f"  - Linhas a processar: {num_rows}\n"
         f"  - Campos no modelo: {num_fields}\n"
         f"  - parallel_requests: {parallel_requests}\n"
@@ -326,6 +334,7 @@ def dataframeit(
             parallel_requests=parallel_requests,
             search_per_field=search_per_field,
             rate_limit_delay=rate_limit_delay,
+            search_provider=search_provider,
         )
 
     # Validar reprocess_columns

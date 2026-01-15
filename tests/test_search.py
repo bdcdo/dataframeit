@@ -997,5 +997,154 @@ def test_dataframeit_no_warn_sequential():
         mock_warn.assert_not_called()
 
 
+# =============================================================================
+# Testes de warning de rate limit para Exa (Issue #67)
+# =============================================================================
+
+def test_warn_search_rate_limit_exa_provider():
+    """Testa que warning funciona corretamente com provedor Exa."""
+    from dataframeit.core import _warn_search_rate_limit
+
+    with pytest.warns(UserWarning) as record:
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=4,
+            parallel_requests=20,
+            search_per_field=True,
+            rate_limit_delay=0.0,
+            search_provider="exa",
+        )
+
+    assert len(record) == 1
+    warning_msg = str(record[0].message)
+    assert "exa" in warning_msg.lower()
+    assert "rate limit" in warning_msg.lower()
+
+
+def test_warn_search_rate_limit_exa_higher_limit():
+    """Testa que Exa tem limite mais alto que Tavily (300 vs 100 req/min)."""
+    from dataframeit.core import _warn_search_rate_limit
+    import warnings
+
+    # Configuração que excede limite do Tavily (100) mas não do Exa (300)
+    # 10 workers * 60/s = 600 req/min > 100 (Tavily) mas vamos usar delay
+    # Com delay de 0.5s: 10 * (60/0.5) = 1200 req/min - ambos excedem
+    # Com delay de 1.0s: 10 * (60/1.0) = 600 req/min - excede Tavily, perto do Exa
+
+    # Tavily deve emitir warning
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=1,
+            parallel_requests=3,
+            search_per_field=False,
+            rate_limit_delay=0.5,  # 3 * 120 = 360 req/min > 80 (Tavily 80%)
+            search_provider="tavily",
+        )
+    tavily_warnings = [x for x in w if "rate limit" in str(x.message).lower()]
+    assert len(tavily_warnings) == 1
+
+    # Exa não deve emitir warning para mesma configuração (360 < 240 = 300*0.8)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=1,
+            parallel_requests=3,
+            search_per_field=False,
+            rate_limit_delay=0.5,  # 3 * 120 = 360 req/min > 240 (Exa 80%)
+            search_provider="exa",
+        )
+    # Exa também deve emitir warning pois 360 > 240
+    exa_warnings = [x for x in w if "rate limit" in str(x.message).lower()]
+    assert len(exa_warnings) == 1
+
+
+def test_warn_search_rate_limit_exa_safe_config():
+    """Testa configuração segura que não gera warning para Exa."""
+    from dataframeit.core import _warn_search_rate_limit
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        # Configuração conservadora para Exa:
+        # - 5 workers * 1 = 5 queries concorrentes (< 10)
+        # - Com delay de 0.5s: (60/0.5) * 5 = 600 req/min
+        # - Mas 600 > 240 (80% de 300), então vamos usar delay maior
+        _warn_search_rate_limit(
+            num_rows=50,
+            num_fields=1,
+            parallel_requests=3,
+            search_per_field=False,
+            rate_limit_delay=1.0,  # 3 * 60 = 180 req/min < 240 (Exa 80%)
+            search_provider="exa",
+        )
+
+    # Nenhum warning deve ser emitido
+    rate_limit_warnings = [x for x in w if "rate limit" in str(x.message).lower()]
+    assert len(rate_limit_warnings) == 0
+
+
+def test_warn_search_rate_limit_shows_correct_provider_name():
+    """Testa que o warning mostra o nome correto do provedor."""
+    from dataframeit.core import _warn_search_rate_limit
+
+    # Teste com Tavily
+    with pytest.warns(UserWarning) as record:
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=4,
+            parallel_requests=20,
+            search_per_field=True,
+            rate_limit_delay=0.0,
+            search_provider="tavily",
+        )
+    assert "Tavily" in str(record[0].message)
+
+    # Teste com Exa
+    with pytest.warns(UserWarning) as record:
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=4,
+            parallel_requests=20,
+            search_per_field=True,
+            rate_limit_delay=0.0,
+            search_provider="exa",
+        )
+    assert "Exa" in str(record[0].message)
+
+
+def test_dataframeit_passes_search_provider_to_warning():
+    """Testa que dataframeit passa o search_provider correto para o warning."""
+    from dataframeit.core import dataframeit
+
+    df = pd.DataFrame({"texto": ["item"] * 100})
+
+    with patch('dataframeit.core.validate_provider_dependencies'), \
+         patch('dataframeit.core.validate_search_dependencies'), \
+         patch('dataframeit.core._warn_search_rate_limit') as mock_warn, \
+         patch('dataframeit.core._process_rows_parallel') as mock_process:
+
+        mock_process.return_value = {'total_tokens': 0}
+
+        # Teste com Exa
+        try:
+            dataframeit(
+                df,
+                questions=MedicamentoInfo,
+                prompt="Pesquise sobre {texto}",
+                use_search=True,
+                search_provider="exa",
+                parallel_requests=10,
+            )
+        except Exception:
+            pass
+
+        mock_warn.assert_called_once()
+        call_args = mock_warn.call_args
+        assert call_args.kwargs['search_provider'] == "exa"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

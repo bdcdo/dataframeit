@@ -9,13 +9,18 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
-- **Aviso de rate limit para busca web** (#67): O DataFrameIt agora emite um warning quando a configuração de `parallel_requests` combinada com `use_search=True` pode exceder os limites de taxa do Tavily (~100 req/min).
+- **Aviso de rate limit para busca web com suporte a múltiplos provedores** (#67): O DataFrameIt agora emite um warning quando a configuração de `parallel_requests` combinada com `use_search=True` pode exceder os limites de taxa do provedor de busca selecionado.
+
+  **Rate limits por provedor:**
+  - Tavily: ~100 req/min
+  - Exa: ~300 req/min (3x maior que Tavily)
 
   ```
   ============================================================
-  AVISO: Configuração pode exceder rate limits de busca
+  AVISO: Configuração pode exceder rate limits de busca (Tavily)
   ============================================================
   Configuração atual:
+    - Provedor de busca: tavily
     - parallel_requests: 20
     - search_per_field: True
     - Total de queries estimadas: 400
@@ -27,7 +32,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
   - O warning inclui recomendações específicas de `parallel_requests` e `rate_limit_delay`
   - Calcula queries concorrentes considerando `search_per_field`
-  - Documentação atualizada com tabela de configurações recomendadas
+  - Usa limites específicos para cada provedor (Tavily vs Exa)
+  - Documentação atualizada com tabela de configurações recomendadas por provedor
 
 ## [0.5.2] - 2025-01-12
 
