@@ -801,5 +801,435 @@ def test_call_agent_per_field_uses_config_override():
     assert captured_configs[0].search_config.search_depth == "advanced"
 
 
+# =============================================================================
+# Testes de search_groups
+# =============================================================================
+
+class RegulatoryModel(BaseModel):
+    """Modelo de teste para search_groups."""
+    status_anvisa: str = Field(description="Status de aprovação na ANVISA")
+    avaliacao_conitec: str = Field(description="Avaliação da CONITEC")
+    nome: str = Field(description="Nome do medicamento")
+    fabricante: str = Field(description="Fabricante")
+
+
+def test_search_groups_requires_use_search():
+    """Verifica que search_groups requer use_search=True."""
+    from dataframeit.core import _validate_search_groups
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {"grupo": {"fields": ["nome"]}},
+            RegulatoryModel,
+            use_search=False,
+            search_per_field=True
+        )
+
+    assert "use_search=True" in str(exc_info.value)
+
+
+def test_search_groups_requires_per_field():
+    """Verifica que search_groups requer search_per_field=True."""
+    from dataframeit.core import _validate_search_groups
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {"grupo": {"fields": ["nome"]}},
+            RegulatoryModel,
+            use_search=True,
+            search_per_field=False
+        )
+
+    assert "search_per_field=True" in str(exc_info.value)
+
+
+def test_search_groups_validates_unknown_fields():
+    """Verifica que campos inexistentes geram erro."""
+    from dataframeit.core import _validate_search_groups
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {"grupo": {"fields": ["campo_inexistente"]}},
+            RegulatoryModel,
+            use_search=True,
+            search_per_field=True
+        )
+
+    assert "campo_inexistente" in str(exc_info.value)
+    assert "não existem" in str(exc_info.value)
+
+
+def test_search_groups_validates_duplicate_fields():
+    """Verifica que campos em múltiplos grupos geram erro."""
+    from dataframeit.core import _validate_search_groups
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {
+                "grupo1": {"fields": ["nome", "fabricante"]},
+                "grupo2": {"fields": ["fabricante", "status_anvisa"]},  # fabricante duplicado
+            },
+            RegulatoryModel,
+            use_search=True,
+            search_per_field=True
+        )
+
+    assert "fabricante" in str(exc_info.value)
+    assert "múltiplos grupos" in str(exc_info.value)
+
+
+def test_search_groups_validates_field_config_conflict():
+    """Verifica que campos com json_schema_extra em grupos geram erro."""
+    from dataframeit.core import _validate_search_groups
+
+    class ModelWithConfig(BaseModel):
+        campo_a: str = Field(json_schema_extra={"prompt": "custom"})
+        campo_b: str
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {"grupo": {"fields": ["campo_a", "campo_b"]}},
+            ModelWithConfig,
+            use_search=True,
+            search_per_field=True
+        )
+
+    assert "campo_a" in str(exc_info.value)
+    assert "json_schema_extra" in str(exc_info.value)
+
+
+def test_search_groups_validates_search_depth():
+    """Verifica que search_depth inválido no grupo gera erro."""
+    from dataframeit.core import _validate_search_groups
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {"grupo": {"fields": ["nome"], "search_depth": "invalid"}},
+            RegulatoryModel,
+            use_search=True,
+            search_per_field=True
+        )
+
+    assert "search_depth" in str(exc_info.value)
+
+
+def test_search_groups_validates_max_results():
+    """Verifica que max_results inválido no grupo gera erro."""
+    from dataframeit.core import _validate_search_groups
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_search_groups(
+            {"grupo": {"fields": ["nome"], "max_results": 100}},
+            RegulatoryModel,
+            use_search=True,
+            search_per_field=True
+        )
+
+    assert "max_results" in str(exc_info.value)
+
+
+def test_search_groups_valid_config():
+    """Verifica que configuração válida é processada corretamente."""
+    from dataframeit.core import _validate_search_groups
+    from dataframeit.llm import SearchGroupConfig
+
+    result = _validate_search_groups(
+        {
+            "regulatory": {
+                "fields": ["status_anvisa", "avaliacao_conitec"],
+                "prompt": "Busque regulatório: {query}",
+                "max_results": 10,
+                "search_depth": "advanced",
+            }
+        },
+        RegulatoryModel,
+        use_search=True,
+        search_per_field=True
+    )
+
+    assert "regulatory" in result
+    assert isinstance(result["regulatory"], SearchGroupConfig)
+    assert result["regulatory"].fields == ["status_anvisa", "avaliacao_conitec"]
+    assert result["regulatory"].prompt == "Busque regulatório: {query}"
+    assert result["regulatory"].max_results == 10
+    assert result["regulatory"].search_depth == "advanced"
+
+
+def test_call_agent_per_group_basic():
+    """Verifica que call_agent_per_group funciona com grupos."""
+    from dataframeit.agent import call_agent_per_group
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    # Rastrear chamadas
+    call_count = 0
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        nonlocal call_count
+        call_count += 1
+
+        # Retornar valores para todos os campos do modelo
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "search_credits": 1,
+                "search_count": 1,
+            }
+        }
+
+    search_config = SearchConfig(
+        enabled=True,
+        per_field=True,
+        groups={
+            "regulatory": SearchGroupConfig(
+                fields=["status_anvisa", "avaliacao_conitec"]
+            )
+        }
+    )
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        result = call_agent_per_group(
+            "Medicamento X",
+            RegulatoryModel,
+            "Pesquise sobre {texto}",
+            config,
+        )
+
+    # Deve fazer 3 chamadas: 1 para grupo (2 campos) + 2 para campos isolados
+    assert call_count == 3
+
+    # Todos os campos devem ter valores
+    assert "status_anvisa" in result["data"]
+    assert "avaliacao_conitec" in result["data"]
+    assert "nome" in result["data"]
+    assert "fabricante" in result["data"]
+
+
+def test_call_agent_per_group_sums_usage():
+    """Verifica que call_agent_per_group soma usage de todas as chamadas."""
+    from dataframeit.agent import call_agent_per_group
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "search_credits": 2,
+                "search_count": 1,
+            }
+        }
+
+    search_config = SearchConfig(
+        enabled=True,
+        per_field=True,
+        groups={
+            "regulatory": SearchGroupConfig(
+                fields=["status_anvisa", "avaliacao_conitec"]
+            )
+        }
+    )
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        result = call_agent_per_group(
+            "Medicamento X",
+            RegulatoryModel,
+            "Pesquise sobre {texto}",
+            config,
+        )
+
+    # 3 chamadas (1 grupo + 2 isolados), 100 tokens cada
+    assert result["usage"]["input_tokens"] == 300
+    assert result["usage"]["output_tokens"] == 150
+    assert result["usage"]["total_tokens"] == 450
+    assert result["usage"]["search_credits"] == 6
+    assert result["usage"]["search_count"] == 3
+
+
+def test_call_agent_per_group_uses_custom_prompt():
+    """Verifica que call_agent_per_group usa prompt customizado do grupo."""
+    from dataframeit.agent import call_agent_per_group
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    captured_prompts = []
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        captured_prompts.append(prompt)
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                      "search_credits": 0, "search_count": 0}
+        }
+
+    search_config = SearchConfig(
+        enabled=True,
+        per_field=True,
+        groups={
+            "regulatory": SearchGroupConfig(
+                fields=["status_anvisa", "avaliacao_conitec"],
+                prompt="Busque dados regulatórios ANVISA/CONITEC para {query}"
+            )
+        }
+    )
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        call_agent_per_group("Aspirina", RegulatoryModel, "Prompt base {texto}", config)
+
+    # Primeira chamada deve ser do grupo com prompt customizado
+    assert any("ANVISA/CONITEC" in p for p in captured_prompts)
+
+
+def test_call_agent_per_group_traces():
+    """Verifica que traces são coletados por grupo e por campo isolado."""
+    from dataframeit.agent import call_agent_per_group
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    call_counter = [0]
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        call_counter[0] += 1
+        fields = list(model.model_fields.keys())
+        result = {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                      "search_credits": 0, "search_count": 0}
+        }
+        if save_trace:
+            result["trace"] = {"call_number": call_counter[0]}
+        return result
+
+    search_config = SearchConfig(
+        enabled=True,
+        per_field=True,
+        groups={
+            "regulatory": SearchGroupConfig(
+                fields=["status_anvisa", "avaliacao_conitec"]
+            )
+        }
+    )
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        result = call_agent_per_group(
+            "Medicamento X",
+            RegulatoryModel,
+            "Pesquise sobre {texto}",
+            config,
+            save_trace="full"
+        )
+
+    # Deve ter traces para grupo + campos isolados
+    assert "traces" in result
+    assert "regulatory" in result["traces"]  # Trace do grupo
+    assert "nome" in result["traces"]  # Trace do campo isolado
+    assert "fabricante" in result["traces"]  # Trace do campo isolado
+
+
+def test_search_groups_setup_columns():
+    """Verifica que _setup_columns cria colunas corretas para grupos."""
+    from dataframeit.core import _setup_columns
+    from dataframeit.llm import SearchConfig, SearchGroupConfig
+
+    df = pd.DataFrame({"texto": ["a", "b"]})
+
+    search_config = SearchConfig(
+        enabled=True,
+        per_field=True,
+        groups={
+            "regulatory": SearchGroupConfig(
+                fields=["status_anvisa", "avaliacao_conitec"]
+            )
+        }
+    )
+
+    _setup_columns(
+        df,
+        ["status_anvisa", "avaliacao_conitec", "nome", "fabricante"],
+        None, False, True, search_config, "full", RegulatoryModel
+    )
+
+    # Deve ter coluna de trace para o grupo
+    assert "_trace_regulatory" in df.columns
+
+    # Deve ter colunas de trace para campos isolados
+    assert "_trace_nome" in df.columns
+    assert "_trace_fabricante" in df.columns
+
+    # NÃO deve ter colunas de trace para campos no grupo
+    assert "_trace_status_anvisa" not in df.columns
+    assert "_trace_avaliacao_conitec" not in df.columns
+
+
+def test_apply_group_overrides_no_changes():
+    """Verifica que config original é retornada se não há overrides."""
+    from dataframeit.agent import _apply_group_overrides
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=3, base_delay=1.0, max_delay=60.0, rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
+    )
+
+    group_config = SearchGroupConfig(fields=["campo"])
+    new_config = _apply_group_overrides(config, group_config)
+
+    # Deve ser o mesmo objeto
+    assert new_config is config
+
+
+def test_apply_group_overrides_with_changes():
+    """Verifica override de search_depth e max_results no grupo."""
+    from dataframeit.agent import _apply_group_overrides
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=3, base_delay=1.0, max_delay=60.0, rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
+    )
+
+    group_config = SearchGroupConfig(
+        fields=["campo"],
+        search_depth="advanced",
+        max_results=10
+    )
+    new_config = _apply_group_overrides(config, group_config)
+
+    # Novo config deve ter valores sobrescritos
+    assert new_config.search_config.search_depth == "advanced"
+    assert new_config.search_config.max_results == 10
+
+    # Config original não deve mudar
+    assert config.search_config.search_depth == "basic"
+    assert config.search_config.max_results == 5
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

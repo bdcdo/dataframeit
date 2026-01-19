@@ -4,11 +4,11 @@ import time
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Union, Any, Optional, Literal
+from typing import Union, Any, Optional, Literal, Dict
 import pandas as pd
 from tqdm import tqdm
 
-from .llm import LLMConfig, SearchConfig, call_langchain
+from .llm import LLMConfig, SearchConfig, SearchGroupConfig, call_langchain
 from .utils import (
     to_pandas,
     from_pandas,
@@ -28,6 +28,101 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 
 # Chaves de configuração per-field reconhecidas em json_schema_extra
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
+
+
+def _validate_search_groups(
+    search_groups: Dict[str, dict],
+    pydantic_model,
+    use_search: bool,
+    search_per_field: bool
+) -> Dict[str, SearchGroupConfig]:
+    """Valida e converte search_groups para SearchGroupConfig.
+
+    Args:
+        search_groups: Dicionário de grupos de busca do usuário.
+        pydantic_model: Modelo Pydantic para validar campos.
+        use_search: Se busca está habilitada.
+        search_per_field: Se modo per_field está habilitado.
+
+    Returns:
+        Dicionário de SearchGroupConfig validados.
+
+    Raises:
+        ValueError: Se validação falhar.
+    """
+    # Validar pré-requisitos
+    if not use_search:
+        raise ValueError("search_groups requer use_search=True")
+    if not search_per_field:
+        raise ValueError("search_groups requer search_per_field=True")
+
+    expected_fields = set(pydantic_model.model_fields.keys())
+    all_grouped_fields = set()
+    validated_groups = {}
+
+    for group_name, group_config in search_groups.items():
+        # Validar estrutura
+        if not isinstance(group_config, dict):
+            raise ValueError(f"Grupo '{group_name}' deve ser um dicionário")
+        if 'fields' not in group_config:
+            raise ValueError(f"Grupo '{group_name}' deve ter chave 'fields'")
+
+        fields = group_config['fields']
+        if not isinstance(fields, list) or not fields:
+            raise ValueError(f"Grupo '{group_name}': 'fields' deve ser uma lista não-vazia")
+
+        # Validar que campos existem no modelo
+        unknown_fields = set(fields) - expected_fields
+        if unknown_fields:
+            raise ValueError(
+                f"Grupo '{group_name}': campos {unknown_fields} não existem no modelo Pydantic. "
+                f"Campos disponíveis: {expected_fields}"
+            )
+
+        # Validar que campos não pertencem a múltiplos grupos
+        duplicate_fields = all_grouped_fields & set(fields)
+        if duplicate_fields:
+            raise ValueError(
+                f"Campos {duplicate_fields} pertencem a múltiplos grupos. "
+                f"Cada campo pode pertencer a apenas um grupo."
+            )
+        all_grouped_fields.update(fields)
+
+        # Validar que campos do grupo não têm json_schema_extra de busca
+        for field_name in fields:
+            field_info = pydantic_model.model_fields[field_name]
+            extra = field_info.json_schema_extra
+            if isinstance(extra, dict):
+                conflicting_keys = set(extra.keys()) & set(_FIELD_CONFIG_KEYS)
+                if conflicting_keys:
+                    raise ValueError(
+                        f"Campo '{field_name}' no grupo '{group_name}' tem json_schema_extra "
+                        f"com chaves de busca {conflicting_keys}. Escolha entre configuração "
+                        f"per-field (json_schema_extra) ou grupo (search_groups), não ambos."
+                    )
+
+        # Validar search_depth se especificado
+        if group_config.get('search_depth') and group_config['search_depth'] not in ('basic', 'advanced'):
+            raise ValueError(
+                f"Grupo '{group_name}': search_depth deve ser 'basic' ou 'advanced'"
+            )
+
+        # Validar max_results se especificado
+        if group_config.get('max_results') is not None:
+            if not 1 <= group_config['max_results'] <= 20:
+                raise ValueError(
+                    f"Grupo '{group_name}': max_results deve estar entre 1 e 20"
+                )
+
+        # Criar SearchGroupConfig
+        validated_groups[group_name] = SearchGroupConfig(
+            fields=fields,
+            prompt=group_config.get('prompt'),
+            max_results=group_config.get('max_results'),
+            search_depth=group_config.get('search_depth'),
+        )
+
+    return validated_groups
 
 
 def _has_field_config(pydantic_model) -> bool:
@@ -72,6 +167,7 @@ def dataframeit(
     search_per_field=False,
     max_results=5,
     search_depth="basic",
+    search_groups: Optional[Dict[str, dict]] = None,
     save_trace: Optional[Union[bool, Literal["full", "minimal"]]] = None,
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
@@ -120,6 +216,10 @@ def dataframeit(
         max_results: Número máximo de resultados por busca (1-20). Padrão: 5.
         search_depth: Profundidade da busca - "basic" (1 crédito) ou "advanced" (2 créditos).
             Apenas para Tavily. Padrão: "basic".
+        search_groups: Grupos de campos que compartilham contexto de busca. Formato:
+            {"nome_grupo": {"fields": ["campo1", "campo2"], "prompt": "...", ...}}
+            Permite reduzir chamadas de API quando múltiplos campos precisam do mesmo contexto.
+            Requer use_search=True e search_per_field=True.
         save_trace: Salva o trace completo do raciocínio do agente. Requer use_search=True.
             - None/False: Desabilitado (padrão)
             - True/"full": Trace completo com conteúdo das mensagens
@@ -205,6 +305,14 @@ def dataframeit(
     expected_columns = list(questions.model_fields.keys())
     if not expected_columns:
         raise ValueError("Modelo Pydantic não pode estar vazio")
+
+    # Validar e processar search_groups
+    if search_groups:
+        validated_groups = _validate_search_groups(
+            search_groups, questions, use_search, search_per_field
+        )
+        # Adicionar grupos ao search_config
+        search_config.groups = validated_groups
 
     # Validar reprocess_columns
     if reprocess_columns is not None:
@@ -327,8 +435,23 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
     trace_cols = []
     if trace_mode:
         if search_config and search_config.per_field and pydantic_model:
-            # Uma coluna por campo
-            trace_cols = [f'_trace_{field}' for field in pydantic_model.model_fields.keys()]
+            if search_config.groups:
+                # Com grupos: trace por grupo + trace por campo isolado
+                grouped_fields = set()
+                for group_config in search_config.groups.values():
+                    grouped_fields.update(group_config.fields)
+
+                # Adicionar colunas de trace para grupos
+                for group_name in search_config.groups.keys():
+                    trace_cols.append(f'_trace_{group_name}')
+
+                # Adicionar colunas de trace para campos isolados (não em grupos)
+                for field in pydantic_model.model_fields.keys():
+                    if field not in grouped_fields:
+                        trace_cols.append(f'_trace_{field}')
+            else:
+                # Sem grupos: uma coluna por campo
+                trace_cols = [f'_trace_{field}' for field in pydantic_model.model_fields.keys()]
         else:
             # Coluna única
             trace_cols = ['_trace']
@@ -505,9 +628,12 @@ def _process_rows(
         try:
             # Chamar LLM ou agente com busca
             if config.search_config and config.search_config.enabled:
-                from .agent import call_agent, call_agent_per_field
+                from .agent import call_agent, call_agent_per_field, call_agent_per_group
                 if config.search_config.per_field:
-                    result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
+                    if config.search_config.groups:
+                        result = call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
+                    else:
+                        result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
                 else:
                     result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
             else:
@@ -684,9 +810,12 @@ def _process_rows_parallel(
         try:
             # Chamar LLM ou agente com busca
             if config.search_config and config.search_config.enabled:
-                from .agent import call_agent, call_agent_per_field
+                from .agent import call_agent, call_agent_per_field, call_agent_per_group
                 if config.search_config.per_field:
-                    result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
+                    if config.search_config.groups:
+                        result = call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
+                    else:
+                        result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
                 else:
                     result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
             else:

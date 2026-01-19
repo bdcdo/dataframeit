@@ -188,6 +188,107 @@ trace_ingredient = json.loads(result['_trace_active_ingredient'].iloc[0])
 trace_indication = json.loads(result['_trace_indication'].iloc[0])
 ```
 
+## Search Groups (v0.5.3+)
+
+When multiple fields need the same search context, you can group them to reduce redundant API calls.
+
+### Motivation
+
+Without groups, if you have 6 fields with `search_per_field=True`, 6 searches are made per row. With groups, related fields share a single search.
+
+**Example:**
+- Fields `fda_status`, `ema_approval`, `clinical_trials` are all about regulation
+- Without groups: 3 separate searches (redundant)
+- With groups: 1 shared search (efficient)
+
+### Group Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `fields` | list | Yes | List of fields belonging to the group |
+| `prompt` | str | No | Custom prompt for the group. Use `{query}` for the text |
+| `max_results` | int | No | Results override (1-20) |
+| `search_depth` | str | No | Override: `"basic"` or `"advanced"` |
+
+### Basic Example
+
+```python
+from pydantic import BaseModel, Field
+
+class DrugRegulatory(BaseModel):
+    # Group "regulatory" fields (1 shared search)
+    fda_status: str = Field(description="FDA approval status")
+    ema_approval: str = Field(description="EMA approval status")
+    clinical_trials: str = Field(description="Ongoing clinical trials")
+
+    # Isolated fields (1 search each)
+    name: str = Field(description="Drug name")
+    manufacturer: str = Field(description="Manufacturer")
+
+result = dataframeit(
+    df,
+    DrugRegulatory,
+    "Research the drug: {texto}",
+    text_column='text',
+    use_search=True,
+    search_per_field=True,
+    search_groups={
+        "regulatory": {
+            "fields": ["fda_status", "ema_approval", "clinical_trials"],
+            "prompt": "Search regulatory status (FDA, EMA, clinical trials) for: {query}",
+            "search_depth": "advanced",
+        }
+    }
+)
+```
+
+**Result:**
+- Before: 5 searches (1 per field)
+- After: 3 searches (1 for group + 2 isolated)
+
+### Multiple Groups
+
+```python
+search_groups={
+    "regulatory": {
+        "fields": ["fda_status", "ema_approval"],
+        "prompt": "Search regulatory status: {query}",
+    },
+    "clinical": {
+        "fields": ["efficacy", "safety"],
+        "prompt": "Search clinical studies about: {query}",
+        "search_depth": "advanced",
+    }
+}
+```
+
+### Traces with Groups
+
+With `save_trace=True`, traces are organized by group:
+
+```python
+result = dataframeit(
+    df, Model, PROMPT,
+    use_search=True,
+    search_per_field=True,
+    search_groups={"regulatory": {"fields": ["fda_status", "ema_approval"]}},
+    save_trace=True
+)
+
+# Group trace
+trace_regulatory = json.loads(result['_trace_regulatory'].iloc[0])
+
+# Isolated field traces
+trace_name = json.loads(result['_trace_name'].iloc[0])
+```
+
+### Validation Rules
+
+1. **Requires `use_search=True` and `search_per_field=True`**
+2. **Fields must exist in the Pydantic model**
+3. **Fields cannot be in multiple groups**
+4. **Fields in groups cannot have `json_schema_extra` for search** - choose between per-field or group configuration, not both
+
 ## Use Case: Fact Checking
 
 ```python

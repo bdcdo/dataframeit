@@ -271,6 +271,106 @@ trace_principio = json.loads(resultado['_trace_principio_ativo'].iloc[0])
 trace_indicacao = json.loads(resultado['_trace_indicacao'].iloc[0])
 ```
 
+## Grupos de Busca (v0.5.3+)
+
+Quando vários campos precisam do mesmo contexto de busca, você pode agrupá-los para reduzir chamadas de API redundantes.
+
+### Motivação
+
+Sem grupos, se você tiver 6 campos com `search_per_field=True`, serão feitas 6 buscas por linha. Com grupos, campos relacionados compartilham uma única busca.
+
+**Exemplo:**
+- Campos `status_anvisa`, `avaliacao_conitec`, `existe_pcdt` são todos sobre regulação
+- Sem grupos: 3 buscas separadas (redundante)
+- Com grupos: 1 busca compartilhada (eficiente)
+
+### Parâmetros de Grupo
+
+| Parâmetro | Tipo | Obrigatório | Descrição |
+|-----------|------|-------------|-----------|
+| `fields` | list | Sim | Lista de campos que pertencem ao grupo |
+| `prompt` | str | Não | Prompt customizado para o grupo. Use `{query}` para o texto |
+| `max_results` | int | Não | Override de número de resultados (1-20) |
+| `search_depth` | str | Não | Override: `"basic"` ou `"advanced"` |
+
+### Exemplo Básico
+
+```python
+from pydantic import BaseModel, Field
+
+class MedicamentoRegulatorio(BaseModel):
+    # Campos do grupo "regulatory" (1 busca compartilhada)
+    status_anvisa: str = Field(description="Status de aprovação na ANVISA")
+    avaliacao_conitec: str = Field(description="Avaliação da CONITEC")
+    existe_pcdt: str = Field(description="Se existe PCDT publicado")
+
+    # Campos isolados (1 busca cada)
+    nome: str = Field(description="Nome comercial")
+    fabricante: str = Field(description="Laboratório fabricante")
+
+resultado = dataframeit(
+    df,
+    MedicamentoRegulatorio,
+    "Pesquise sobre o medicamento: {texto}",
+    use_search=True,
+    search_per_field=True,
+    search_groups={
+        "regulatory": {
+            "fields": ["status_anvisa", "avaliacao_conitec", "existe_pcdt"],
+            "prompt": "Busque status regulatório no Brasil (ANVISA, CONITEC, PCDT) para: {query}",
+            "search_depth": "advanced",
+        }
+    }
+)
+```
+
+**Resultado:**
+- Antes: 5 buscas (1 por campo)
+- Depois: 3 buscas (1 para grupo + 2 isolados)
+
+### Múltiplos Grupos
+
+```python
+search_groups={
+    "regulatory": {
+        "fields": ["status_anvisa", "avaliacao_conitec"],
+        "prompt": "Busque status regulatório: {query}",
+    },
+    "clinical": {
+        "fields": ["eficacia", "seguranca"],
+        "prompt": "Busque estudos clínicos sobre: {query}",
+        "search_depth": "advanced",
+    }
+}
+```
+
+### Traces com Grupos
+
+Com `save_trace=True`, os traces são organizados por grupo:
+
+```python
+resultado = dataframeit(
+    df, Model, PROMPT,
+    use_search=True,
+    search_per_field=True,
+    search_groups={"regulatory": {"fields": ["status_anvisa", "avaliacao_conitec"]}},
+    save_trace=True
+)
+
+# Trace do grupo
+trace_regulatory = json.loads(resultado['_trace_regulatory'].iloc[0])
+
+# Traces dos campos isolados
+trace_nome = json.loads(resultado['_trace_nome'].iloc[0])
+```
+
+### Regras de Validação
+
+1. **Requer `use_search=True` e `search_per_field=True`**
+2. **Campos devem existir no modelo Pydantic**
+3. **Campos não podem estar em múltiplos grupos**
+4. **Campos em grupos não podem ter `json_schema_extra` de busca** - escolha entre configuração per-field ou grupo, não ambos
+
 ## Caso de Uso: Verificação de Fatos
 
 ```python
