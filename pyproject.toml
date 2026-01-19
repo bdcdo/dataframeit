@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dataframeit"
-version = "0.5.2"
+version = "0.5.3"
 description = "Enriqueça DataFrames com análises de texto usando LLMs. Extraia informações estruturadas de textos com Pydantic."
 readme = "README.md"
 license = "MIT"

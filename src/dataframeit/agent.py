@@ -251,6 +251,166 @@ def call_agent_per_field(
     return response
 
 
+def call_agent_per_group(
+    text: str,
+    pydantic_model,
+    user_prompt: str,
+    config: LLMConfig,
+    save_trace: Optional[str] = None
+) -> dict:
+    """Processa campos agrupados com agente compartilhado e campos isolados individualmente.
+
+    Campos em grupos compartilham a mesma busca, reduzindo chamadas de API.
+    Campos fora de grupos são processados individualmente como em call_agent_per_field.
+
+    Args:
+        text: Texto a ser processado.
+        pydantic_model: Modelo Pydantic completo.
+        user_prompt: Template do prompt do usuário.
+        config: Configuração do LLM incluindo search_config.groups.
+        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
+
+    Returns:
+        Dicionário com 'data' (todos os campos combinados), 'usage' (soma de
+        todos os tokens e créditos), e 'traces' (dict por grupo/campo, se habilitado).
+    """
+    combined_data = {}
+    total_usage = {
+        'input_tokens': 0,
+        'output_tokens': 0,
+        'total_tokens': 0,
+        'search_credits': 0,
+        'search_count': 0,
+    }
+    traces = {} if save_trace else None
+
+    groups = config.search_config.groups
+
+    # Identificar campos em grupos vs campos isolados
+    grouped_fields = set()
+    for group_config in groups.values():
+        grouped_fields.update(group_config.fields)
+
+    isolated_fields = [f for f in pydantic_model.model_fields.keys() if f not in grouped_fields]
+
+    # 1. Processar cada grupo (busca compartilhada)
+    for group_name, group_config in groups.items():
+        # Criar modelo com campos do grupo
+        group_field_infos = {
+            field_name: (pydantic_model.model_fields[field_name].annotation,
+                        pydantic_model.model_fields[field_name])
+            for field_name in group_config.fields
+        }
+        GroupModel = create_model(
+            f'{pydantic_model.__name__}_group_{group_name}',
+            **group_field_infos
+        )
+
+        # Construir prompt do grupo
+        if group_config.prompt:
+            # Substituir {query} pelo texto se presente
+            group_prompt = group_config.prompt.replace('{query}', text)
+            if '{texto}' not in group_prompt:
+                group_prompt = f"{group_prompt}\n\nTexto: {{texto}}"
+        else:
+            # Prompt padrão com instruções sobre os campos do grupo
+            field_list = ', '.join(group_config.fields)
+            group_prompt = f"{user_prompt}\n\nResponda os campos: {field_list}"
+
+        # Criar config com overrides do grupo (se houver)
+        effective_config = _apply_group_overrides(config, group_config)
+
+        # Chamar agente para o grupo
+        result = call_agent(text, GroupModel, group_prompt, effective_config, save_trace)
+
+        # Combinar resultados
+        for field_name in group_config.fields:
+            combined_data[field_name] = result['data'].get(field_name)
+
+        # Somar usage
+        if result.get('usage'):
+            for key in total_usage:
+                total_usage[key] += result['usage'].get(key, 0)
+
+        # Coletar trace por grupo
+        if save_trace and result.get('trace'):
+            traces[group_name] = result['trace']
+
+    # 2. Processar campos isolados (um agente por campo)
+    for field_name in isolated_fields:
+        field_info = pydantic_model.model_fields[field_name]
+
+        # Criar modelo temporário com apenas este campo
+        SingleFieldModel = create_model(
+            f'{pydantic_model.__name__}_{field_name}',
+            **{field_name: (field_info.annotation, field_info)}
+        )
+
+        # Extrair configurações do campo (opcional)
+        extra = field_info.json_schema_extra
+        field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+        # Construir prompt para este campo
+        field_prompt = _build_field_prompt(
+            user_prompt, field_name, field_info.description, field_config
+        )
+
+        # Criar config com overrides do campo (se houver)
+        effective_config = _apply_field_overrides(config, field_config)
+
+        # Chamar agente para este campo
+        result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+
+        # Combinar resultado
+        combined_data[field_name] = result['data'].get(field_name)
+
+        # Somar usage
+        if result.get('usage'):
+            for key in total_usage:
+                total_usage[key] += result['usage'].get(key, 0)
+
+        # Coletar trace por campo isolado
+        if save_trace and result.get('trace'):
+            traces[field_name] = result['trace']
+
+    response = {'data': combined_data, 'usage': total_usage}
+    if save_trace:
+        response['traces'] = traces
+
+    return response
+
+
+def _apply_group_overrides(config: LLMConfig, group_config) -> LLMConfig:
+    """Cria novo LLMConfig com overrides do grupo (se houver).
+
+    Args:
+        config: Configuração base do LLM.
+        group_config: SearchGroupConfig com possíveis overrides.
+
+    Returns:
+        LLMConfig original se não há overrides, ou novo LLMConfig com
+        parâmetros de busca sobrescritos.
+    """
+    search_depth = group_config.search_depth
+    max_results = group_config.max_results
+
+    # Se não há overrides, retorna config original
+    if not search_depth and not max_results:
+        return config
+
+    # Criar nova SearchConfig com overrides
+    new_config = copy(config)
+    new_search_config = copy(config.search_config)
+
+    if search_depth:
+        new_search_config.search_depth = search_depth
+    if max_results:
+        new_search_config.max_results = max_results
+
+    new_config.search_config = new_search_config
+    return new_config
+
+
 def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 

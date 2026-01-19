@@ -5,6 +5,34 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.3] - 2025-01-19
+
+### Adicionado
+
+- **`search_groups` - Agrupamento de campos para busca compartilhada** (#77): Novo parâmetro que permite agrupar campos que compartilham contexto de busca, reduzindo chamadas de API redundantes.
+
+  ```python
+  result = dataframeit(
+      df, MyModel, PROMPT,
+      use_search=True,
+      search_per_field=True,
+      search_groups={
+          "regulatory": {
+              "fields": ["status_anvisa", "avaliacao_conitec", "existe_pcdt"],
+              "prompt": "Search regulatory status: ANVISA, CONITEC, PCDT for {query}",
+              "max_results": 5,
+              "search_depth": "advanced",  # opcional
+          }
+      }
+  )
+  ```
+
+  - **Redução de chamadas**: Campos em um grupo compartilham a mesma busca (1 busca para múltiplos campos)
+  - **Prompts customizados**: Cada grupo pode ter seu próprio prompt com `{query}` placeholder
+  - **Parâmetros por grupo**: `max_results` e `search_depth` configuráveis por grupo
+  - **Traces por grupo**: Com `save_trace=True`, gera `_trace_{nome_grupo}` para grupos
+  - **Validações**: Campos não podem estar em múltiplos grupos; campos em grupos não podem ter `json_schema_extra` de busca
+
 ## [0.5.2] - 2025-01-12
 
 ### Adicionado

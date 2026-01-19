@@ -1,7 +1,29 @@
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from .utils import check_dependency
 from .errors import retry_with_backoff
+
+
+@dataclass
+class SearchGroupConfig:
+    """Configuração de um grupo de busca.
+
+    Permite agrupar múltiplos campos que compartilham contexto de busca,
+    reduzindo chamadas de API redundantes.
+
+    Attributes:
+        fields: Lista de nomes dos campos que pertencem a este grupo.
+        prompt: Prompt customizado para o grupo. Use {query} para inserir
+            o texto de busca. Se None, usa o prompt padrão.
+        max_results: Número máximo de resultados por busca (1-20).
+            Se None, usa o valor global.
+        search_depth: Profundidade da busca ("basic" ou "advanced").
+            Se None, usa o valor global.
+    """
+    fields: List[str]
+    prompt: Optional[str] = None
+    max_results: Optional[int] = None
+    search_depth: Optional[str] = None
 
 
 @dataclass
@@ -17,6 +39,7 @@ class SearchConfig:
     per_field: bool = False  # Um agente por campo
     max_results: int = 5
     search_depth: str = "basic"  # "basic" ou "advanced" (apenas Tavily)
+    groups: Optional[Dict[str, SearchGroupConfig]] = None
 
 
 @dataclass
