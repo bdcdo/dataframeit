@@ -18,6 +18,23 @@ uv add <pacote>
 uv run python script.py
 ```
 
+## Fluxo de Trabalho Git
+
+**Sempre crie uma branch antes de começar a trabalhar no código.**
+
+```bash
+# Criar e mudar para nova branch
+git checkout -b <tipo>/<descricao>
+
+# Tipos comuns:
+# - feature/  -> nova funcionalidade
+# - fix/      -> correção de bug
+# - docs/     -> documentação
+# - refactor/ -> refatoração
+```
+
+Nunca faça commits diretamente na `main`.
+
 ## Versionamento
 
 ### CHANGELOG
