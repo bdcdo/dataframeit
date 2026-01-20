@@ -1502,7 +1502,12 @@ def test_collect_configured_fields_no_infinite_recursion():
 
 
 def test_call_agent_per_field_nested_search():
-    """Testa integração de call_agent_per_field com busca em campos aninhados."""
+    """Testa integração de call_agent_per_field com busca em campos aninhados.
+
+    Com a nova arquitetura de duas fases:
+    1. Primeiro extrai a lista de pedidos
+    2. Depois enriquece cada item da lista com buscas específicas
+    """
     from dataframeit.agent import call_agent_per_field
     from dataframeit.llm import LLMConfig, SearchConfig
 
@@ -1513,8 +1518,27 @@ def test_call_agent_per_field_nested_search():
         call_count[0] += 1
         captured_prompts.append(prompt)
 
-        # Retornar valores para todos os campos do modelo
         fields = list(model.model_fields.keys())
+
+        # Se está pedindo 'pedidos', retornar uma lista de itens
+        if 'pedidos' in fields:
+            return {
+                "data": {
+                    "pedidos": [
+                        {"info_medicamento": {"principio_ativo": "Semaglutida"}, "quantidade": 1},
+                        {"info_medicamento": {"principio_ativo": "AAS"}, "quantidade": 2},
+                    ]
+                },
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "search_credits": 0,
+                    "search_count": 0,
+                }
+            }
+
+        # Para outros campos (incluindo campos de busca aninhados)
         return {
             "data": {f: f"valor_{f}" for f in fields},
             "usage": {
@@ -1542,13 +1566,20 @@ def test_call_agent_per_field_nested_search():
         )
 
     # Deve ter chamado agente para:
-    # 1. Campo aninhado configurado (status_anvisa_atual)
-    # 2. Campos de primeiro nível (pedidos, observacao)
-    assert call_count[0] >= 3
+    # 1. Campo pedidos (extração da lista)
+    # 2. Campo observacao
+    # 3-4. Enriquecimento de cada item da lista (2 itens x 1 campo de busca cada)
+    # Total esperado: pelo menos 4 chamadas
+    assert call_count[0] >= 4, f"Esperado >= 4 chamadas, mas teve {call_count[0]}"
 
     # Resultado deve ter os campos de primeiro nível
     assert "pedidos" in result["data"]
     assert "observacao" in result["data"]
+
+    # A lista de pedidos deve ter sido enriquecida
+    pedidos = result["data"]["pedidos"]
+    assert isinstance(pedidos, list)
+    assert len(pedidos) == 2
 
 
 def test_call_agent_per_field_nested_context_in_prompt():
@@ -1762,6 +1793,205 @@ def test_column_ordering_in_from_pandas():
     token_start_idx = cols.index('_input_tokens')
     assert '_output_tokens' in cols[token_start_idx:]
     assert '_total_tokens' in cols[token_start_idx:]
+
+
+# =============================================================================
+# Testes para Issue #84 - Busca por item em List[Model]
+# =============================================================================
+
+def test_is_list_of_pydantic_model_basic():
+    """Testa is_list_of_pydantic_model com List[Model]."""
+    from dataframeit.utils import is_list_of_pydantic_model
+
+    is_list, inner = is_list_of_pydantic_model(List[PedidoItem])
+
+    assert is_list is True
+    assert inner is PedidoItem
+
+
+def test_is_list_of_pydantic_model_optional_list():
+    """Testa is_list_of_pydantic_model com Optional[List[Model]]."""
+    from dataframeit.utils import is_list_of_pydantic_model
+
+    is_list, inner = is_list_of_pydantic_model(Optional[List[PedidoItem]])
+
+    assert is_list is True
+    assert inner is PedidoItem
+
+
+def test_is_list_of_pydantic_model_not_list():
+    """Testa is_list_of_pydantic_model com modelo direto (não lista)."""
+    from dataframeit.utils import is_list_of_pydantic_model
+
+    is_list, inner = is_list_of_pydantic_model(PedidoItem)
+
+    assert is_list is False
+    assert inner is None
+
+
+def test_is_list_of_pydantic_model_list_of_primitives():
+    """Testa is_list_of_pydantic_model com List[str]."""
+    from dataframeit.utils import is_list_of_pydantic_model
+
+    is_list, inner = is_list_of_pydantic_model(List[str])
+
+    assert is_list is False
+    assert inner is None
+
+
+def test_get_list_fields_with_nested_search():
+    """Testa identificação de campos List[Model] com busca interna."""
+    from dataframeit.agent import _get_list_fields_with_nested_search
+
+    result = _get_list_fields_with_nested_search(AnaliseSentencaSaude)
+
+    # Deve identificar 'pedidos' como campo com busca interna
+    assert 'pedidos' in result
+    assert result['pedidos']['inner_model'] is PedidoItem
+    assert len(result['pedidos']['search_fields']) > 0
+
+    # O campo de busca deve ser status_anvisa_atual
+    search_paths = [f[0] for f in result['pedidos']['search_fields']]
+    assert any('status_anvisa_atual' in p for p in search_paths)
+
+
+def test_enrich_list_items_with_search():
+    """Testa enriquecimento de itens de lista com buscas."""
+    from dataframeit.agent import _enrich_list_items_with_search, _collect_configured_fields
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    call_count = [0]
+    captured_contexts = []
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        call_count[0] += 1
+        # Capturar contexto do item do prompt
+        if "Pesquise informações para:" in prompt:
+            context_start = prompt.find("Pesquise informações para:")
+            context_end = prompt.find("\n", context_start)
+            captured_contexts.append(prompt[context_start:context_end])
+
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"busca_resultado_{f}" for f in fields},
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "search_credits": 1,
+                "search_count": 1,
+            }
+        }
+
+    # Preparar dados de teste
+    list_items = [
+        {"info_medicamento": {"principio_ativo": "Semaglutida"}, "quantidade": 1},
+        {"info_medicamento": {"principio_ativo": "AAS"}, "quantidade": 2},
+    ]
+
+    search_fields = _collect_configured_fields(PedidoItem)
+
+    search_config = SearchConfig(enabled=True, per_field=True)
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        enriched, usage, traces = _enrich_list_items_with_search(
+            list_items, PedidoItem, search_fields, "texto", config
+        )
+
+    # Deve ter chamado para cada item (2 itens x campos de busca por item)
+    assert call_count[0] >= 2
+
+    # Usage deve refletir as buscas por item
+    assert usage['search_count'] == call_count[0]
+    assert usage['search_credits'] == call_count[0]
+
+    # Verificar que os contextos capturados contêm informações dos itens
+    assert len(captured_contexts) == 2
+
+
+def test_issue_84_search_count_per_item():
+    """Reproduz cenário exato da issue 84: search_count deve ser > 0 para List[Model].
+
+    Quando um campo List[Model] contém modelos com json_schema_extra de busca,
+    cada item da lista deve ter sua própria busca executada, e o search_count
+    deve refletir o número total de buscas realizadas.
+    """
+    from dataframeit.agent import call_agent_per_field
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    search_call_count = [0]
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        fields = list(model.model_fields.keys())
+
+        # Contar apenas chamadas de busca (campos com json_schema_extra)
+        is_search_field = 'status_anvisa_atual' in fields
+
+        if is_search_field:
+            search_call_count[0] += 1
+
+        # Se está pedindo 'pedidos', retornar uma lista com 3 itens
+        if 'pedidos' in fields:
+            return {
+                "data": {
+                    "pedidos": [
+                        {"info_medicamento": {"principio_ativo": "Ozempic"}, "quantidade": 1},
+                        {"info_medicamento": {"principio_ativo": "Aspirina"}, "quantidade": 2},
+                        {"info_medicamento": {"principio_ativo": "Metformina"}, "quantidade": 3},
+                    ]
+                },
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "search_credits": 0,
+                    "search_count": 0,
+                }
+            }
+
+        return {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "search_credits": 1 if is_search_field else 0,
+                "search_count": 1 if is_search_field else 0,
+            }
+        }
+
+    search_config = SearchConfig(enabled=True, per_field=True)
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        result = call_agent_per_field(
+            "O paciente solicita Ozempic, Aspirina e Metformina.",
+            AnaliseSentencaSaude,
+            "Analise {texto}",
+            config,
+        )
+
+    # VERIFICAÇÃO CRÍTICA da Issue #84:
+    # search_count deve ser > 0 quando há itens com campos de busca
+    assert result["usage"]["search_count"] > 0, \
+        f"Issue #84: search_count deveria ser > 0, mas é {result['usage']['search_count']}"
+
+    # Deve ter feito 3 buscas (uma para cada item da lista)
+    assert search_call_count[0] == 3, \
+        f"Esperado 3 buscas (uma por item), mas teve {search_call_count[0]}"
+
+    # search_count total deve ser 3
+    assert result["usage"]["search_count"] == 3, \
+        f"search_count deveria ser 3, mas é {result['usage']['search_count']}"
 
 
 if __name__ == "__main__":

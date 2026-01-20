@@ -511,6 +511,69 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 # EXTRAÇÃO DE MODELOS PYDANTIC ANINHADOS
 # =============================================================================
 
+def is_list_of_pydantic_model(field_type) -> tuple:
+    """Verifica se um tipo é List[Model] ou Optional[List[Model]].
+
+    Args:
+        field_type: Anotação de tipo a analisar.
+
+    Returns:
+        Tupla (is_list, inner_model):
+        - is_list: True se o tipo é List[PydanticModel]
+        - inner_model: O modelo Pydantic interno (ou None)
+
+    Examples:
+        >>> class Inner(BaseModel):
+        ...     x: str
+        >>> is_list_of_pydantic_model(List[Inner])
+        (True, <class 'Inner'>)
+        >>> is_list_of_pydantic_model(Optional[List[Inner]])
+        (True, <class 'Inner'>)
+        >>> is_list_of_pydantic_model(Inner)
+        (False, None)
+        >>> is_list_of_pydantic_model(List[str])
+        (False, None)
+    """
+    from pydantic import BaseModel
+
+    origin = get_origin(field_type)
+    args = get_args(field_type)
+
+    # Caso 1: Diretamente List[Model]
+    if origin is list and args:
+        inner_type = args[0]
+        if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
+            return (True, inner_type)
+
+    # Caso 2: Optional[List[Model]] ou Union[List[Model], None]
+    if origin is Union and args:
+        for arg in args:
+            if arg is type(None):
+                continue
+            # Verificar se este argumento é List[Model]
+            arg_origin = get_origin(arg)
+            arg_args = get_args(arg)
+            if arg_origin is list and arg_args:
+                inner_type = arg_args[0]
+                if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
+                    return (True, inner_type)
+
+    # Caso 3: types.UnionType (Python 3.10+)
+    if isinstance(field_type, types.UnionType):
+        args = get_args(field_type)
+        for arg in args:
+            if arg is type(None):
+                continue
+            arg_origin = get_origin(arg)
+            arg_args = get_args(arg)
+            if arg_origin is list and arg_args:
+                inner_type = arg_args[0]
+                if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
+                    return (True, inner_type)
+
+    return (False, None)
+
+
 def get_nested_pydantic_models(field_type) -> List:
     """Extrai todos os modelos Pydantic de uma anotação de tipo.
 

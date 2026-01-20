@@ -17,7 +17,7 @@ from pydantic import create_model
 from .llm import LLMConfig, build_prompt, _create_langchain_llm
 from .errors import retry_with_backoff
 from .search import get_provider
-from .utils import get_nested_pydantic_models
+from .utils import get_nested_pydantic_models, is_list_of_pydantic_model
 
 # Chaves de configuração per-field reconhecidas em json_schema_extra
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
@@ -155,6 +155,171 @@ def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set =
             results.extend(nested_results)
 
     return results
+
+
+def _get_list_fields_with_nested_search(pydantic_model) -> dict:
+    """Identifica campos List[Model] que têm configuração de busca em modelos internos.
+
+    Args:
+        pydantic_model: Modelo Pydantic a analisar.
+
+    Returns:
+        Dicionário: {field_name: {'inner_model': Model, 'search_fields': [(relative_path, field_name, field_info)]}}
+    """
+    list_fields_with_search = {}
+
+    for field_name, field_info in pydantic_model.model_fields.items():
+        is_list, inner_model = is_list_of_pydantic_model(field_info.annotation)
+
+        if is_list and inner_model:
+            # Coletar campos de busca dentro do modelo interno
+            inner_search_fields = _collect_configured_fields(inner_model)
+
+            if inner_search_fields:
+                list_fields_with_search[field_name] = {
+                    'inner_model': inner_model,
+                    'search_fields': inner_search_fields,
+                }
+
+    return list_fields_with_search
+
+
+def _enrich_list_items_with_search(
+    list_items: list,
+    inner_model,
+    search_fields: list,
+    text: str,
+    config: LLMConfig,
+    save_trace: Optional[str] = None
+) -> tuple:
+    """Enriquece cada item de uma lista com buscas específicas.
+
+    Args:
+        list_items: Lista de dicionários (items extraídos pelo LLM).
+        inner_model: Modelo Pydantic do item interno.
+        search_fields: Lista de tuplas (path, field_name, field_info, parent_model, has_config).
+        text: Texto original sendo processado.
+        config: Configuração do LLM.
+        save_trace: Modo de trace.
+
+    Returns:
+        Tupla (enriched_items, usage, traces).
+    """
+    enriched_items = []
+    total_usage = {
+        'input_tokens': 0,
+        'output_tokens': 0,
+        'total_tokens': 0,
+        'search_credits': 0,
+        'search_count': 0,
+    }
+    traces = [] if save_trace else None
+
+    for item_idx, item in enumerate(list_items or []):
+        if item is None:
+            enriched_items.append(item)
+            continue
+
+        # Converter item para dicionário se necessário
+        if hasattr(item, 'model_dump'):
+            item_dict = item.model_dump()
+        elif isinstance(item, dict):
+            item_dict = item.copy()
+        else:
+            enriched_items.append(item)
+            continue
+
+        item_traces = {} if save_trace else None
+
+        # Construir contexto do item para a busca
+        item_context = _build_item_context(item_dict, inner_model)
+
+        # Para cada campo de busca no modelo interno
+        for path, field_name, field_info, parent_model, has_config in search_fields:
+            if not has_config:
+                continue
+
+            extra = field_info.json_schema_extra
+            field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+            # Criar modelo temporário para a busca
+            SingleFieldModel = create_model(
+                f'ItemSearch_{item_idx}_{path.replace(".", "_")}',
+                **{field_name: (field_info.annotation, field_info)}
+            )
+
+            # Construir prompt para busca do campo com contexto do item
+            field_prompt = _build_field_prompt(
+                f"Pesquise informações para: {item_context}",
+                field_name,
+                field_info.description,
+                field_config
+            )
+
+            # Criar config com overrides do campo
+            effective_config = _apply_field_overrides(config, field_config)
+
+            # Chamar agente para buscar informações
+            result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+
+            # Atualizar o item com o resultado da busca
+            search_result = result['data'].get(field_name)
+            _set_nested_value(item_dict, path, search_result)
+
+            # Somar usage
+            if result.get('usage'):
+                for key in total_usage:
+                    total_usage[key] += result['usage'].get(key, 0)
+
+            # Coletar trace
+            if save_trace and result.get('trace'):
+                item_traces[path] = result['trace']
+
+        enriched_items.append(item_dict)
+
+        if save_trace and item_traces:
+            traces.append(item_traces)
+
+    return enriched_items, total_usage, traces
+
+
+def _build_item_context(item_dict: dict, inner_model) -> str:
+    """Constrói uma string de contexto para um item de lista.
+
+    Usa os primeiros campos não-nulos do item para criar contexto.
+    """
+    context_parts = []
+
+    for field_name, field_info in inner_model.model_fields.items():
+        value = item_dict.get(field_name)
+        if value is not None and not isinstance(value, (dict, list)):
+            # Usar apenas valores simples (strings, números)
+            context_parts.append(f"{field_name}: {value}")
+            if len(context_parts) >= 3:  # Limitar a 3 campos para não sobrecarregar
+                break
+
+    return ", ".join(context_parts) if context_parts else "item"
+
+
+def _set_nested_value(obj: dict, path: str, value):
+    """Define um valor em um caminho aninhado de um dicionário.
+
+    Args:
+        obj: Dicionário a modificar.
+        path: Caminho no formato "a.b.c".
+        value: Valor a definir.
+    """
+    parts = path.split(".")
+    current = obj
+
+    for i, part in enumerate(parts[:-1]):
+        if part not in current:
+            current[part] = {}
+        elif not isinstance(current[part], dict):
+            current[part] = {}
+        current = current[part]
+
+    current[parts[-1]] = value
 
 
 def call_agent(
@@ -316,8 +481,9 @@ def call_agent_per_field(
     - condition: condição para executar o campo (baseado em valores de outros campos)
 
     Suporta campos aninhados em List[Model], Optional[Model], etc.
-    Campos configurados em modelos aninhados são detectados e processados
-    com buscas separadas, cujos resultados são incluídos no contexto.
+    Para campos List[Model] com configuração de busca interna:
+    1. Primeiro extrai a lista básica (estrutura)
+    2. Depois enriquece cada item com buscas específicas por item
 
     Args:
         text: Texto a ser processado.
@@ -346,14 +512,19 @@ def call_agent_per_field(
     }
     traces = {} if save_trace else None
 
-    # Coletar campos configurados aninhados (excluir campos de primeiro nível)
+    # Identificar campos List[Model] com configuração de busca interna
+    list_fields_with_search = _get_list_fields_with_nested_search(pydantic_model)
+    list_field_names = set(list_fields_with_search.keys())
+
+    # Coletar campos configurados aninhados que NÃO estão em List[Model]
+    # (campos em List[Model] serão processados por item após a extração da lista)
     all_configured_fields = _collect_configured_fields(pydantic_model)
     nested_configured_fields = [
         f for f in all_configured_fields
-        if '.' in f[0]  # path contém '.', então é aninhado
+        if '.' in f[0] and not any(f[0].startswith(lf + '.') for lf in list_field_names)
     ]
 
-    # Executar buscas para campos aninhados configurados
+    # Executar buscas para campos aninhados configurados (não em listas)
     nested_context = {}
     if nested_configured_fields:
         nested_context, nested_usage, nested_traces = _run_nested_searches(
@@ -425,8 +596,39 @@ def call_agent_per_field(
         # Chamar agente para este campo
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
 
+        # Obter resultado do campo
+        field_value = result['data'].get(field_name)
+
+        # FASE 2: Se é um campo List[Model] com busca interna, enriquecer cada item
+        if field_name in list_fields_with_search and field_value:
+            list_config = list_fields_with_search[field_name]
+            inner_model = list_config['inner_model']
+            search_fields = list_config['search_fields']
+
+            logger.debug(f"Enriquecendo {len(field_value) if isinstance(field_value, list) else 0} itens de '{field_name}' com buscas")
+
+            enriched_items, enrich_usage, enrich_traces = _enrich_list_items_with_search(
+                field_value,
+                inner_model,
+                search_fields,
+                text,
+                config,
+                save_trace
+            )
+
+            # Atualizar o valor do campo com itens enriquecidos
+            field_value = enriched_items
+
+            # Somar usage das buscas de enriquecimento
+            for key in enrich_usage:
+                total_usage[key] += enrich_usage.get(key, 0)
+
+            # Coletar traces de enriquecimento
+            if save_trace and enrich_traces:
+                traces[f'{field_name}_items'] = enrich_traces
+
         # Combinar resultado
-        combined_data[field_name] = result['data'].get(field_name)
+        combined_data[field_name] = field_value
 
         # Somar usage de todas as chamadas (exceto campos não numéricos)
         if result.get('usage'):
