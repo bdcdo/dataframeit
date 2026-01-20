@@ -1630,5 +1630,139 @@ def test_call_agent_per_field_sums_nested_usage():
     assert result["usage"]["search_count"] == expected_calls
 
 
+# =============================================================================
+# Testes de ordenação de colunas (Issue #81)
+# =============================================================================
+
+def test_reorder_columns_basic():
+    """Verifica que _reorder_columns ordena colunas corretamente."""
+    from dataframeit.utils import _reorder_columns
+
+    # Criar DataFrame com colunas em ordem incorreta
+    df = pd.DataFrame({
+        'texto': ['a'],
+        'campo1': ['b'],
+        '_input_tokens': [100],
+        '_output_tokens': [50],
+        'campo2': ['c'],
+        '_trace_grupo1': ['trace1'],
+        '_total_tokens': [150],
+        '_search_credits': [1],
+        '_search_count': [1],
+    })
+
+    result = _reorder_columns(df)
+
+    # Verificar ordem das colunas
+    cols = result.columns.tolist()
+
+    # Colunas do usuário primeiro
+    assert cols.index('texto') < cols.index('_trace_grupo1')
+    assert cols.index('campo1') < cols.index('_trace_grupo1')
+    assert cols.index('campo2') < cols.index('_trace_grupo1')
+
+    # Trace antes de search
+    assert cols.index('_trace_grupo1') < cols.index('_search_credits')
+
+    # Search antes de tokens
+    assert cols.index('_search_credits') < cols.index('_input_tokens')
+    assert cols.index('_search_count') < cols.index('_input_tokens')
+
+    # Tokens no final
+    token_cols = ['_input_tokens', '_output_tokens', '_total_tokens']
+    for tcol in token_cols:
+        assert cols.index(tcol) > cols.index('campo2')
+
+
+def test_reorder_columns_with_status():
+    """Verifica que colunas de status ficam no final."""
+    from dataframeit.utils import _reorder_columns
+
+    df = pd.DataFrame({
+        'texto': ['a'],
+        '_dataframeit_status': ['ok'],
+        'campo1': ['b'],
+        '_error_details': [None],
+        '_input_tokens': [100],
+    })
+
+    result = _reorder_columns(df)
+    cols = result.columns.tolist()
+
+    # Status e error devem estar no final
+    assert cols.index('_dataframeit_status') > cols.index('_input_tokens')
+    assert cols.index('_error_details') > cols.index('_input_tokens')
+
+
+def test_reorder_columns_multiple_traces():
+    """Verifica ordenação com múltiplas colunas de trace."""
+    from dataframeit.utils import _reorder_columns
+
+    df = pd.DataFrame({
+        'texto': ['a'],
+        '_trace_campo1': ['t1'],
+        'campo1': ['b'],
+        '_input_tokens': [100],
+        '_trace_grupo1': ['tg1'],
+        'campo2': ['c'],
+        '_output_tokens': [50],
+        '_trace_campo2': ['t2'],
+        '_total_tokens': [150],
+    })
+
+    result = _reorder_columns(df)
+    cols = result.columns.tolist()
+
+    # Todas as traces devem estar após os campos do usuário
+    for trace_col in ['_trace_campo1', '_trace_grupo1', '_trace_campo2']:
+        assert cols.index(trace_col) > cols.index('campo2')
+
+    # Todas as traces devem estar antes dos tokens
+    for trace_col in ['_trace_campo1', '_trace_grupo1', '_trace_campo2']:
+        assert cols.index(trace_col) < cols.index('_input_tokens')
+
+
+def test_column_ordering_in_from_pandas():
+    """Verifica que from_pandas retorna colunas ordenadas corretamente."""
+    from dataframeit.utils import from_pandas, ConversionInfo, ORIGINAL_TYPE_PANDAS_DF
+
+    # Criar DataFrame com colunas em ordem incorreta (simulando problema real)
+    df = pd.DataFrame({
+        'texto': ['a'],
+        'regulatory': ['info1'],
+        '_input_tokens': [100],
+        '_output_tokens': [50],
+        'nome': ['nome1'],
+        '_trace_grupo_reg': ['trace1'],
+        '_total_tokens': [150],
+        'tipo': ['tipo1'],
+        '_search_credits': [1],
+        '_search_count': [1],
+    })
+
+    conversion_info = ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF)
+    result = from_pandas(df, conversion_info)
+
+    cols = result.columns.tolist()
+
+    # Ordem esperada: texto, regulatory, nome, tipo, _trace_*, _search_*, _*_tokens
+    # Colunas do usuário
+    user_cols = ['texto', 'regulatory', 'nome', 'tipo']
+    for ucol in user_cols:
+        assert cols.index(ucol) < cols.index('_trace_grupo_reg')
+
+    # Trace antes de search
+    assert cols.index('_trace_grupo_reg') < cols.index('_search_credits')
+
+    # Search antes de tokens
+    assert cols.index('_search_credits') < cols.index('_input_tokens')
+    assert cols.index('_search_count') < cols.index('_input_tokens')
+
+    # Tokens no final
+    token_start_idx = cols.index('_input_tokens')
+    assert '_output_tokens' in cols[token_start_idx:]
+    assert '_total_tokens' in cols[token_start_idx:]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
