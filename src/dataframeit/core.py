@@ -14,6 +14,7 @@ from .utils import (
     from_pandas,
     get_complex_fields,
     normalize_complex_columns,
+    get_nested_pydantic_models,
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
@@ -125,20 +126,41 @@ def _validate_search_groups(
     return validated_groups
 
 
-def _has_field_config(pydantic_model) -> bool:
+def _has_field_config(pydantic_model, _visited: set = None) -> bool:
     """Verifica se algum campo tem configuração customizada em json_schema_extra.
+
+    Busca recursivamente em modelos aninhados dentro de List[Model], Optional[Model], etc.
 
     Args:
         pydantic_model: Modelo Pydantic a ser verificado.
+        _visited: Conjunto de modelos já visitados (previne loops infinitos).
 
     Returns:
         True se algum campo tiver configuração per-field, False caso contrário.
     """
+    # Inicializar conjunto de visitados para evitar recursão infinita
+    if _visited is None:
+        _visited = set()
+
+    # Evitar loops em modelos auto-referenciais
+    model_id = id(pydantic_model)
+    if model_id in _visited:
+        return False
+    _visited.add(model_id)
+
     for field_info in pydantic_model.model_fields.values():
+        # Verificar se este campo tem configuração
         extra = field_info.json_schema_extra
         if isinstance(extra, dict):
             if any(k in extra for k in _FIELD_CONFIG_KEYS):
                 return True
+
+        # Buscar modelos Pydantic aninhados no tipo do campo
+        nested_models = get_nested_pydantic_models(field_info.annotation)
+        for nested_model in nested_models:
+            if _has_field_config(nested_model, _visited):
+                return True
+
     return False
 
 
