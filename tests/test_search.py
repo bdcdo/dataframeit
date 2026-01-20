@@ -2,7 +2,7 @@
 
 import pandas as pd
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, List, Optional
 import pytest
 from unittest.mock import patch, MagicMock
 import os
@@ -411,6 +411,11 @@ def test_extract_usage_advanced_depth():
 def test_extract_usage_with_object_metadata():
     """Verifica extração de tokens quando usage_metadata é um objeto (não dict)."""
     from dataframeit.agent import _extract_usage
+    from dataframeit.search import TavilyProvider
+    from dataframeit.llm import SearchConfig
+
+    provider = TavilyProvider()
+    search_config = SearchConfig(enabled=True, provider="tavily")
 
     # Criar objeto mock que usa atributos ao invés de dict
     metadata_obj = MagicMock()
@@ -430,7 +435,7 @@ def test_extract_usage_with_object_metadata():
         ],
     }
 
-    usage = _extract_usage(mock_result, "basic")
+    usage = _extract_usage(mock_result, provider, search_config)
 
     assert usage["input_tokens"] == 150
     assert usage["output_tokens"] == 75
@@ -441,6 +446,11 @@ def test_extract_usage_with_debug_logging(caplog):
     """Verifica que logging de diagnóstico funciona sem erros."""
     import logging
     from dataframeit.agent import _extract_usage
+    from dataframeit.search import TavilyProvider
+    from dataframeit.llm import SearchConfig
+
+    provider = TavilyProvider()
+    search_config = SearchConfig(enabled=True, provider="tavily")
 
     mock_result = {
         "messages": [
@@ -469,7 +479,7 @@ def test_extract_usage_with_debug_logging(caplog):
 
     # Ativar logging de debug
     with caplog.at_level(logging.DEBUG, logger="dataframeit.agent"):
-        usage = _extract_usage(mock_result, "basic")
+        usage = _extract_usage(mock_result, provider, search_config)
 
     # Verificar que os tokens foram extraídos corretamente
     assert usage["input_tokens"] == 300  # 100 + 200
@@ -1302,6 +1312,322 @@ def test_apply_group_overrides_with_changes():
     # Config original não deve mudar
     assert config.search_config.search_depth == "basic"
     assert config.search_config.max_results == 5
+
+
+# =============================================================================
+# Testes de campos aninhados em List[Model]
+# =============================================================================
+
+class InformacoesMedicamento(BaseModel):
+    """Modelo aninhado para informações de medicamento."""
+    status_anvisa_atual: Optional[str] = Field(
+        default=None,
+        json_schema_extra={"search_depth": "basic", "max_results": 2},
+    )
+    principio_ativo: Optional[str] = Field(default=None)
+
+
+class PedidoItem(BaseModel):
+    """Item de pedido com modelo aninhado."""
+    info_medicamento: Optional[InformacoesMedicamento] = None
+    quantidade: int = Field(default=1)
+
+
+class AnaliseSentencaSaude(BaseModel):
+    """Modelo principal com List[Model]."""
+    pedidos: List[PedidoItem]
+    observacao: Optional[str] = None
+
+
+def test_get_nested_pydantic_models_list():
+    """Testa extração de modelos de List[Model]."""
+    from dataframeit.utils import get_nested_pydantic_models
+
+    models = get_nested_pydantic_models(List[PedidoItem])
+
+    assert len(models) == 1
+    assert models[0] is PedidoItem
+
+
+def test_get_nested_pydantic_models_optional_list():
+    """Testa extração de modelos de Optional[List[Model]]."""
+    from dataframeit.utils import get_nested_pydantic_models
+
+    models = get_nested_pydantic_models(Optional[List[PedidoItem]])
+
+    assert len(models) == 1
+    assert models[0] is PedidoItem
+
+
+def test_get_nested_pydantic_models_optional_model():
+    """Testa extração de modelos de Optional[Model]."""
+    from dataframeit.utils import get_nested_pydantic_models
+
+    models = get_nested_pydantic_models(Optional[InformacoesMedicamento])
+
+    assert len(models) == 1
+    assert models[0] is InformacoesMedicamento
+
+
+def test_get_nested_pydantic_models_primitive():
+    """Testa que tipos primitivos retornam lista vazia."""
+    from dataframeit.utils import get_nested_pydantic_models
+
+    assert get_nested_pydantic_models(str) == []
+    assert get_nested_pydantic_models(int) == []
+    assert get_nested_pydantic_models(Optional[str]) == []
+    assert get_nested_pydantic_models(List[str]) == []
+
+
+def test_has_field_config_detects_nested_in_list():
+    """Verifica que _has_field_config detecta config em List[Model]."""
+    from dataframeit.core import _has_field_config
+
+    # AnaliseSentencaSaude tem pedidos: List[PedidoItem]
+    # PedidoItem tem info_medicamento: InformacoesMedicamento
+    # InformacoesMedicamento.status_anvisa_atual tem json_schema_extra
+    assert _has_field_config(AnaliseSentencaSaude) is True
+
+
+def test_has_field_config_detects_optional_list():
+    """Verifica que _has_field_config detecta config em Optional[List[Model]]."""
+    from dataframeit.core import _has_field_config
+
+    class ModeloComOptionalList(BaseModel):
+        itens: Optional[List[InformacoesMedicamento]] = None
+
+    assert _has_field_config(ModeloComOptionalList) is True
+
+
+def test_has_field_config_deeply_nested():
+    """Verifica detecção em estruturas profundamente aninhadas."""
+    from dataframeit.core import _has_field_config
+
+    class Nivel3(BaseModel):
+        campo_profundo: str = Field(json_schema_extra={"prompt": "deep search"})
+
+    class Nivel2(BaseModel):
+        nivel3: Nivel3
+
+    class Nivel1(BaseModel):
+        nivel2: List[Nivel2]
+
+    class Raiz(BaseModel):
+        nivel1: Nivel1
+
+    assert _has_field_config(Raiz) is True
+
+
+def test_has_field_config_no_infinite_recursion():
+    """Verifica que modelos auto-referenciais não causam loop infinito."""
+    from dataframeit.core import _has_field_config
+
+    class NodoArvore(BaseModel):
+        valor: str
+        filhos: Optional[List['NodoArvore']] = None
+
+    # Atualizar referências forward para Python resolver o tipo
+    NodoArvore.model_rebuild()
+
+    # Não deve entrar em loop infinito, deve retornar False (sem config)
+    assert _has_field_config(NodoArvore) is False
+
+
+def test_has_field_config_no_config_in_nested():
+    """Verifica que retorna False se modelo aninhado não tem config."""
+    from dataframeit.core import _has_field_config
+
+    class NestedSimples(BaseModel):
+        campo: str
+
+    class RaizSimples(BaseModel):
+        nested: List[NestedSimples]
+
+    assert _has_field_config(RaizSimples) is False
+
+
+def test_collect_configured_fields_returns_paths():
+    """Verifica que _collect_configured_fields retorna caminhos corretos."""
+    from dataframeit.agent import _collect_configured_fields
+
+    results = _collect_configured_fields(AnaliseSentencaSaude)
+
+    # Deve encontrar: pedidos.info_medicamento.status_anvisa_atual
+    paths = [r[0] for r in results]
+
+    assert len(results) >= 1
+    assert any('status_anvisa_atual' in path for path in paths)
+    assert any('pedidos' in path for path in paths)
+
+
+def test_collect_configured_fields_deeply_nested():
+    """Verifica coleta de caminhos em estruturas profundas."""
+    from dataframeit.agent import _collect_configured_fields
+
+    class Nivel3(BaseModel):
+        campo_profundo: str = Field(json_schema_extra={"max_results": 5})
+
+    class Nivel2(BaseModel):
+        nivel3: Nivel3
+
+    class Nivel1(BaseModel):
+        nivel2: List[Nivel2]
+
+    class Raiz(BaseModel):
+        nivel1: Nivel1
+
+    results = _collect_configured_fields(Raiz)
+    paths = [r[0] for r in results]
+
+    assert len(results) == 1
+    assert 'nivel1.nivel2.nivel3.campo_profundo' in paths
+
+
+def test_collect_configured_fields_no_infinite_recursion():
+    """Verifica que modelos auto-referenciais não causam loop infinito."""
+    from dataframeit.agent import _collect_configured_fields
+
+    class NodoArvoreConfig(BaseModel):
+        valor: str = Field(json_schema_extra={"prompt": "search value"})
+        filhos: Optional[List['NodoArvoreConfig']] = None
+
+    NodoArvoreConfig.model_rebuild()
+
+    # Não deve entrar em loop infinito
+    results = _collect_configured_fields(NodoArvoreConfig)
+
+    # Deve encontrar apenas o campo 'valor' do primeiro nível
+    paths = [r[0] for r in results]
+    assert 'valor' in paths
+
+
+def test_call_agent_per_field_nested_search():
+    """Testa integração de call_agent_per_field com busca em campos aninhados."""
+    from dataframeit.agent import call_agent_per_field
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    call_count = [0]
+    captured_prompts = []
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        call_count[0] += 1
+        captured_prompts.append(prompt)
+
+        # Retornar valores para todos os campos do modelo
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "search_credits": 1,
+                "search_count": 1,
+            }
+        }
+
+    search_config = SearchConfig(enabled=True, per_field=True)
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        result = call_agent_per_field(
+            "Medicamento X",
+            AnaliseSentencaSaude,
+            "Analise {texto}",
+            config,
+        )
+
+    # Deve ter chamado agente para:
+    # 1. Campo aninhado configurado (status_anvisa_atual)
+    # 2. Campos de primeiro nível (pedidos, observacao)
+    assert call_count[0] >= 3
+
+    # Resultado deve ter os campos de primeiro nível
+    assert "pedidos" in result["data"]
+    assert "observacao" in result["data"]
+
+
+def test_call_agent_per_field_nested_context_in_prompt():
+    """Verifica que contexto de busca aninhada é incluído no prompt."""
+    from dataframeit.agent import call_agent_per_field
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    captured_prompts = []
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        captured_prompts.append(prompt)
+
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"valor_busca_{f}" for f in fields},
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                      "search_credits": 0, "search_count": 0}
+        }
+
+    search_config = SearchConfig(enabled=True, per_field=True)
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        call_agent_per_field("Medicamento X", AnaliseSentencaSaude, "Analise {texto}", config)
+
+    # Procurar prompt do campo 'pedidos' que deve ter contexto aninhado
+    prompts_pedidos = [p for p in captured_prompts if 'pedidos' in p.lower()]
+
+    # Deve haver menção ao contexto de buscas aninhadas
+    pedidos_prompt = next((p for p in prompts_pedidos if 'Contexto de buscas' in p), None)
+    assert pedidos_prompt is not None or len(prompts_pedidos) > 0
+
+
+def test_call_agent_per_field_sums_nested_usage():
+    """Verifica que usage de buscas aninhadas é somado."""
+    from dataframeit.agent import call_agent_per_field
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    call_count = [0]
+
+    def mock_call_agent(text, model, prompt, config, save_trace=None):
+        call_count[0] += 1
+
+        fields = list(model.model_fields.keys())
+        return {
+            "data": {f: f"valor_{f}" for f in fields},
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "search_credits": 1,
+                "search_count": 1,
+            }
+        }
+
+    search_config = SearchConfig(enabled=True, per_field=True)
+    config = LLMConfig(
+        model="test", provider="test", api_key=None,
+        max_retries=1, base_delay=0.1, max_delay=1.0, rate_limit_delay=0,
+        search_config=search_config
+    )
+
+    with patch('dataframeit.agent.call_agent', side_effect=mock_call_agent):
+        result = call_agent_per_field(
+            "Medicamento X",
+            AnaliseSentencaSaude,
+            "Analise {texto}",
+            config,
+        )
+
+    # Usage deve ser a soma de todas as chamadas
+    expected_calls = call_count[0]
+    assert result["usage"]["input_tokens"] == expected_calls * 100
+    assert result["usage"]["total_tokens"] == expected_calls * 150
+    assert result["usage"]["search_count"] == expected_calls
 
 
 if __name__ == "__main__":

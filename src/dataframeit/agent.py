@@ -17,6 +17,10 @@ from pydantic import create_model
 from .llm import LLMConfig, build_prompt, _create_langchain_llm
 from .errors import retry_with_backoff
 from .search import get_provider
+from .utils import get_nested_pydantic_models
+
+# Chaves de configuração per-field reconhecidas em json_schema_extra
+_FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
 
 
 def _get_field_config(extra: dict) -> dict:
@@ -106,6 +110,53 @@ def _apply_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
     return new_config
 
 
+def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set = None) -> list:
+    """Coleta todos os campos com json_schema_extra de busca, incluindo aninhados.
+
+    Args:
+        pydantic_model: Modelo Pydantic a analisar.
+        prefix: Prefixo do caminho (usado internamente para recursão).
+        _visited: Conjunto de modelos já visitados (previne loops infinitos).
+
+    Returns:
+        Lista de tuplas: (path, field_name, field_info, parent_model, has_config)
+        Ex: ("pedidos.info_medicamento", "status_anvisa_atual", <FieldInfo>, InformacoesMedicamento, True)
+    """
+    if _visited is None:
+        _visited = set()
+
+    # Evitar loops em modelos auto-referenciais
+    model_id = id(pydantic_model)
+    if model_id in _visited:
+        return []
+    _visited.add(model_id)
+
+    results = []
+
+    for field_name, field_info in pydantic_model.model_fields.items():
+        # Construir caminho completo
+        path = f"{prefix}.{field_name}" if prefix else field_name
+
+        # Verificar se este campo tem configuração de busca
+        extra = field_info.json_schema_extra
+        has_config = False
+        if isinstance(extra, dict):
+            has_config = any(k in extra for k in _FIELD_CONFIG_KEYS)
+
+        # Adicionar este campo se tiver configuração
+        if has_config:
+            results.append((path, field_name, field_info, pydantic_model, True))
+
+        # Buscar modelos Pydantic aninhados no tipo do campo
+        nested_models = get_nested_pydantic_models(field_info.annotation)
+        for nested_model in nested_models:
+            # Recursivamente coletar campos do modelo aninhado
+            nested_results = _collect_configured_fields(nested_model, path, _visited)
+            results.extend(nested_results)
+
+    return results
+
+
 def call_agent(
     text: str,
     pydantic_model,
@@ -177,6 +228,77 @@ def call_agent(
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
+def _run_nested_searches(
+    text: str,
+    nested_fields: list,
+    config: LLMConfig,
+    save_trace: Optional[str] = None
+) -> tuple:
+    """Executa buscas para campos configurados em modelos aninhados.
+
+    Args:
+        text: Texto a ser processado.
+        nested_fields: Lista de tuplas (path, field_name, field_info, parent_model, has_config).
+        config: Configuração do LLM.
+        save_trace: Modo de trace.
+
+    Returns:
+        Tupla (search_context: dict, usage: dict, traces: dict).
+        search_context mapeia path -> resultado da busca.
+    """
+    search_context = {}
+    total_usage = {
+        'input_tokens': 0,
+        'output_tokens': 0,
+        'total_tokens': 0,
+        'search_credits': 0,
+        'search_count': 0,
+    }
+    traces = {} if save_trace else None
+
+    for path, field_name, field_info, parent_model, has_config in nested_fields:
+        if not has_config:
+            continue
+
+        # Extrair configurações do campo
+        extra = field_info.json_schema_extra
+        field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+        # Criar modelo temporário para a busca
+        SingleFieldModel = create_model(
+            f'NestedSearch_{path.replace(".", "_")}',
+            **{field_name: (field_info.annotation, field_info)}
+        )
+
+        # Construir prompt para busca do campo aninhado
+        field_prompt = _build_field_prompt(
+            f"Pesquise informações para preencher o campo '{path}'",
+            field_name,
+            field_info.description,
+            field_config
+        )
+
+        # Criar config com overrides do campo (se houver)
+        effective_config = _apply_field_overrides(config, field_config)
+
+        # Chamar agente para buscar informações
+        result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+
+        # Armazenar contexto de busca
+        search_context[path] = result['data'].get(field_name)
+
+        # Somar usage
+        if result.get('usage'):
+            for key in total_usage:
+                total_usage[key] += result['usage'].get(key, 0)
+
+        # Coletar trace
+        if save_trace and result.get('trace'):
+            traces[path] = result['trace']
+
+    return search_context, total_usage, traces
+
+
 def call_agent_per_field(
     text: str,
     pydantic_model,
@@ -192,6 +314,10 @@ def call_agent_per_field(
     Suporta execução condicional de campos baseada em:
     - depends_on: lista de campos que devem ser processados primeiro
     - condition: condição para executar o campo (baseado em valores de outros campos)
+
+    Suporta campos aninhados em List[Model], Optional[Model], etc.
+    Campos configurados em modelos aninhados são detectados e processados
+    com buscas separadas, cujos resultados são incluídos no contexto.
 
     Args:
         text: Texto a ser processado.
@@ -219,6 +345,29 @@ def call_agent_per_field(
         'search_count': 0,
     }
     traces = {} if save_trace else None
+
+    # Coletar campos configurados aninhados (excluir campos de primeiro nível)
+    all_configured_fields = _collect_configured_fields(pydantic_model)
+    nested_configured_fields = [
+        f for f in all_configured_fields
+        if '.' in f[0]  # path contém '.', então é aninhado
+    ]
+
+    # Executar buscas para campos aninhados configurados
+    nested_context = {}
+    if nested_configured_fields:
+        nested_context, nested_usage, nested_traces = _run_nested_searches(
+            text, nested_configured_fields, config, save_trace
+        )
+
+        # Somar usage das buscas aninhadas
+        for key in total_usage:
+            total_usage[key] += nested_usage.get(key, 0)
+
+        # Coletar traces aninhados
+        if save_trace and nested_traces:
+            for path, trace in nested_traces.items():
+                traces[path] = trace
 
     # Extrair configurações de todos os campos
     field_configs = {}
@@ -258,6 +407,17 @@ def call_agent_per_field(
         field_prompt = _build_field_prompt(
             user_prompt, field_name, field_info.description, field_config
         )
+
+        # Adicionar contexto de buscas aninhadas ao prompt se houver
+        relevant_context = {
+            path: value for path, value in nested_context.items()
+            if path.startswith(f"{field_name}.")
+        }
+        if relevant_context:
+            context_str = "\n".join(
+                f"- {path}: {value}" for path, value in relevant_context.items()
+            )
+            field_prompt += f"\n\nContexto de buscas realizadas para campos aninhados:\n{context_str}"
 
         # Criar config com overrides do campo (se houver)
         effective_config = _apply_field_overrides(config, field_config)

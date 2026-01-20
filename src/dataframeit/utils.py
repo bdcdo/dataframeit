@@ -11,7 +11,7 @@ import re
 import json
 import importlib
 import types
-from typing import Tuple, Union, Any, get_origin, get_args
+from typing import Tuple, Union, Any, List, get_origin, get_args
 from dataclasses import dataclass
 import pandas as pd
 
@@ -203,10 +203,11 @@ def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) 
 
     # pandas DataFrame
     if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF:
-        return df
+        return _reorder_columns(df)
 
     # polars DataFrame
     if conversion_info.original_type == ORIGINAL_TYPE_POLARS_DF:
+        df = _reorder_columns(df)
         if pl is not None:
             return pl.from_pandas(df)
         return df
@@ -220,12 +221,13 @@ def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) 
         # Restaurar índice original
         if conversion_info.original_index is not None:
             df.index = conversion_info.original_index
-        return df
+        return _reorder_columns(df)
 
     # polars Series - similar ao pandas Series
     if conversion_info.original_type == ORIGINAL_TYPE_POLARS_SERIES:
         if DEFAULT_TEXT_COLUMN in df.columns:
             df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
+        df = _reorder_columns(df)
         if pl is not None:
             return pl.from_pandas(df)
         return df
@@ -234,16 +236,57 @@ def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) 
     if conversion_info.original_type == ORIGINAL_TYPE_LIST:
         if DEFAULT_TEXT_COLUMN in df.columns:
             df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        return df
+        return _reorder_columns(df)
 
     # dict - tratar como DataFrame, retorna DataFrame com chaves como índice
     if conversion_info.original_type == ORIGINAL_TYPE_DICT:
         if DEFAULT_TEXT_COLUMN in df.columns:
             df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        return df
+        return _reorder_columns(df)
 
     # Fallback
-    return df
+    return _reorder_columns(df)
+
+
+def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Reordena colunas para que internas fiquem no final.
+
+    Ordem final das colunas:
+    1. Colunas do usuário (originais + campos do modelo)
+    2. Colunas de trace (_trace_*)
+    3. Colunas de busca (_search_credits, _search_count)
+    4. Colunas de tokens (_input_tokens, _output_tokens, _total_tokens)
+    5. Colunas de controle (_dataframeit_status, _error_details)
+
+    Args:
+        df: DataFrame a reordenar.
+
+    Returns:
+        DataFrame com colunas reordenadas.
+    """
+    # Separar colunas por categoria
+    user_cols = []
+    trace_cols = []
+    search_cols = []
+    token_cols = []
+    status_cols = []
+
+    for col in df.columns:
+        if col.startswith('_trace_'):
+            trace_cols.append(col)
+        elif col in ['_search_credits', '_search_count']:
+            search_cols.append(col)
+        elif col in ['_input_tokens', '_output_tokens', '_total_tokens']:
+            token_cols.append(col)
+        elif col in ['_dataframeit_status', '_error_details']:
+            status_cols.append(col)
+        else:
+            user_cols.append(col)
+
+    # Ordem final: user -> trace -> search -> tokens -> status
+    new_order = user_cols + trace_cols + search_cols + token_cols + status_cols
+
+    return df[new_order]
 
 
 # =============================================================================
@@ -462,3 +505,69 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 
         if has_json:
             df[col] = df[col].apply(normalize_value)
+
+
+# =============================================================================
+# EXTRAÇÃO DE MODELOS PYDANTIC ANINHADOS
+# =============================================================================
+
+def get_nested_pydantic_models(field_type) -> List:
+    """Extrai todos os modelos Pydantic de uma anotação de tipo.
+
+    Trata List[Model], Optional[List[Model]], Union[Model, None], etc.
+    Usado para detectar campos de busca em modelos aninhados.
+
+    Args:
+        field_type: Anotação de tipo a analisar.
+
+    Returns:
+        Lista de modelos Pydantic encontrados na anotação.
+
+    Examples:
+        >>> class Inner(BaseModel):
+        ...     x: str
+        >>> get_nested_pydantic_models(List[Inner])
+        [<class 'Inner'>]
+        >>> get_nested_pydantic_models(Optional[List[Inner]])
+        [<class 'Inner'>]
+        >>> get_nested_pydantic_models(str)
+        []
+    """
+    from pydantic import BaseModel
+
+    models = []
+    origin = get_origin(field_type)
+
+    # Caso 1: É diretamente um modelo Pydantic
+    if isinstance(field_type, type) and issubclass(field_type, BaseModel):
+        models.append(field_type)
+        return models
+
+    # Caso 2: Tipos genéricos (List[X], Optional[X], Union[X, Y], etc.)
+    if origin is not None:
+        args = get_args(field_type)
+
+        for arg in args:
+            # Ignorar NoneType em Optional/Union
+            if arg is type(None):
+                continue
+
+            # Checar se o argumento é um modelo Pydantic
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                models.append(arg)
+            else:
+                # Recursivamente buscar em tipos aninhados (e.g., List[List[Model]])
+                models.extend(get_nested_pydantic_models(arg))
+
+    # Caso 3: types.UnionType para sintaxe X | Y (Python 3.10+)
+    if isinstance(field_type, types.UnionType):
+        args = get_args(field_type)
+        for arg in args:
+            if arg is type(None):
+                continue
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                models.append(arg)
+            else:
+                models.extend(get_nested_pydantic_models(arg))
+
+    return models
