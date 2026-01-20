@@ -5,9 +5,12 @@ Suporta múltiplos provedores de busca:
 - Exa: Motor de busca semântico
 """
 
+import logging
 import time
 from copy import copy
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from pydantic import create_model
 
@@ -24,13 +27,15 @@ def _get_field_config(extra: dict) -> dict:
 
     Returns:
         Dicionário com configurações extraídas (prompt, prompt_append,
-        search_depth, max_results).
+        search_depth, max_results, depends_on, condition).
     """
     return {
         'prompt': extra.get('prompt') or extra.get('prompt_replace'),
         'prompt_append': extra.get('prompt_append'),
         'search_depth': extra.get('search_depth'),
         'max_results': extra.get('max_results'),
+        'depends_on': extra.get('depends_on', []),
+        'condition': extra.get('condition'),
     }
 
 
@@ -184,6 +189,10 @@ def call_agent_per_field(
     Útil quando o modelo tem muitos campos e um único contexto ficaria
     sobrecarregado com informações de múltiplas buscas.
 
+    Suporta execução condicional de campos baseada em:
+    - depends_on: lista de campos que devem ser processados primeiro
+    - condition: condição para executar o campo (baseado em valores de outros campos)
+
     Args:
         text: Texto a ser processado.
         pydantic_model: Modelo Pydantic completo.
@@ -194,7 +203,12 @@ def call_agent_per_field(
     Returns:
         Dicionário com 'data' (todos os campos combinados), 'usage' (soma
         de todos os tokens e créditos) e 'traces' (dict por campo, se habilitado).
+
+    Raises:
+        ValueError: Se há dependências circulares ou inválidas.
     """
+    from .conditional import get_field_execution_order, should_skip_field
+
     combined_data = {}
     search_provider = config.search_config.provider if config.search_config else None
     total_usage = {
@@ -206,17 +220,39 @@ def call_agent_per_field(
     }
     traces = {} if save_trace else None
 
-    # Iterar por cada campo do modelo Pydantic
+    # Extrair configurações de todos os campos
+    field_configs = {}
     for field_name, field_info in pydantic_model.model_fields.items():
+        extra = field_info.json_schema_extra
+        field_configs[field_name] = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+    # Determinar ordem de execução baseada em dependências
+    try:
+        execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
+    except ValueError as e:
+        logger.error(f"Erro ao determinar ordem de execução: {e}")
+        raise
+
+    logger.debug(f"Ordem de execução de campos: {execution_order}")
+    if any(dependencies.values()):
+        logger.debug(f"Mapa de dependências: {dependencies}")
+
+    # Processar campos na ordem determinada
+    for field_name in execution_order:
+        field_info = pydantic_model.model_fields[field_name]
+        field_config = field_configs[field_name]
+
+        # Verificar se o campo deve ser pulado (condição não satisfeita)
+        if should_skip_field(field_name, field_config, combined_data):
+            logger.info(f"Campo '{field_name}' pulado (condição não satisfeita)")
+            combined_data[field_name] = None
+            continue
+
         # Criar modelo temporário com apenas este campo
         SingleFieldModel = create_model(
             f'{pydantic_model.__name__}_{field_name}',
             **{field_name: (field_info.annotation, field_info)}
         )
-
-        # Extrair configurações do campo (opcional)
-        extra = field_info.json_schema_extra
-        field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
 
         # Construir prompt para este campo
         field_prompt = _build_field_prompt(
@@ -435,11 +471,51 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
 
     # Extrair token usage das mensagens
     messages = agent_result.get("messages", [])
+
+    # Diagnóstico: logar detalhes de cada mensagem (ativado com logging.DEBUG)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"[token_tracking] Total messages in agent result: {len(messages)}")
+        for i, msg in enumerate(messages):
+            msg_type = getattr(msg, 'type', type(msg).__name__)
+            has_metadata = hasattr(msg, 'usage_metadata') and msg.usage_metadata is not None
+            has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
+
+            metadata_info = ""
+            if has_metadata:
+                meta = msg.usage_metadata
+                # Suportar tanto dict quanto objeto com atributos
+                if isinstance(meta, dict):
+                    metadata_info = f"in={meta.get('input_tokens', 0)}, out={meta.get('output_tokens', 0)}"
+                else:
+                    metadata_info = f"in={getattr(meta, 'input_tokens', 0)}, out={getattr(meta, 'output_tokens', 0)}"
+
+            tool_info = ""
+            if has_tool_calls:
+                tool_names = []
+                for tc in msg.tool_calls:
+                    name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
+                    tool_names.append(name)
+                tool_info = f", tools={tool_names}"
+
+            logger.debug(
+                f"[token_tracking]   [{i}] {msg_type}: "
+                f"has_usage_metadata={has_metadata}"
+                f"{f', {metadata_info}' if metadata_info else ''}"
+                f"{tool_info}"
+            )
+
     for msg in messages:
         if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
-            usage['input_tokens'] += msg.usage_metadata.get('input_tokens', 0)
-            usage['output_tokens'] += msg.usage_metadata.get('output_tokens', 0)
-            usage['total_tokens'] += msg.usage_metadata.get('total_tokens', 0)
+            meta = msg.usage_metadata
+            # Suportar tanto dict quanto objeto com atributos
+            if isinstance(meta, dict):
+                usage['input_tokens'] += meta.get('input_tokens', 0)
+                usage['output_tokens'] += meta.get('output_tokens', 0)
+                usage['total_tokens'] += meta.get('total_tokens', 0)
+            else:
+                usage['input_tokens'] += getattr(meta, 'input_tokens', 0)
+                usage['output_tokens'] += getattr(meta, 'output_tokens', 0)
+                usage['total_tokens'] += getattr(meta, 'total_tokens', 0)
 
     # Contar chamadas de busca (tool calls) usando padrão do provider
     tool_pattern = provider.get_tool_name_pattern()
@@ -457,6 +533,9 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
         search_depth=search_config.search_depth,
         max_results=search_config.max_results,
     )
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"[token_tracking] Final usage: {usage}")
 
     return usage
 
