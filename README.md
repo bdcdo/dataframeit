@@ -77,20 +77,32 @@ O dataframeit usa **Groq como default**, que oferece **free tier permanente** se
 Para evitar rate limits, adicione um pequeno delay entre requisições:
 
 ```python
-# Recomendado: 1 segundo entre requisições = 60 RPM máximo
+# Recomendado para uso simples: sequencial com 1s de delay
 resultado = dataframeit(
     df, Sentimento, "Analise o sentimento.",
-    rate_limit_delay=1.0  # Delay de 1 segundo entre requisições
+    rate_limit_delay=1.0  # 1 req/segundo = 60 RPM (máximo do free tier)
 )
 
-# Para datasets grandes, use rate_limit_delay + parallel_requests:
+# Para processar mais rápido, use paralelismo COM delay ajustado:
 resultado = dataframeit(
     df, Sentimento, "Analise o sentimento.",
-    rate_limit_delay=1.0,      # 1s entre requisições
-    parallel_requests=3,       # 3 requisições simultâneas
+    rate_limit_delay=2.0,      # 2s entre requisições por worker
+    parallel_requests=2,       # 2 workers = 60 RPM no total
     track_tokens=True          # Monitore RPM e TPM em tempo real
 )
+
+# Para datasets MUITO grandes (1000+ linhas), seja mais conservador:
+resultado = dataframeit(
+    df, Sentimento, "Analise o sentimento.",
+    rate_limit_delay=1.5,      # 1.5s = ~40 RPM (margem de segurança)
+    track_tokens=True
+)
 ```
+
+**💡 Cálculo do delay:** Com N workers paralelos, use `rate_limit_delay = N × (60s / 60 RPM) = N` segundos.
+- 1 worker: `rate_limit_delay=1.0` → 60 RPM
+- 2 workers: `rate_limit_delay=2.0` → 60 RPM total (30 RPM cada)
+- 3 workers: `rate_limit_delay=3.0` → 60 RPM total (20 RPM cada)
 
 **Dica:** O parâmetro `track_tokens=True` mostra estatísticas em tempo real (RPM, TPM) para você calibrar os valores ideais.
 

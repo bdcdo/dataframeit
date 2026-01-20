@@ -49,28 +49,44 @@ resultado = dataframeit(
 Para evitar rate limits (429 errors), adicione delay entre requisições:
 
 ```python
-# Recomendado: 1 segundo entre requisições = 60 RPM máximo
+# Opção 1: Processamento sequencial (mais simples)
 resultado = dataframeit(
     df, Model, PROMPT,
-    rate_limit_delay=1.0  # Delay de 1 segundo entre requisições
+    rate_limit_delay=1.0  # 1 req/segundo = 60 RPM (máximo do free tier)
 )
 
-# Para datasets grandes, combine delay + paralelismo:
+# Opção 2: Processamento paralelo (mais rápido, REQUER ajuste do delay!)
 resultado = dataframeit(
     df, Model, PROMPT,
-    rate_limit_delay=1.0,      # 1s entre requisições
-    parallel_requests=3,       # 3 requisições simultâneas = ~180 req/min teórico
-    track_tokens=True          # Monitore RPM e TPM em tempo real
+    rate_limit_delay=2.0,      # 2s × 2 workers = 60 RPM total
+    parallel_requests=2,       # 2 workers simultâneos
+    track_tokens=True          # Monitore RPM em tempo real
 )
 
-# Para datasets muito grandes (1000+ linhas), seja conservador:
+# Opção 3: Conservador para datasets grandes (evita picos)
 resultado = dataframeit(
     df, Model, PROMPT,
-    rate_limit_delay=1.5,      # 1.5s = 40 RPM (margem de segurança)
-    parallel_requests=2,       # 2 workers
+    rate_limit_delay=1.5,      # 1.5s = ~40 RPM (margem de segurança)
     track_tokens=True
 )
 ```
+
+**⚠️ IMPORTANTE - Cálculo do delay com paralelismo:**
+
+O rate limit de 60 RPM é **compartilhado entre todos os workers**. Use esta fórmula:
+
+```
+rate_limit_delay = parallel_requests × (60s / 60 RPM)
+                 = parallel_requests × 1.0
+```
+
+**Exemplos:**
+- 1 worker: `rate_limit_delay=1.0` → 60 RPM
+- 2 workers: `rate_limit_delay=2.0` → 60 RPM total (30 RPM cada)
+- 3 workers: `rate_limit_delay=3.0` → 60 RPM total (20 RPM cada)
+- 4 workers: `rate_limit_delay=4.0` → 60 RPM total (15 RPM cada)
+
+**❌ Erro comum:** Usar `parallel_requests=3` com `rate_limit_delay=1.0` resulta em ~180 RPM → ERRO 429!
 
 **💡 Dica:** Use `track_tokens=True` para ver estatísticas em tempo real:
 - Requests por minuto (RPM) atual
@@ -78,7 +94,7 @@ resultado = dataframeit(
 - Tempo restante estimado
 - Progresso com barra de status
 
-Isso ajuda a calibrar `rate_limit_delay` e `parallel_requests` para o seu caso de uso!
+Isso ajuda a validar se você está dentro dos limites!
 
 ### Modelos Recomendados
 
