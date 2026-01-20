@@ -13,7 +13,8 @@ DataFrameIt processa textos em DataFrames usando Modelos de Linguagem (LLMs) e e
 ## Instalação
 
 ```bash
-pip install dataframeit[google]  # Google Gemini (recomendado)
+pip install dataframeit  # Groq incluído (default - free tier permanente!)
+pip install dataframeit[google]  # Google Gemini
 pip install dataframeit[openai]  # OpenAI
 pip install dataframeit[anthropic]  # Anthropic Claude
 ```
@@ -21,7 +22,8 @@ pip install dataframeit[anthropic]  # Anthropic Claude
 Configure sua API key:
 
 ```bash
-export GOOGLE_API_KEY="sua-chave"  # ou OPENAI_API_KEY, ANTHROPIC_API_KEY
+export GROQ_API_KEY="sua-chave"  # Gratuito em console.groq.com
+# Ou: GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
 ```
 
 ## Exemplo Rápido
@@ -61,7 +63,7 @@ print(resultado)
 
 ## Funcionalidades
 
-- **Múltiplos providers**: Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
+- **Múltiplos providers**: Groq (default, free tier permanente), Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
 - **Múltiplos tipos de entrada**: DataFrame, Series, list, dict
 - **Saída estruturada**: Validação automática com Pydantic
 - **Resiliência**: Retry automático com backoff exponencial

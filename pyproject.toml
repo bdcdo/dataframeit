@@ -45,12 +45,16 @@ classifiers = [
 dependencies = [
     "langchain>=1.0.0",
     "langchain-core>=1.0.0",
+    "langchain-groq>=0.2.0",
     "pandas",
     "pydantic>=2.0",
     "tqdm",
 ]
 
 [project.optional-dependencies]
+groq = [
+    "langchain-groq>=0.2.0",
+]
 google = [
     "langchain-google-genai>=2.0.0",
 ]
@@ -67,6 +71,7 @@ search = [
     "langchain-tavily>=0.1.0",
 ]
 all = [
+    "langchain-groq>=0.2.0",
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
