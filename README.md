@@ -61,6 +61,39 @@ print(resultado)
 | Péssimo atendimento... | negativo | alta |
 | Entrega ok... | neutro | media |
 
+## 💰 100% Gratuito com Groq!
+
+O dataframeit usa **Groq como default**, que oferece **free tier permanente** sem necessidade de cartão de crédito:
+
+- ✅ **60 requisições por minuto** (RPM)
+- ✅ **10.000 tokens por minuto** (TPM)
+- ✅ **Sem limite de tempo** - free tier permanente!
+- ✅ **Ultra-rápido** - 200+ tokens/segundo
+
+**Cadastre-se grátis:** [console.groq.com](https://console.groq.com)
+
+### Otimizando para o Free Tier
+
+Para evitar rate limits, adicione um pequeno delay entre requisições:
+
+```python
+# Recomendado: 1 segundo entre requisições = 60 RPM máximo
+resultado = dataframeit(
+    df, Sentimento, "Analise o sentimento.",
+    rate_limit_delay=1.0  # Delay de 1 segundo entre requisições
+)
+
+# Para datasets grandes, use rate_limit_delay + parallel_requests:
+resultado = dataframeit(
+    df, Sentimento, "Analise o sentimento.",
+    rate_limit_delay=1.0,      # 1s entre requisições
+    parallel_requests=3,       # 3 requisições simultâneas
+    track_tokens=True          # Monitore RPM e TPM em tempo real
+)
+```
+
+**Dica:** O parâmetro `track_tokens=True` mostra estatísticas em tempo real (RPM, TPM) para você calibrar os valores ideais.
+
 ## Funcionalidades
 
 - **Múltiplos providers**: Groq (default, free tier permanente), Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain

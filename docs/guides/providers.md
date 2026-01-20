@@ -15,15 +15,25 @@ Configure diferentes provedores de LLM via LangChain.
 
 ## Groq (Padrão) ⚡
 
-**Free tier permanente:** 60 RPM, 10.000 TPM - Ultra-rápido e gratuito!
+**🎉 100% GRATUITO - Free tier permanente sem cartão de crédito!**
+
+- ✅ **60 RPM** (requisições por minuto)
+- ✅ **10.000 TPM** (tokens por minuto)
+- ✅ **Sem limite de tempo** - use para sempre!
+- ✅ **Ultra-rápido** - 200-1000+ tokens/segundo
+- ✅ **Sem surpresas** - não precisa de cartão de crédito
+
+**Cadastre-se grátis:** [console.groq.com](https://console.groq.com)
 
 ```bash
 pip install dataframeit  # langchain-groq já incluído
-export GROQ_API_KEY="sua-chave"
+export GROQ_API_KEY="sua-chave"  # Pegue em console.groq.com (grátis!)
 ```
 
+### Uso Básico
+
 ```python
-# Padrão - não precisa especificar
+# Padrão - não precisa especificar nada!
 resultado = dataframeit(df, Model, PROMPT)
 
 # Explícito
@@ -32,17 +42,43 @@ resultado = dataframeit(
     provider='groq',
     model='moonshotai/kimi-k2-instruct-0905'
 )
+```
 
-# Com parâmetros extras
+### Otimizando para o Free Tier (Recomendado!)
+
+Para evitar rate limits (429 errors), adicione delay entre requisições:
+
+```python
+# Recomendado: 1 segundo entre requisições = 60 RPM máximo
 resultado = dataframeit(
     df, Model, PROMPT,
-    provider='groq',
-    model='moonshotai/kimi-k2-instruct-0905',
-    model_kwargs={
-        'temperature': 0.2
-    }
+    rate_limit_delay=1.0  # Delay de 1 segundo entre requisições
+)
+
+# Para datasets grandes, combine delay + paralelismo:
+resultado = dataframeit(
+    df, Model, PROMPT,
+    rate_limit_delay=1.0,      # 1s entre requisições
+    parallel_requests=3,       # 3 requisições simultâneas = ~180 req/min teórico
+    track_tokens=True          # Monitore RPM e TPM em tempo real
+)
+
+# Para datasets muito grandes (1000+ linhas), seja conservador:
+resultado = dataframeit(
+    df, Model, PROMPT,
+    rate_limit_delay=1.5,      # 1.5s = 40 RPM (margem de segurança)
+    parallel_requests=2,       # 2 workers
+    track_tokens=True
 )
 ```
+
+**💡 Dica:** Use `track_tokens=True` para ver estatísticas em tempo real:
+- Requests por minuto (RPM) atual
+- Tokens por minuto (TPM) atual
+- Tempo restante estimado
+- Progresso com barra de status
+
+Isso ajuda a calibrar `rate_limit_delay` e `parallel_requests` para o seu caso de uso!
 
 ### Modelos Recomendados
 
@@ -59,6 +95,44 @@ resultado = dataframeit(
 - ✅ Structured outputs + Function calling nativos
 - ✅ Prompt caching com 50% desconto
 - ✅ Open-source friendly (modelos Apache 2.0)
+
+### 🔧 Troubleshooting: Rate Limits
+
+**Erro: "429 Too Many Requests" / "Rate limit reached"**
+
+Isso significa que você excedeu o limite de 60 RPM ou 10.000 TPM. Soluções:
+
+1. **Adicione delay entre requisições:**
+   ```python
+   resultado = dataframeit(df, Model, PROMPT, rate_limit_delay=1.0)
+   ```
+
+2. **Reduza paralelismo:**
+   ```python
+   resultado = dataframeit(df, Model, PROMPT, parallel_requests=2)  # Ao invés de 5+
+   ```
+
+3. **Use modelo menor para economizar tokens:**
+   ```python
+   resultado = dataframeit(
+       df, Model, PROMPT,
+       model='llama-3.1-8b-instant'  # Mais rápido, consome menos tokens
+   )
+   ```
+
+4. **Monitore em tempo real com track_tokens:**
+   ```python
+   resultado = dataframeit(df, Model, PROMPT, track_tokens=True)
+   ```
+   Você verá algo como:
+   ```
+   Processing: 100%|████████| 50/50 [00:52<00:00]
+   RPM: 57.3 | TPM: 8,234 | Avg: 143.7 tokens/req
+   ```
+
+**Precisa de mais?**
+- Upgrade para [Developer Tier](https://console.groq.com/settings/billing): 1.000 RPM, 500K RPD, 260K TPM
+- Ou use Google Gemini 2.0 Flash: 1M TPM no free tier (mas apenas 15 RPM)
 
 ## Google Gemini
 
@@ -206,6 +280,16 @@ resultado = dataframeit(
 | OpenAI | gpt-5.2 | $5.00 | $15.00 | ❌ |
 | Anthropic | claude-sonnet-4.5 | $3.00 | $15.00 | ❌ |
 | Anthropic | claude-haiku-4.5 | $1.00 | $5.00 | ❌ |
+
+!!! tip "Free Tier Permanente = Groq"
+    **Groq é o único com free tier permanente sem cartão de crédito!**
+
+    - ✅ Groq: Free forever (60 RPM, 10K TPM)
+    - ✅ Google Gemini: Free tier (mas limitado: 15 RPM)
+    - ❌ OpenAI: Apenas $5 de créditos que expiram em 3 meses
+    - ❌ Anthropic: Sem free tier
+
+    Para começar sem gastar nada, use Groq! Para datasets muito grandes (>1000 linhas), considere Gemini 2.0 Flash (1M TPM).
 
 !!! note "Preços mudam"
     Verifique os preços atuais nos sites oficiais dos providers.
