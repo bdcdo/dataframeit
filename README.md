@@ -13,7 +13,8 @@ DataFrameIt processa textos em DataFrames usando Modelos de Linguagem (LLMs) e e
 ## Instalação
 
 ```bash
-pip install dataframeit[google]  # Google Gemini (recomendado)
+pip install dataframeit  # Groq incluído (default - free tier permanente!)
+pip install dataframeit[google]  # Google Gemini
 pip install dataframeit[openai]  # OpenAI
 pip install dataframeit[anthropic]  # Anthropic Claude
 ```
@@ -21,7 +22,8 @@ pip install dataframeit[anthropic]  # Anthropic Claude
 Configure sua API key:
 
 ```bash
-export GOOGLE_API_KEY="sua-chave"  # ou OPENAI_API_KEY, ANTHROPIC_API_KEY
+export GROQ_API_KEY="sua-chave"  # Gratuito em console.groq.com
+# Ou: GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
 ```
 
 ## Exemplo Rápido
@@ -59,9 +61,54 @@ print(resultado)
 | Péssimo atendimento... | negativo | alta |
 | Entrega ok... | neutro | media |
 
+## 💰 100% Gratuito com Groq!
+
+O dataframeit usa **Groq como default**, que oferece **free tier permanente** sem necessidade de cartão de crédito:
+
+- ✅ **60 requisições por minuto** (RPM)
+- ✅ **10.000 tokens por minuto** (TPM)
+- ✅ **Sem limite de tempo** - free tier permanente!
+- ✅ **Ultra-rápido** - 200+ tokens/segundo
+
+**Cadastre-se grátis:** [console.groq.com](https://console.groq.com)
+
+### Otimizando para o Free Tier
+
+Para evitar rate limits, adicione um pequeno delay entre requisições:
+
+```python
+# Recomendado para uso simples: sequencial com 1s de delay
+resultado = dataframeit(
+    df, Sentimento, "Analise o sentimento.",
+    rate_limit_delay=1.0  # 1 req/segundo = 60 RPM (máximo do free tier)
+)
+
+# Para processar mais rápido, use paralelismo COM delay ajustado:
+resultado = dataframeit(
+    df, Sentimento, "Analise o sentimento.",
+    rate_limit_delay=2.0,      # 2s entre requisições por worker
+    parallel_requests=2,       # 2 workers = 60 RPM no total
+    track_tokens=True          # Monitore RPM e TPM em tempo real
+)
+
+# Para datasets MUITO grandes (1000+ linhas), seja mais conservador:
+resultado = dataframeit(
+    df, Sentimento, "Analise o sentimento.",
+    rate_limit_delay=1.5,      # 1.5s = ~40 RPM (margem de segurança)
+    track_tokens=True
+)
+```
+
+**💡 Cálculo do delay:** Com N workers paralelos, use `rate_limit_delay = N × (60s / 60 RPM) = N` segundos.
+- 1 worker: `rate_limit_delay=1.0` → 60 RPM
+- 2 workers: `rate_limit_delay=2.0` → 60 RPM total (30 RPM cada)
+- 3 workers: `rate_limit_delay=3.0` → 60 RPM total (20 RPM cada)
+
+**Dica:** O parâmetro `track_tokens=True` mostra estatísticas em tempo real (RPM, TPM) para você calibrar os valores ideais.
+
 ## Funcionalidades
 
-- **Múltiplos providers**: Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
+- **Múltiplos providers**: Groq (default, free tier permanente), Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
 - **Múltiplos tipos de entrada**: DataFrame, Series, list, dict
 - **Saída estruturada**: Validação automática com Pydantic
 - **Resiliência**: Retry automático com backoff exponencial

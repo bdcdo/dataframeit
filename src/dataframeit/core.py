@@ -171,8 +171,8 @@ def dataframeit(
     perguntas=None,  # Deprecated: use 'questions'
     resume=True,
     reprocess_columns=None,
-    model='gemini-3.0-flash',
-    provider='google_genai',
+    model='moonshotai/kimi-k2-instruct-0905',
+    provider='groq',
     status_column=None,
     text_column: Optional[str] = None,
     api_key=None,
@@ -210,8 +210,8 @@ def dataframeit(
         resume: Se True, continua de onde parou.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
-        model: Nome do modelo LLM.
-        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc).
+        model: Nome do modelo LLM (padrão: 'moonshotai/kimi-k2-instruct-0905').
+        provider: Provider do LangChain (padrão: 'groq'). Outros: 'google_genai', 'openai', 'anthropic', etc.
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos (obrigatório para DataFrames,
                     automático para Series/list/dict).
