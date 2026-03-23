@@ -56,7 +56,7 @@ class TestUseSearchWithClaudeCode:
         from dataframeit import dataframeit
 
         with patch('dataframeit.core.validate_provider_dependencies'):
-            with pytest.raises(ValueError, match="use_search.*claude_code"):
+            with pytest.raises(ValueError, match=r"use_search.*claude_code"):
                 dataframeit(
                     ["texto teste"],
                     questions=SampleModel,

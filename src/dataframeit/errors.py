@@ -139,10 +139,10 @@ def validate_provider_dependencies(provider: str):
     if provider == 'claude_code':
         try:
             importlib.import_module('claude_agent_sdk')
-        except ImportError:
+        except ImportError as err:
             raise ImportError(_get_missing_package_message(
                 'claude_agent_sdk', 'claude-agent-sdk', 'Claude Code SDK'
-            ))
+            )) from err
         return
 
     # Validar LangChain base
