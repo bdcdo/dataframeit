@@ -5,6 +5,17 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Adicionado
+
+- **`provider='claude_code'` - Suporte ao Claude Code SDK**: Novo provider que usa `claude-agent-sdk` para chamadas LLM via créditos do Claude Code ao invés de créditos de API.
+  - Instale: `pip install dataframeit[claude-code]`
+  - Modelos: `model='haiku'`, `model='sonnet'`, `model='opus'`
+  - Parâmetros via `model_kwargs`: `effort`, `max_turns`, `max_budget_usd`
+  - Não requer API key (usa credenciais do Claude Code)
+  - Busca web (`use_search=True`) não suportada inicialmente
+
 ## [0.5.3] - 2025-01-19
 
 ### Adicionado

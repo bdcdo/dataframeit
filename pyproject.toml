@@ -60,6 +60,9 @@ openai = [
 anthropic = [
     "langchain-anthropic>=0.3.0",
 ]
+claude-code = [
+    "claude-agent-sdk>=0.1.48",
+]
 polars = [
     "polars>=0.20",
 ]
@@ -79,6 +82,7 @@ all = [
     "langchain-anthropic>=0.3.0",
     "langchain-tavily>=0.1.0",
     "langchain-exa>=0.2.0",
+    "claude-agent-sdk>=0.1.48",
     "polars>=0.20",
 ]
 dev = [
