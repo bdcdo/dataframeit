@@ -271,6 +271,13 @@ def dataframeit(
     # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
     validate_provider_dependencies(provider)
 
+    # Validar busca web com claude_code
+    if use_search and provider == 'claude_code':
+        raise ValueError(
+            "Busca web (use_search=True) não é suportada com provider='claude_code'. "
+            "Use um provider LangChain como 'google_genai' ou 'openai' para busca web."
+        )
+
     # Validar parâmetros de busca
     if use_search:
         if search_provider not in ("tavily", "exa"):
@@ -610,7 +617,8 @@ def _process_rows(
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    desc = f"Processando [{engine}+langchain{search_mode}]"
+    backend = 'claude_code' if config.provider == 'claude_code' else 'langchain'
+    desc = f"Processando [{engine}+{backend}{search_mode}]"
 
     # Adicionar info de rate limiting (se ativo)
     if config.rate_limit_delay > 0:
@@ -658,6 +666,9 @@ def _process_rows(
                         result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
                 else:
                     result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
+            elif config.provider == 'claude_code':
+                from .claude_code import call_claude_code
+                result = call_claude_code(text, pydantic_model, user_prompt, config)
             else:
                 result = call_langchain(text, pydantic_model, user_prompt, config)
 
@@ -796,7 +807,8 @@ def _process_rows_parallel(
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    desc = f"Processando [{engine}+langchain{search_mode}] [{parallel_requests} workers]"
+    backend = 'claude_code' if config.provider == 'claude_code' else 'langchain'
+    desc = f"Processando [{engine}+{backend}{search_mode}] [{parallel_requests} workers]"
 
     if reprocess_columns:
         desc += f" (reprocessando: {', '.join(reprocess_columns)})"
@@ -840,6 +852,9 @@ def _process_rows_parallel(
                         result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
                 else:
                     result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
+            elif config.provider == 'claude_code':
+                from .claude_code import call_claude_code
+                result = call_claude_code(text, pydantic_model, user_prompt, config)
             else:
                 result = call_langchain(text, pydantic_model, user_prompt, config)
 

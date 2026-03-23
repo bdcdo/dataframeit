@@ -89,6 +89,7 @@ def _infer_provider_info(provider: str) -> dict:
         'fireworks': 'Fireworks AI',
         'together': 'Together AI',
         'groq': 'Groq',
+        'claude_code': 'Claude Code',
     }
     name = name_map.get(provider, provider.replace('_', ' ').title())
 
@@ -129,11 +130,21 @@ def validate_provider_dependencies(provider: str):
     """Valida se as dependências do provider estão instaladas ANTES de iniciar.
 
     Args:
-        provider: Nome do provider (google_genai, openai, anthropic, etc).
+        provider: Nome do provider (google_genai, openai, anthropic, claude_code, etc).
 
     Raises:
         ImportError: Com mensagem amigável se dependência não estiver instalada.
     """
+    # Claude Code SDK não precisa de LangChain
+    if provider == 'claude_code':
+        try:
+            importlib.import_module('claude_agent_sdk')
+        except ImportError:
+            raise ImportError(_get_missing_package_message(
+                'claude_agent_sdk', 'claude-agent-sdk', 'Claude Code SDK'
+            ))
+        return
+
     # Validar LangChain base
     try:
         importlib.import_module('langchain')
