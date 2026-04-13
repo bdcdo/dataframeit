@@ -83,9 +83,9 @@ DataFrameIt uses LangChain to abstract different LLM providers:
 
 | Provider | Popular Models | Environment Variable |
 |----------|----------------|---------------------|
-| `google_genai` | gemini-3.0-flash, gemini-2.5-pro | `GOOGLE_API_KEY` |
+| `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro | `GOOGLE_API_KEY` |
 | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 | `OPENAI_API_KEY` |
-| `anthropic` | claude-sonnet-4.5, claude-opus-4.5 | `ANTHROPIC_API_KEY` |
+| `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 | `ANTHROPIC_API_KEY` |
 
 ## Processing Flow
 

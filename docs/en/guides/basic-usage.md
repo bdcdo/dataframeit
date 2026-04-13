@@ -129,7 +129,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-sonnet-4.5'
+    model='claude-sonnet-4-5'
 )
 ```
 

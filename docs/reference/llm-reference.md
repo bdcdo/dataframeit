@@ -35,7 +35,7 @@ resultado = dataframeit(
     questions,               # Modelo Pydantic
     prompt,                  # Template do prompt
     text_column='texto',     # Coluna com textos (obrigatório para DataFrame)
-    model='gemini-3.0-flash',
+    model='gemini-3-flash-preview',
     provider='google_genai', # 'google_genai', 'openai', 'anthropic'
     resume=True,             # Continua de onde parou
     parallel_requests=1,     # Workers paralelos
@@ -160,7 +160,7 @@ resultado = dataframeit(
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='anthropic',
-    model='claude-sonnet-4.5'
+    model='claude-sonnet-4-5'
 )
 
 # Com parâmetros extras

@@ -10,7 +10,7 @@ DataFrameIt uses [LangChain](https://langchain.com/) to support multiple LLM pro
     pip install dataframeit[google]
     ```
 
-    Models: `gemini-3.0-flash`, `gemini-2.5-flash`, `gemini-2.5-pro`
+    Models: `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-2.5-pro`
 
 === "OpenAI"
 
@@ -26,7 +26,7 @@ DataFrameIt uses [LangChain](https://langchain.com/) to support multiple LLM pro
     pip install dataframeit[anthropic]
     ```
 
-    Models: `claude-sonnet-4.5`, `claude-opus-4.5`, `claude-haiku-4.5`
+    Models: `claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`
 
 === "All Providers"
 
