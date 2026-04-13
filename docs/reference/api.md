@@ -13,7 +13,7 @@ def dataframeit(
     prompt,
     resume=True,
     reprocess_columns=None,
-    model='gemini-3.0-flash',
+    model='gemini-3-flash-preview',
     provider='google_genai',
     status_column=None,
     text_column=None,
@@ -56,7 +56,7 @@ def dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `model` | str | `'gemini-3.0-flash'` | Nome do modelo LLM |
+| `model` | str | `'gemini-3-flash-preview'` | Nome do modelo LLM |
 | `provider` | str | `'google_genai'` | Provider LangChain |
 | `api_key` | str | `None` | API key (usa env var se None) |
 | `model_kwargs` | dict | `None` | Parâmetros extras (temperature, etc.) |

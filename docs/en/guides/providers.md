@@ -6,9 +6,9 @@ Configure different LLM providers via LangChain.
 
 | Provider | Identifier | Current Models (2025) |
 |----------|------------|----------------------|
-| Google | `google_genai` | gemini-3.0-flash, gemini-2.5-flash, gemini-2.5-pro |
+| Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
-| Anthropic | `anthropic` | claude-sonnet-4.5, claude-opus-4.5, claude-haiku-4.5 |
+| Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
 | Cohere | `cohere` | command-r, command-r-plus |
 | Mistral | `mistral` | mistral-large, mistral-small |
 
@@ -28,7 +28,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='google_genai',
-    model='gemini-3.0-flash'
+    model='gemini-3-flash-preview'
 )
 
 # With extra parameters
@@ -48,7 +48,7 @@ result = dataframeit(
 
 | Model | Use | Cost |
 |-------|-----|------|
-| `gemini-3.0-flash` | General use, newest | Low |
+| `gemini-3-flash-preview` | General use, newest | Low |
 | `gemini-2.5-flash` | General use, fast | Low |
 | `gemini-2.5-pro` | Complex tasks, reasoning | Medium |
 
@@ -99,7 +99,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-sonnet-4.5'
+    model='claude-sonnet-4-5'
 )
 
 # With max_tokens
@@ -107,7 +107,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-opus-4.5',
+    model='claude-opus-4-6',
     model_kwargs={
         'max_tokens': 4096
     }
@@ -118,9 +118,9 @@ result = dataframeit(
 
 | Model | Use | Cost |
 |-------|-----|------|
-| `claude-sonnet-4.5` | General use, excellent quality | Medium |
-| `claude-opus-4.5` | Maximum quality, agentic | High |
-| `claude-haiku-4.5` | Fast, economical | Low |
+| `claude-sonnet-4-5` | General use, excellent quality | Medium |
+| `claude-opus-4-6` | Maximum quality, agentic | High |
+| `claude-haiku-4-5` | Fast, economical | Low |
 
 ## Cohere
 
@@ -158,12 +158,12 @@ result = dataframeit(
 
 | Provider | Model | Input (1M tokens) | Output (1M tokens) |
 |----------|-------|-------------------|-------------------|
-| Google | gemini-3.0-flash | $0.50 | $3.00 |
+| Google | gemini-3-flash-preview | $0.50 | $3.00 |
 | Google | gemini-2.5-pro | $1.25 | $5.00 |
 | OpenAI | gpt-5.2-mini | $0.30 | $1.20 |
 | OpenAI | gpt-5.2 | $5.00 | $15.00 |
-| Anthropic | claude-sonnet-4.5 | $3.00 | $15.00 |
-| Anthropic | claude-haiku-4.5 | $1.00 | $5.00 |
+| Anthropic | claude-sonnet-4-5 | $3.00 | $15.00 |
+| Anthropic | claude-haiku-4-5 | $1.00 | $5.00 |
 
 !!! note "Prices change"
     Check current prices on provider official websites.

@@ -35,7 +35,7 @@ result = dataframeit(
     questions,               # Pydantic model
     prompt,                  # Prompt template
     text_column='text',      # Column with texts (required for DataFrame)
-    model='gemini-3.0-flash',
+    model='gemini-3-flash-preview',
     provider='google_genai', # 'google_genai', 'openai', 'anthropic'
     resume=True,             # Continue from where it stopped
     parallel_requests=1,     # Parallel workers
@@ -163,7 +163,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-sonnet-4.5'
+    model='claude-sonnet-4-5'
 )
 
 # With extra parameters

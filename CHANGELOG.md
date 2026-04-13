@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-04-13
+
 ### Adicionado
 
 - **`provider='claude_code'` - Suporte ao Claude Code SDK**: Novo provider que usa `claude-agent-sdk` para chamadas LLM via créditos do Claude Code ao invés de créditos de API.
@@ -15,6 +17,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   - Parâmetros via `model_kwargs`: `effort`, `max_turns`, `max_budget_usd`
   - Não requer API key (usa credenciais do Claude Code)
   - Busca web (`use_search=True`) não suportada inicialmente
+
+### Corrigido
+
+- **Default `model='gemini-3.0-flash'` inválido**: o modelo não existe na API Google e retornava `404 models/gemini-3.0-flash is not found`. Default trocado para `gemini-3-flash-preview` (Gemini 3 Flash real, lançado em dezembro/2025).
+- **IDs de modelos Claude na documentação usavam formato com ponto** (ex: `claude-sonnet-4.5`), que não é aceito pela API Anthropic. Corrigidos para o formato com hífen (`claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`).
+- **Documentação de modelos Gemini desatualizada**: tabelas em `docs/` atualizadas para refletir modelos realmente disponíveis (`gemini-3-flash-preview` preview, `gemini-2.5-flash`/`gemini-2.5-pro` estáveis).
 
 ## [0.5.3] - 2025-01-19
 
@@ -139,6 +147,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ---
 
+[0.5.4]: https://github.com/bdcdo/dataframeit/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/bdcdo/dataframeit/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/bdcdo/dataframeit/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/bdcdo/dataframeit/compare/v0.5.0...v0.5.1
