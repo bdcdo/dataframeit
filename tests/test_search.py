@@ -290,7 +290,6 @@ def test_setup_columns_with_search():
     _setup_columns(df, ["campo1"], None, False, True, search_config)
 
     assert "_search_credits" in df.columns
-    # _search_count foi removido (v0.6.0): permanece métrica interna, não materializada
     assert "_search_count" not in df.columns
 
 
