@@ -9,6 +9,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
+- **Inferência automática de `text_column`** (#93): quando `text_column=None` em um DataFrame, a lib agora tenta, em ordem, as colunas `texto`, `text`, `decisao`, `content`, `content_text`. Zero-config para integrar com pipelines `juscraper.cjpg/cjsg → dataframeit` (coluna `decisao`). Warning em caso de ambiguidade; ValueError informativo (listando colunas disponíveis) se nenhum candidato bate. DataFrames de 1 coluna passam a usar essa coluna direto. `text_column=` explícito continua tendo precedência absoluta.
 - **Suporte opcional a Groq** (#94): novo provider disponível via `pip install dataframeit[groq]`. Use com `provider='groq'` e modelos como `llama-3.3-70b-versatile` ou `llama-3.1-8b-instant`. Requer `GROQ_API_KEY`.
 - **Aviso de rate limit para busca web** (#67): `dataframeit(...)` agora emite um `UserWarning` quando a combinação de `use_search=True`, `parallel_requests` e `search_per_field` pode exceder o rate limit do provedor de busca (Tavily ou Exa). A mensagem inclui recomendações específicas de `parallel_requests` e `rate_limit_delay`. O aviso também dispara em execuções sequenciais quando o total de queries estimadas (`linhas × campos`) ultrapassa 100.
 - Documentação de rate limits e processamento paralelo em `docs/guides/web-search.md` e `docs/en/guides/web-search.md`, com tabelas de configurações recomendadas por provedor.
