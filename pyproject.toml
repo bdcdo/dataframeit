@@ -60,6 +60,9 @@ openai = [
 anthropic = [
     "langchain-anthropic>=0.3.0",
 ]
+groq = [
+    "langchain-groq>=0.2.0",
+]
 claude-code = [
     "claude-agent-sdk>=0.1.48",
 ]
@@ -80,6 +83,7 @@ all = [
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",
     "langchain-anthropic>=0.3.0",
+    "langchain-groq>=0.2.0",
     "langchain-tavily>=0.1.0",
     "langchain-exa>=0.2.0",
     "claude-agent-sdk>=0.1.48",

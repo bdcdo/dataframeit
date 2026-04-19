@@ -9,6 +9,7 @@ Configure diferentes provedores de LLM via LangChain.
 | Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
 | Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
+| Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b |
 | Cohere | `cohere` | command-r, command-r-plus |
 | Mistral | `mistral` | mistral-large, mistral-small |
 
@@ -115,6 +116,60 @@ resultado = dataframeit(
 | `claude-sonnet-4-5` | Uso geral, excelente qualidade | Médio |
 | `claude-opus-4-6` | Máxima qualidade, agentic | Alto |
 | `claude-haiku-4-5` | Rápido, econômico | Baixo |
+
+## Groq
+
+```bash
+pip install dataframeit[groq]
+export GROQ_API_KEY="sua-chave"
+```
+
+```python
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='groq',
+    model='llama-3.3-70b-versatile'
+)
+
+# Modelo mais rápido/econômico
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='groq',
+    model='llama-3.1-8b-instant',
+    model_kwargs={
+        'temperature': 0.2
+    }
+)
+
+# GPT-OSS para tarefas com raciocínio mais pesado
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='groq',
+    model='openai/gpt-oss-120b'
+)
+```
+
+### Modelos Recomendados
+
+Produção:
+
+| Modelo | Contexto | Throughput | Uso |
+|--------|----------|-----------|-----|
+| `llama-3.3-70b-versatile` | 131K | ~280 t/s | Uso geral, boa qualidade |
+| `llama-3.1-8b-instant` | 131K | ~560 t/s | Alta velocidade, econômico |
+| `openai/gpt-oss-120b` | 131K | ~500 t/s | Raciocínio, tarefas complexas |
+| `openai/gpt-oss-20b` | 131K | ~1000 t/s | Mais rápido que o 120b, custo baixo |
+| `groq/compound` | - | ~450 t/s | Sistema agêntico com web search e execução de código embutidos |
+
+Preview (podem mudar ou ser descontinuados):
+
+| Modelo | Uso |
+|--------|-----|
+| `meta-llama/llama-4-scout-17b-16e-instruct` | Llama 4 Scout, alta velocidade |
+| `qwen/qwen3-32b` | Qwen3, bom para reasoning |
+
+!!! note "Disponibilidade e free tier"
+    O Groq oferece free tier com limites de requisições por minuto por modelo. A lista de modelos muda com frequência (especialmente os `preview`); verifique [console.groq.com/docs/models](https://console.groq.com/docs/models) para o catálogo atual e limites.
 
 ## Cohere
 
