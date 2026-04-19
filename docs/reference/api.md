@@ -107,7 +107,6 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 | `_error_details` | Detalhes do erro (quando aplicável) |
 | `_input_tokens` | Tokens de entrada (se `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (se `track_tokens=True`) |
-| `_total_tokens` | Total de tokens (se `track_tokens=True`) |
 
 ### Exemplos
 

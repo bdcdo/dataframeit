@@ -123,7 +123,7 @@ def test_parallel_tracks_tokens():
             # Verificar colunas de tokens
             assert "_input_tokens" in result.columns
             assert "_output_tokens" in result.columns
-            assert "_total_tokens" in result.columns
+            assert "_total_tokens" not in result.columns
 
             # Cada linha deve ter os tokens registrados
             assert result["_input_tokens"].tolist() == [100, 100, 100]

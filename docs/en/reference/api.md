@@ -107,7 +107,6 @@ Returns data in the same format as input with extracted columns added.
 | `_error_details` | Error details (when applicable) |
 | `_input_tokens` | Input tokens (if `track_tokens=True`) |
 | `_output_tokens` | Output tokens (if `track_tokens=True`) |
-| `_total_tokens` | Total tokens (if `track_tokens=True`) |
 
 ### Examples
 

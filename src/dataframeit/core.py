@@ -584,8 +584,8 @@ def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Opti
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
-    token_cols = ['_input_tokens', '_output_tokens', '_total_tokens'] if track_tokens else []
-    search_cols = ['_search_credits', '_search_count'] if (search_config and search_config.enabled) else []
+    token_cols = ['_input_tokens', '_output_tokens', '_reasoning_tokens'] if track_tokens else []
+    search_cols = ['_search_credits'] if (search_config and search_config.enabled) else []
 
     # Colunas de trace
     trace_cols = []
@@ -681,6 +681,8 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
     print(f"Total de tokens: {token_stats['total_tokens']:,}")
     print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
+    if token_stats.get('reasoning_tokens', 0) > 0:
+        print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
 
     # Métricas de throughput (se disponíveis)
     if 'elapsed_seconds' in token_stats and token_stats['elapsed_seconds'] > 0:
@@ -762,6 +764,7 @@ def _process_rows(
         'input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
+        'reasoning_tokens': 0,
         'search_credits': 0,
         'search_count': 0,
     }
@@ -821,19 +824,19 @@ def _process_rows(
             if track_tokens and usage:
                 df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
                 df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
-                df.at[idx, '_total_tokens'] = usage.get('total_tokens', 0)
+                df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
-                # Acumular estatísticas
+                # Acumular estatísticas (total exibido apenas no summary do console)
                 token_stats['input_tokens'] += usage.get('input_tokens', 0)
                 token_stats['output_tokens'] += usage.get('output_tokens', 0)
                 token_stats['total_tokens'] += usage.get('total_tokens', 0)
+                token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
 
             # Armazenar métricas de busca (se habilitado)
             if config.search_config and config.search_config.enabled and usage:
                 df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
-                df.at[idx, '_search_count'] = usage.get('search_count', 0)
 
-                # Acumular estatísticas de busca
+                # Acumular estatísticas de busca (search_count mantido só para o summary)
                 token_stats['search_credits'] += usage.get('search_credits', 0)
                 token_stats['search_count'] += usage.get('search_count', 0)
 
@@ -922,6 +925,7 @@ def _process_rows_parallel(
         'input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
+        'reasoning_tokens': 0,
         'requests_completed': 0,
         'search_credits': 0,
         'search_count': 0,
@@ -1003,16 +1007,16 @@ def _process_rows_parallel(
                 if track_tokens and usage:
                     df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
                     df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
-                    df.at[idx, '_total_tokens'] = usage.get('total_tokens', 0)
+                    df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
                     token_stats['input_tokens'] += usage.get('input_tokens', 0)
                     token_stats['output_tokens'] += usage.get('output_tokens', 0)
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
+                    token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
 
                 # Métricas de busca
                 if config.search_config and config.search_config.enabled and usage:
                     df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
-                    df.at[idx, '_search_count'] = usage.get('search_count', 0)
 
                     token_stats['search_credits'] += usage.get('search_credits', 0)
                     token_stats['search_count'] += usage.get('search_count', 0)

@@ -111,10 +111,14 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
         usage = None
         raw_message = result.get('raw')
         if raw_message and hasattr(raw_message, 'usage_metadata') and raw_message.usage_metadata:
+            meta = raw_message.usage_metadata
+            details = meta.get('output_token_details', {}) if isinstance(meta, dict) else (getattr(meta, 'output_token_details', {}) or {})
+            reasoning_tokens = details.get('reasoning', 0) if isinstance(details, dict) else getattr(details, 'reasoning', 0)
             usage = {
-                'input_tokens': raw_message.usage_metadata.get('input_tokens', 0),
-                'output_tokens': raw_message.usage_metadata.get('output_tokens', 0),
-                'total_tokens': raw_message.usage_metadata.get('total_tokens', 0)
+                'input_tokens': meta.get('input_tokens', 0),
+                'output_tokens': meta.get('output_tokens', 0),
+                'total_tokens': meta.get('total_tokens', 0),
+                'reasoning_tokens': reasoning_tokens,
             }
 
         return {'data': data, 'usage': usage}

@@ -121,7 +121,6 @@ O DataFrameIt adiciona colunas de controle automaticamente:
 | `_error_details` | Detalhes do erro (quando status é `'error'`) |
 | `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
-| `_total_tokens` | Total de tokens (com `track_tokens=True`) |
 
 ## Próximos Passos
 
