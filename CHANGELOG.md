@@ -13,9 +13,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
+- Coluna `_reasoning_tokens` para modelos com reasoning (GPT-5, o-series, Claude thinking) (#65). Extraída de `usage_metadata.output_token_details["reasoning"]`; aparece no summary quando > 0.
 - **Suporte opcional a Groq** (#94): novo provider disponível via `pip install dataframeit[groq]`. Use com `provider='groq'` e modelos como `llama-3.3-70b-versatile` ou `llama-3.1-8b-instant`. Requer `GROQ_API_KEY`.
 - **Aviso de rate limit para busca web** (#67): `dataframeit(...)` agora emite um `UserWarning` quando a combinação de `use_search=True`, `parallel_requests` e `search_per_field` pode exceder o rate limit do provedor de busca (Tavily ou Exa). A mensagem inclui recomendações específicas de `parallel_requests` e `rate_limit_delay`. O aviso também dispara em execuções sequenciais quando o total de queries estimadas (`linhas × campos`) ultrapassa 100.
 - Documentação de rate limits e processamento paralelo em `docs/guides/web-search.md` e `docs/en/guides/web-search.md`, com tabelas de configurações recomendadas por provedor.
+
+### Corrigido
+
+- Filtrar `UserWarning: Field name X shadows ...` do `langchain_tavily` no import do provider (#74). Filtro específico ao módulo upstream.
 
 ## [0.5.4] - 2026-04-13
 

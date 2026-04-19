@@ -255,7 +255,7 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
     1. Colunas do usuário (originais + campos do modelo)
     2. Colunas de trace (_trace_*)
     3. Colunas de busca (_search_credits)
-    4. Colunas de tokens (_input_tokens, _output_tokens)
+    4. Colunas de tokens (_input_tokens, _output_tokens, _reasoning_tokens)
     5. Colunas de controle (_dataframeit_status, _error_details)
 
     Args:
@@ -276,7 +276,7 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
             trace_cols.append(col)
         elif col in ['_search_credits']:
             search_cols.append(col)
-        elif col in ['_input_tokens', '_output_tokens']:
+        elif col in ['_input_tokens', '_output_tokens', '_reasoning_tokens']:
             token_cols.append(col)
         elif col in ['_dataframeit_status', '_error_details']:
             status_cols.append(col)

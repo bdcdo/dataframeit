@@ -49,7 +49,19 @@ class TavilyProvider(SearchProvider):
         Returns:
             Instância de TavilySearch configurada.
         """
-        from langchain_tavily import TavilySearch
+        import warnings
+
+        # langchain_tavily emite UserWarnings sobre "Field name X shadows attribute"
+        # em BaseTool na definição de TavilyResearch. São warnings externos e ruidosos;
+        # filtramos apenas o módulo upstream para não mascarar warnings nossos.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Field name .* shadows.*",
+                category=UserWarning,
+                module=r"langchain_tavily\..*",
+            )
+            from langchain_tavily import TavilySearch
 
         return TavilySearch(
             max_results=max_results,
