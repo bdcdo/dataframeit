@@ -379,6 +379,68 @@ def test_extract_usage_with_exa_provider():
     assert usage["search_credits"] == 2
 
 
+def test_extract_usage_accumulates_reasoning_tokens():
+    """#65: reasoning tokens (GPT-5, o-series) devem ser extraídos de output_token_details."""
+    from dataframeit.agent import _extract_usage
+    from dataframeit.search import TavilyProvider
+    from dataframeit.llm import SearchConfig
+
+    provider = TavilyProvider()
+    search_config = SearchConfig(enabled=True, provider="tavily")
+
+    # Duas mensagens com reasoning tokens — simula multi-agent (gpt-5 + reasoning_effort)
+    mock_result = {
+        "messages": [
+            MagicMock(
+                usage_metadata={
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                    "output_token_details": {"reasoning": 40},
+                },
+                tool_calls=[],
+            ),
+            MagicMock(
+                usage_metadata={
+                    "input_tokens": 80,
+                    "output_tokens": 30,
+                    "total_tokens": 110,
+                    "output_token_details": {"reasoning": 25},
+                },
+                tool_calls=[],
+            ),
+        ],
+    }
+
+    usage = _extract_usage(mock_result, provider, search_config)
+
+    assert usage["reasoning_tokens"] == 65
+    assert usage["input_tokens"] == 180
+    assert usage["output_tokens"] == 80
+
+
+def test_extract_usage_reasoning_tokens_default_zero():
+    """Se `output_token_details` está ausente, reasoning_tokens deve ser 0 (sem quebrar)."""
+    from dataframeit.agent import _extract_usage
+    from dataframeit.search import TavilyProvider
+    from dataframeit.llm import SearchConfig
+
+    provider = TavilyProvider()
+    search_config = SearchConfig(enabled=True, provider="tavily")
+
+    mock_result = {
+        "messages": [
+            MagicMock(
+                usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+                tool_calls=[],
+            ),
+        ],
+    }
+
+    usage = _extract_usage(mock_result, provider, search_config)
+    assert usage["reasoning_tokens"] == 0
+
+
 # =============================================================================
 # Testes de mensagens de erro amigáveis
 # =============================================================================

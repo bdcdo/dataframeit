@@ -826,6 +826,7 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
         'input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
+        'reasoning_tokens': 0,
         'search_credits': 0,
         'search_count': 0,
         'search_provider': provider.name,
@@ -874,10 +875,19 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
                 usage['input_tokens'] += meta.get('input_tokens', 0)
                 usage['output_tokens'] += meta.get('output_tokens', 0)
                 usage['total_tokens'] += meta.get('total_tokens', 0)
+                details = meta.get('output_token_details') or {}
             else:
                 usage['input_tokens'] += getattr(meta, 'input_tokens', 0)
                 usage['output_tokens'] += getattr(meta, 'output_tokens', 0)
                 usage['total_tokens'] += getattr(meta, 'total_tokens', 0)
+                details = getattr(meta, 'output_token_details', None) or {}
+
+            # Reasoning tokens (GPT-5, o-series, Claude thinking): expostos em
+            # output_token_details.reasoning pelo LangChain. Invisíveis até v0.6.0.
+            if isinstance(details, dict):
+                usage['reasoning_tokens'] += details.get('reasoning', 0)
+            else:
+                usage['reasoning_tokens'] += getattr(details, 'reasoning', 0)
 
     # Contar chamadas de busca (tool calls) usando padrão do provider
     tool_pattern = provider.get_tool_name_pattern()
