@@ -18,6 +18,7 @@ from .utils import (
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
+    ORIGINAL_TYPE_SQL,
 )
 from .errors import validate_provider_dependencies, validate_search_dependencies, get_friendly_error_message, is_recoverable_error, is_rate_limit_error
 
@@ -273,6 +274,7 @@ def dataframeit(
     search_depth="basic",
     search_groups: Optional[Dict[str, dict]] = None,
     save_trace: Optional[Union[bool, Literal["full", "minimal"]]] = None,
+    con=None,
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
@@ -283,6 +285,8 @@ def dataframeit(
     - polars.Series: Retorna DataFrame polars com resultados
     - list: Retorna lista de dicionários com os resultados
     - dict: Retorna dicionário {chave: {campos extraídos}}
+    - tupla ``(query_sql, conexao)`` ou string SQL + ``con=engine`` (ler via
+      ``pandas.read_sql``; a saída é um DataFrame, não há gravação de volta)
 
     Args:
         data: Dados contendo textos (DataFrame, Series, list ou dict).
@@ -394,12 +398,13 @@ def dataframeit(
         )
 
     # Converter para pandas se necessário
-    df_pandas, conversion_info = to_pandas(data)
+    df_pandas, conversion_info = to_pandas(data, con=con)
 
     # Determinar coluna de texto
     is_dataframe_type = conversion_info.original_type in (
         ORIGINAL_TYPE_PANDAS_DF,
         ORIGINAL_TYPE_POLARS_DF,
+        ORIGINAL_TYPE_SQL,
     )
 
     if is_dataframe_type:

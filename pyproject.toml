@@ -79,6 +79,9 @@ search-all = [
     "langchain-tavily>=0.1.0",
     "langchain-exa>=0.2.0",
 ]
+sql = [
+    "sqlalchemy>=2.0",
+]
 all = [
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.3.0",

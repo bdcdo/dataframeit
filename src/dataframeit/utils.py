@@ -29,6 +29,7 @@ ORIGINAL_TYPE_PANDAS_SERIES = 'pandas_series'
 ORIGINAL_TYPE_POLARS_SERIES = 'polars_series'
 ORIGINAL_TYPE_LIST = 'list'
 ORIGINAL_TYPE_DICT = 'dict'
+ORIGINAL_TYPE_SQL = 'sql_query'
 
 # Coluna padrão usada para dados convertidos
 DEFAULT_TEXT_COLUMN = '_texto'
@@ -101,7 +102,7 @@ def check_dependency(package: str, install_name: str = None):
         )
 
 
-def to_pandas(data) -> Tuple[pd.DataFrame, ConversionInfo]:
+def to_pandas(data, con=None) -> Tuple[pd.DataFrame, ConversionInfo]:
     """Converte dados para pandas DataFrame.
 
     Suporta:
@@ -111,9 +112,12 @@ def to_pandas(data) -> Tuple[pd.DataFrame, ConversionInfo]:
     - polars.Series
     - list (de strings)
     - dict (valores são os textos)
+    - tupla ``(query_sql, conexao)`` ou string SQL + ``con=`` (via pd.read_sql)
 
     Args:
         data: Dados a serem convertidos.
+        con: Conexão SQLAlchemy (engine/Connection) ou string de conexão. Usado
+            somente quando ``data`` é uma string SQL; ignorado nos outros casos.
 
     Returns:
         Tupla (DataFrame pandas, ConversionInfo com metadados da conversão).
@@ -121,6 +125,20 @@ def to_pandas(data) -> Tuple[pd.DataFrame, ConversionInfo]:
     Raises:
         TypeError: Se o tipo não for suportado.
     """
+    # SQL: tupla (query, conexao)
+    if (
+        isinstance(data, tuple)
+        and len(data) == 2
+        and isinstance(data[0], str)
+        and data[1] is not None
+    ):
+        query, connection = data
+        return pd.read_sql(query, connection), ConversionInfo(original_type=ORIGINAL_TYPE_SQL)
+
+    # SQL: query + kwarg con=
+    if isinstance(data, str) and con is not None:
+        return pd.read_sql(data, con), ConversionInfo(original_type=ORIGINAL_TYPE_SQL)
+
     # pandas DataFrame
     if isinstance(data, pd.DataFrame):
         return data, ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF)
@@ -201,8 +219,8 @@ def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) 
             cols_to_drop = [c for c in [status_col, error_col] if c in df.columns]
             df = df.drop(columns=cols_to_drop)
 
-    # pandas DataFrame
-    if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF:
+    # pandas DataFrame (inclui fonte SQL — saída é DataFrame, não grava de volta)
+    if conversion_info.original_type in (ORIGINAL_TYPE_PANDAS_DF, ORIGINAL_TYPE_SQL):
         return _reorder_columns(df)
 
     # polars DataFrame
