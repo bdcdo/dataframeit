@@ -31,6 +31,88 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
 
 
+# Limites aproximados de requisições por minuto por provedor de busca.
+_SEARCH_PROVIDER_RATE_LIMITS = {
+    'tavily': 100,  # plano gratuito/básico: ~100 req/min
+    'exa': 300,     # plano padrão: ~5 QPS = ~300 req/min
+}
+
+# Limite de queries concorrentes acima do qual vale avisar o usuário.
+_RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
+
+
+def _warn_search_rate_limit(
+    num_rows: int,
+    num_fields: int,
+    parallel_requests: int,
+    search_per_field: bool,
+    rate_limit_delay: float,
+    search_provider: str = "tavily",
+) -> None:
+    """Avisa quando a configuração pode exceder rate limits do provedor de busca.
+
+    Dispara quando (a) o número de queries concorrentes é alto ou (b) a taxa
+    estimada ultrapassa ~80% do limite do provedor. Inclui recomendações de
+    ``parallel_requests`` e ``rate_limit_delay`` seguros.
+    """
+    queries_per_row = num_fields if search_per_field else 1
+    total_queries = num_rows * queries_per_row
+    concurrent_queries = parallel_requests * queries_per_row
+
+    provider_limit = _SEARCH_PROVIDER_RATE_LIMITS.get(
+        search_provider, _SEARCH_PROVIDER_RATE_LIMITS['tavily']
+    )
+    provider_name = search_provider.capitalize()
+
+    issues: list[str] = []
+
+    if concurrent_queries > _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES:
+        issues.append(
+            f"queries concorrentes estimadas: {concurrent_queries} "
+            f"(limite recomendado: {_RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES})"
+        )
+
+    if rate_limit_delay > 0:
+        estimated_rpm = (60 / rate_limit_delay) * parallel_requests
+    else:
+        estimated_rpm = parallel_requests * 60
+    if search_per_field:
+        estimated_rpm *= num_fields
+
+    if estimated_rpm > provider_limit * 0.8:
+        issues.append(
+            f"taxa estimada ~{estimated_rpm:.0f} req/min "
+            f"(limite {provider_name}: ~{provider_limit}/min)"
+        )
+
+    if not issues:
+        return
+
+    # Recomendações: reduzir paralelismo e sugerir delay adequado ao provedor.
+    if search_per_field:
+        recommended_parallel = max(1, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES // num_fields)
+        recommended_delay = (60 * recommended_parallel * num_fields) / (provider_limit * 0.7)
+    else:
+        recommended_parallel = min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES)
+        recommended_delay = (60 * recommended_parallel) / (provider_limit * 0.7)
+    recommended_parallel = max(1, recommended_parallel)
+    recommended_delay = max(0.5, round(recommended_delay, 1))
+
+    recs = [f"parallel_requests={recommended_parallel}"]
+    if rate_limit_delay < recommended_delay:
+        recs.append(f"rate_limit_delay={recommended_delay}")
+
+    msg = (
+        f"Configuração pode exceder rate limits de busca ({provider_name}). "
+        f"parallel_requests={parallel_requests}, search_per_field={search_per_field}, "
+        f"rate_limit_delay={rate_limit_delay}s, total de queries estimadas={total_queries}. "
+        + "Problemas: " + "; ".join(issues) + ". "
+        + "Para evitar HTTP 429, use: " + ", ".join(recs) + "."
+    )
+
+    warnings.warn(msg, UserWarning, stacklevel=3)
+
+
 def _validate_search_groups(
     search_groups: Dict[str, dict],
     pydantic_model,
@@ -334,6 +416,23 @@ def dataframeit(
     expected_columns = list(questions.model_fields.keys())
     if not expected_columns:
         raise ValueError("Modelo Pydantic não pode estar vazio")
+
+    # Avisar sobre rate limits de busca quando a configuração parece arriscada.
+    # Cobre tanto paralelismo alto quanto search_per_field em datasets grandes
+    # mesmo sem paralelismo — ambos podem estourar o limite do provedor.
+    if use_search:
+        is_risky = parallel_requests > 1 or (
+            search_per_field and len(expected_columns) * len(df_pandas) > 100
+        )
+        if is_risky:
+            _warn_search_rate_limit(
+                num_rows=len(df_pandas),
+                num_fields=len(expected_columns),
+                parallel_requests=parallel_requests,
+                search_per_field=search_per_field,
+                rate_limit_delay=rate_limit_delay,
+                search_provider=search_provider,
+            )
 
     # Validar e processar search_groups
     if search_groups:

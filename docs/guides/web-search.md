@@ -432,3 +432,65 @@ resultado = dataframeit(
 2. Prefira `search_depth='basic'`
 3. Filtre seu DataFrame antes de processar
 4. Use `search_per_field=False` quando possível
+
+## Rate Limits e Processamento Paralelo
+
+!!! danger "Erros HTTP 429"
+    Ao usar `parallel_requests` com busca web, é fácil exceder os limites de taxa do provedor de busca. Isso faz com que buscas falhem silenciosamente e retornem dados incompletos.
+
+### Limites por Provedor
+
+| Provedor | Rate limit aproximado |
+|----------|----------------------|
+| Tavily   | ~100 req/min         |
+| Exa      | ~300 req/min         |
+
+Se você precisa de maior throughput, considere `search_provider="exa"`.
+
+### Como as Queries são Contadas
+
+| Configuração | Queries por linha |
+|--------------|------------------|
+| `search_per_field=False` | 1 por linha |
+| `search_per_field=True` | 1 por campo, por linha |
+
+Com `parallel_requests=20` e `search_per_field=True` em um modelo de 4 campos, podem ir ~80 queries concorrentes — muito acima dos limites dos provedores.
+
+### Configurações Recomendadas
+
+**Tavily (padrão):**
+
+| Cenário | `parallel_requests` | `rate_limit_delay` |
+|---------|---------------------|--------------------|
+| `search_per_field=False` | 5–10 | 0.5s |
+| `search_per_field=True` (2–3 campos) | 3–5 | 0.5s |
+| `search_per_field=True` (4+ campos) | 2–3 | 1.0s |
+
+**Exa:**
+
+| Cenário | `parallel_requests` | `rate_limit_delay` |
+|---------|---------------------|--------------------|
+| `search_per_field=False` | 10–15 | 0.3s |
+| `search_per_field=True` (2–3 campos) | 5–8 | 0.3s |
+| `search_per_field=True` (4+ campos) | 3–5 | 0.5s |
+
+```python
+# Configuração segura com Tavily e múltiplos campos
+resultado = dataframeit(
+    df, Model, PROMPT,
+    use_search=True, search_per_field=True,
+    parallel_requests=3, rate_limit_delay=0.5,
+)
+
+# Maior throughput com Exa
+resultado = dataframeit(
+    df, Model, PROMPT,
+    use_search=True, search_provider="exa",
+    search_per_field=True,
+    parallel_requests=5, rate_limit_delay=0.3,
+)
+```
+
+### Aviso Automático
+
+O DataFrameIt emite um `UserWarning` quando a configuração parece arriscada (queries concorrentes altas ou taxa estimada perto do limite), incluindo recomendações de `parallel_requests` e `rate_limit_delay` para evitar HTTP 429. O gatilho também dispara em execuções sequenciais quando `search_per_field=True` produz muitas queries (>100 no total).

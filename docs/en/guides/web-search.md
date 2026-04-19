@@ -352,3 +352,65 @@ result = dataframeit(
 2. Prefer `search_depth='basic'`
 3. Filter your DataFrame before processing
 4. Use `search_per_field=False` when possible
+
+## Rate Limits and Parallel Processing
+
+!!! danger "HTTP 429 errors"
+    Using `parallel_requests` with web search can easily exceed the search provider's rate limits. Searches then fail silently and return incomplete data.
+
+### Provider Limits
+
+| Provider | Approximate rate limit |
+|----------|-----------------------|
+| Tavily   | ~100 req/min          |
+| Exa      | ~300 req/min          |
+
+If you need higher throughput, consider `search_provider="exa"`.
+
+### How Queries are Counted
+
+| Configuration | Queries per row |
+|---------------|-----------------|
+| `search_per_field=False` | 1 per row |
+| `search_per_field=True` | 1 per field, per row |
+
+With `parallel_requests=20` and `search_per_field=True` on a 4-field model, you can fire ~80 concurrent queries — well above either provider's limit.
+
+### Recommended Settings
+
+**Tavily (default):**
+
+| Scenario | `parallel_requests` | `rate_limit_delay` |
+|----------|---------------------|--------------------|
+| `search_per_field=False` | 5–10 | 0.5s |
+| `search_per_field=True` (2–3 fields) | 3–5 | 0.5s |
+| `search_per_field=True` (4+ fields) | 2–3 | 1.0s |
+
+**Exa:**
+
+| Scenario | `parallel_requests` | `rate_limit_delay` |
+|----------|---------------------|--------------------|
+| `search_per_field=False` | 10–15 | 0.3s |
+| `search_per_field=True` (2–3 fields) | 5–8 | 0.3s |
+| `search_per_field=True` (4+ fields) | 3–5 | 0.5s |
+
+```python
+# Safe settings for Tavily with multiple fields
+result = dataframeit(
+    df, Model, PROMPT,
+    use_search=True, search_per_field=True,
+    parallel_requests=3, rate_limit_delay=0.5,
+)
+
+# Higher throughput with Exa
+result = dataframeit(
+    df, Model, PROMPT,
+    use_search=True, search_provider="exa",
+    search_per_field=True,
+    parallel_requests=5, rate_limit_delay=0.3,
+)
+```
+
+### Automatic Warning
+
+DataFrameIt emits a `UserWarning` when the configuration looks risky (high concurrent queries or estimated rate close to the provider limit), with recommended `parallel_requests` and `rate_limit_delay` values to avoid HTTP 429. The warning also fires on sequential runs when `search_per_field=True` produces many queries (>100 total).
