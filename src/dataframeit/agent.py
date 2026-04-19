@@ -883,7 +883,8 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
                 details = getattr(meta, 'output_token_details', None) or {}
 
             # Reasoning tokens (GPT-5, o-series, Claude thinking): LangChain
-            # os expõe em output_token_details.reasoning, fora do output_tokens.
+            # os expõe em output_token_details.reasoning como breakdown de
+            # output_tokens — isto é, já estão contabilizados em output_tokens.
             if isinstance(details, dict):
                 usage['reasoning_tokens'] += details.get('reasoning', 0)
             else:

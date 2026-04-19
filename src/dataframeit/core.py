@@ -654,7 +654,7 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
     print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get('reasoning_tokens', 0) > 0:
-        print(f"  - Reasoning: {token_stats['reasoning_tokens']:,} tokens")
+        print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
 
     # Métricas de throughput (se disponíveis)
     if 'elapsed_seconds' in token_stats and token_stats['elapsed_seconds'] > 0:
