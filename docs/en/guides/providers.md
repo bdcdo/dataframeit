@@ -9,6 +9,7 @@ Configure different LLM providers via LangChain.
 | Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
 | Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
+| Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b, groq/compound |
 | Cohere | `cohere` | command-r, command-r-plus |
 | Mistral | `mistral` | mistral-large, mistral-small |
 
@@ -121,6 +122,63 @@ result = dataframeit(
 | `claude-sonnet-4-5` | General use, excellent quality | Medium |
 | `claude-opus-4-6` | Maximum quality, agentic | High |
 | `claude-haiku-4-5` | Fast, economical | Low |
+
+## Groq
+
+```bash
+pip install dataframeit[groq]
+export GROQ_API_KEY="your-key"
+```
+
+```python
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='groq',
+    model='llama-3.3-70b-versatile'
+)
+
+# Faster / cheaper model
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='groq',
+    model='llama-3.1-8b-instant',
+    model_kwargs={
+        'temperature': 0.2
+    }
+)
+
+# GPT-OSS for heavier reasoning tasks
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='groq',
+    model='openai/gpt-oss-120b'
+)
+```
+
+### Recommended Models
+
+Production:
+
+| Model | Context | Throughput | Use |
+|-------|---------|-----------|-----|
+| `llama-3.3-70b-versatile` | 131K | ~280 t/s | General use, good quality |
+| `llama-3.1-8b-instant` | 131K | ~560 t/s | High speed, economical |
+| `openai/gpt-oss-120b` | 131K | ~500 t/s | Reasoning, complex tasks |
+| `openai/gpt-oss-20b` | 131K | ~1000 t/s | Faster than 120b, low cost |
+| `groq/compound` | - | ~450 t/s | Agentic system with built-in web search and code execution |
+
+Preview (may change or be deprecated):
+
+| Model | Use |
+|-------|-----|
+| `meta-llama/llama-4-scout-17b-16e-instruct` | Llama 4 Scout, high speed |
+| `qwen/qwen3-32b` | Qwen3, good for reasoning |
+
+!!! note "Availability and free tier"
+    Groq offers a free tier with per-minute request limits per model. The model catalog changes frequently (especially `preview` models); check [console.groq.com/docs/models](https://console.groq.com/docs/models) for the current list and limits.
 
 ## Cohere
 
