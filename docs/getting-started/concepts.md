@@ -121,7 +121,8 @@ O DataFrameIt adiciona colunas de controle automaticamente:
 | `_error_details` | Detalhes do erro (quando status é `'error'`) |
 | `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
-| `_total_tokens` | Total de tokens (com `track_tokens=True`) |
+
+> Desde v0.6.0, `_total_tokens` foi removido (recomputável como `_input_tokens + _output_tokens`). O total agregado continua exibido no summary do console.
 
 ## Próximos Passos
 

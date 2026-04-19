@@ -111,7 +111,8 @@ resultado = dataframeit(
 |--------|-----------|
 | `_input_tokens` | Tokens de entrada por linha |
 | `_output_tokens` | Tokens de saída por linha |
-| `_total_tokens` | Total por linha |
+
+> Desde v0.6.0, `_total_tokens` foi removido — some `_input_tokens + _output_tokens` para obter o total por linha. O agregado continua no summary de console.
 
 ### Calculando Custos
 

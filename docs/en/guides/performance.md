@@ -115,7 +115,8 @@ result = dataframeit(
 |--------|-------------|
 | `_input_tokens` | Input tokens per row |
 | `_output_tokens` | Output tokens per row |
-| `_total_tokens` | Total per row |
+
+> Since v0.6.0, `_total_tokens` has been removed — sum `_input_tokens + _output_tokens` for the per-row total. The aggregate remains in the console summary.
 
 ### Calculating Costs
 

@@ -229,7 +229,8 @@ success = result[result['_dataframeit_status'] == 'processed']
 | `_error_details` | Error message |
 | `_input_tokens` | Input tokens |
 | `_output_tokens` | Output tokens |
-| `_total_tokens` | Total tokens |
+
+> Since v0.6.0, `_total_tokens` has been removed — recompute via `_input_tokens + _output_tokens`.
 
 ---
 

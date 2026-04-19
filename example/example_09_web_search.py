@@ -142,17 +142,17 @@ print("=" * 80)
 print("METRICAS DE BUSCA")
 print("=" * 80)
 
-if '_search_count' in df_resultado.columns:
-    total_buscas = df_resultado['_search_count'].sum()
-    print(f"Total de buscas realizadas: {total_buscas}")
-
 if '_search_credits' in df_resultado.columns:
     total_creditos = df_resultado['_search_credits'].sum()
     print(f"Creditos Tavily consumidos: {total_creditos}")
 
-if '_total_tokens' in df_resultado.columns:
-    total_tokens = df_resultado['_total_tokens'].sum()
-    print(f"Total de tokens utilizados: {total_tokens}")
+# _total_tokens foi removido em v0.6.0 — recompute via input+output
+if '_input_tokens' in df_resultado.columns:
+    total_tokens = (
+        df_resultado['_input_tokens'].fillna(0).sum()
+        + df_resultado['_output_tokens'].fillna(0).sum()
+    )
+    print(f"Total de tokens utilizados: {int(total_tokens)}")
 
 # ============================================================================
 # 7. EXEMPLO AVANCADO: BUSCA POR CAMPO

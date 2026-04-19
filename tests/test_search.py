@@ -290,7 +290,8 @@ def test_setup_columns_with_search():
     _setup_columns(df, ["campo1"], None, False, True, search_config)
 
     assert "_search_credits" in df.columns
-    assert "_search_count" in df.columns
+    # _search_count foi removido (v0.6.0): permanece métrica interna, não materializada
+    assert "_search_count" not in df.columns
 
 
 def test_setup_columns_without_search():
@@ -1677,9 +1678,7 @@ def test_reorder_columns_basic():
         '_output_tokens': [50],
         'campo2': ['c'],
         '_trace_grupo1': ['trace1'],
-        '_total_tokens': [150],
         '_search_credits': [1],
-        '_search_count': [1],
     })
 
     result = _reorder_columns(df)
@@ -1697,10 +1696,9 @@ def test_reorder_columns_basic():
 
     # Search antes de tokens
     assert cols.index('_search_credits') < cols.index('_input_tokens')
-    assert cols.index('_search_count') < cols.index('_input_tokens')
 
     # Tokens no final
-    token_cols = ['_input_tokens', '_output_tokens', '_total_tokens']
+    token_cols = ['_input_tokens', '_output_tokens']
     for tcol in token_cols:
         assert cols.index(tcol) > cols.index('campo2')
 
@@ -1738,7 +1736,6 @@ def test_reorder_columns_multiple_traces():
         'campo2': ['c'],
         '_output_tokens': [50],
         '_trace_campo2': ['t2'],
-        '_total_tokens': [150],
     })
 
     result = _reorder_columns(df)
@@ -1765,10 +1762,8 @@ def test_column_ordering_in_from_pandas():
         '_output_tokens': [50],
         'nome': ['nome1'],
         '_trace_grupo_reg': ['trace1'],
-        '_total_tokens': [150],
         'tipo': ['tipo1'],
         '_search_credits': [1],
-        '_search_count': [1],
     })
 
     conversion_info = ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF)
@@ -1787,12 +1782,10 @@ def test_column_ordering_in_from_pandas():
 
     # Search antes de tokens
     assert cols.index('_search_credits') < cols.index('_input_tokens')
-    assert cols.index('_search_count') < cols.index('_input_tokens')
 
     # Tokens no final
     token_start_idx = cols.index('_input_tokens')
     assert '_output_tokens' in cols[token_start_idx:]
-    assert '_total_tokens' in cols[token_start_idx:]
 
 
 # =============================================================================
