@@ -222,7 +222,6 @@ sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
 | `_error_details` | Mensagem de erro |
 | `_input_tokens` | Tokens de entrada |
 | `_output_tokens` | Tokens de saída |
-| `_total_tokens` | Total de tokens |
 
 ---
 

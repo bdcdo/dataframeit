@@ -115,7 +115,6 @@ result = dataframeit(
 |--------|-------------|
 | `_input_tokens` | Input tokens per row |
 | `_output_tokens` | Output tokens per row |
-| `_total_tokens` | Total per row |
 
 ### Calculating Costs
 
