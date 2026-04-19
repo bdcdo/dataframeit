@@ -34,7 +34,7 @@ result = dataframeit(
     data,                    # DataFrame, Series, list or dict
     questions,               # Pydantic model
     prompt,                  # Prompt template
-    text_column='text',      # Column with texts (required for DataFrame)
+    text_column=None,        # Column with texts (None = automatic inference)
     model='gemini-3-flash-preview',
     provider='google_genai', # 'google_genai', 'openai', 'anthropic'
     resume=True,             # Continue from where it stopped

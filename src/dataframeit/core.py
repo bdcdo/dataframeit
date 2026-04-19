@@ -301,9 +301,10 @@ def dataframeit(
         provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc).
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
-                    infere automaticamente dentre TEXT_COLUMN_CANDIDATES
-                    ('texto', 'text', 'decisao', 'content', 'content_text') e
-                    levanta ValueError informativo se nenhuma bate.
+                    infere dentre TEXT_COLUMN_CANDIDATES ('texto', 'text',
+                    'decisao', 'content', 'content_text'); DataFrames com uma
+                    única coluna usam-na direto. Se nenhum candidato bater e o
+                    DataFrame tiver múltiplas colunas, levanta ValueError.
                     Automático para Series/list/dict.
         api_key: Chave API específica.
         max_retries: Número máximo de tentativas.

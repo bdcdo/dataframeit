@@ -42,7 +42,7 @@ def dataframeit(
 | `data` | DataFrame, Series, list, dict | Sim | Dados contendo os textos a processar |
 | `questions` | Pydantic BaseModel | Sim | Modelo Pydantic definindo campos a extrair |
 | `prompt` | str | Sim | Template do prompt. Use `{texto}` para posicionar o texto |
-| `text_column` | str | DataFrame: Sim | Nome da coluna com textos. Padrão: `'texto'` |
+| `text_column` | str | Não | Nome da coluna com textos. Se `None`, tenta `texto`, `text`, `decisao`, `content`, `content_text` na ordem (ou a única coluna, se o DataFrame tiver apenas uma) |
 
 #### Processamento
 
