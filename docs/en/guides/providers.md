@@ -9,7 +9,7 @@ Configure different LLM providers via LangChain.
 | Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
 | Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
-| Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b |
+| Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b, groq/compound |
 | Cohere | `cohere` | command-r, command-r-plus |
 | Mistral | `mistral` | mistral-large, mistral-small |
 
