@@ -230,8 +230,6 @@ success = result[result['_dataframeit_status'] == 'processed']
 | `_input_tokens` | Input tokens |
 | `_output_tokens` | Output tokens |
 
-> Since v0.6.0, `_total_tokens` has been removed — recompute via `_input_tokens + _output_tokens`.
-
 ---
 
 ## Incremental Processing

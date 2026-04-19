@@ -146,7 +146,6 @@ if '_search_credits' in df_resultado.columns:
     total_creditos = df_resultado['_search_credits'].sum()
     print(f"Creditos Tavily consumidos: {total_creditos}")
 
-# _total_tokens foi removido em v0.6.0 — recompute via input+output
 if '_input_tokens' in df_resultado.columns:
     total_tokens = (
         df_resultado['_input_tokens'].fillna(0).sum()

@@ -108,8 +108,6 @@ Returns data in the same format as input with extracted columns added.
 | `_input_tokens` | Input tokens (if `track_tokens=True`) |
 | `_output_tokens` | Output tokens (if `track_tokens=True`) |
 
-> Since v0.6.0, `_total_tokens` has been removed from the output DataFrame (#69). Compute as `_input_tokens + _output_tokens`; the aggregate still appears in the console summary.
-
 ### Examples
 
 ```python

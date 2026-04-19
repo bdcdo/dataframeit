@@ -5,14 +5,11 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Unreleased]
+## [0.6.0] - Unreleased
 
-### ⚠️ Breaking Changes
+### Removido
 
-- **Colunas `_total_tokens` e `_search_count` removidas do DataFrame de saída** (#69). Valores continuam agregados no summary de console ao final da execução (`track_tokens=True`), mas não são mais materializados por linha.
-  - `_total_tokens` é redundante com `_input_tokens + _output_tokens`. Migração: `df[['_input_tokens', '_output_tokens']].sum().sum()`.
-  - `_search_count` também continua sendo calculado internamente para o cálculo de `_search_credits`, mas não aparece mais em coluna do DataFrame.
-  - Bump para `0.6.0` por ser breaking change.
+- Colunas `_total_tokens` e `_search_count` do DataFrame de saída (#69). Totais continuam no summary de console; `_search_count` segue interno para o cálculo de `_search_credits`.
 
 ### Adicionado
 

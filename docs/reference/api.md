@@ -108,8 +108,6 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 | `_input_tokens` | Tokens de entrada (se `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (se `track_tokens=True`) |
 
-> Desde v0.6.0, `_total_tokens` foi removido do DataFrame de saída (#69). Calcule como `_input_tokens + _output_tokens`; o total agregado continua no summary do console.
-
 ### Exemplos
 
 ```python

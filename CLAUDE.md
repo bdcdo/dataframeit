@@ -44,6 +44,16 @@ Nunca faça commits diretamente na `main`.
 - Siga o formato [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 - Categorias: `Adicionado`, `Alterado`, `Corrigido`, `Removido`, `Depreciado`, `Segurança`
 - Inclua referência à issue/PR quando aplicável (ex: `(#123)`)
+- **Factual e curto.** Sem subseções de "Migração", "Como migrar", "Impacto para usuários". A lib é de uso interno e esse tipo de nota é ruído.
+
+### Documentação e comentários — sem notas de migração
+
+A lib tem **um único usuário** (Bruno). Portanto, ao mudar comportamento — inclusive breaking:
+
+- **Não** adicione notas do tipo `> Desde v0.X.Y, Z foi removido — migre para W.` em `docs/**/*.md`, `README.md` ou arquivos de exemplo. Atualize a tabela/exemplo para o estado **atual** e pronto.
+- **Não** deixe comentários no código registrando o que era antes (`# antes era X`, `# invisível até v0.6.0`, etc). Comentários documentam invariantes do código atual, não o histórico.
+- **Não** inclua seção "Migration" / "Impacto" nos bodies de PR. Basta descrever o quê e o porquê.
+- Bump de versão está OK — serve de âncora no repo. Só não o referencie dentro de docs/comentários.
 
 ### Versão
 

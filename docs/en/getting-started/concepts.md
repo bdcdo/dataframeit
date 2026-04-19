@@ -122,8 +122,6 @@ DataFrameIt automatically adds control columns:
 | `_input_tokens` | Input tokens (with `track_tokens=True`) |
 | `_output_tokens` | Output tokens (with `track_tokens=True`) |
 
-> Since v0.6.0, `_total_tokens` has been removed (recomputable as `_input_tokens + _output_tokens`). The aggregate total is still printed to the console summary.
-
 ## Next Steps
 
 - [Basic Usage](../guides/basic-usage.md): Practical examples
