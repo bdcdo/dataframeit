@@ -30,6 +30,11 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 # Chaves de configuração per-field reconhecidas em json_schema_extra
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
 
+# Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
+# Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
+# e convenções comuns de ETL ('content', 'content_text').
+TEXT_COLUMN_CANDIDATES = ('texto', 'text', 'decisao', 'content', 'content_text')
+
 
 # Limites aproximados de requisições por minuto por provedor de busca.
 _SEARCH_PROVIDER_RATE_LIMITS = {
@@ -295,8 +300,12 @@ def dataframeit(
         model: Nome do modelo LLM.
         provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc).
         status_column: Coluna para rastrear progresso.
-        text_column: Nome da coluna com textos (obrigatório para DataFrames,
-                    automático para Series/list/dict).
+        text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
+                    infere dentre TEXT_COLUMN_CANDIDATES ('texto', 'text',
+                    'decisao', 'content', 'content_text'); DataFrames com uma
+                    única coluna usam-na direto. Se nenhum candidato bater e o
+                    DataFrame tiver múltiplas colunas, levanta ValueError.
+                    Automático para Series/list/dict.
         api_key: Chave API específica.
         max_retries: Número máximo de tentativas.
         base_delay: Delay base para retry.
@@ -403,11 +412,30 @@ def dataframeit(
     )
 
     if is_dataframe_type:
-        # Para DataFrames, usa 'texto' como padrão se não especificado
         if text_column is None:
-            text_column = 'texto'
+            matches = [c for c in TEXT_COLUMN_CANDIDATES if c in df_pandas.columns]
+            if matches:
+                text_column = matches[0]
+                if len(matches) > 1:
+                    warnings.warn(
+                        f"Múltiplas colunas candidatas encontradas: {matches}. "
+                        f"Usando '{text_column}'. Passe text_column= para suprimir este aviso.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+            elif len(df_pandas.columns) == 1:
+                text_column = df_pandas.columns[0]
+            else:
+                raise ValueError(
+                    f"Nenhuma coluna de texto identificada entre {TEXT_COLUMN_CANDIDATES}. "
+                    f"Colunas disponíveis: {list(df_pandas.columns)}. "
+                    f"Passe text_column= explicitamente."
+                )
         if text_column not in df_pandas.columns:
-            raise ValueError(f"Coluna '{text_column}' não encontrada no DataFrame")
+            raise ValueError(
+                f"Coluna '{text_column}' não encontrada no DataFrame. "
+                f"Colunas disponíveis: {list(df_pandas.columns)}."
+            )
     else:
         # Para Series/list/dict, usa coluna interna
         text_column = DEFAULT_TEXT_COLUMN
