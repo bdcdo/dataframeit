@@ -745,15 +745,33 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
 
 _SUPPORTED_CHECKPOINT_EXTS = ('.csv', '.xlsx', '.parquet')
 
+# Extensões que exigem dependência opcional para pandas serializar.
+# Validamos antes do loop para falhar rápido — um ModuleNotFoundError no primeiro
+# save (após N linhas de LLM) desperdiça horas de trabalho.
+_CHECKPOINT_EXT_REQUIRES = {
+    '.xlsx': ('openpyxl', 'openpyxl'),
+    '.parquet': ('pyarrow', 'pyarrow'),
+}
+
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
-    """Valida que a extensão é suportada antes de iniciar o processamento."""
+    """Valida extensão suportada e dependência opcional necessária."""
+    import importlib.util
+
     ext = Path(path).suffix.lower()
     if ext not in _SUPPORTED_CHECKPOINT_EXTS:
         raise ValueError(
             f"Extensão {ext or '(nenhuma)'} não suportada para checkpoint. "
             f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
         )
+    requires = _CHECKPOINT_EXT_REQUIRES.get(ext)
+    if requires is not None:
+        module, pip_name = requires
+        if importlib.util.find_spec(module) is None:
+            raise ImportError(
+                f"Checkpoint {ext} requer o pacote '{module}', que não está instalado. "
+                f"Execute: pip install {pip_name}"
+            )
 
 
 def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
@@ -928,7 +946,6 @@ def _process_rows(
             if batch_size and rows_processed_this_run % batch_size == 0:
                 _save_checkpoint(df, checkpoint_path)
 
-            # Rate limiting: aguardar antes da próxima requisição
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
@@ -954,6 +971,10 @@ def _process_rows(
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
                 _save_checkpoint(df, checkpoint_path)
+
+    # Save final: garante que a cauda (< batch_size) também fica no disco.
+    if batch_size and rows_processed_this_run > 0 and rows_processed_this_run % batch_size != 0:
+        _save_checkpoint(df, checkpoint_path)
 
     return token_stats
 
@@ -1071,6 +1092,7 @@ def _process_rows_parallel(
             retry_info = result.get('_retry_info', {})
 
             # Atualizar DataFrame (com lock para thread-safety)
+            snapshot = None
             with lock:
                 for col in expected_columns:
                     if col in extracted:
@@ -1090,22 +1112,18 @@ def _process_rows_parallel(
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
                     token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
 
-                # Métricas de busca
                 if config.search_config and config.search_config.enabled and usage:
                     df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
 
                     token_stats['search_credits'] += usage.get('search_credits', 0)
                     token_stats['search_count'] += usage.get('search_count', 0)
 
-                # Armazenar traces (se habilitado)
                 if trace_mode:
                     if config.search_config and config.search_config.per_field:
-                        # Traces por campo
                         traces = result.get('traces', {})
                         for field_name, trace in traces.items():
                             df.at[idx, f'_trace_{field_name}'] = json.dumps(trace, ensure_ascii=False)
                     else:
-                        # Trace único
                         trace = result.get('trace')
                         if trace:
                             df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
@@ -1118,9 +1136,12 @@ def _process_rows_parallel(
 
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
-                    _save_checkpoint(df, checkpoint_path)
+                    # Copia sob lock, serializa fora — evita bloquear threads na I/O.
+                    snapshot = df.copy()
 
-            # Rate limiting entre requisições (se configurado)
+            if snapshot is not None:
+                _save_checkpoint(snapshot, checkpoint_path)
+
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
@@ -1144,7 +1165,7 @@ def _process_rows_parallel(
                         # Limpar evento após um tempo
                         threading.Timer(5.0, rate_limit_event.clear).start()
 
-            # Registrar erro
+            snapshot = None
             with lock:
                 if is_recoverable_error(e):
                     error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
@@ -1160,7 +1181,10 @@ def _process_rows_parallel(
 
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
-                    _save_checkpoint(df, checkpoint_path)
+                    snapshot = df.copy()
+
+            if snapshot is not None:
+                _save_checkpoint(snapshot, checkpoint_path)
 
             return {'success': False, 'idx': idx, 'error': error_msg}
 
@@ -1190,7 +1214,10 @@ def _process_rows_parallel(
                         completed += 1
                         warnings.warn(f"Erro inesperado no executor: {e}")
 
-    # Calcular métricas finais
+    # Save final: garante que a cauda (< batch_size) também fica no disco.
+    if batch_size and checkpoint_counter > 0 and checkpoint_counter % batch_size != 0:
+        _save_checkpoint(df, checkpoint_path)
+
     elapsed = time.time() - start_time
     token_stats['elapsed_seconds'] = elapsed
     token_stats['initial_workers'] = initial_workers

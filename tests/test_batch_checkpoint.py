@@ -27,7 +27,7 @@ def _mock_llm_factory():
 
 
 def test_checkpoint_fires_on_multiples_sequential(tmp_path):
-    """Sequencial: callback disparado em 2 e 4 (não em 5 — sem chamada final)."""
+    """Sequencial: saves em 2, 4 e final em 5 (save final cobre a cauda)."""
     df = pd.DataFrame({"texto": ["a", "b", "c", "d", "e"]})
     ckpt = tmp_path / "ckpt.csv"
 
@@ -50,12 +50,35 @@ def test_checkpoint_fires_on_multiples_sequential(tmp_path):
         )
 
     processed_counts = [c for c, _ in observed_counts]
-    assert processed_counts == [2, 4]
+    assert processed_counts == [2, 4, 5]
     assert all(p == str(ckpt) for _, p in observed_counts)
 
 
+def test_checkpoint_no_duplicate_final_save_sequential(tmp_path):
+    """Sequencial: quando total é múltiplo de batch_size, nenhum save extra."""
+    df = pd.DataFrame({"texto": ["a", "b", "c", "d"]})
+    ckpt = tmp_path / "ckpt.csv"
+
+    observed_counts = []
+
+    def spy(df_arg, path_arg):
+        observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
+
+    _, mock_llm = _mock_llm_factory()
+
+    with patch("dataframeit.core._save_checkpoint", side_effect=spy), \
+         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
+         patch("dataframeit.core.validate_provider_dependencies"):
+        dataframeit(
+            df, questions=SimpleModel, prompt="Teste {texto}",
+            batch_size=2, checkpoint_path=ckpt,
+        )
+
+    assert observed_counts == [2, 4]
+
+
 def test_checkpoint_fires_on_multiples_parallel(tmp_path):
-    """Paralelo: contador monotônico mesmo com ordem fora — 3 chamadas em 3,6,9."""
+    """Paralelo: contador monotônico, 3 saves incrementais + save final com 10."""
     df = pd.DataFrame({"texto": [f"linha{i}" for i in range(10)]})
     ckpt = tmp_path / "ckpt.csv"
 
@@ -78,9 +101,75 @@ def test_checkpoint_fires_on_multiples_parallel(tmp_path):
             checkpoint_path=ckpt,
         )
 
-    assert len(observed_counts) == 3
+    assert len(observed_counts) == 4
     assert observed_counts == sorted(observed_counts)
-    assert observed_counts[-1] >= 9
+    assert observed_counts[-1] == 10
+
+
+def test_checkpoint_no_duplicate_final_save_parallel(tmp_path):
+    """Paralelo: quando total é múltiplo de batch_size, nenhum save extra."""
+    df = pd.DataFrame({"texto": [f"linha{i}" for i in range(9)]})
+    ckpt = tmp_path / "ckpt.csv"
+
+    observed_counts = []
+
+    def spy(df_arg, path_arg):
+        observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
+
+    _, mock_llm = _mock_llm_factory()
+
+    with patch("dataframeit.core._save_checkpoint", side_effect=spy), \
+         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
+         patch("dataframeit.core.validate_provider_dependencies"):
+        dataframeit(
+            df, questions=SimpleModel, prompt="Teste {texto}",
+            parallel_requests=3, batch_size=3, checkpoint_path=ckpt,
+        )
+
+    assert len(observed_counts) == 3
+    assert observed_counts[-1] == 9
+
+
+def test_missing_openpyxl_rejected_early(tmp_path):
+    """Falta de openpyxl para .xlsx falha na validação, não após N linhas."""
+    df = pd.DataFrame({"texto": ["a", "b"]})
+
+    def fake_find_spec(name):
+        if name == "openpyxl":
+            return None
+        import importlib.util as _iu
+        return _iu.find_spec(name)
+
+    with patch("dataframeit.core.call_langchain") as mock_llm, \
+         patch("dataframeit.core.validate_provider_dependencies"), \
+         patch("importlib.util.find_spec", side_effect=fake_find_spec):
+        with pytest.raises(ImportError, match="openpyxl"):
+            dataframeit(
+                df, questions=SimpleModel, prompt="Teste {texto}",
+                batch_size=1, checkpoint_path=tmp_path / "x.xlsx",
+            )
+        mock_llm.assert_not_called()
+
+
+def test_missing_pyarrow_rejected_early(tmp_path):
+    """Falta de pyarrow para .parquet falha na validação, não após N linhas."""
+    df = pd.DataFrame({"texto": ["a", "b"]})
+
+    def fake_find_spec(name):
+        if name == "pyarrow":
+            return None
+        import importlib.util as _iu
+        return _iu.find_spec(name)
+
+    with patch("dataframeit.core.call_langchain") as mock_llm, \
+         patch("dataframeit.core.validate_provider_dependencies"), \
+         patch("importlib.util.find_spec", side_effect=fake_find_spec):
+        with pytest.raises(ImportError, match="pyarrow"):
+            dataframeit(
+                df, questions=SimpleModel, prompt="Teste {texto}",
+                batch_size=1, checkpoint_path=tmp_path / "x.parquet",
+            )
+        mock_llm.assert_not_called()
 
 
 def test_no_checkpoint_when_params_none(tmp_path):
