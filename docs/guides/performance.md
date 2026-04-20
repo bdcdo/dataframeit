@@ -82,6 +82,33 @@ resultado = dataframeit(
 )
 ```
 
+## Checkpoints em Execuções Longas
+
+Em datasets grandes (milhares de linhas, horas de execução), um kill/crash perde
+todo o progresso em memória. Use `batch_size` + `checkpoint_path` para persistir
+o DataFrame a cada N linhas processadas:
+
+```python
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    batch_size=100,
+    checkpoint_path="checkpoint.xlsx",
+)
+```
+
+Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em caso
+de interrupção, recarregue o DataFrame do disco e re-execute com `resume=True`:
+
+```python
+df_parcial = pd.read_excel("checkpoint.xlsx")
+resultado = dataframeit(
+    df_parcial, Model, PROMPT,
+    resume=True, batch_size=100, checkpoint_path="checkpoint.xlsx",
+)
+```
+
 ## Tracking de Tokens
 
 Monitore uso e custos com `track_tokens=True`:

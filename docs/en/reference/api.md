@@ -30,6 +30,8 @@ def dataframeit(
     search_per_field=False,
     max_results=5,
     search_depth="basic",
+    batch_size=None,
+    checkpoint_path=None,
 ) -> Any
 ```
 
@@ -76,6 +78,8 @@ def dataframeit(
 |-----------|------|---------|-------------|
 | `parallel_requests` | int | `1` | Parallel workers (1 = sequential) |
 | `track_tokens` | bool | `True` | Track token usage |
+| `batch_size` | int | `None` | Save checkpoint every N processed rows (requires `checkpoint_path`) |
+| `checkpoint_path` | str \| Path | `None` | Checkpoint file destination; extension sets format (`.csv`, `.xlsx`, `.parquet`) |
 
 #### Web Search
 
