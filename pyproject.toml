@@ -70,6 +70,9 @@ polars = [
     "polars>=0.20",
     "pyarrow>=10",
 ]
+excel = [
+    "openpyxl>=3.1",
+]
 search = [
     "langchain-tavily>=0.1.0",
 ]
@@ -90,6 +93,7 @@ all = [
     "claude-agent-sdk>=0.1.48",
     "polars>=0.20",
     "pyarrow>=10",
+    "openpyxl>=3.1",
 ]
 dev = [
     "pytest>=7.0",
