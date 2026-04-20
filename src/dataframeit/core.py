@@ -1,26 +1,34 @@
 import json
-import warnings
-import time
 import logging
+import os
 import threading
+import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Union, Any, Optional, Literal, Dict
+from pathlib import Path
+from typing import Any, Literal
+
 import pandas as pd
 from tqdm import tqdm
 
+from .errors import (
+    get_friendly_error_message,
+    is_rate_limit_error,
+    is_recoverable_error,
+    validate_provider_dependencies,
+    validate_search_dependencies,
+)
 from .llm import LLMConfig, SearchConfig, SearchGroupConfig, call_langchain
 from .utils import (
-    to_pandas,
-    from_pandas,
-    get_complex_fields,
-    normalize_complex_columns,
-    get_nested_pydantic_models,
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
+    from_pandas,
+    get_complex_fields,
+    get_nested_pydantic_models,
+    normalize_complex_columns,
+    to_pandas,
 )
-from .errors import validate_provider_dependencies, validate_search_dependencies, get_friendly_error_message, is_recoverable_error, is_rate_limit_error
-
 
 # Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
 logging.getLogger('langchain_google_genai').setLevel(logging.ERROR)
@@ -119,11 +127,11 @@ def _warn_search_rate_limit(
 
 
 def _validate_search_groups(
-    search_groups: Dict[str, dict],
+    search_groups: dict[str, dict],
     pydantic_model,
     use_search: bool,
     search_per_field: bool
-) -> Dict[str, SearchGroupConfig]:
+) -> dict[str, SearchGroupConfig]:
     """Valida e converte search_groups para SearchGroupConfig.
 
     Args:
@@ -261,7 +269,7 @@ def dataframeit(
     model='gemini-3-flash-preview',
     provider='google_genai',
     status_column=None,
-    text_column: Optional[str] = None,
+    text_column: str | None = None,
     api_key=None,
     max_retries=3,
     base_delay=1.0,
@@ -276,8 +284,10 @@ def dataframeit(
     search_per_field=False,
     max_results=5,
     search_depth="basic",
-    search_groups: Optional[Dict[str, dict]] = None,
-    save_trace: Optional[Union[bool, Literal["full", "minimal"]]] = None,
+    search_groups: dict[str, dict] | None = None,
+    save_trace: bool | Literal["full", "minimal"] | None = None,
+    batch_size: int | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> Any:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
@@ -338,6 +348,13 @@ def dataframeit(
             - True/"full": Trace completo com conteúdo das mensagens
             - "minimal": Apenas queries e contagens, sem conteúdo de tool results
             Colunas geradas: "_trace" (agente único) ou "_trace_{campo}" (per_field).
+        batch_size: Se definido (int >= 1), salva o DataFrame em `checkpoint_path` a cada
+            N linhas processadas nesta execução. Combinado com `resume=True`, permite
+            retomar execuções longas após kill/crash sem perder progresso.
+            Requer `checkpoint_path`.
+        checkpoint_path: Caminho do arquivo de checkpoint. Formato inferido pela extensão
+            (.csv, .xlsx, .parquet). Escrita atômica via .tmp + rename. Requer `batch_size`.
+            Exemplo: ``dataframeit(df, Model, PROMPT, batch_size=100, checkpoint_path="ckpt.xlsx")``.
 
     Returns:
         Dados com informações extraídas no mesmo formato da entrada.
@@ -361,6 +378,14 @@ def dataframeit(
 
     # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
     validate_provider_dependencies(provider)
+
+    # Validar parâmetros de checkpoint
+    if (batch_size is None) != (checkpoint_path is None):
+        raise ValueError("batch_size e checkpoint_path devem ser usados juntos")
+    if batch_size is not None:
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size deve ser int >= 1")
+        _validate_checkpoint_extension(checkpoint_path)
 
     # Validar busca web com claude_code
     if use_search and provider == 'claude_code':
@@ -543,6 +568,8 @@ def dataframeit(
             reprocess_columns,
             parallel_requests,
             trace_mode,
+            batch_size,
+            checkpoint_path,
         )
     else:
         token_stats = _process_rows(
@@ -559,6 +586,8 @@ def dataframeit(
             track_tokens,
             reprocess_columns,
             trace_mode,
+            batch_size,
+            checkpoint_path,
         )
 
     # Exibir estatísticas de tokens e throughput
@@ -580,7 +609,7 @@ def dataframeit(
     return from_pandas(df_pandas, conversion_info)
 
 
-def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: Optional[str], resume: bool, track_tokens: bool, search_config: Optional[SearchConfig] = None, trace_mode: Optional[str] = None, pydantic_model=None):
+def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: str | None, resume: bool, track_tokens: bool, search_config: SearchConfig | None = None, trace_mode: str | None = None, pydantic_model=None):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
@@ -714,6 +743,56 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
     print("=" * 60 + "\n")
 
 
+_SUPPORTED_CHECKPOINT_EXTS = ('.csv', '.xlsx', '.parquet')
+
+# Extensões que exigem dependência opcional para pandas serializar.
+# Validamos antes do loop para falhar rápido — um ModuleNotFoundError no primeiro
+# save (após N linhas de LLM) desperdiça horas de trabalho.
+_CHECKPOINT_EXT_REQUIRES = {
+    '.xlsx': ('openpyxl', 'openpyxl'),
+    '.parquet': ('pyarrow', 'pyarrow'),
+}
+
+
+def _validate_checkpoint_extension(path: str | Path) -> None:
+    """Valida extensão suportada e dependência opcional necessária."""
+    import importlib.util
+
+    ext = Path(path).suffix.lower()
+    if ext not in _SUPPORTED_CHECKPOINT_EXTS:
+        raise ValueError(
+            f"Extensão {ext or '(nenhuma)'} não suportada para checkpoint. "
+            f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
+        )
+    requires = _CHECKPOINT_EXT_REQUIRES.get(ext)
+    if requires is not None:
+        module, pip_name = requires
+        if importlib.util.find_spec(module) is None:
+            raise ImportError(
+                f"Checkpoint {ext} requer o pacote '{module}', que não está instalado. "
+                f"Execute: pip install {pip_name}"
+            )
+
+
+def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
+    """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão."""
+    path = Path(path)
+    ext = path.suffix.lower()
+    tmp = path.with_name(path.name + '.tmp')
+    if ext == '.csv':
+        df.to_csv(tmp, index=False)
+    elif ext == '.xlsx':
+        df.to_excel(tmp, index=False)
+    elif ext == '.parquet':
+        df.to_parquet(tmp, index=False)
+    else:
+        raise ValueError(
+            f"Extensão {ext} não suportada para checkpoint. "
+            f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
+        )
+    os.replace(tmp, path)
+
+
 def _process_rows(
     df: pd.DataFrame,
     pydantic_model,
@@ -727,7 +806,9 @@ def _process_rows(
     conversion_info,
     track_tokens: bool,
     reprocess_columns=None,
-    trace_mode: Optional[str] = None,
+    trace_mode: str | None = None,
+    batch_size: int | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> dict:
     """Processa cada linha do DataFrame.
 
@@ -768,6 +849,8 @@ def _process_rows(
         'search_credits': 0,
         'search_count': 0,
     }
+
+    rows_processed_this_run = 0
 
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
@@ -859,7 +942,10 @@ def _process_rows(
             if retry_info.get('retries', 0) > 0:
                 df.at[idx, '_error_details'] = f"Sucesso após {retry_info['retries']} retry(s)"
 
-            # Rate limiting: aguardar antes da próxima requisição
+            rows_processed_this_run += 1
+            if batch_size and rows_processed_this_run % batch_size == 0:
+                _save_checkpoint(df, checkpoint_path)
+
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
@@ -882,6 +968,14 @@ def _process_rows(
             df.at[idx, status_col] = 'error'
             df.at[idx, '_error_details'] = error_details
 
+            rows_processed_this_run += 1
+            if batch_size and rows_processed_this_run % batch_size == 0:
+                _save_checkpoint(df, checkpoint_path)
+
+    # Save final: garante que a cauda (< batch_size) também fica no disco.
+    if batch_size and rows_processed_this_run > 0 and rows_processed_this_run % batch_size != 0:
+        _save_checkpoint(df, checkpoint_path)
+
     return token_stats
 
 
@@ -899,7 +993,9 @@ def _process_rows_parallel(
     track_tokens: bool,
     reprocess_columns,
     parallel_requests: int,
-    trace_mode: Optional[str] = None,
+    trace_mode: str | None = None,
+    batch_size: int | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> dict:
     """Processa linhas do DataFrame em paralelo com auto-redução de workers.
 
@@ -919,6 +1015,7 @@ def _process_rows_parallel(
     initial_workers = parallel_requests
     workers_reduced = False
     rate_limit_event = threading.Event()
+    checkpoint_counter = 0
 
     # Contadores
     token_stats = {
@@ -962,7 +1059,7 @@ def _process_rows_parallel(
 
     def process_single_row(row_data):
         """Processa uma única linha (executada em thread separada)."""
-        nonlocal current_workers, workers_reduced
+        nonlocal current_workers, workers_reduced, checkpoint_counter
 
         i, idx, row = row_data
         text = str(row[text_column])
@@ -995,6 +1092,7 @@ def _process_rows_parallel(
             retry_info = result.get('_retry_info', {})
 
             # Atualizar DataFrame (com lock para thread-safety)
+            snapshot = None
             with lock:
                 for col in expected_columns:
                     if col in extracted:
@@ -1014,22 +1112,18 @@ def _process_rows_parallel(
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
                     token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
 
-                # Métricas de busca
                 if config.search_config and config.search_config.enabled and usage:
                     df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
 
                     token_stats['search_credits'] += usage.get('search_credits', 0)
                     token_stats['search_count'] += usage.get('search_count', 0)
 
-                # Armazenar traces (se habilitado)
                 if trace_mode:
                     if config.search_config and config.search_config.per_field:
-                        # Traces por campo
                         traces = result.get('traces', {})
                         for field_name, trace in traces.items():
                             df.at[idx, f'_trace_{field_name}'] = json.dumps(trace, ensure_ascii=False)
                     else:
-                        # Trace único
                         trace = result.get('trace')
                         if trace:
                             df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
@@ -1040,7 +1134,14 @@ def _process_rows_parallel(
                 if retry_info.get('retries', 0) > 0:
                     df.at[idx, '_error_details'] = f"Sucesso após {retry_info['retries']} retry(s)"
 
-            # Rate limiting entre requisições (se configurado)
+                checkpoint_counter += 1
+                if batch_size and checkpoint_counter % batch_size == 0:
+                    # Copia sob lock, serializa fora — evita bloquear threads na I/O.
+                    snapshot = df.copy()
+
+            if snapshot is not None:
+                _save_checkpoint(snapshot, checkpoint_path)
+
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
@@ -1064,7 +1165,7 @@ def _process_rows_parallel(
                         # Limpar evento após um tempo
                         threading.Timer(5.0, rate_limit_event.clear).start()
 
-            # Registrar erro
+            snapshot = None
             with lock:
                 if is_recoverable_error(e):
                     error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
@@ -1078,6 +1179,13 @@ def _process_rows_parallel(
                 df.at[idx, status_col] = 'error'
                 df.at[idx, '_error_details'] = error_details
 
+                checkpoint_counter += 1
+                if batch_size and checkpoint_counter % batch_size == 0:
+                    snapshot = df.copy()
+
+            if snapshot is not None:
+                _save_checkpoint(snapshot, checkpoint_path)
+
             return {'success': False, 'idx': idx, 'error': error_msg}
 
     # Processar com ThreadPoolExecutor
@@ -1089,11 +1197,11 @@ def _process_rows_parallel(
         while pending_rows:
             # Pegar batch com número atual de workers
             with lock:
-                batch_size = min(current_workers, len(pending_rows))
-            batch = pending_rows[:batch_size]
-            pending_rows = pending_rows[batch_size:]
+                worker_batch = min(current_workers, len(pending_rows))
+            batch = pending_rows[:worker_batch]
+            pending_rows = pending_rows[worker_batch:]
 
-            with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            with ThreadPoolExecutor(max_workers=worker_batch) as executor:
                 futures = {executor.submit(process_single_row, row): row for row in batch}
 
                 for future in as_completed(futures):
@@ -1106,7 +1214,10 @@ def _process_rows_parallel(
                         completed += 1
                         warnings.warn(f"Erro inesperado no executor: {e}")
 
-    # Calcular métricas finais
+    # Save final: garante que a cauda (< batch_size) também fica no disco.
+    if batch_size and checkpoint_counter > 0 and checkpoint_counter % batch_size != 0:
+        _save_checkpoint(df, checkpoint_path)
+
     elapsed = time.time() - start_time
     token_stats['elapsed_seconds'] = elapsed
     token_stats['initial_workers'] = initial_workers

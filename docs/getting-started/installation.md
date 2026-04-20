@@ -42,6 +42,14 @@ Se você usa Polars ao invés de Pandas:
 pip install dataframeit[google,polars]
 ```
 
+## Com Excel (Opcional)
+
+Para checkpoints em `.xlsx` ou ler arquivos Excel via `read_df()`:
+
+```bash
+pip install dataframeit[excel]
+```
+
 ## Configuração de API Keys
 
 Configure a variável de ambiente correspondente ao seu provider:
