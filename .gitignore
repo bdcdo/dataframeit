@@ -52,6 +52,7 @@ htmlcov/
 
 # Claude
 .claude/
+.playwright-mcp/
 
 # Project specific
 *.log

@@ -31,7 +31,9 @@ def _get_field_config(extra: dict) -> dict:
 
     Returns:
         Dicionário com configurações extraídas (prompt, prompt_append,
-        search_depth, max_results, depends_on, condition).
+        search_depth, max_results, depends_on, condition). `depends_on`
+        é normalmente derivado automaticamente de `condition` (quando
+        dict) — só precisa ser declarado para `condition` callable.
     """
     return {
         'prompt': extra.get('prompt') or extra.get('prompt_replace'),
@@ -476,9 +478,10 @@ def call_agent_per_field(
     Útil quando o modelo tem muitos campos e um único contexto ficaria
     sobrecarregado com informações de múltiplas buscas.
 
-    Suporta execução condicional de campos baseada em:
-    - depends_on: lista de campos que devem ser processados primeiro
-    - condition: condição para executar o campo (baseado em valores de outros campos)
+    Suporta execução condicional via `condition` no json_schema_extra dos
+    campos. A ordem de processamento é derivada automaticamente do campo
+    referenciado em `condition` (quando dict). Para `condition` callable,
+    declare explicitamente os campos lidos via `depends_on`.
 
     Suporta campos aninhados em List[Model], Optional[Model], etc.
     Para campos List[Model] com configuração de busca interna:

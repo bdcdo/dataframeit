@@ -1,17 +1,17 @@
 # Campos Condicionais
 
-A partir da versão 0.6.0, o DataFrameIt suporta execução condicional de campos quando usando `search_per_field=True`. Isso permite que você:
+O DataFrameIt suporta execução condicional de campos quando usando `search_per_field=True`. Isso permite que você:
 
-1. **Controle a ordem de execução** dos campos através de dependências
-2. **Execute campos condicionalmente** baseado em valores de outros campos
-3. **Acesse campos aninhados** nas condições
+1. **Execute campos condicionalmente** baseado em valores de outros campos
+2. **Acesse campos aninhados** nas condições
+3. **Controle a ordem de execução** — derivada automaticamente da condição
 
 ## Configuração Básica
 
-Use as seguintes chaves no `json_schema_extra` de cada campo:
+Use a chave `condition` no `json_schema_extra` de cada campo:
 
-- `depends_on`: Lista de campos que devem ser processados antes deste campo
-- `condition`: Condição para executar o campo (se não satisfeita, o campo é pulado)
+- `condition` (dict): condição para executar o campo. A dependência (e portanto a ordem de execução) é **derivada automaticamente** do campo referenciado em `condition['field']`.
+- `condition` (callable): função que recebe os campos já processados e retorna bool. Para que a ordem seja respeitada, declare os campos lidos via `depends_on`.
 
 ## Exemplo 1: Pessoa Física vs Jurídica
 
@@ -29,7 +29,6 @@ class PessoaInfo(BaseModel):
     cpf: str = Field(
         description="CPF da pessoa física",
         json_schema_extra={
-            'depends_on': ['tipo'],
             'condition': {'field': 'tipo', 'equals': 'pf'}
         }
     )
@@ -37,7 +36,6 @@ class PessoaInfo(BaseModel):
     cnpj: str = Field(
         description="CNPJ da pessoa jurídica",
         json_schema_extra={
-            'depends_on': ['tipo'],
             'condition': {'field': 'tipo', 'equals': 'pj'}
         }
     )
@@ -45,7 +43,6 @@ class PessoaInfo(BaseModel):
     razao_social: str = Field(
         description="Razão social da empresa",
         json_schema_extra={
-            'depends_on': ['tipo'],
             'condition': {'field': 'tipo', 'equals': 'pj'}
         }
     )
@@ -72,9 +69,9 @@ print(result)
 # Para a segunda linha: tipo='pj', cpf=None, cnpj='12.345.678/0001-90', razao_social='Empresa XYZ LTDA'
 ```
 
-## Exemplo 2: Campos Aninhados
+## Exemplo 2: Campos Encadeados
 
-Este exemplo mostra como usar condições com campos aninhados:
+Este exemplo mostra como encadear condições em sequência:
 
 ```python
 class EnderecoInfo(BaseModel):
@@ -83,7 +80,6 @@ class EnderecoInfo(BaseModel):
     estado: str = Field(
         description="Estado (apenas para Brasil)",
         json_schema_extra={
-            'depends_on': ['pais'],
             'condition': {'field': 'pais', 'equals': 'Brasil'}
         }
     )
@@ -91,7 +87,6 @@ class EnderecoInfo(BaseModel):
     cep: str = Field(
         description="CEP (apenas para Brasil)",
         json_schema_extra={
-            'depends_on': ['estado'],
             'condition': {'field': 'estado', 'exists': True}
         }
     )
@@ -99,15 +94,14 @@ class EnderecoInfo(BaseModel):
     zip_code: str = Field(
         description="ZIP Code (apenas para outros países)",
         json_schema_extra={
-            'depends_on': ['pais'],
             'condition': {'field': 'pais', 'not_equals': 'Brasil'}
         }
     )
 ```
 
-## Exemplo 3: Múltiplas Dependências
+## Exemplo 3: Condição Callable com Múltiplas Dependências
 
-Campos podem depender de múltiplos outros campos:
+Quando a condição combina vários campos, use um callable e declare os campos lidos via `depends_on`:
 
 ```python
 class PedidoInfo(BaseModel):
@@ -123,13 +117,6 @@ class PedidoInfo(BaseModel):
                 data.get('tipo_cliente') == 'vip' and
                 data.get('valor_pedido', 0) > 1000
             )
-        }
-    )
-
-    frete_gratis: bool = Field(
-        description="Se o frete é grátis",
-        json_schema_extra={
-            'depends_on': ['desconto'],
         }
     )
 ```
@@ -170,9 +157,11 @@ Para condições mais complexas, use uma função:
 }
 ```
 
+Lembre-se de declarar `depends_on` com os campos lidos pelo lambda — sem isso, a ordem de execução não é garantida.
+
 ## Campos Aninhados em Condições
 
-Você pode acessar campos aninhados usando notação de ponto:
+Você pode acessar campos aninhados usando notação de ponto. A dependência derivada é o campo raiz:
 
 ```python
 class ProdutoInfo(BaseModel):
@@ -181,7 +170,6 @@ class ProdutoInfo(BaseModel):
     taxa_entrega: float = Field(
         description="Taxa de entrega",
         json_schema_extra={
-            'depends_on': ['endereco'],
             'condition': {'field': 'endereco.cidade', 'in': ['São Paulo', 'Rio de Janeiro']}
         }
     )
@@ -189,17 +177,17 @@ class ProdutoInfo(BaseModel):
 
 ## Ordem de Execução
 
-O DataFrameIt automaticamente determina a ordem correta de execução dos campos baseado nas dependências declaradas. Por exemplo:
+O DataFrameIt deriva a ordem automaticamente do campo referenciado em cada `condition`:
 
 ```python
-class ModeloComplexo(BaseModel):
+class ModeloEncadeado(BaseModel):
     a: str
-    b: str = Field(json_schema_extra={'depends_on': ['a']})
-    c: str = Field(json_schema_extra={'depends_on': ['a', 'b']})
-    d: str = Field(json_schema_extra={'depends_on': ['c']})
+    b: str = Field(json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
+    c: str = Field(json_schema_extra={'condition': {'field': 'b', 'equals': 'y'}})
+    d: str = Field(json_schema_extra={'condition': {'field': 'c', 'equals': 'z'}})
 ```
 
-A ordem de execução será: `a → b → c → d`
+A ordem de execução será: `a → b → c → d`.
 
 ## Detecção de Dependências Circulares
 
@@ -207,8 +195,8 @@ O sistema detecta automaticamente dependências circulares e gera um erro:
 
 ```python
 class ModeloInvalido(BaseModel):
-    a: str = Field(json_schema_extra={'depends_on': ['b']})
-    b: str = Field(json_schema_extra={'depends_on': ['a']})
+    a: str = Field(json_schema_extra={'condition': {'field': 'b', 'equals': 'x'}})
+    b: str = Field(json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
 
 # ValueError: Dependências circulares detectadas: a -> b -> a
 ```
@@ -247,7 +235,6 @@ class InfoCompleta(BaseModel):
 
     detalhes_pf: str = Field(
         json_schema_extra={
-            'depends_on': ['tipo'],
             'condition': {'field': 'tipo', 'equals': 'pf'},
             'search_depth': 'advanced',  # Busca mais profunda
             'max_results': 10,  # Mais resultados

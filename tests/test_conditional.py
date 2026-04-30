@@ -242,32 +242,39 @@ class TestGetFieldExecutionOrder:
     """Testes para get_field_execution_order."""
 
     def test_simple_order(self):
-        """Testa ordem de execução simples."""
+        """Testa ordem de execução simples (depends_on derivado de condition dict)."""
         class SimpleModel(BaseModel):
             a: str
-            b: str = Field(json_schema_extra={'depends_on': ['a']})
+            b: str = Field(json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
 
         field_configs = {
             'a': {},
-            'b': {'depends_on': ['a']},
+            'b': {'condition': {'field': 'a', 'equals': 'x'}},
         }
 
         order, deps = get_field_execution_order(SimpleModel, field_configs)
         assert order.index('a') < order.index('b')
+        assert deps['b'] == ['a']
 
     def test_complex_order(self):
-        """Testa ordem de execução complexa."""
+        """Testa ordem de execução complexa via auto-derivação."""
         class ComplexModel(BaseModel):
             tipo: str
-            cpf: str = Field(json_schema_extra={'depends_on': ['tipo']})
-            cnpj: str = Field(json_schema_extra={'depends_on': ['tipo']})
-            validacao: str = Field(json_schema_extra={'depends_on': ['cpf', 'cnpj']})
+            cpf: str = Field(json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pf'}})
+            cnpj: str = Field(json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pj'}})
+            validacao: str = Field(json_schema_extra={
+                'depends_on': ['cpf', 'cnpj'],
+                'condition': lambda data: bool(data.get('cpf') or data.get('cnpj')),
+            })
 
         field_configs = {
             'tipo': {},
-            'cpf': {'depends_on': ['tipo']},
-            'cnpj': {'depends_on': ['tipo']},
-            'validacao': {'depends_on': ['cpf', 'cnpj']},
+            'cpf': {'condition': {'field': 'tipo', 'equals': 'pf'}},
+            'cnpj': {'condition': {'field': 'tipo', 'equals': 'pj'}},
+            'validacao': {
+                'depends_on': ['cpf', 'cnpj'],
+                'condition': lambda data: bool(data.get('cpf') or data.get('cnpj')),
+            },
         }
 
         order, deps = get_field_execution_order(ComplexModel, field_configs)
@@ -277,30 +284,189 @@ class TestGetFieldExecutionOrder:
         assert order.index('cnpj') < order.index('validacao')
 
     def test_missing_dependency_raises(self):
-        """Testa que dependência inexistente levanta erro."""
+        """Testa que dependência inexistente levanta erro (via condition dict)."""
         class ModelWithInvalidDep(BaseModel):
-            a: str = Field(json_schema_extra={'depends_on': ['nonexistent']})
+            a: str = Field(json_schema_extra={
+                'condition': {'field': 'nonexistent', 'equals': 'x'}
+            })
 
         field_configs = {
-            'a': {'depends_on': ['nonexistent']},
+            'a': {'condition': {'field': 'nonexistent', 'equals': 'x'}},
         }
 
         with pytest.raises(ValueError, match="depende de campos inexistentes"):
             get_field_execution_order(ModelWithInvalidDep, field_configs)
 
     def test_circular_dependency_raises(self):
-        """Testa que dependência circular levanta erro."""
+        """Testa que dependência circular levanta erro (via condition dict)."""
         class ModelWithCircular(BaseModel):
-            a: str = Field(json_schema_extra={'depends_on': ['b']})
-            b: str = Field(json_schema_extra={'depends_on': ['a']})
+            a: str = Field(json_schema_extra={'condition': {'field': 'b', 'equals': 'x'}})
+            b: str = Field(json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
 
         field_configs = {
-            'a': {'depends_on': ['b']},
-            'b': {'depends_on': ['a']},
+            'a': {'condition': {'field': 'b', 'equals': 'x'}},
+            'b': {'condition': {'field': 'a', 'equals': 'x'}},
         }
 
         with pytest.raises(ValueError, match="Dependências circulares"):
             get_field_execution_order(ModelWithCircular, field_configs)
+
+    def test_auto_derive_from_condition_dict(self):
+        """Testa que condition dict deriva depends_on automaticamente."""
+        class M(BaseModel):
+            tipo: str
+            cpf: str = Field(json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pf'}})
+
+        configs = {
+            'tipo': {},
+            'cpf': {'condition': {'field': 'tipo', 'equals': 'pf'}},
+        }
+        order, deps = get_field_execution_order(M, configs)
+        assert deps['cpf'] == ['tipo']
+        assert order.index('tipo') < order.index('cpf')
+
+    def test_explicit_depends_on_unions_with_condition(self):
+        """Testa que depends_on explícito é unido com a derivação automática."""
+        class M(BaseModel):
+            a: str
+            b: str
+            c: str = Field(json_schema_extra={
+                'depends_on': ['a', 'b'],
+                'condition': {'field': 'a', 'equals': 'x'},
+            })
+
+        configs = {
+            'a': {},
+            'b': {},
+            'c': {
+                'depends_on': ['a', 'b'],
+                'condition': {'field': 'a', 'equals': 'x'},
+            },
+        }
+        order, deps = get_field_execution_order(M, configs)
+        assert deps['c'] == ['a', 'b']
+        assert order.index('a') < order.index('c')
+        assert order.index('b') < order.index('c')
+
+    def test_explicit_depends_on_unions_with_condition_field(self):
+        """Testa união quando o explícito não inclui o campo da condition."""
+        class M(BaseModel):
+            tipo: str
+            x: str
+            c: str = Field(json_schema_extra={
+                'depends_on': ['x'],
+                'condition': {'field': 'tipo', 'equals': 'pf'},
+            })
+
+        configs = {
+            'tipo': {},
+            'x': {},
+            'c': {
+                'depends_on': ['x'],
+                'condition': {'field': 'tipo', 'equals': 'pf'},
+            },
+        }
+        order, deps = get_field_execution_order(M, configs)
+        assert set(deps['c']) == {'x', 'tipo'}
+        assert deps['c'][0] == 'x'  # explícito preservado primeiro
+        assert order.index('x') < order.index('c')
+        assert order.index('tipo') < order.index('c')
+
+    def test_nested_condition_field_uses_root(self):
+        """Testa que campo aninhado em condition ('endereco.cidade') resolve para raiz ('endereco')."""
+        class M(BaseModel):
+            endereco: dict
+            taxa: float = Field(json_schema_extra={
+                'condition': {'field': 'endereco.cidade', 'equals': 'SP'}
+            })
+
+        configs = {
+            'endereco': {},
+            'taxa': {'condition': {'field': 'endereco.cidade', 'equals': 'SP'}},
+        }
+        order, deps = get_field_execution_order(M, configs)
+        assert deps['taxa'] == ['endereco']
+        assert order.index('endereco') < order.index('taxa')
+
+    def test_depends_on_without_condition_emits_warning(self, caplog):
+        """Testa que depends_on sem condition emite warning e é ignorado."""
+        import logging
+
+        class M(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={'depends_on': ['a']})
+
+        configs = {
+            'a': {},
+            'b': {'depends_on': ['a']},
+        }
+        with caplog.at_level(logging.WARNING, logger='dataframeit.conditional'):
+            order, deps = get_field_execution_order(M, configs)
+        assert deps['b'] == []
+        assert any("depends_on" in rec.message and "condition" in rec.message for rec in caplog.records)
+
+    def test_callable_condition_without_depends_on_has_no_deps(self):
+        """Testa que callable sem depends_on não impõe ordem (não levanta erro)."""
+        class M(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={
+                'condition': lambda data: bool(data.get('a'))
+            })
+
+        configs = {
+            'a': {},
+            'b': {'condition': lambda data: bool(data.get('a'))},
+        }
+        order, deps = get_field_execution_order(M, configs)
+        assert deps['b'] == []
+        assert set(order) == {'a', 'b'}
+
+    def test_callable_condition_without_depends_on_emits_warning(self, caplog):
+        """Testa que callable sem depends_on emite warning."""
+        import logging
+
+        class M(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={
+                'condition': lambda data: bool(data.get('a'))
+            })
+
+        configs = {
+            'a': {},
+            'b': {'condition': lambda data: bool(data.get('a'))},
+        }
+        with caplog.at_level(logging.WARNING, logger='dataframeit.conditional'):
+            get_field_execution_order(M, configs)
+        assert any(
+            "callable" in rec.message and "depends_on" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_callable_condition_with_depends_on_no_warning(self, caplog):
+        """Testa que callable com depends_on não emite warning."""
+        import logging
+
+        class M(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={
+                'depends_on': ['a'],
+                'condition': lambda data: bool(data.get('a')),
+            })
+
+        configs = {
+            'a': {},
+            'b': {
+                'depends_on': ['a'],
+                'condition': lambda data: bool(data.get('a')),
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger='dataframeit.conditional'):
+            order, deps = get_field_execution_order(M, configs)
+        assert deps['b'] == ['a']
+        assert not any(
+            "callable" in rec.message and "depends_on" in rec.message
+            for rec in caplog.records
+        )
 
 
 class TestShouldSkipField:

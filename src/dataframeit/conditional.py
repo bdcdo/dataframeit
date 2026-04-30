@@ -288,15 +288,62 @@ def topological_sort(dependencies: Dict[str, List[str]]) -> List[str]:
     return result
 
 
+def _resolve_depends_on(field_name: str, config: dict) -> List[str]:
+    """Resolve as dependências de um campo a partir de sua configuração.
+
+    Regras:
+    1. Sem `condition`, `depends_on` é ignorado (com warning) — sem condition, ordem não afeta o resultado.
+    2. Com `condition` dict, a dep do campo raiz de `condition['field']` é unida ao `depends_on` explícito.
+    3. Com `condition` callable sem `depends_on`, retorna lista vazia (com warning).
+    """
+    explicit = config.get('depends_on') or []
+    if isinstance(explicit, str):
+        explicit = [explicit]
+    elif not isinstance(explicit, list):
+        explicit = []
+
+    condition = config.get('condition')
+
+    if condition is None:
+        if explicit:
+            logger.warning(
+                f"Campo '{field_name}' tem 'depends_on' mas não tem 'condition' — "
+                f"depends_on será ignorado (sem condition, ordem não afeta o resultado)."
+            )
+        return []
+
+    derived: List[str] = []
+    if isinstance(condition, dict):
+        field_path = condition.get('field')
+        if field_path:
+            derived = [field_path.split('.')[0]]
+    elif callable(condition) and not explicit:
+        logger.warning(
+            f"Campo '{field_name}' tem 'condition' callable sem 'depends_on' — "
+            f"a ordem de execução não é garantida. Declare 'depends_on' com os campos "
+            f"lidos pela função."
+        )
+
+    result = list(explicit)
+    for dep in derived:
+        if dep not in result:
+            result.append(dep)
+    return result
+
+
 def get_field_execution_order(
     pydantic_model,
     field_configs: Dict[str, dict]
 ) -> Tuple[List[str], Dict[str, List[str]]]:
     """Determina ordem de execução dos campos baseado em dependências.
 
+    Dependências são derivadas automaticamente de `condition` (quando dict)
+    ou declaradas explicitamente via `depends_on` (necessário apenas para
+    `condition` callable).
+
     Args:
         pydantic_model: Modelo Pydantic.
-        field_configs: Dict mapeando campo -> config (com 'depends_on').
+        field_configs: Dict mapeando campo -> config (com 'condition' e/ou 'depends_on').
 
     Returns:
         Tupla (ordem_de_execução, mapa_de_dependências).
@@ -307,18 +354,10 @@ def get_field_execution_order(
     all_fields = set(pydantic_model.model_fields.keys())
     dependencies = {}
 
-    # Construir mapa de dependências
     for field_name in all_fields:
         config = field_configs.get(field_name, {})
-        depends_on = config.get('depends_on', [])
+        depends_on = _resolve_depends_on(field_name, config)
 
-        # Normalizar para lista
-        if isinstance(depends_on, str):
-            depends_on = [depends_on]
-        elif not isinstance(depends_on, list):
-            depends_on = []
-
-        # Verificar se dependências existem
         missing = check_dependencies_exist(field_name, depends_on, all_fields)
         if missing:
             raise ValueError(
@@ -327,7 +366,6 @@ def get_field_execution_order(
 
         dependencies[field_name] = depends_on
 
-    # Ordenar topologicamente
     ordered = topological_sort(dependencies)
 
     return ordered, dependencies

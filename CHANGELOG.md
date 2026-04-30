@@ -7,6 +7,16 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-30
+
+### Alterado
+
+- `depends_on` é derivado automaticamente de `condition` quando esta é um dict; só precisa ser declarado explicitamente para `condition` callable (#103).
+
+### Removido
+
+- `depends_on` sem `condition` deixa de afetar a ordem de execução (apenas emite warning) (#103).
+
 ## [0.6.0] - 2026-04-20
 
 ### Removido
