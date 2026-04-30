@@ -325,8 +325,8 @@ class TestGetFieldExecutionOrder:
         assert deps['cpf'] == ['tipo']
         assert order.index('tipo') < order.index('cpf')
 
-    def test_explicit_depends_on_overrides_condition(self):
-        """Testa que depends_on explícito vence sobre derivação automática."""
+    def test_explicit_depends_on_unions_with_condition(self):
+        """Testa que depends_on explícito é unido com a derivação automática."""
         class M(BaseModel):
             a: str
             b: str
@@ -347,6 +347,30 @@ class TestGetFieldExecutionOrder:
         assert deps['c'] == ['a', 'b']
         assert order.index('a') < order.index('c')
         assert order.index('b') < order.index('c')
+
+    def test_explicit_depends_on_unions_with_condition_field(self):
+        """Testa união quando o explícito não inclui o campo da condition."""
+        class M(BaseModel):
+            tipo: str
+            x: str
+            c: str = Field(json_schema_extra={
+                'depends_on': ['x'],
+                'condition': {'field': 'tipo', 'equals': 'pf'},
+            })
+
+        configs = {
+            'tipo': {},
+            'x': {},
+            'c': {
+                'depends_on': ['x'],
+                'condition': {'field': 'tipo', 'equals': 'pf'},
+            },
+        }
+        order, deps = get_field_execution_order(M, configs)
+        assert set(deps['c']) == {'x', 'tipo'}
+        assert deps['c'][0] == 'x'  # explícito preservado primeiro
+        assert order.index('x') < order.index('c')
+        assert order.index('tipo') < order.index('c')
 
     def test_nested_condition_field_uses_root(self):
         """Testa que campo aninhado em condition ('endereco.cidade') resolve para raiz ('endereco')."""
@@ -396,6 +420,53 @@ class TestGetFieldExecutionOrder:
         order, deps = get_field_execution_order(M, configs)
         assert deps['b'] == []
         assert set(order) == {'a', 'b'}
+
+    def test_callable_condition_without_depends_on_emits_warning(self, caplog):
+        """Testa que callable sem depends_on emite warning."""
+        import logging
+
+        class M(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={
+                'condition': lambda data: bool(data.get('a'))
+            })
+
+        configs = {
+            'a': {},
+            'b': {'condition': lambda data: bool(data.get('a'))},
+        }
+        with caplog.at_level(logging.WARNING, logger='dataframeit.conditional'):
+            get_field_execution_order(M, configs)
+        assert any(
+            "callable" in rec.message and "depends_on" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_callable_condition_with_depends_on_no_warning(self, caplog):
+        """Testa que callable com depends_on não emite warning."""
+        import logging
+
+        class M(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={
+                'depends_on': ['a'],
+                'condition': lambda data: bool(data.get('a')),
+            })
+
+        configs = {
+            'a': {},
+            'b': {
+                'depends_on': ['a'],
+                'condition': lambda data: bool(data.get('a')),
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger='dataframeit.conditional'):
+            order, deps = get_field_execution_order(M, configs)
+        assert deps['b'] == ['a']
+        assert not any(
+            "callable" in rec.message and "depends_on" in rec.message
+            for rec in caplog.records
+        )
 
 
 class TestShouldSkipField:

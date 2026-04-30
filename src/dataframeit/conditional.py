@@ -292,9 +292,9 @@ def _resolve_depends_on(field_name: str, config: dict) -> List[str]:
     """Resolve as dependências de um campo a partir de sua configuração.
 
     Regras:
-    1. `depends_on` explícito sempre vence (mas é ignorado se não houver `condition`).
-    2. Sem `depends_on` explícito e com `condition` dict, deriva o campo raiz de `condition['field']`.
-    3. Caso contrário (callable sem depends_on, sem condition, etc.), retorna lista vazia.
+    1. Sem `condition`, `depends_on` é ignorado (com warning) — sem condition, ordem não afeta o resultado.
+    2. Com `condition` dict, a dep do campo raiz de `condition['field']` é unida ao `depends_on` explícito.
+    3. Com `condition` callable sem `depends_on`, retorna lista vazia (com warning).
     """
     explicit = config.get('depends_on') or []
     if isinstance(explicit, str):
@@ -304,21 +304,31 @@ def _resolve_depends_on(field_name: str, config: dict) -> List[str]:
 
     condition = config.get('condition')
 
-    if explicit:
-        if not condition:
+    if condition is None:
+        if explicit:
             logger.warning(
                 f"Campo '{field_name}' tem 'depends_on' mas não tem 'condition' — "
                 f"depends_on será ignorado (sem condition, ordem não afeta o resultado)."
             )
-            return []
-        return explicit
+        return []
 
+    derived: List[str] = []
     if isinstance(condition, dict):
         field_path = condition.get('field')
         if field_path:
-            return [field_path.split('.')[0]]
+            derived = [field_path.split('.')[0]]
+    elif callable(condition) and not explicit:
+        logger.warning(
+            f"Campo '{field_name}' tem 'condition' callable sem 'depends_on' — "
+            f"a ordem de execução não é garantida. Declare 'depends_on' com os campos "
+            f"lidos pela função."
+        )
 
-    return []
+    result = list(explicit)
+    for dep in derived:
+        if dep not in result:
+            result.append(dep)
+    return result
 
 
 def get_field_execution_order(
