@@ -201,6 +201,88 @@ resultado = dataframeit(
 )
 ```
 
+## Servidor no Brasil (São Paulo)
+
+Os providers acima usam endpoints públicos globais. Para servir do Brasil — útil por latência, residência de dados ou exigência regulatória — use um dos três caminhos abaixo. Em todos eles, o `dataframeit` repassa o que vier em `model_kwargs` direto para o LangChain.
+
+### Vertex AI (Gemini em `southamerica-east1`)
+
+Duas variantes. A primeira não exige instalar pacote novo:
+
+```python
+# Variante A: usa langchain-google-genai (já é dep do provider 'google_genai')
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='google_genai',
+    model='gemini-2.5-flash',
+    model_kwargs={
+        'vertexai': True,
+        'project': '<id-do-projeto-gcp>',
+        'location': 'southamerica-east1',
+    },
+)
+```
+
+```python
+# Variante B: usa langchain-google-vertexai (provider dedicado)
+# pip install langchain-google-vertexai
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='google_vertexai',
+    model='gemini-2.5-flash',
+    model_kwargs={
+        'project': '<id-do-projeto-gcp>',
+        'location': 'southamerica-east1',
+    },
+)
+```
+
+Autenticação (qualquer variante):
+
+```bash
+gcloud auth application-default login
+# OU
+export GOOGLE_APPLICATION_CREDENTIALS=/caminho/service-account.json
+```
+
+### AWS Bedrock (`sa-east-1`)
+
+```bash
+pip install langchain-aws
+aws configure  # ou exporte AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+```
+
+```python
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='bedrock_converse',
+    model='anthropic.claude-3-5-sonnet-20240620-v1:0',
+    model_kwargs={'region_name': 'sa-east-1'},
+)
+```
+
+Os IDs de modelo disponíveis em `sa-east-1` mudam — confira o console Bedrock antes. Para inferência cross-region, use o prefixo `us.` (ex.: `us.anthropic.claude-...`) e ajuste `region_name` ao que sua conta tiver habilitado.
+
+### Azure OpenAI (Brazil South)
+
+```bash
+pip install langchain-openai
+export AZURE_OPENAI_API_KEY="sua-chave"
+export AZURE_OPENAI_ENDPOINT="https://<seu-recurso>.openai.azure.com/"
+export OPENAI_API_VERSION="2025-03-01-preview"
+```
+
+```python
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='azure_openai',
+    model='gpt-4o',  # ou o nome do deployment
+    model_kwargs={'azure_deployment': '<nome-do-deployment>'},
+)
+```
+
+A região é codificada no `AZURE_OPENAI_ENDPOINT` — provisione o recurso em "Brazil South" no portal Azure.
+
 ## Comparação de Preços (Aproximado - 2025)
 
 | Provider | Modelo | Input (1M tokens) | Output (1M tokens) |
