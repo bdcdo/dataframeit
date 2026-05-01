@@ -106,18 +106,34 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
 
         data = parsed.model_dump()
 
-        # Extrair usage_metadata do raw AIMessage
-        # Nota: Para Google GenAI, tokens estão em usage_metadata, não response_metadata
+        # Extrair usage_metadata do raw AIMessage. Suporta tanto dict quanto
+        # objeto com atributos — provedores variam (ex: Google GenAI devolve
+        # dict; integrações que envolvem dataclasses do LangChain podem expor
+        # como objeto).
         usage = None
         raw_message = result.get('raw')
         if raw_message and hasattr(raw_message, 'usage_metadata') and raw_message.usage_metadata:
             meta = raw_message.usage_metadata
-            details = meta.get('output_token_details', {}) if isinstance(meta, dict) else (getattr(meta, 'output_token_details', {}) or {})
-            reasoning_tokens = details.get('reasoning', 0) if isinstance(details, dict) else getattr(details, 'reasoning', 0)
+            if isinstance(meta, dict):
+                input_tokens = meta.get('input_tokens', 0)
+                output_tokens = meta.get('output_tokens', 0)
+                total_tokens = meta.get('total_tokens', 0)
+                details = meta.get('output_token_details') or {}
+            else:
+                input_tokens = getattr(meta, 'input_tokens', 0)
+                output_tokens = getattr(meta, 'output_tokens', 0)
+                total_tokens = getattr(meta, 'total_tokens', 0)
+                details = getattr(meta, 'output_token_details', None) or {}
+
+            if isinstance(details, dict):
+                reasoning_tokens = details.get('reasoning', 0)
+            else:
+                reasoning_tokens = getattr(details, 'reasoning', 0)
+
             usage = {
-                'input_tokens': meta.get('input_tokens', 0),
-                'output_tokens': meta.get('output_tokens', 0),
-                'total_tokens': meta.get('total_tokens', 0),
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+                'total_tokens': total_tokens,
                 'reasoning_tokens': reasoning_tokens,
             }
 
