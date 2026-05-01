@@ -212,6 +212,96 @@ result = dataframeit(
 )
 ```
 
+## Brazilian region (São Paulo)
+
+The providers above use global public endpoints. To serve from Brazil — for latency, data residency or regulatory reasons — use one of the three options below. In all of them, `dataframeit` forwards `model_kwargs` straight to LangChain.
+
+### Vertex AI (Gemini in `southamerica-east1`)
+
+Two variants. The first one needs no extra package install:
+
+```python
+# Variant A: uses langchain-google-genai (already a dep of provider 'google_genai')
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='google_genai',
+    model='gemini-2.5-flash',
+    model_kwargs={
+        'vertexai': True,
+        'project': '<gcp-project-id>',
+        'location': 'southamerica-east1',
+    },
+)
+```
+
+```python
+# Variant B: uses langchain-google-vertexai (dedicated provider)
+# pip install langchain-google-vertexai
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='google_vertexai',
+    model='gemini-2.5-flash',
+    model_kwargs={
+        'project': '<gcp-project-id>',
+        'location': 'southamerica-east1',
+    },
+)
+```
+
+Authentication (any variant):
+
+```bash
+gcloud auth application-default login
+# OR
+export GOOGLE_APPLICATION_CREDENTIALS=/path/service-account.json
+```
+
+### AWS Bedrock (`sa-east-1`)
+
+```bash
+pip install langchain-aws
+aws configure  # or export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+```
+
+```python
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='bedrock_converse',
+    model='anthropic.claude-3-5-sonnet-20240620-v1:0',
+    model_kwargs={'region_name': 'sa-east-1'},
+)
+```
+
+Available model IDs in `sa-east-1` change — check the Bedrock console first. For cross-region inference, use the `us.` prefix (e.g. `us.anthropic.claude-...`) and set `region_name` to whatever your account has enabled.
+
+For the legacy Bedrock API (non-converse), switch to `provider='bedrock'` keeping the same `model_kwargs`. The newer API (`bedrock_converse`) is recommended for new projects.
+
+### Azure OpenAI (Brazil South)
+
+```bash
+pip install langchain-openai
+export AZURE_OPENAI_API_KEY="your-key"
+export AZURE_OPENAI_ENDPOINT="https://<your-resource>.openai.azure.com/"
+export OPENAI_API_VERSION="2025-03-01-preview"
+```
+
+```python
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='azure_openai',
+    model='gpt-4o',  # or the deployment name
+    model_kwargs={'azure_deployment': '<deployment-name>'},
+)
+```
+
+The region is encoded in `AZURE_OPENAI_ENDPOINT` — provision the resource in "Brazil South" via the Azure portal.
+
+The API version (`OPENAI_API_VERSION`) changes often. Check the latest stable version at [aka.ms/azure-openai-api-versions](https://aka.ms/azure-openai-api-versions).
+
 ## Price Comparison (Approximate - 2025)
 
 | Provider | Model | Input (1M tokens) | Output (1M tokens) |

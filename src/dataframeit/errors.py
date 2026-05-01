@@ -57,6 +57,48 @@ NON_RECOVERABLE_ERRORS = (
 )
 
 
+# Auth via credenciais de SDK (sem env var de API key) compartilhada por
+# todos os providers Bedrock. Linhas mantidas curtas para caber em caixas de 80 cols.
+_BEDROCK_BASE = {
+    'package': 'langchain_aws',
+    'install': 'langchain-aws',
+    'env_var': None,
+    'auth_hint': (
+        'aws configure\n'
+        'OU exporte AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY\n'
+        '(opcional: AWS_SESSION_TOKEN, AWS_REGION)'
+    ),
+}
+
+# Providers cuja heurística simples (langchain_{provider} + {PROVIDER}_API_KEY) não bate com a realidade.
+# env_var=None indica auth por SDK (ADC, AWS creds), não por API key.
+_PROVIDER_OVERRIDES = {
+    'google_vertexai': {
+        'package': 'langchain_google_vertexai',
+        'install': 'langchain-google-vertexai',
+        'env_var': None,
+        'name': 'Google Vertex AI',
+        'auth_hint': (
+            'gcloud auth application-default login\n'
+            'OU exporte GOOGLE_APPLICATION_CREDENTIALS=/caminho/service-account.json'
+        ),
+    },
+    'bedrock': {**_BEDROCK_BASE, 'name': 'AWS Bedrock'},
+    'bedrock_converse': {**_BEDROCK_BASE, 'name': 'AWS Bedrock (Converse)'},
+    'azure_openai': {
+        'package': 'langchain_openai',
+        'install': 'langchain-openai',
+        'env_var': 'AZURE_OPENAI_API_KEY',
+        'name': 'Azure OpenAI',
+        'auth_hint': (
+            'export AZURE_OPENAI_API_KEY="sua-chave-aqui"\n'
+            'export AZURE_OPENAI_ENDPOINT="https://<recurso>.openai.azure.com/"\n'
+            'export OPENAI_API_VERSION="2025-03-01-preview"'
+        ),
+    },
+}
+
+
 def _infer_provider_info(provider: str) -> dict:
     """Infere informações do provider dinamicamente.
 
@@ -68,6 +110,9 @@ def _infer_provider_info(provider: str) -> dict:
     """
     if not provider:
         return {'package': None, 'install': None, 'env_var': 'API_KEY', 'name': 'LLM'}
+
+    if provider in _PROVIDER_OVERRIDES:
+        return dict(_PROVIDER_OVERRIDES[provider])
 
     # Inferir nome do pacote: provider -> langchain_{provider}
     package = f"langchain_{provider}"
@@ -270,24 +315,55 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 
     # === ERROS DE AUTENTICAÇÃO ===
     if any(p in error_str for p in ['authenticationerror', 'invalidapikey', '401', 'api_key', 'api key']):
+        if env_var is None:
+            # Auth via credenciais de SDK (Vertex AI ADC, AWS creds, etc).
+            auth_hint = provider_data.get(
+                'auth_hint',
+                'Configure as credenciais conforme a documentação do provider.'
+            )
+            hint_lines = '\n'.join(
+                f"║     {line:<73}║" for line in auth_hint.split('\n')
+            )
+            msg = f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE AUTENTICAÇÃO - Credenciais não configuradas                         ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Provider: {provider_name:<66}║
+║                                                                              ║
+║  Este provider usa credenciais de SDK (não uma API key tradicional).         ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║                                                                              ║
+{hint_lines}
+║                                                                              ║
+║  Verifique também se região, projeto/conta e modelo estão corretos.          ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+            return msg.strip()
+        export_linux = f'export {env_var}="sua-chave-aqui"'
+        export_win = f'$env:{env_var}="sua-chave-aqui"'
         msg = f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  ERRO DE AUTENTICAÇÃO - Chave de API inválida ou não configurada             ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
-║  O {provider_name} não aceitou sua chave de API.                             ║
+║  Provider: {provider_name:<66}║
+║                                                                              ║
+║  Sua chave de API não foi aceita.                                            ║
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
 ║                                                                              ║
-║  1. Obtenha uma chave de API no site/console do {provider_name}              ║
+║  1. Obtenha uma chave de API no site/console do provider.                    ║
 ║                                                                              ║
-║  2. Configure a chave no terminal (antes de executar seu código):            ║
+║  2. Configure no terminal (antes de executar seu código):                    ║
 ║                                                                              ║
 ║     No Linux/Mac:                                                            ║
-║     export {env_var}="sua-chave-aqui"                                        ║
+║     {export_linux:<73}║
 ║                                                                              ║
 ║     No Windows (PowerShell):                                                 ║
-║     $env:{env_var}="sua-chave-aqui"                                          ║
+║     {export_win:<73}║
 ║                                                                              ║
 ║  3. OU passe diretamente no código:                                          ║
 ║     dataframeit(..., api_key="sua-chave-aqui")                               ║

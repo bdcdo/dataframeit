@@ -7,6 +7,16 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-01
+
+### Adicionado
+
+- Receitas para usar LLMs hospedados em São Paulo via Vertex AI (`southamerica-east1`), AWS Bedrock (`sa-east-1`) e Azure OpenAI (Brazil South) em `docs/guides/providers.md` (#102).
+
+### Corrigido
+
+- Inferência de pacote/env var em `errors.py` para `google_vertexai`, `bedrock`, `bedrock_converse` e `azure_openai`: mensagens de erro agora indicam o pacote correto (`langchain-aws`, `langchain-google-vertexai`, `langchain-openai`) e, para providers com auth via SDK, orientam configuração de credenciais em vez de uma API key inexistente (#102).
+
 ## [0.7.0] - 2026-04-30
 
 ### Alterado
