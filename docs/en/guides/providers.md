@@ -277,6 +277,8 @@ result = dataframeit(
 
 Available model IDs in `sa-east-1` change — check the Bedrock console first. For cross-region inference, use the `us.` prefix (e.g. `us.anthropic.claude-...`) and set `region_name` to whatever your account has enabled.
 
+For the legacy Bedrock API (non-converse), switch to `provider='bedrock'` keeping the same `model_kwargs`. The newer API (`bedrock_converse`) is recommended for new projects.
+
 ### Azure OpenAI (Brazil South)
 
 ```bash
@@ -297,6 +299,8 @@ result = dataframeit(
 ```
 
 The region is encoded in `AZURE_OPENAI_ENDPOINT` — provision the resource in "Brazil South" via the Azure portal.
+
+The API version (`OPENAI_API_VERSION`) changes often. Check the latest stable version at [aka.ms/azure-openai-api-versions](https://aka.ms/azure-openai-api-versions).
 
 ## Price Comparison (Approximate - 2025)
 
