@@ -7,6 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto, alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError` (#107).
+
+### Alterado
+
+- Leitura de `usage_metadata` extraída para helper `_parse_usage_metadata` em `llm.py` e reaproveitada por `agent._extract_usage`, eliminando divergência futura entre os dois caminhos (#107).
+
 ## [0.7.1] - 2026-05-01
 
 ### Adicionado
