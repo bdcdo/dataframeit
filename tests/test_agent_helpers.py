@@ -277,19 +277,23 @@ class TestCollectConfiguredFields:
         paths = [r[0] for r in result]
         assert "items.descricao" in paths
 
-    def test_nao_loop_em_modelo_visitado(self):
-        """O parametro _visited evita recursao infinita."""
+    def test_nao_loop_em_modelos_mutuamente_referenciais(self):
+        """Modelos mutuamente referentes nao causam recursao infinita."""
         from dataframeit.agent import _collect_configured_fields
 
         class A(BaseModel):
             x: str = Field(json_schema_extra={"prompt": "p"})
+            b: Optional["B"] = None
 
-        # Chamar duas vezes com mesmo _visited nao duplica
-        visited = set()
-        first = _collect_configured_fields(A, _visited=visited)
-        second = _collect_configured_fields(A, _visited=visited)
-        assert len(first) == 1
-        assert second == []  # ja visitado
+        class B(BaseModel):
+            y: str = Field(json_schema_extra={"prompt": "q"})
+            a: Optional[A] = None
+
+        A.model_rebuild()
+        result = _collect_configured_fields(A)
+        paths = [r[0] for r in result]
+        assert "x" in paths
+        assert "b.y" in paths
 
 
 # =============================================================================
@@ -376,6 +380,20 @@ class TestExtractUsage:
         provider = _make_provider(pattern="tavily")
         usage = _extract_usage(result, provider, SearchConfig(provider="tavily"))
         assert usage["search_count"] == 2
+
+    def test_search_count_com_tool_calls_como_objeto(self):
+        """tool_calls pode vir como list[obj] (nao apenas list[dict])."""
+        from dataframeit.agent import _extract_usage
+        from dataframeit.llm import SearchConfig
+
+        msg = SimpleNamespace(
+            tool_calls=[SimpleNamespace(name="tavily_search", args={}, id="1")],
+            type="ai",
+        )
+        usage = _extract_usage(
+            {"messages": [msg]}, _make_provider(pattern="tavily"), SearchConfig(provider="tavily"),
+        )
+        assert usage["search_count"] == 1
 
     def test_search_count_pelo_substring_search(self):
         from dataframeit.agent import _extract_usage

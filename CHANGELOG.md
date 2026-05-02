@@ -7,6 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto, alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError` (#107).
+
+### Alterado
+
+- Leitura de `usage_metadata` extraída para helper `_parse_usage_metadata` em `llm.py` e reaproveitada por `agent._extract_usage`, eliminando divergência futura entre os dois caminhos (#107).
+
 ## [0.7.1] - 2026-05-01
 
 ### Adicionado
@@ -16,7 +24,6 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Corrigido
 
 - Inferência de pacote/env var em `errors.py` para `google_vertexai`, `bedrock`, `bedrock_converse` e `azure_openai`: mensagens de erro agora indicam o pacote correto (`langchain-aws`, `langchain-google-vertexai`, `langchain-openai`) e, para providers com auth via SDK, orientam configuração de credenciais em vez de uma API key inexistente (#102).
-- `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto (com fallback via `getattr`), alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError`.
 
 ## [0.7.0] - 2026-04-30
 

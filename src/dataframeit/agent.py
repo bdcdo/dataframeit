@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 from pydantic import create_model
 
-from .llm import LLMConfig, build_prompt, _create_langchain_llm
+from .llm import LLMConfig, build_prompt, _create_langchain_llm, _parse_usage_metadata
 from .errors import retry_with_backoff
 from .search import get_provider
 from .utils import get_nested_pydantic_models, is_list_of_pydantic_model
@@ -870,28 +870,16 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
                 f"{tool_info}"
             )
 
+    # Reasoning tokens (GPT-5, o-series, Claude thinking) já estão
+    # contabilizados em output_tokens — output_token_details.reasoning é
+    # apenas um breakdown.
     for msg in messages:
         if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
-            meta = msg.usage_metadata
-            # Suportar tanto dict quanto objeto com atributos
-            if isinstance(meta, dict):
-                usage['input_tokens'] += meta.get('input_tokens', 0)
-                usage['output_tokens'] += meta.get('output_tokens', 0)
-                usage['total_tokens'] += meta.get('total_tokens', 0)
-                details = meta.get('output_token_details') or {}
-            else:
-                usage['input_tokens'] += getattr(meta, 'input_tokens', 0)
-                usage['output_tokens'] += getattr(meta, 'output_tokens', 0)
-                usage['total_tokens'] += getattr(meta, 'total_tokens', 0)
-                details = getattr(meta, 'output_token_details', None) or {}
-
-            # Reasoning tokens (GPT-5, o-series, Claude thinking): LangChain
-            # os expõe em output_token_details.reasoning como breakdown de
-            # output_tokens — isto é, já estão contabilizados em output_tokens.
-            if isinstance(details, dict):
-                usage['reasoning_tokens'] += details.get('reasoning', 0)
-            else:
-                usage['reasoning_tokens'] += getattr(details, 'reasoning', 0)
+            parsed = _parse_usage_metadata(msg.usage_metadata)
+            usage['input_tokens'] += parsed['input_tokens']
+            usage['output_tokens'] += parsed['output_tokens']
+            usage['total_tokens'] += parsed['total_tokens']
+            usage['reasoning_tokens'] += parsed['reasoning_tokens']
 
     # Contar chamadas de busca (tool calls) usando padrão do provider
     tool_pattern = provider.get_tool_name_pattern()
