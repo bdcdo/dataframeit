@@ -10,7 +10,6 @@ import importlib
 import random
 import time
 import warnings
-from collections.abc import Callable
 
 
 class ProviderError(RuntimeError):
@@ -664,7 +663,6 @@ def retry_with_backoff(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
-    should_retry: Callable[[Exception], bool] | None = None,
 ) -> dict:
     """Executa função com retry e backoff exponencial.
 
@@ -673,7 +671,6 @@ def retry_with_backoff(
         max_retries: Número máximo de tentativas.
         base_delay: Delay base em segundos.
         max_delay: Delay máximo em segundos.
-        should_retry: Predicado opcional para providers com classificação própria.
 
     Returns:
         Dicionário com 'result' (resultado da função) e 'retry_info' (informações de retry).
@@ -700,10 +697,8 @@ def retry_with_backoff(
             error_msg = str(e)
             retry_info['errors'].append(f"{error_name}: {error_msg[:100]}")
 
-            retry_predicate = should_retry or is_recoverable_error
-
             # Verificar se é erro não-recuperável
-            if not retry_predicate(e):
+            if not is_recoverable_error(e):
                 warnings.warn(
                     f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
                     stacklevel=3

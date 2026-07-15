@@ -133,13 +133,11 @@ class CodexBackend:
         pydantic_model: type[BaseModel],
         user_prompt: str,
     ):
-        from openai_codex.types import ReasoningEffort
-
         self.config = config
         self._pydantic_model = pydantic_model
         self._user_prompt = user_prompt
         self._schema = self._build_schema(pydantic_model)
-        self._effort = self._validate_config(ReasoningEffort)
+        self._effort = self._validate_config()
         self._client: Any = None
         self._runtime: tempfile.TemporaryDirectory[str] | None = None
         self._workspace: Path | None = None
@@ -194,7 +192,6 @@ class CodexBackend:
             self.config.max_retries,
             self.config.base_delay,
             self.config.max_delay,
-            should_retry=lambda error: isinstance(error, ProviderOverloadedError),
         )
 
     @staticmethod
@@ -226,7 +223,9 @@ class CodexBackend:
         if source_auth.is_file():
             (self._codex_home / "auth.json").symlink_to(source_auth.resolve())
 
-    def _validate_config(self, reasoning_effort_type):
+    def _validate_config(self):
+        from openai_codex.types import ReasoningEffort
+
         if self.config.api_key:
             raise ProviderConfigurationError(
                 "provider='codex' usa a autenticação do Codex; não passe api_key"
@@ -242,9 +241,9 @@ class CodexBackend:
 
         effort = model_kwargs.get("effort", "medium")
         try:
-            return reasoning_effort_type(effort)
+            return ReasoningEffort(effort)
         except ValueError as err:
-            allowed = ", ".join(item.value for item in reasoning_effort_type)
+            allowed = ", ".join(item.value for item in ReasoningEffort)
             raise ProviderConfigurationError(
                 f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
             ) from err

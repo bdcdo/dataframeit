@@ -24,7 +24,7 @@ export OPENAI_API_KEY="..."     # For OpenAI
 export ANTHROPIC_API_KEY="..."  # For Anthropic
 ```
 
-The `codex` provider is optional, is not included in the `all` extra, and always executes the runtime pinned by `dataframeit[codex]`. It reuses `auth.json`, which can be created once with `codex --config cli_auth_credentials_store='"file"' login`, and does not require `OPENAI_API_KEY`.
+The `codex` provider is optional, is not included in the `all` extra, uses the bundled runtime, and requires local file-backed authentication without `OPENAI_API_KEY`. See [Installation](../getting-started/installation.md) to configure the extra and credentials.
 
 ---
 
@@ -188,7 +188,7 @@ result = dataframeit(
 )
 ```
 
-The `codex` provider accepts only `effort` in `model_kwargs` and does not support `use_search=True` or tools. The external CLI is used only to create `auth.json`; execution always uses the bundled runtime.
+The `codex` provider accepts only `effort` in `model_kwargs` and does not support `use_search=True` or tools. See [Installation](../getting-started/installation.md) for runtime and authentication requirements.
 
 ---
 

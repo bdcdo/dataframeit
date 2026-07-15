@@ -36,7 +36,7 @@ O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs o
     uv add "dataframeit[codex]"
     ```
 
-    O extra fixa o SDK Python oficial e seu runtime compatível. O DataFrameIt sempre usa esse runtime empacotado; uma instalação externa do comando `codex` não participa da execução.
+    O extra fixa o SDK Python oficial e seu runtime compatível. O DataFrameIt sempre usa esse runtime empacotado; uma instalação externa do comando `codex` não participa da execução. O provider permanece experimental porque as versões fixadas do SDK e do runtime ainda são de pré-lançamento.
 
 === "Todos os Providers"
 

@@ -36,7 +36,7 @@ DataFrameIt integrates multiple LLM providers through LangChain or official SDKs
     uv add "dataframeit[codex]"
     ```
 
-    This extra pins the official Python SDK and its compatible runtime. DataFrameIt always uses that bundled runtime; an external `codex` command does not participate in execution.
+    This extra pins the official Python SDK and its compatible runtime. DataFrameIt always uses that bundled runtime; an external `codex` command does not participate in execution. The provider remains experimental because the pinned SDK and runtime versions are still prereleases.
 
 === "All Providers"
 

@@ -87,15 +87,7 @@ resultado = dataframeit(
 
 ## OpenAI Codex (Experimental)
 
-O provider `codex` usa o [SDK Python oficial](https://github.com/openai/codex/tree/main/sdk/python) com autenticação local em arquivo. Ele é opcional, não faz parte do extra `all` e permanece experimental porque as versões fixadas do SDK e do runtime ainda são de pré-lançamento.
-
-```bash
-pip install dataframeit[codex]
-# ou
-uv add "dataframeit[codex]"
-```
-
-O extra inclui e fixa o runtime compatível com o SDK. O DataFrameIt sempre executa esse runtime empacotado. Se `auth.json` ainda não existir, use o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli) uma vez para executar `codex --config cli_auth_credentials_store='"file"' login` e criar o arquivo; o CLI externo não participa do processamento do DataFrame.
+O provider `codex` usa o [SDK Python oficial](https://github.com/openai/codex/tree/main/sdk/python) e permanece experimental. Para instalar o extra, entender qual runtime é executado e configurar a autenticação local em arquivo, consulte [Instalação](../getting-started/installation.md).
 
 ```python
 resultado = dataframeit(
@@ -109,7 +101,7 @@ resultado = dataframeit(
 )
 ```
 
-Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True`, ferramentas e campos `dict` com chaves dinâmicas não são suportados. A autenticação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
+Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True`, ferramentas e campos `dict` com chaves dinâmicas não são suportados. A autenticação configurada durante a instalação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
 
 O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre uma thread efêmera por linha. Cada execução usa `CODEX_HOME` e workspace isolados, compartilha apenas `auth.json`, nega aprovações e aplica sandbox somente leitura. Busca e ferramentas não são disponibilizadas.
 

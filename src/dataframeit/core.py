@@ -6,7 +6,7 @@ import time
 import warnings
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -56,36 +56,21 @@ _SEARCH_PROVIDER_RATE_LIMITS = {
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
 
-ProviderCall = Callable[[str], dict]
-
-
 @dataclass(frozen=True)
 class ProviderBackend:
     """Nome e função de chamada vinculados a uma única configuração."""
 
     label: str
-    invoke: ProviderCall
+    invoke: Callable[[str], dict]
 
 
 @contextmanager
-def _codex_provider_backend(
-    config: LLMConfig,
-    pydantic_model,
-    user_prompt: str,
-) -> Iterator[ProviderBackend]:
-    """Adapta o backend stateful do Codex ao contrato comum por linha."""
-    from .codex import CodexBackend
-
-    with CodexBackend(config, pydantic_model, user_prompt) as backend:
-        yield ProviderBackend(label="codex", invoke=backend.invoke)
-
-
 def _provider_backend(
     config: LLMConfig,
     pydantic_model,
     user_prompt: str,
     trace_mode: str | None,
-) -> AbstractContextManager[ProviderBackend]:
+) -> Iterator[ProviderBackend]:
     """Seleciona e vincula uma única implementação para toda a execução."""
     if config.search_config and config.search_config.enabled:
         from .agent import call_agent, call_agent_per_field, call_agent_per_group
@@ -97,38 +82,38 @@ def _provider_backend(
         else:
             search_call = call_agent_per_field
 
-        return nullcontext(
-            ProviderBackend(
-                label="langchain",
-                invoke=lambda text: search_call(
-                    text, pydantic_model, user_prompt, config, trace_mode
-                ),
-            )
+        yield ProviderBackend(
+            label="langchain",
+            invoke=lambda text: search_call(
+                text, pydantic_model, user_prompt, config, trace_mode
+            ),
         )
+        return
 
     if config.provider == "codex":
-        return _codex_provider_backend(config, pydantic_model, user_prompt)
+        from .codex import CodexBackend
+
+        with CodexBackend(config, pydantic_model, user_prompt) as backend:
+            yield ProviderBackend(label="codex", invoke=backend.invoke)
+        return
 
     if config.provider == "claude_code":
         from .claude_code import call_claude_code
 
-        return nullcontext(
-            ProviderBackend(
-                label="claude_code",
-                invoke=lambda text: call_claude_code(
-                    text, pydantic_model, user_prompt, config
-                ),
-            )
-        )
-
-    langchain_call = call_langchain
-    return nullcontext(
-        ProviderBackend(
-            label="langchain",
-            invoke=lambda text: langchain_call(
+        yield ProviderBackend(
+            label="claude_code",
+            invoke=lambda text: call_claude_code(
                 text, pydantic_model, user_prompt, config
             ),
         )
+        return
+
+    langchain_call = call_langchain
+    yield ProviderBackend(
+        label="langchain",
+        invoke=lambda text: langchain_call(
+            text, pydantic_model, user_prompt, config
+        ),
     )
 
 
@@ -993,7 +978,7 @@ def _process_rows(
             result = backend.invoke(text)
 
             # Extrair dados e usage metadata
-            extracted = result.get('data', result)  # Retrocompatibilidade
+            extracted = result['data']
             usage = result.get('usage')
             retry_info = result.get('_retry_info', {})
 
@@ -1185,7 +1170,7 @@ def _process_rows_parallel(
             result = backend.invoke(text)
 
             # Extrair dados
-            extracted = result.get('data', result)
+            extracted = result['data']
             usage = result.get('usage')
             retry_info = result.get('_retry_info', {})
 

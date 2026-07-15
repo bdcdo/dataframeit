@@ -17,7 +17,6 @@ from dataframeit.errors import (
     ProviderOverloadedError,
     is_rate_limit_error,
     is_recoverable_error,
-    retry_with_backoff,
 )
 from dataframeit.llm import LLMConfig
 
@@ -537,21 +536,3 @@ class TestProviderErrorClassification:
     )
     def test_other_typed_provider_errors_are_not_recoverable(self, error):
         assert is_recoverable_error(error) is False
-
-    def test_explicit_retry_predicate_stops_after_first_attempt(self):
-        attempts = 0
-
-        def fail():
-            nonlocal attempts
-            attempts += 1
-            raise RuntimeError("definitive")
-
-        with pytest.warns(UserWarning, match="não-recuperável"):
-            with pytest.raises(RuntimeError, match="definitive"):
-                retry_with_backoff(
-                    fail,
-                    max_retries=3,
-                    should_retry=lambda error: False,
-                )
-
-        assert attempts == 1

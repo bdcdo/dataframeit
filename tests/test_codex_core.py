@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import threading
+from contextlib import contextmanager
 from unittest.mock import Mock
 
 import pandas as pd
@@ -204,37 +205,31 @@ def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch, failure_
     pd.testing.assert_frame_equal(data, original)
 
 
-def test_langchain_callable_is_bound_when_backend_is_selected(monkeypatch):
+def test_langchain_backend_invokes_selected_provider(monkeypatch):
     selected_call = Mock(return_value={"data": {"value": "first"}})
-    late_replacement = Mock(return_value={"data": {"value": "late"}})
     monkeypatch.setattr(core, "call_langchain", selected_call)
     config = make_config(provider="google_genai")
-    backend_context = core._provider_backend(config, ResultModel, "{texto}", None)
-    monkeypatch.setattr(core, "call_langchain", late_replacement)
 
-    with backend_context as backend:
+    with core._provider_backend(config, ResultModel, "{texto}", None) as backend:
         result = backend.invoke("row")
 
+    assert backend.label == "langchain"
     assert result["data"]["value"] == "first"
     selected_call.assert_called_once_with("row", ResultModel, "{texto}", config)
-    late_replacement.assert_not_called()
 
 
-def test_claude_callable_is_bound_when_backend_is_selected(monkeypatch):
+def test_claude_backend_invokes_selected_provider(monkeypatch):
     claude_module = importlib.import_module("dataframeit.claude_code")
     selected_call = Mock(return_value={"data": {"value": "first"}})
-    late_replacement = Mock(return_value={"data": {"value": "late"}})
     monkeypatch.setattr(claude_module, "call_claude_code", selected_call)
     config = make_config(provider="claude_code")
-    backend_context = core._provider_backend(config, ResultModel, "{texto}", None)
-    monkeypatch.setattr(claude_module, "call_claude_code", late_replacement)
 
-    with backend_context as backend:
+    with core._provider_backend(config, ResultModel, "{texto}", None) as backend:
         result = backend.invoke("row")
 
+    assert backend.label == "claude_code"
     assert result["data"]["value"] == "first"
     selected_call.assert_called_once_with("row", ResultModel, "{texto}", config)
-    late_replacement.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -249,7 +244,7 @@ def test_claude_callable_is_bound_when_backend_is_selected(monkeypatch):
         ),
     ],
 )
-def test_search_dispatch_is_bound_once(monkeypatch, per_field, groups, selected_name):
+def test_search_backend_invokes_selected_mode(monkeypatch, per_field, groups, selected_name):
     agent_module = importlib.import_module("dataframeit.agent")
     calls = {
         name: Mock(return_value={"data": {"value": name}})
@@ -260,27 +255,43 @@ def test_search_dispatch_is_bound_once(monkeypatch, per_field, groups, selected_
 
     search_config = SearchConfig(enabled=True, per_field=per_field, groups=groups)
     config = make_config(provider="google_genai", search_config=search_config)
-    backend_context = core._provider_backend(
-        config,
-        ResultModel,
-        "{texto}",
-        "minimal",
-    )
-    late_replacement = Mock(return_value={"data": {"value": "late"}})
-    monkeypatch.setattr(agent_module, selected_name, late_replacement)
-
-    with backend_context as backend:
+    with core._provider_backend(config, ResultModel, "{texto}", "minimal") as backend:
         first = backend.invoke("one")
         second = backend.invoke("two")
 
+    assert backend.label == "langchain"
     assert first["data"]["value"] == selected_name
     assert second["data"]["value"] == selected_name
     assert calls[selected_name].call_count == 2
-    late_replacement.assert_not_called()
     for name, call in calls.items():
         if name != selected_name:
             call.assert_not_called()
 
 
-def test_row_processing_has_no_late_dispatch_helper():
-    assert not hasattr(core, "_call_row_model")
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_malformed_backend_result_is_recorded_as_row_error(monkeypatch, parallel_requests):
+    @contextmanager
+    def malformed_backend(*args):
+        yield core.ProviderBackend(
+            label="codex",
+            invoke=lambda text: {"usage": None},
+        )
+
+    monkeypatch.setattr(core, "validate_provider_dependencies", Mock())
+    monkeypatch.setattr(core, "_provider_backend", malformed_backend)
+    data = pd.DataFrame({"text": ["row"]})
+
+    with pytest.warns(UserWarning, match="Falha ao processar linha"):
+        result = core.dataframeit(
+            data,
+            questions=ResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-5.4",
+            parallel_requests=parallel_requests,
+            track_tokens=False,
+        )
+
+    assert result["_dataframeit_status"].tolist() == ["error"]
+    assert "KeyError: 'data'" in result["_error_details"].iloc[0]
+    assert result["value"].isna().all()
