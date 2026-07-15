@@ -31,7 +31,13 @@ jobs:
           enable-cache: true
 
       - name: Verify Codex remains optional
-        run: uv run --python "${{ matrix.python-version }}" --extra dev python -c 'from importlib.metadata import distributions; installed = {dist.metadata["Name"].lower() for dist in distributions()}; assert not {"openai-codex", "openai-codex-cli-bin"} & installed'
+        run: >-
+          uv run --python "${{ matrix.python-version }}" --extra dev python -c
+          'from importlib.metadata import distributions;
+          installed = {d.metadata["Name"].lower() for d in distributions()};
+          packages = {"filelock", "openai-codex",
+          "openai-codex-cli-bin"};
+          assert not packages & installed'
 
       - name: Run tests
         run: uv run --python "${{ matrix.python-version }}" --extra dev pytest
@@ -56,7 +62,9 @@ jobs:
           enable-cache: true
 
       - name: Run tests with the Codex SDK and bundled runtime
-        run: uv run --python "${{ matrix.python-version }}" --extra dev --extra codex pytest
+        run: >-
+          uv run --python "${{ matrix.python-version }}"
+          --extra dev --extra codex pytest
 
   codex-windows:
     runs-on: windows-latest
@@ -73,8 +81,10 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Verify portable authentication lifecycle
-        run: uv run --python 3.13 --extra dev --extra codex pytest tests/test_codex.py::TestBackendLifecycle
+      - name: Verify portable multiprocess authentication lifecycle
+        run: >-
+          uv run --python 3.13 --extra dev --extra codex pytest
+          tests/test_codex.py::TestBackendLifecycle
 
   docs:
     if: github.event_name == 'pull_request'

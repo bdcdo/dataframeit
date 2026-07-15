@@ -21,7 +21,9 @@ from .errors import (
 from .llm import LLMConfig, build_prompt
 
 _ALLOWED_MODEL_KWARGS = frozenset({"effort"})
+_AUTH_LOCK_SUFFIX = ".dataframeit.lock"
 _CODEX_CONFIG_OVERRIDES = (
+    'cli_auth_credentials_store="file"',
     "project_doc_max_bytes=0",
     'web_search="disabled"',
     "mcp_servers={}",
@@ -246,6 +248,7 @@ class CodexBackend:
         self._schema = self._build_schema(pydantic_model)
         self._effort = self._validate_config()
         self._client: Any = None
+        self._auth_lock: Any = None
         self._runtime: tempfile.TemporaryDirectory[str] | None = None
         self._workspace: Path | None = None
         self._codex_home: Path | None = None
@@ -253,8 +256,8 @@ class CodexBackend:
     def __enter__(self) -> CodexBackend:
         from openai_codex import Codex, CodexConfig
 
-        self._create_isolated_runtime()
         try:
+            self._create_isolated_runtime()
             self._client = Codex(
                 CodexConfig(
                     cwd=os.fspath(self._workspace),
@@ -282,6 +285,7 @@ class CodexBackend:
     def close(self) -> None:
         """Encerra o app-server e remove todo o estado temporário."""
         client, self._client = self._client, None
+        auth_lock, self._auth_lock = self._auth_lock, None
         runtime, self._runtime = self._runtime, None
         self._workspace = None
         self._codex_home = None
@@ -289,8 +293,12 @@ class CodexBackend:
             if client is not None:
                 client.close()
         finally:
-            if runtime is not None:
-                runtime.cleanup()
+            try:
+                if runtime is not None:
+                    runtime.cleanup()
+            finally:
+                if auth_lock is not None:
+                    auth_lock.release()
 
     def invoke(self, text: str) -> dict:
         """Processa uma linha com structured output nativo do Codex."""
@@ -320,17 +328,18 @@ class CodexBackend:
             Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
         )
         source_auth = source_home / "auth.json"
-        has_auth = source_auth.is_file()
+        resolved_auth = self._acquire_auth_lock(source_auth) if source_auth.is_file() else None
 
         try:
             runtime = tempfile.TemporaryDirectory(
                 prefix="dataframeit-codex-",
-                dir=source_auth.parent if has_auth else None,
+                dir=resolved_auth.parent if resolved_auth is not None else None,
             )
         except OSError as err:
             raise ProviderConfigurationError(
                 "Não foi possível criar o runtime temporário do Codex"
             ) from err
+        self._runtime = runtime
 
         runtime_root = Path(runtime.name)
         workspace = runtime_root / "workspace"
@@ -339,23 +348,42 @@ class CodexBackend:
             workspace.mkdir(mode=0o700)
             codex_home.mkdir(mode=0o700)
         except OSError as err:
-            runtime.cleanup()
             raise ProviderConfigurationError(
                 "Não foi possível criar os diretórios do runtime temporário do Codex"
             ) from err
 
-        if has_auth:
+        if resolved_auth is not None:
             try:
-                os.link(source_auth.resolve(strict=True), codex_home / "auth.json")
+                os.link(resolved_auth, codex_home / "auth.json")
             except OSError as err:
-                runtime.cleanup()
                 raise ProviderConfigurationError(
                     "Não foi possível criar hard link para o auth.json do Codex"
                 ) from err
 
-        self._runtime = runtime
         self._workspace = workspace
         self._codex_home = codex_home
+
+    def _acquire_auth_lock(self, source_auth: Path) -> Path:
+        """Impede runtimes concorrentes de atualizarem a mesma credencial."""
+        from filelock import FileLock, Timeout
+
+        try:
+            resolved_auth = source_auth.resolve(strict=True)
+            lock_path = resolved_auth.with_name(resolved_auth.name + _AUTH_LOCK_SUFFIX)
+            auth_lock = FileLock(lock_path, thread_local=False)
+            auth_lock.acquire(timeout=0)
+        except Timeout as err:
+            raise ProviderConfigurationError(
+                "Outra execução do DataFrameIt já está usando este auth.json do Codex; "
+                "aguarde sua conclusão antes de iniciar outra"
+            ) from err
+        except (OSError, NotImplementedError) as err:
+            raise ProviderConfigurationError(
+                "Não foi possível obter acesso exclusivo ao auth.json do Codex"
+            ) from err
+
+        self._auth_lock = auth_lock
+        return resolved_auth
 
     def _validate_config(self):
         from openai_codex.types import ReasoningEffort
