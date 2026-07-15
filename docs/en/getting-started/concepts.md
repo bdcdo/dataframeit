@@ -120,7 +120,9 @@ DataFrameIt automatically adds control columns:
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, or `None` |
 | `_error_details` | Error details (when status is `'error'`) |
 | `_input_tokens` | Input tokens (with `track_tokens=True`) |
+| `_cached_input_tokens` | Input subset served from cache (`provider='codex'`) |
 | `_output_tokens` | Output tokens (with `track_tokens=True`) |
+| `_reasoning_tokens` | Output subset used for reasoning |
 
 ## Next Steps
 

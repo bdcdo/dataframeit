@@ -59,9 +59,9 @@ def dataframeit(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model` | str | `'gemini-3-flash-preview'` | LLM model name |
-| `provider` | str | `'google_genai'` | LangChain provider |
-| `api_key` | str | `None` | API key (uses env var if None) |
-| `model_kwargs` | dict | `None` | Extra parameters (temperature, etc.) |
+| `provider` | str | `'google_genai'` | Provider identifier; `codex` uses the official SDK instead of LangChain |
+| `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` |
+| `model_kwargs` | dict | `None` | Extra parameters; with `codex`, only `effort` and `codex_bin` are accepted |
 
 #### Resilience
 
@@ -85,7 +85,7 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `use_search` | bool | `False` | Enable web search via Tavily |
+| `use_search` | bool | `False` | Enable web search via Tavily; not supported with `provider='codex'` |
 | `search_per_field` | bool | `False` | Execute separate search per field |
 | `max_results` | int | `5` | Results per search (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` or `'advanced'` |
@@ -110,7 +110,9 @@ Returns data in the same format as input with extracted columns added.
 | `_dataframeit_status` | `'processed'`, `'error'`, or `None` |
 | `_error_details` | Error details (when applicable) |
 | `_input_tokens` | Input tokens (if `track_tokens=True`) |
+| `_cached_input_tokens` | Input subset served from cache (`codex` only) |
 | `_output_tokens` | Output tokens (if `track_tokens=True`) |
+| `_reasoning_tokens` | Output subset used for reasoning |
 
 ### Examples
 

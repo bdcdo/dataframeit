@@ -137,7 +137,9 @@ resultado = dataframeit(
 | Coluna | Descrição |
 |--------|-----------|
 | `_input_tokens` | Tokens de entrada por linha |
+| `_cached_input_tokens` | Parcela do input atendida por cache (somente `codex`) |
 | `_output_tokens` | Tokens de saída por linha |
+| `_reasoning_tokens` | Parcela do output usada em raciocínio |
 
 ### Calculando Custos
 

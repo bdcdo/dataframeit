@@ -7,10 +7,10 @@ Este módulo contém funções para:
 - Executar funções com retry e backoff exponencial
 """
 import importlib
-import time
 import random
+import time
 import warnings
-
+from collections.abc import Callable
 
 # Erros considerados recuperáveis (transientes)
 RECOVERABLE_ERRORS = (
@@ -54,6 +54,10 @@ NON_RECOVERABLE_ERRORS = (
     'MissingAPIKeyError',
     'InvalidAPIKeyError',
     'BadRequestError',
+    # Contratos locais de providers SDK
+    'CodexConfigurationError',
+    'CodexOutputError',
+    'CodexPermanentError',
 )
 
 
@@ -73,6 +77,22 @@ _BEDROCK_BASE = {
 # Providers cuja heurística simples (langchain_{provider} + {PROVIDER}_API_KEY) não bate com a realidade.
 # env_var=None indica auth por SDK (ADC, AWS creds), não por API key.
 _PROVIDER_OVERRIDES = {
+    'claude_code': {
+        'package': 'claude_agent_sdk',
+        'install': 'dataframeit[claude-code]',
+        'env_var': None,
+        'name': 'Claude Code',
+        'auth_hint': 'Autentique o Claude Code conforme a documentação do SDK.',
+        'uses_langchain': False,
+    },
+    'codex': {
+        'package': 'openai_codex',
+        'install': 'dataframeit[codex]',
+        'env_var': None,
+        'name': 'OpenAI Codex',
+        'auth_hint': 'codex login',
+        'uses_langchain': False,
+    },
     'google_vertexai': {
         'package': 'langchain_google_vertexai',
         'install': 'langchain-google-vertexai',
@@ -161,10 +181,6 @@ def _get_missing_package_message(package: str, install_name: str, friendly_name:
 ║                                                                              ║
 ║      pip install {install_name:<62} ║
 ║                                                                              ║
-║  Ou, para instalar todas as dependências recomendadas:                       ║
-║                                                                              ║
-║      pip install dataframeit[all]                                            ║
-║                                                                              ║
 ║  Após instalar, execute seu código novamente.                                ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -180,13 +196,15 @@ def validate_provider_dependencies(provider: str):
     Raises:
         ImportError: Com mensagem amigável se dependência não estiver instalada.
     """
-    # Claude Code SDK não precisa de LangChain
-    if provider == 'claude_code':
+    provider_data = _infer_provider_info(provider)
+
+    # Providers de SDK falam diretamente com seus runtimes, sem LangChain.
+    if not provider_data.get('uses_langchain', True):
         try:
-            importlib.import_module('claude_agent_sdk')
+            importlib.import_module(provider_data['package'])
         except ImportError as err:
             raise ImportError(_get_missing_package_message(
-                'claude_agent_sdk', 'claude-agent-sdk', 'Claude Code SDK'
+                provider_data['package'], provider_data['install'], provider_data['name']
             )) from err
         return
 
@@ -203,7 +221,6 @@ def validate_provider_dependencies(provider: str):
 
     # Validar provider específico (inferir dinamicamente)
     if provider:
-        provider_data = _infer_provider_info(provider)
         package = provider_data['package']
         install = provider_data['install']
         name = provider_data['name']
@@ -590,7 +607,13 @@ def is_rate_limit_error(error: Exception) -> bool:
     return any(pattern in error_str for pattern in rate_limit_patterns)
 
 
-def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0) -> dict:
+def retry_with_backoff(
+    func,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    should_retry: Callable[[Exception], bool] | None = None,
+) -> dict:
     """Executa função com retry e backoff exponencial.
 
     Args:
@@ -598,6 +621,7 @@ def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_
         max_retries: Número máximo de tentativas.
         base_delay: Delay base em segundos.
         max_delay: Delay máximo em segundos.
+        should_retry: Predicado opcional para providers com classificação própria.
 
     Returns:
         Dicionário com 'result' (resultado da função) e 'retry_info' (informações de retry).
@@ -624,8 +648,10 @@ def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_
             error_msg = str(e)
             retry_info['errors'].append(f"{error_name}: {error_msg[:100]}")
 
+            retry_predicate = should_retry or is_recoverable_error
+
             # Verificar se é erro não-recuperável
-            if not is_recoverable_error(e):
+            if not retry_predicate(e):
                 warnings.warn(
                     f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
                     stacklevel=3

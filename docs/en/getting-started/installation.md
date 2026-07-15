@@ -2,7 +2,7 @@
 
 ## Basic Installation
 
-DataFrameIt uses [LangChain](https://langchain.com/) to support multiple LLM providers. Choose the provider you want to use:
+DataFrameIt integrates multiple LLM providers through LangChain or official SDKs for local tools. Choose the provider you want to use:
 
 === "Google Gemini (Recommended)"
 
@@ -28,11 +28,27 @@ DataFrameIt uses [LangChain](https://langchain.com/) to support multiple LLM pro
 
     Models: `claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`
 
+=== "Codex (Experimental)"
+
+    ```bash
+    pip install dataframeit[codex]
+    # or
+    uv add "dataframeit[codex]"
+    ```
+
+    This extra pins the official Python SDK prerelease, which in turn pins a compatible runtime, but it does not install the `codex` command. Install the [official Codex CLI](https://learn.chatgpt.com/docs/codex/cli) as well:
+
+    ```bash
+    curl -fsSL https://chatgpt.com/codex/install.sh | sh
+    ```
+
 === "All Providers"
 
     ```bash
     pip install dataframeit[all]
     ```
+
+    While experimental, the Codex provider is not included in `all`; install `dataframeit[codex]` separately.
 
 ## With Polars (Optional)
 
@@ -50,9 +66,9 @@ For `.xlsx` checkpoints or reading Excel files via `read_df()`:
 pip install dataframeit[excel]
 ```
 
-## API Keys Configuration
+## Authentication Configuration
 
-Set the environment variable for your provider:
+Configure the credentials for your provider:
 
 === "Google Gemini"
 
@@ -77,6 +93,15 @@ Set the environment variable for your provider:
     ```
 
     Get your key at: [Anthropic Console](https://console.anthropic.com/)
+
+=== "Codex"
+
+    ```bash
+    codex login
+    codex login status
+    ```
+
+    The SDK reuses file-backed authentication from the local Codex installation. DataFrameIt shares only `auth.json` with an ephemeral `CODEX_HOME`; do not pass `api_key` to `dataframeit()` for this provider.
 
 ## Verifying Installation
 

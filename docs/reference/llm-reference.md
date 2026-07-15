@@ -14,6 +14,7 @@ DataFrameIt processa textos em DataFrames usando LLMs e extrai informações est
 pip install dataframeit[google]    # Google Gemini (padrão)
 pip install dataframeit[openai]    # OpenAI
 pip install dataframeit[anthropic] # Anthropic Claude
+pip install dataframeit[codex]     # Codex SDK oficial (experimental)
 ```
 
 **Variáveis de ambiente:**
@@ -22,6 +23,8 @@ export GOOGLE_API_KEY="..."     # Para Gemini
 export OPENAI_API_KEY="..."     # Para OpenAI
 export ANTHROPIC_API_KEY="..."  # Para Anthropic
 ```
+
+O provider `codex` reutiliza a autenticação local criada por `codex login` e não requer `OPENAI_API_KEY` quando essa sessão estiver ativa.
 
 ---
 
@@ -36,7 +39,7 @@ resultado = dataframeit(
     prompt,                  # Template do prompt
     text_column=None,        # Coluna com textos (None = inferência automática)
     model='gemini-3-flash-preview',
-    provider='google_genai', # 'google_genai', 'openai', 'anthropic'
+    provider='google_genai', # 'google_genai', 'openai', 'anthropic', 'codex'
     resume=True,             # Continua de onde parou
     parallel_requests=1,     # Workers paralelos
     rate_limit_delay=0.0,    # Delay entre requisições (segundos)
@@ -163,6 +166,14 @@ resultado = dataframeit(
     model='claude-sonnet-4-5'
 )
 
+# Codex SDK oficial (experimental)
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='codex',
+    model='gpt-5.4',
+    model_kwargs={'effort': 'medium'}
+)
+
 # Com parâmetros extras
 resultado = dataframeit(
     df, Model, PROMPT,
@@ -171,6 +182,8 @@ resultado = dataframeit(
     model_kwargs={'temperature': 0.2}
 )
 ```
+
+O provider `codex` aceita somente `effort` e `codex_bin` em `model_kwargs` e não suporta `use_search=True`. `codex_bin` seleciona explicitamente um CLI local quando o runtime fixado pelo SDK é antigo demais para o modelo escolhido.
 
 ---
 
@@ -221,7 +234,9 @@ sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
 | `_dataframeit_status` | `'processed'`, `'error'`, `None` |
 | `_error_details` | Mensagem de erro |
 | `_input_tokens` | Tokens de entrada |
+| `_cached_input_tokens` | Parcela do input atendida por cache (somente `codex`) |
 | `_output_tokens` | Tokens de saída |
+| `_reasoning_tokens` | Parcela do output usada em raciocínio |
 
 ---
 

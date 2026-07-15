@@ -4,7 +4,10 @@ import os
 import threading
 import time
 import warnings
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -52,6 +55,66 @@ _SEARCH_PROVIDER_RATE_LIMITS = {
 
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
+
+ProviderCall = Callable[[str, Any, str], dict]
+
+
+@dataclass(frozen=True)
+class ProviderBackend:
+    """Nome e função de chamada vinculados a uma única configuração."""
+
+    label: str
+    invoke: ProviderCall
+
+
+@contextmanager
+def _provider_backend(config: LLMConfig, pydantic_model) -> Iterator[ProviderBackend]:
+    """Cria uma única implementação de provider para toda a execução."""
+    if config.provider == "codex":
+        from .codex import CodexBackend
+
+        codex_backend = CodexBackend(config)
+        codex_backend.prepare(pydantic_model)
+        with codex_backend as backend:
+            yield ProviderBackend(label="codex", invoke=backend.call)
+        return
+
+    if config.provider == "claude_code":
+        from .claude_code import call_claude_code
+
+        yield ProviderBackend(
+            label="claude_code",
+            invoke=lambda text, model, prompt: call_claude_code(
+                text, model, prompt, config
+            ),
+        )
+        return
+
+    yield ProviderBackend(
+        label="langchain",
+        invoke=lambda text, model, prompt: call_langchain(text, model, prompt, config),
+    )
+
+
+def _call_row_model(
+    text: str,
+    pydantic_model,
+    user_prompt: str,
+    config: LLMConfig,
+    trace_mode: str | None,
+    backend: ProviderBackend,
+) -> dict:
+    """Despacha uma linha para busca ou para o backend selecionado."""
+    if not (config.search_config and config.search_config.enabled):
+        return backend.invoke(text, pydantic_model, user_prompt)
+
+    from .agent import call_agent, call_agent_per_field, call_agent_per_group
+
+    if not config.search_config.per_field:
+        return call_agent(text, pydantic_model, user_prompt, config, trace_mode)
+    if config.search_config.groups:
+        return call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
+    return call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
 
 
 def _warn_search_rate_limit(
@@ -376,9 +439,6 @@ def dataframeit(
     if '{texto}' not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
 
-    # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
-    validate_provider_dependencies(provider)
-
     # Validar parâmetros de checkpoint
     if (batch_size is None) != (checkpoint_path is None):
         raise ValueError("batch_size e checkpoint_path devem ser usados juntos")
@@ -387,10 +447,10 @@ def dataframeit(
             raise ValueError("batch_size deve ser int >= 1")
         _validate_checkpoint_extension(checkpoint_path)
 
-    # Validar busca web com claude_code
-    if use_search and provider == 'claude_code':
+    # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
+    if use_search and provider in {'claude_code', 'codex'}:
         raise ValueError(
-            "Busca web (use_search=True) não é suportada com provider='claude_code'. "
+            f"Busca web (use_search=True) não é suportada com provider='{provider}'. "
             "Use um provider LangChain como 'google_genai' ou 'openai' para busca web."
         )
 
@@ -515,17 +575,40 @@ def dataframeit(
         )
         return from_pandas(df_pandas, conversion_info)
 
+    status_col = status_column or '_dataframeit_status'
+    complex_fields = get_complex_fields(questions)
+
+    # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
+    if (
+        resume
+        and not reprocess_columns
+        and status_col in df_pandas.columns
+        and df_pandas[status_col].notna().all()
+    ):
+        if complex_fields:
+            normalize_complex_columns(df_pandas, complex_fields)
+        return from_pandas(df_pandas, conversion_info)
+
+    # Para execuções com trabalho pendente, falha antes de mutar o DataFrame.
+    validate_provider_dependencies(provider)
+
     # Configurar colunas
-    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens, search_config, trace_mode, questions)
+    _setup_columns(
+        df_pandas,
+        expected_columns,
+        status_column,
+        resume,
+        track_tokens,
+        search_config,
+        trace_mode,
+        questions,
+        provider,
+    )
 
     # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
     # serializadas como strings JSON ao salvar/carregar de arquivos
-    complex_fields = get_complex_fields(questions)
     if complex_fields and resume:
         normalize_complex_columns(df_pandas, complex_fields)
-
-    # Determinar coluna de status
-    status_col = status_column or '_dataframeit_status'
 
     # Determinar onde começar
     start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume, reprocess_columns)
@@ -551,44 +634,48 @@ def dataframeit(
                 "search_depth, max_results) requerem search_per_field=True"
             )
 
-    # Processar linhas (escolher entre sequencial e paralelo)
-    if parallel_requests > 1:
-        token_stats = _process_rows_parallel(
-            df_pandas,
-            questions,
-            prompt,
-            text_column,
-            status_col,
-            expected_columns,
-            config,
-            start_pos,
-            processed_count,
-            conversion_info,
-            track_tokens,
-            reprocess_columns,
-            parallel_requests,
-            trace_mode,
-            batch_size,
-            checkpoint_path,
-        )
-    else:
-        token_stats = _process_rows(
-            df_pandas,
-            questions,
-            prompt,
-            text_column,
-            status_col,
-            expected_columns,
-            config,
-            start_pos,
-            processed_count,
-            conversion_info,
-            track_tokens,
-            reprocess_columns,
-            trace_mode,
-            batch_size,
-            checkpoint_path,
-        )
+    # O backend vive durante toda a execução; providers de SDK podem compartilhar
+    # uma única conexão sem compartilhar o contexto de cada linha.
+    with _provider_backend(config, questions) as backend:
+        if parallel_requests > 1:
+            token_stats = _process_rows_parallel(
+                df_pandas,
+                questions,
+                prompt,
+                text_column,
+                status_col,
+                expected_columns,
+                config,
+                backend,
+                start_pos,
+                processed_count,
+                conversion_info,
+                track_tokens,
+                reprocess_columns,
+                parallel_requests,
+                trace_mode,
+                batch_size,
+                checkpoint_path,
+            )
+        else:
+            token_stats = _process_rows(
+                df_pandas,
+                questions,
+                prompt,
+                text_column,
+                status_col,
+                expected_columns,
+                config,
+                backend,
+                start_pos,
+                processed_count,
+                conversion_info,
+                track_tokens,
+                reprocess_columns,
+                trace_mode,
+                batch_size,
+                checkpoint_path,
+            )
 
     # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
@@ -609,11 +696,23 @@ def dataframeit(
     return from_pandas(df_pandas, conversion_info)
 
 
-def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: str | None, resume: bool, track_tokens: bool, search_config: SearchConfig | None = None, trace_mode: str | None = None, pydantic_model=None):
+def _setup_columns(
+    df: pd.DataFrame,
+    expected_columns: list,
+    status_column: str | None,
+    resume: bool,
+    track_tokens: bool,
+    search_config: SearchConfig | None = None,
+    trace_mode: str | None = None,
+    pydantic_model=None,
+    provider: str | None = None,
+):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
     token_cols = ['_input_tokens', '_output_tokens', '_reasoning_tokens'] if track_tokens else []
+    if track_tokens and provider == 'codex':
+        token_cols.insert(1, '_cached_input_tokens')
     search_cols = ['_search_credits'] if (search_config and search_config.enabled) else []
 
     # Colunas de trace
@@ -709,6 +808,8 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
     print(f"Modelo: {model}")
     print(f"Total de tokens: {token_stats['total_tokens']:,}")
     print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
+    if token_stats.get('cached_input_tokens', 0) > 0:
+        print(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get('reasoning_tokens', 0) > 0:
         print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
@@ -801,6 +902,7 @@ def _process_rows(
     status_col: str,
     expected_columns: list,
     config: LLMConfig,
+    backend: ProviderBackend,
     start_pos: int,
     processed_count: int,
     conversion_info,
@@ -827,8 +929,7 @@ def _process_rows(
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    backend = 'claude_code' if config.provider == 'claude_code' else 'langchain'
-    desc = f"Processando [{engine}+{backend}{search_mode}]"
+    desc = f"Processando [{engine}+{backend.label}{search_mode}]"
 
     # Adicionar info de rate limiting (se ativo)
     if config.rate_limit_delay > 0:
@@ -843,6 +944,7 @@ def _process_rows(
     # Inicializar contadores de tokens e busca
     token_stats = {
         'input_tokens': 0,
+        'cached_input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
         'reasoning_tokens': 0,
@@ -869,21 +971,9 @@ def _process_rows(
         text = str(row[text_column])
 
         try:
-            # Chamar LLM ou agente com busca
-            if config.search_config and config.search_config.enabled:
-                from .agent import call_agent, call_agent_per_field, call_agent_per_group
-                if config.search_config.per_field:
-                    if config.search_config.groups:
-                        result = call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
-                    else:
-                        result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
-                else:
-                    result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
-            elif config.provider == 'claude_code':
-                from .claude_code import call_claude_code
-                result = call_claude_code(text, pydantic_model, user_prompt, config)
-            else:
-                result = call_langchain(text, pydantic_model, user_prompt, config)
+            result = _call_row_model(
+                text, pydantic_model, user_prompt, config, trace_mode, backend
+            )
 
             # Extrair dados e usage metadata
             extracted = result.get('data', result)  # Retrocompatibilidade
@@ -906,11 +996,14 @@ def _process_rows(
             # Armazenar tokens no DataFrame (se habilitado)
             if track_tokens and usage:
                 df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
+                if '_cached_input_tokens' in df.columns:
+                    df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
                 df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                 df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
                 # Acumular estatísticas (total exibido apenas no summary do console)
                 token_stats['input_tokens'] += usage.get('input_tokens', 0)
+                token_stats['cached_input_tokens'] += usage.get('cached_input_tokens', 0)
                 token_stats['output_tokens'] += usage.get('output_tokens', 0)
                 token_stats['total_tokens'] += usage.get('total_tokens', 0)
                 token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
@@ -987,6 +1080,7 @@ def _process_rows_parallel(
     status_col: str,
     expected_columns: list,
     config: LLMConfig,
+    backend: ProviderBackend,
     start_pos: int,
     processed_count: int,
     conversion_info,
@@ -1020,6 +1114,7 @@ def _process_rows_parallel(
     # Contadores
     token_stats = {
         'input_tokens': 0,
+        'cached_input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
         'reasoning_tokens': 0,
@@ -1035,8 +1130,10 @@ def _process_rows_parallel(
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    backend = 'claude_code' if config.provider == 'claude_code' else 'langchain'
-    desc = f"Processando [{engine}+{backend}{search_mode}] [{parallel_requests} workers]"
+    desc = (
+        f"Processando [{engine}+{backend.label}{search_mode}] "
+        f"[{parallel_requests} workers]"
+    )
 
     if reprocess_columns:
         desc += f" (reprocessando: {', '.join(reprocess_columns)})"
@@ -1070,21 +1167,9 @@ def _process_rows_parallel(
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
 
         try:
-            # Chamar LLM ou agente com busca
-            if config.search_config and config.search_config.enabled:
-                from .agent import call_agent, call_agent_per_field, call_agent_per_group
-                if config.search_config.per_field:
-                    if config.search_config.groups:
-                        result = call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
-                    else:
-                        result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
-                else:
-                    result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
-            elif config.provider == 'claude_code':
-                from .claude_code import call_claude_code
-                result = call_claude_code(text, pydantic_model, user_prompt, config)
-            else:
-                result = call_langchain(text, pydantic_model, user_prompt, config)
+            result = _call_row_model(
+                text, pydantic_model, user_prompt, config, trace_mode, backend
+            )
 
             # Extrair dados
             extracted = result.get('data', result)
@@ -1104,10 +1189,13 @@ def _process_rows_parallel(
 
                 if track_tokens and usage:
                     df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
+                    if '_cached_input_tokens' in df.columns:
+                        df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
                     df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                     df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
                     token_stats['input_tokens'] += usage.get('input_tokens', 0)
+                    token_stats['cached_input_tokens'] += usage.get('cached_input_tokens', 0)
                     token_stats['output_tokens'] += usage.get('output_tokens', 0)
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
                     token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
@@ -1206,7 +1294,7 @@ def _process_rows_parallel(
 
                 for future in as_completed(futures):
                     try:
-                        result = future.result()
+                        future.result()
                         pbar.update(1)
                         completed += 1
                     except Exception as e:

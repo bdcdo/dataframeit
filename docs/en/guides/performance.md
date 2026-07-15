@@ -142,7 +142,9 @@ result = dataframeit(
 | Column | Description |
 |--------|-------------|
 | `_input_tokens` | Input tokens per row |
+| `_cached_input_tokens` | Input subset served from cache (`codex` only) |
 | `_output_tokens` | Output tokens per row |
+| `_reasoning_tokens` | Output subset used for reasoning |
 
 ### Calculating Costs
 

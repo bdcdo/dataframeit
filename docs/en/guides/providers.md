@@ -1,6 +1,6 @@
 # Providers
 
-Configure different LLM providers via LangChain.
+Configure different LLM providers through LangChain or official SDKs for local tools.
 
 ## Supported Providers
 
@@ -8,6 +8,7 @@ Configure different LLM providers via LangChain.
 |----------|------------|----------------------|
 | Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
+| OpenAI Codex (experimental) | `codex` | Models available in the Codex session |
 | Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
 | Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b, groq/compound |
 | Cohere | `cohere` | command-r, command-r-plus |
@@ -87,6 +88,50 @@ result = dataframeit(
 | `gpt-5.2-mini` | General use, economical | Low |
 | `gpt-5.2` | Maximum quality | High |
 | `gpt-4.1` | Coding, precise instructions | Medium |
+
+## OpenAI Codex (Experimental)
+
+The `codex` provider uses the [official Python SDK](https://github.com/openai/codex/tree/main/sdk/python) and the authentication already configured in the local Codex installation. The extra is experimental because the pinned SDK and runtime versions are still prereleases.
+
+```bash
+pip install dataframeit[codex]
+# or
+uv add "dataframeit[codex]"
+
+# The Python extra does not install the codex command
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex login
+codex login status
+```
+
+```python
+result = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    text_column='text',
+    provider='codex',
+    model='gpt-5.4',
+    model_kwargs={
+        'effort': 'medium',
+    },
+    parallel_requests=3,
+)
+```
+
+For this provider, `model_kwargs` accepts only `effort` and `codex_bin`. `timeout_seconds` is not accepted because the beta SDK does not yet expose a hard per-turn deadline. `use_search=True` and `dict` fields with dynamic keys are not supported by strict structured output. The SDK reuses the local session, so do not pass `api_key` to `dataframeit()` for this path. Each row runs in an ephemeral thread with approvals denied and a read-only sandbox over an empty temporary directory.
+
+By default, the SDK uses its pinned runtime. If a model requires a newer version, locate a compatible Codex CLI with `command -v codex` and explicitly pass the returned path in `codex_bin`, for example `model_kwargs={'codex_bin': '/home/user/.local/bin/codex'}`. DataFrameIt never switches runtimes silently.
+
+DataFrameIt creates an ephemeral `CODEX_HOME` for every run and shares only the local file-backed authentication through a link to `auth.json`. Global configuration, MCP servers, skills, hooks, plugins, and sessions are not loaded; shell, apps, browser, computer use, image generation, and search are disabled as well. The entire directory is removed when the DataFrame run ends.
+
+The Codex agent still has a larger base context than a plain API call. In an isolated smoke test with `gpt-5.4`, one short text consumed 6,472 input tokens. Run a pilot and inspect `_input_tokens` and `_cached_input_tokens` before processing large datasets.
+
+### Integration choice
+
+The official SDK controls a local `codex app-server` and includes a pinned CLI runtime. DataFrameIt keeps one client for the DataFrame processing run instead of starting an independent `codex exec` invocation for every row.
+
+The [llm-openai-via-codex](https://github.com/simonw/llm-openai-via-codex/) project follows a different architecture: its current implementation reads and refreshes Codex OAuth credentials and calls the ChatGPT Codex endpoint directly. DataFrameIt does not interpret or copy the contents of `auth.json`; it exposes the file to the official runtime through a temporary link, while authentication, refresh, and runtime communication remain the SDK's responsibility.
 
 ## Anthropic Claude
 

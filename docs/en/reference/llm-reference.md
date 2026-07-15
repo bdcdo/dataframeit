@@ -14,6 +14,7 @@ DataFrameIt processes texts in DataFrames using LLMs and extracts structured inf
 pip install dataframeit[google]    # Google Gemini (default)
 pip install dataframeit[openai]    # OpenAI
 pip install dataframeit[anthropic] # Anthropic Claude
+pip install dataframeit[codex]     # Official Codex SDK (experimental)
 ```
 
 **Environment variables:**
@@ -22,6 +23,8 @@ export GOOGLE_API_KEY="..."     # For Gemini
 export OPENAI_API_KEY="..."     # For OpenAI
 export ANTHROPIC_API_KEY="..."  # For Anthropic
 ```
+
+The `codex` provider reuses the local authentication created by `codex login` and does not require `OPENAI_API_KEY` while that session is active.
 
 ---
 
@@ -36,7 +39,7 @@ result = dataframeit(
     prompt,                  # Prompt template
     text_column=None,        # Column with texts (None = automatic inference)
     model='gemini-3-flash-preview',
-    provider='google_genai', # 'google_genai', 'openai', 'anthropic'
+    provider='google_genai', # 'google_genai', 'openai', 'anthropic', 'codex'
     resume=True,             # Continue from where it stopped
     parallel_requests=1,     # Parallel workers
     rate_limit_delay=0.0,    # Delay between requests (seconds)
@@ -166,6 +169,15 @@ result = dataframeit(
     model='claude-sonnet-4-5'
 )
 
+# Official Codex SDK (experimental)
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='codex',
+    model='gpt-5.4',
+    model_kwargs={'effort': 'medium'}
+)
+
 # With extra parameters
 result = dataframeit(
     df, Model, PROMPT,
@@ -175,6 +187,8 @@ result = dataframeit(
     model_kwargs={'temperature': 0.2}
 )
 ```
+
+The `codex` provider accepts only `effort` and `codex_bin` in `model_kwargs` and does not support `use_search=True`. `codex_bin` explicitly selects a local CLI when the runtime pinned by the SDK is too old for the chosen model.
 
 ---
 
@@ -228,7 +242,9 @@ success = result[result['_dataframeit_status'] == 'processed']
 | `_dataframeit_status` | `'processed'`, `'error'`, `None` |
 | `_error_details` | Error message |
 | `_input_tokens` | Input tokens |
+| `_cached_input_tokens` | Input subset served from cache (`codex` only) |
 | `_output_tokens` | Output tokens |
+| `_reasoning_tokens` | Output subset used for reasoning |
 
 ---
 
