@@ -1,22 +1,23 @@
-"""Testes para o provider Codex baseado no SDK oficial."""
+"""Testes unitários do adapter Codex e de seu contrato opcional."""
 
-import sys
-import threading
-from enum import Enum
+from __future__ import annotations
+
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from typing import Annotated, Literal
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from dataframeit.codex import (
-    CodexBackend,
-    CodexConfigurationError,
-    CodexOutputError,
-    CodexPermanentError,
-    _to_strict_json_schema,
+from dataframeit.codex import CodexBackend, _to_strict_json_schema
+from dataframeit.errors import (
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderOutputError,
+    ProviderOverloadedError,
+    is_rate_limit_error,
+    is_recoverable_error,
+    retry_with_backoff,
 )
 from dataframeit.llm import LLMConfig
 
@@ -30,93 +31,45 @@ class NestedModel(BaseModel):
     label: str
 
 
-class ModelWithOptionalAndNested(BaseModel):
-    nested: NestedModel
+class ModelWithRefSibling(BaseModel):
+    nested: Annotated[NestedModel, Field(description="Nested value")]
+
+
+class ModelWithArray(BaseModel):
+    items: list[NestedModel]
+
+
+class ModelWithAnyOf(BaseModel):
+    value: str | int
     note: str | None = None
+
+
+class CatModel(BaseModel):
+    kind: Literal["cat"]
+    lives: int
+
+
+class DogModel(BaseModel):
+    kind: Literal["dog"]
+    barks: bool
+
+
+class ModelWithDiscriminatedUnion(BaseModel):
+    animal: Annotated[CatModel | DogModel, Field(discriminator="kind")]
 
 
 class ModelWithDynamicKeys(BaseModel):
     values: dict[str, str]
 
 
-class ReasoningEffort(Enum):
-    none = "none"
-    minimal = "minimal"
-    low = "low"
-    medium = "medium"
-    high = "high"
-    xhigh = "xhigh"
+class RecursiveModel(BaseModel):
+    name: str
+    child: RecursiveModel | None = None
 
 
-class TurnStatus(Enum):
-    completed = "completed"
-    interrupted = "interrupted"
-    failed = "failed"
-    in_progress = "inProgress"
-
-
-class ApprovalMode:
-    deny_all = "deny_all"
-
-
-class Sandbox:
-    read_only = "read-only"
-
-
-class FakeCodexConfig:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-
-
-class FakeCodex:
-    instances = []
-    account_response = SimpleNamespace(
-        requires_openai_auth=True,
-        account=SimpleNamespace(type="chatgpt"),
-    )
-
-    def __init__(self, config):
-        self.config = config
-        self.closed = False
-        self.instances.append(self)
-
-    def account(self):
-        return self.account_response
-
-    def close(self):
-        self.closed = True
-
-
-@pytest.fixture
-def fake_sdk(monkeypatch):
-    sdk = ModuleType("openai_codex")
-    sdk.ApprovalMode = ApprovalMode
-    sdk.Codex = FakeCodex
-    sdk.CodexConfig = FakeCodexConfig
-    sdk.Sandbox = Sandbox
-    sdk.is_retryable_error = lambda error: isinstance(error, FakeServerBusyError)
-
-    sdk_types = ModuleType("openai_codex.types")
-    sdk_types.ReasoningEffort = ReasoningEffort
-    sdk_types.TurnStatus = TurnStatus
-
-    monkeypatch.setitem(sys.modules, "openai_codex", sdk)
-    monkeypatch.setitem(sys.modules, "openai_codex.types", sdk_types)
-    FakeCodex.instances.clear()
-    FakeCodex.account_response = SimpleNamespace(
-        requires_openai_auth=True,
-        account=SimpleNamespace(type="chatgpt"),
-    )
-    return sdk
-
-
-class FakeServerBusyError(RuntimeError):
-    pass
-
-
-def make_config(**overrides):
+def make_config(**overrides) -> LLMConfig:
     values = {
-        "model": "gpt-5.6-luna",
+        "model": "gpt-5.4",
         "provider": "codex",
         "api_key": None,
         "max_retries": 2,
@@ -130,49 +83,92 @@ def make_config(**overrides):
     return LLMConfig(**values)
 
 
+@pytest.fixture
+def codex_sdk():
+    """Carrega o SDK real apenas nos testes que exercitam sua fronteira."""
+    sdk = pytest.importorskip("openai_codex")
+    sdk_types = pytest.importorskip("openai_codex.types")
+    generated = pytest.importorskip("openai_codex.generated.v2_all")
+    return sdk, sdk_types, generated
+
+
 def make_result(
-    response='{"sentimento": "positivo", "confianca": 0.9}',
+    codex_sdk,
+    response: str | None = '{"sentimento": "positivo", "confianca": 0.9}',
     *,
-    status=TurnStatus.completed,
-    usage=True,
+    status=None,
+    usage: bool = True,
 ):
-    token_usage = SimpleNamespace(
-        input_tokens=100,
-        cached_input_tokens=40,
-        output_tokens=30,
-        reasoning_output_tokens=10,
-        total_tokens=130,
+    sdk, sdk_types, generated = codex_sdk
+    token_usage = generated.TokenUsageBreakdown(
+        inputTokens=100,
+        cachedInputTokens=40,
+        outputTokens=30,
+        reasoningOutputTokens=10,
+        totalTokens=130,
     )
-    return SimpleNamespace(
+    thread_usage = (
+        sdk_types.ThreadTokenUsage(last=token_usage, total=token_usage) if usage else None
+    )
+    return sdk.TurnResult(
+        id="turn-1",
+        status=status or sdk_types.TurnStatus.completed,
+        error=None,
+        started_at=1,
+        completed_at=2,
+        duration_ms=1,
         final_response=response,
-        status=status,
-        usage=SimpleNamespace(total=token_usage) if usage else None,
+        items=[],
+        usage=thread_usage,
     )
 
 
-def initialized_backend(config, fake_sdk, result=None):
-    backend = CodexBackend(config)
-    backend._workspace = Path("/tmp/dataframeit-codex-test")
-    backend._effort = ReasoningEffort.medium
-    turn = MagicMock()
-    turn.run.return_value = result or make_result()
-    thread = MagicMock()
+def initialized_backend(tmp_path, codex_sdk, result=None):
+    sdk, _, _ = codex_sdk
+    backend = CodexBackend(make_config(), SampleModel, "Analise: {texto}")
+    backend._workspace = tmp_path / "workspace"
+    backend._workspace.mkdir()
+
+    turn = MagicMock(spec=sdk.TurnHandle)
+    turn.id = "turn-1"
+    turn.run.return_value = result or make_result(codex_sdk)
+    thread = MagicMock(spec=sdk.Thread)
     thread.turn.return_value = turn
-    client = MagicMock()
+    client = MagicMock(spec=sdk.Codex)
     client.thread_start.return_value = thread
     backend._client = client
     return backend, client, thread, turn
 
 
 class TestProviderDependency:
-    def test_missing_sdk_reports_codex_extra(self):
+    def test_missing_sdk_reports_only_codex_extra(self):
         from dataframeit.errors import validate_provider_dependencies
 
         with patch("importlib.import_module", side_effect=ImportError("missing")):
-            with pytest.raises(ImportError, match=r"dataframeit\[codex\]"):
+            with pytest.raises(ImportError) as exc_info:
                 validate_provider_dependencies("codex")
 
-    def test_sdk_skips_langchain_validation(self):
+        message = str(exc_info.value)
+        assert "dataframeit[codex]" in message
+        assert "dataframeit[all]" not in message
+
+    def test_langchain_provider_keeps_all_extra_as_alternative(self):
+        from dataframeit.errors import validate_provider_dependencies
+
+        def import_module(name):
+            if name == "langchain_google_genai":
+                raise ImportError("missing")
+            return MagicMock()
+
+        with patch("importlib.import_module", side_effect=import_module):
+            with pytest.raises(ImportError) as exc_info:
+                validate_provider_dependencies("google_genai")
+
+        message = str(exc_info.value)
+        assert "langchain-google-genai" in message
+        assert "dataframeit[all]" in message
+
+    def test_sdk_provider_skips_langchain_validation(self):
         from dataframeit.errors import validate_provider_dependencies
 
         imported = []
@@ -187,183 +183,175 @@ class TestProviderDependency:
         assert imported == ["openai_codex"]
 
 
-class TestBackendLifecycle:
-    def test_one_client_uses_isolated_home_and_closes(
-        self, fake_sdk, monkeypatch, tmp_path
-    ):
-        source_home = tmp_path / "source-home"
-        source_home.mkdir()
-        source_auth = source_home / "auth.json"
-        source_auth.touch(mode=0o600)
-        (source_home / "config.toml").write_text('[mcp_servers.unsafe]\ncommand="x"\n')
-        monkeypatch.setenv("CODEX_HOME", str(source_home))
+class TestStrictPydanticSchema:
+    def test_refs_with_sibling_metadata_are_expanded_and_strict(self):
+        schema = _to_strict_json_schema(ModelWithRefSibling.model_json_schema())
 
-        with CodexBackend(
-            make_config(
-                model_kwargs={
-                    "codex_bin": sys.executable,
-                    "effort": "high",
-                }
-            )
-        ) as backend:
-            instance = FakeCodex.instances[0]
-            assert backend._effort is ReasoningEffort.high
-            assert instance.config.kwargs["codex_bin"] == str(Path(sys.executable).resolve())
-            assert instance.config.kwargs["cwd"].startswith("/tmp/dataframeit-codex-")
-            runtime_env = instance.config.kwargs["env"]
-            isolated_home = Path(runtime_env["CODEX_HOME"])
-            assert runtime_env["CODEX_SQLITE_HOME"] == str(isolated_home)
-            assert isolated_home != source_home
-            assert (isolated_home / "auth.json").is_symlink()
-            assert (isolated_home / "auth.json").resolve() == source_auth.resolve()
-            assert not (isolated_home / "config.toml").exists()
-            overrides = instance.config.kwargs["config_overrides"]
-            assert 'model_reasoning_effort="medium"' in overrides
-            assert "project_doc_max_bytes=0" in overrides
-            assert "mcp_servers={}" in overrides
-            assert "features.shell_tool=false" in overrides
-            assert not instance.closed
+        assert schema["additionalProperties"] is False
+        assert schema["required"] == ["nested"]
+        assert schema["$defs"]["NestedModel"]["additionalProperties"] is False
+        nested = schema["properties"]["nested"]
+        assert "$ref" not in nested
+        assert nested["description"] == "Nested value"
+        assert nested["additionalProperties"] is False
+        assert nested["required"] == ["label"]
 
-        assert instance.closed
-        assert not isolated_home.exists()
+    def test_arrays_keep_internal_refs_and_make_definitions_strict(self):
+        schema = _to_strict_json_schema(ModelWithArray.model_json_schema())
 
-    def test_missing_login_closes_client(self, fake_sdk):
-        FakeCodex.account_response = SimpleNamespace(
-            requires_openai_auth=True,
-            account=None,
-        )
+        item = schema["properties"]["items"]["items"]
+        assert item == {"$ref": "#/$defs/NestedModel"}
+        assert schema["$defs"]["NestedModel"]["additionalProperties"] is False
+        assert schema["$defs"]["NestedModel"]["required"] == ["label"]
 
-        with pytest.raises(CodexConfigurationError, match="codex login"):
-            with CodexBackend(make_config()):
-                pass
+    def test_any_of_nullable_removes_default_and_requires_every_property(self):
+        schema = _to_strict_json_schema(ModelWithAnyOf.model_json_schema())
 
-        assert FakeCodex.instances[0].closed
+        assert schema["required"] == ["value", "note"]
+        assert schema["properties"]["value"]["anyOf"] == [
+            {"type": "string"},
+            {"type": "integer"},
+        ]
+        note = schema["properties"]["note"]
+        assert "default" not in note
+        assert note["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
-    def test_relative_codex_bin_is_resolved_before_changing_cwd(
-        self, fake_sdk, monkeypatch, tmp_path
-    ):
-        executable = tmp_path / "codex"
-        executable.write_text("#!/bin/sh\n")
-        executable.chmod(0o700)
-        monkeypatch.chdir(tmp_path)
+    def test_discriminated_one_of_preserves_mapping_and_strict_variants(self):
+        schema = _to_strict_json_schema(ModelWithDiscriminatedUnion.model_json_schema())
 
-        with CodexBackend(make_config(model_kwargs={"codex_bin": "./codex"})):
-            configured = FakeCodex.instances[0].config.kwargs["codex_bin"]
+        animal = schema["properties"]["animal"]
+        assert animal["oneOf"] == [
+            {"$ref": "#/$defs/CatModel"},
+            {"$ref": "#/$defs/DogModel"},
+        ]
+        assert animal["discriminator"]["propertyName"] == "kind"
+        assert animal["discriminator"]["mapping"] == {
+            "cat": "#/$defs/CatModel",
+            "dog": "#/$defs/DogModel",
+        }
+        assert schema["$defs"]["CatModel"]["additionalProperties"] is False
+        assert schema["$defs"]["DogModel"]["additionalProperties"] is False
 
-        assert configured == str(executable.resolve())
+    def test_dynamic_dict_is_rejected_from_real_pydantic_schema(self):
+        with pytest.raises(ProviderConfigurationError, match="chaves dinâmicas"):
+            _to_strict_json_schema(ModelWithDynamicKeys.model_json_schema())
+
+    def test_recursive_pydantic_schema_remains_finite_and_strict(self):
+        schema = _to_strict_json_schema(RecursiveModel.model_json_schema())
+
+        assert schema["type"] == "object"
+        assert schema["additionalProperties"] is False
+        assert schema["required"] == ["name", "child"]
+        child_ref = schema["properties"]["child"]["anyOf"][0]
+        assert child_ref == {"$ref": "#/$defs/RecursiveModel"}
+        recursive_definition = schema["$defs"]["RecursiveModel"]
+        assert recursive_definition["additionalProperties"] is False
+        assert recursive_definition["properties"]["child"]["anyOf"][0] == child_ref
+
+
+class TestBackendConfiguration:
+    def test_effort_defaults_to_real_medium_enum(self, codex_sdk):
+        _, sdk_types, _ = codex_sdk
+
+        backend = CodexBackend(make_config(), SampleModel, "{texto}")
+
+        assert backend._effort is sdk_types.ReasoningEffort.medium
+
+    def test_effort_is_the_only_supported_model_kwarg(self, codex_sdk):
+        _, sdk_types, _ = codex_sdk
+
+        backend = CodexBackend(make_config(model_kwargs={"effort": "high"}), SampleModel, "{texto}")
+
+        assert backend._effort is sdk_types.ReasoningEffort.high
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
         [
             ({"api_key": "secret"}, "não passe api_key"),
             ({"model_kwargs": {"temperature": 0}}, "temperature"),
+            ({"model_kwargs": {"codex_bin": "/some/codex"}}, "codex_bin"),
             ({"model_kwargs": {"effort": "maximum"}}, "effort inválido"),
-            ({"model_kwargs": {"timeout_seconds": 30}}, "timeout_seconds"),
-            ({"model_kwargs": {"codex_bin": 42}}, "caminho executável"),
-            ({"model_kwargs": {"codex_bin": "/missing/codex"}}, "não aponta"),
         ],
     )
-    def test_invalid_config_fails_before_client(self, fake_sdk, overrides, message):
-        with pytest.raises(CodexConfigurationError, match=message):
-            with CodexBackend(make_config(**overrides)):
-                pass
+    def test_invalid_config_fails_before_client_start(self, codex_sdk, overrides, message):
+        sdk, _, _ = codex_sdk
 
-        assert FakeCodex.instances == []
+        with patch.object(sdk, "Codex") as codex:
+            with pytest.raises(ProviderConfigurationError, match=message):
+                CodexBackend(make_config(**overrides), SampleModel, "{texto}")
+
+        codex.assert_not_called()
 
 
-class TestCodexCall:
-    def test_pydantic_schema_is_made_strict_recursively(self):
-        schema = _to_strict_json_schema(ModelWithOptionalAndNested.model_json_schema())
+class TestBackendLifecycle:
+    def test_uses_bundled_runtime_in_isolated_home_and_cleans_up(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        source_auth = source_home / "auth.json"
+        source_auth.write_text("{}")
+        (source_home / "config.toml").write_text('[mcp_servers.unsafe]\ncommand="unsafe"\n')
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
 
-        assert schema["additionalProperties"] is False
-        assert schema["required"] == ["nested", "note"]
-        assert schema["$defs"]["NestedModel"]["additionalProperties"] is False
-        assert schema["$defs"]["NestedModel"]["required"] == ["label"]
-        assert "default" not in schema["properties"]["note"]
+        client = MagicMock(spec=sdk.Codex)
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
 
-    def test_strict_schema_handles_arrays_refs_and_all_of(self):
-        schema = {
-            "$defs": {
-                "Item": {
-                    "type": "object",
-                    "properties": {"name": {"type": "string"}},
-                }
-            },
-            "allOf": [
-                {
-                    "type": "object",
-                    "properties": {
-                        "items": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/$defs/Item",
-                                "description": "Extracted items",
-                            },
-                        }
-                    },
-                }
-            ],
-        }
+        with patch.object(sdk, "Codex", return_value=client) as codex:
+            with CodexBackend(make_config(), SampleModel, "{texto}") as backend:
+                launch_config = codex.call_args.args[0]
+                assert isinstance(launch_config, sdk.CodexConfig)
+                assert launch_config.codex_bin is None
+                workspace = Path(launch_config.cwd)
+                isolated_home = Path(launch_config.env["CODEX_HOME"])
+                assert isolated_home.parent == workspace.parent
+                assert launch_config.env["CODEX_SQLITE_HOME"] == str(isolated_home)
+                assert isolated_home != source_home
+                assert (isolated_home / "auth.json").is_symlink()
+                assert (isolated_home / "auth.json").resolve() == source_auth.resolve()
+                assert not (isolated_home / "config.toml").exists()
+                assert "project_doc_max_bytes=0" in launch_config.config_overrides
+                assert "mcp_servers={}" in launch_config.config_overrides
+                assert "features.shell_tool=false" in launch_config.config_overrides
+                assert not any(
+                    "model_reasoning_effort" in item for item in launch_config.config_overrides
+                )
+                assert backend._client is client
 
-        strict = _to_strict_json_schema(schema)
+        client.close.assert_called_once_with()
+        assert not workspace.parent.exists()
 
-        assert "allOf" not in strict
-        assert strict["additionalProperties"] is False
-        assert strict["required"] == ["items"]
-        item_schema = strict["properties"]["items"]["items"]
-        assert "$ref" not in item_schema
-        assert item_schema["description"] == "Extracted items"
-        assert item_schema["additionalProperties"] is False
+    def test_missing_auth_closes_client_and_removes_runtime(self, codex_sdk, monkeypatch, tmp_path):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = MagicMock(spec=sdk.Codex)
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=True)
+        backend = CodexBackend(make_config(), SampleModel, "{texto}")
 
-    @pytest.mark.parametrize(
-        ("schema", "message"),
-        [
-            (
-                {"$ref": "https://example.com/schema", "description": "external"},
-                "Referência externa",
-            ),
-            (
-                {
-                    "$defs": {"value": "not-an-object"},
-                    "$ref": "#/$defs/value",
-                    "description": "invalid",
-                },
-                "Referência inválida",
-            ),
-        ],
-    )
-    def test_strict_schema_rejects_unsupported_refs(self, schema, message):
-        with pytest.raises(CodexConfigurationError, match=message):
-            _to_strict_json_schema(schema)
+        with patch.object(sdk, "Codex", return_value=client) as codex:
+            with pytest.raises(ProviderConfigurationError, match="codex login"):
+                with backend:
+                    pass
 
-    def test_strict_schema_rejects_dynamic_object_keys(self):
-        schema = {
-            "type": "object",
-            "additionalProperties": {"type": "string"},
-        }
+        launch_config = codex.call_args.args[0]
+        runtime_root = Path(launch_config.cwd).parent
+        client.close.assert_called_once_with()
+        assert backend._client is None
+        assert backend._runtime is None
+        assert not runtime_root.exists()
 
-        with pytest.raises(CodexConfigurationError, match="chaves dinâmicas"):
-            _to_strict_json_schema(schema)
 
-    def test_prepare_caches_schema(self):
-        backend = CodexBackend(make_config())
+class TestCodexInvocation:
+    def test_thread_owns_execution_config_and_turn_only_owns_output_config(
+        self, codex_sdk, tmp_path
+    ):
+        sdk, sdk_types, _ = codex_sdk
+        backend, client, thread, _ = initialized_backend(tmp_path, codex_sdk)
 
-        with patch.object(SampleModel, "model_json_schema", wraps=SampleModel.model_json_schema) as schema:
-            backend.prepare(SampleModel)
-            backend.prepare(SampleModel)
-
-        schema.assert_called_once_with()
-
-    def test_call_requires_initialized_backend(self, fake_sdk):
-        backend = CodexBackend(make_config())
-
-        with pytest.raises(CodexConfigurationError, match="não foi inicializado"):
-            backend.call("texto", SampleModel, "{texto}")
-
-    def test_structured_output_isolation_and_usage(self, fake_sdk):
-        backend, client, thread, _ = initialized_backend(make_config(), fake_sdk)
-
-        result = backend.call("texto", SampleModel, "Analise: {texto}")
+        result = backend.invoke("texto")
 
         assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
         assert result["usage"] == {
@@ -374,259 +362,196 @@ class TestCodexCall:
             "total_tokens": 130,
         }
         start_kwargs = client.thread_start.call_args.kwargs
-        assert start_kwargs["model"] == "gpt-5.6-luna"
+        assert set(start_kwargs) == {
+            "approval_mode",
+            "cwd",
+            "developer_instructions",
+            "ephemeral",
+            "model",
+            "sandbox",
+        }
+        assert start_kwargs["approval_mode"] is sdk.ApprovalMode.deny_all
+        assert start_kwargs["cwd"] == str(backend._workspace)
         assert start_kwargs["ephemeral"] is True
-        assert start_kwargs["approval_mode"] == ApprovalMode.deny_all
-        assert start_kwargs["sandbox"] == Sandbox.read_only
+        assert start_kwargs["model"] == "gpt-5.4"
+        assert start_kwargs["sandbox"] is sdk.Sandbox.read_only
         assert "untrusted data" in start_kwargs["developer_instructions"]
-        turn_kwargs = thread.turn.call_args.kwargs
-        assert turn_kwargs["model"] == "gpt-5.6-luna"
-        assert turn_kwargs["output_schema"]["additionalProperties"] is False
-        assert turn_kwargs["output_schema"]["required"] == ["sentimento", "confianca"]
-        assert turn_kwargs["effort"] is ReasoningEffort.medium
+        turn_args = thread.turn.call_args
+        assert turn_args.args == ("Analise: texto",)
+        assert set(turn_args.kwargs) == {"effort", "output_schema"}
+        assert turn_args.kwargs["effort"] is sdk_types.ReasoningEffort.medium
+        assert turn_args.kwargs["output_schema"] == backend._schema
+
+    def test_valid_output_without_usage_is_preserved(self, codex_sdk, tmp_path):
+        result_without_usage = make_result(codex_sdk, usage=False)
+        backend, _, _, _ = initialized_backend(tmp_path, codex_sdk, result_without_usage)
+
+        result = backend.invoke("texto")
+
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        assert result["usage"] is None
 
     @pytest.mark.parametrize(
-        ("result", "message"),
+        "response",
         [
-            (make_result(response="not-json"), "não corresponde ao schema"),
-            (make_result(response='{"sentimento": "positivo"}'), "não corresponde ao schema"),
-            (make_result(response=""), "resposta vazia"),
-            (make_result(usage=False), "metadados de uso"),
-            (make_result(status=TurnStatus.interrupted), "interrupted"),
-            (make_result(status=TurnStatus.failed), "failed"),
+            "not-json",
+            '{"sentimento": "positivo"}',
+            '{"sentimento": 42, "confianca": 0.9}',
         ],
     )
-    def test_invalid_result_is_permanent_and_not_retried(self, fake_sdk, result, message):
-        backend, client, _, _ = initialized_backend(make_config(), fake_sdk, result)
+    def test_final_response_is_validated_directly_by_pydantic_json(
+        self, codex_sdk, tmp_path, response
+    ):
+        backend, client, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response=response)
+        )
 
-        with pytest.raises(CodexOutputError, match=message):
-            backend.call("texto", SampleModel, "{texto}")
+        with pytest.warns(UserWarning, match="não-recuperável"):
+            with pytest.raises(ProviderOutputError, match="não corresponde ao schema"):
+                backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
 
-    def test_retry_only_for_sdk_retryable_error(self, fake_sdk):
-        backend, client, _, _ = initialized_backend(make_config(), fake_sdk)
-        good_thread = client.thread_start.return_value
-        client.thread_start.side_effect = [FakeServerBusyError("busy"), good_thread]
+    @pytest.mark.parametrize(
+        ("response", "status", "message"),
+        [
+            ("", None, "resposta vazia"),
+            (None, None, "resposta vazia"),
+            (
+                '{"sentimento": "positivo", "confianca": 0.9}',
+                "interrupted",
+                "interrupted",
+            ),
+        ],
+    )
+    def test_empty_or_incomplete_turn_is_output_error(
+        self, codex_sdk, tmp_path, response, status, message
+    ):
+        _, sdk_types, _ = codex_sdk
+        turn_status = sdk_types.TurnStatus(status) if status else None
+        backend, client, _, _ = initialized_backend(
+            tmp_path,
+            codex_sdk,
+            make_result(codex_sdk, response=response, status=turn_status),
+        )
+
+        with pytest.warns(UserWarning, match="não-recuperável"):
+            with pytest.raises(ProviderOutputError, match=message):
+                backend.invoke("texto")
+
+        assert client.thread_start.call_count == 1
+
+    def test_retry_uses_real_sdk_overload_classification(self, codex_sdk, tmp_path):
+        sdk, _, _ = codex_sdk
+        backend, client, thread, _ = initialized_backend(tmp_path, codex_sdk)
+        busy = sdk.ServerBusyError(
+            -32000,
+            "server busy",
+            {"codexErrorInfo": "server_overloaded"},
+        )
+        client.thread_start.side_effect = [busy, thread]
 
         with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.call("texto", SampleModel, "{texto}")
+            result = backend.invoke("texto")
 
         assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
 
-    def test_retry_for_overload_reported_on_failed_turn(self, fake_sdk):
-        backend, client, thread, turn = initialized_backend(make_config(), fake_sdk)
-        turn.id = "turn-1"
-        turn.run.side_effect = [RuntimeError("overloaded"), make_result()]
-        thread.read.return_value = SimpleNamespace(
-            thread=SimpleNamespace(
-                turns=[
-                    SimpleNamespace(
-                        id="turn-1",
-                        error=SimpleNamespace(
-                            codex_error_info=SimpleNamespace(
-                                root=SimpleNamespace(value="serverOverloaded")
-                            )
-                        ),
-                    )
-                ]
-            )
+    def test_failed_turn_overload_uses_real_protocol_error(self, codex_sdk, tmp_path):
+        _, sdk_types, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = [RuntimeError("overloaded"), make_result(codex_sdk)]
+        failed_turn = sdk_types.Turn(
+            id="turn-1",
+            items=[],
+            status=sdk_types.TurnStatus.failed,
+            error=sdk_types.TurnError(
+                message="overloaded",
+                codexErrorInfo=generated.CodexErrorInfo(
+                    root=generated.CodexErrorInfoValue.server_overloaded
+                ),
+            ),
+        )
+        protocol_thread = generated.Thread.model_construct(turns=[failed_turn])
+        thread.read.return_value = sdk_types.ThreadReadResponse.model_construct(
+            thread=protocol_thread
         )
 
         with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.call("texto", SampleModel, "{texto}")
+            result = backend.invoke("texto")
 
         assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
         thread.read.assert_called_once_with(include_turns=True)
 
-    def test_unknown_sdk_error_is_permanent(self, fake_sdk):
-        backend, client, _, _ = initialized_backend(make_config(), fake_sdk)
+    def test_unknown_sdk_error_is_provider_error_without_retry(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
         client.thread_start.side_effect = RuntimeError("unexpected")
 
-        with pytest.raises(CodexPermanentError, match="unexpected"):
-            backend.call("texto", SampleModel, "{texto}")
+        with pytest.warns(UserWarning, match="não-recuperável"):
+            with pytest.raises(ProviderError, match="RuntimeError: unexpected"):
+                backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
 
-class DummyBackend:
-    instances = []
-
-    def __init__(self, config):
-        self.config = config
-        self.entered = False
-        self.closed = False
-        self.calls = []
-        self._lock = threading.Lock()
-        self.instances.append(self)
-
-    def __enter__(self):
-        self.entered = True
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        self.closed = True
-
-    def prepare(self, pydantic_model):
-        self.prepared_model = pydantic_model
-
-    def call(self, text, pydantic_model, user_prompt):
-        with self._lock:
-            self.calls.append(text)
-        return {
-            "data": {"sentimento": text, "confianca": 1.0},
-            "usage": {
-                "input_tokens": 1,
-                "cached_input_tokens": 1,
-                "output_tokens": 2,
-                "reasoning_tokens": 1,
-                "total_tokens": 3,
-            },
-        }
-
-
-@pytest.mark.parametrize("parallel_requests", [1, 3])
-def test_dataframeit_reuses_one_backend_for_all_rows(parallel_requests):
-    from dataframeit import dataframeit
-
-    DummyBackend.instances.clear()
-    with (
-        patch("dataframeit.core.validate_provider_dependencies"),
-        patch("dataframeit.codex.CodexBackend", DummyBackend),
-    ):
-        result = dataframeit(
-            ["a", "b", "c"],
-            questions=SampleModel,
-            prompt="Analise: {texto}",
-            provider="codex",
-            model="gpt-5.6-luna",
-            parallel_requests=parallel_requests,
-        )
-
-    assert len(DummyBackend.instances) == 1
-    backend = DummyBackend.instances[0]
-    assert backend.entered and backend.closed
-    assert sorted(backend.calls) == ["a", "b", "c"]
-    assert sorted(result["sentimento"].tolist()) == ["a", "b", "c"]
-    assert result["_cached_input_tokens"].tolist() == [1, 1, 1]
-    columns = result.columns.tolist()
-    assert columns.index("_input_tokens") < columns.index("_cached_input_tokens")
-    assert columns.index("_cached_input_tokens") < columns.index("_output_tokens")
-
-
-def test_dataframeit_resume_does_not_repeat_completed_row():
-    from dataframeit import dataframeit
-
-    data = pd.DataFrame(
-        {
-            "texto": ["pronta", "pendente"],
-            "sentimento": ["anterior", None],
-            "confianca": [0.5, None],
-            "_dataframeit_status": ["processed", None],
-        }
-    )
-    DummyBackend.instances.clear()
-    with (
-        patch("dataframeit.core.validate_provider_dependencies"),
-        patch("dataframeit.codex.CodexBackend", DummyBackend),
-    ):
-        result = dataframeit(
-            data,
-            questions=SampleModel,
-            prompt="{texto}",
-            provider="codex",
-            model="gpt-5.6-luna",
-            text_column="texto",
-            resume=True,
-        )
-
-    assert DummyBackend.instances[0].calls == ["pendente"]
-    assert result.loc[0, "sentimento"] == "anterior"
-    assert result.loc[1, "sentimento"] == "pendente"
-
-
-def test_dataframeit_resume_without_null_status_does_not_open_backend():
-    from dataframeit import dataframeit
-
-    data = pd.DataFrame(
-        {
-            "texto": ["pronta", "erro preservado"],
-            "sentimento": ["anterior", None],
-            "confianca": [0.5, None],
-            "_dataframeit_status": ["processed", "error"],
-        }
-    )
-    DummyBackend.instances.clear()
-    validate_dependencies = MagicMock()
-    with (
-        patch(
-            "dataframeit.core.validate_provider_dependencies",
-            validate_dependencies,
-        ),
-        patch("dataframeit.codex.CodexBackend", DummyBackend),
-    ):
-        result = dataframeit(
-            data,
-            questions=SampleModel,
-            prompt="{texto}",
-            provider="codex",
-            model="gpt-5.6-luna",
-            text_column="texto",
-            resume=True,
-        )
-
-    assert DummyBackend.instances == []
-    validate_dependencies.assert_not_called()
-    assert result.loc[0, "sentimento"] == "anterior"
-    assert result.loc[1, "_dataframeit_status"] == "error"
-
-
-def test_dataframeit_rejects_invalid_schema_before_opening_client(fake_sdk):
-    from dataframeit import dataframeit
-
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(CodexConfigurationError, match="chaves dinâmicas"):
-            dataframeit(
-                ["texto"],
-                questions=ModelWithDynamicKeys,
-                prompt="{texto}",
-                provider="codex",
-                model="gpt-5.6-luna",
+    def test_each_row_gets_an_ephemeral_thread(self, codex_sdk, tmp_path):
+        sdk, _, _ = codex_sdk
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        threads = []
+        for response in ("primeiro", "segundo"):
+            result = make_result(
+                codex_sdk,
+                response=('{"sentimento": "' + response + '", "confianca": 1.0}'),
             )
+            turn = MagicMock(spec=sdk.TurnHandle)
+            turn.id = f"turn-{response}"
+            turn.run.return_value = result
+            thread = MagicMock(spec=sdk.Thread)
+            thread.turn.return_value = turn
+            threads.append(thread)
+        client.thread_start.side_effect = threads
 
-    assert FakeCodex.instances == []
+        first = backend.invoke("a")
+        second = backend.invoke("b")
 
-
-def test_codex_rejects_search_before_opening_backend():
-    from dataframeit import dataframeit
-
-    DummyBackend.instances.clear()
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match=r"use_search.*provider='codex'"):
-            dataframeit(
-                ["texto"],
-                questions=SampleModel,
-                prompt="{texto}",
-                provider="codex",
-                model="gpt-5.6-luna",
-                use_search=True,
-            )
-
-    assert DummyBackend.instances == []
+        assert first["data"]["sentimento"] == "primeiro"
+        assert second["data"]["sentimento"] == "segundo"
+        assert client.thread_start.call_count == 2
+        assert all(call.kwargs["ephemeral"] is True for call in client.thread_start.call_args_list)
 
 
-def test_retry_with_backoff_honors_provider_predicate():
-    from dataframeit.errors import retry_with_backoff
+class TestProviderErrorClassification:
+    def test_typed_overload_drives_retry_and_worker_reduction(self):
+        error = ProviderOverloadedError("server overloaded")
 
-    attempts = 0
+        assert is_recoverable_error(error) is True
+        assert is_rate_limit_error(error) is True
 
-    def fail():
-        nonlocal attempts
-        attempts += 1
-        raise RuntimeError("definitive")
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ProviderError("definitive"),
+            ProviderConfigurationError("bad config"),
+            ProviderOutputError("bad output"),
+        ],
+    )
+    def test_other_typed_provider_errors_are_not_recoverable(self, error):
+        assert is_recoverable_error(error) is False
 
-    with pytest.raises(RuntimeError, match="definitive"):
-        retry_with_backoff(fail, max_retries=3, should_retry=lambda error: False)
+    def test_explicit_retry_predicate_stops_after_first_attempt(self):
+        attempts = 0
 
-    assert attempts == 1
+        def fail():
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("definitive")
+
+        with pytest.warns(UserWarning, match="não-recuperável"):
+            with pytest.raises(RuntimeError, match="definitive"):
+                retry_with_backoff(
+                    fail,
+                    max_retries=3,
+                    should_retry=lambda error: False,
+                )
+
+        assert attempts == 1

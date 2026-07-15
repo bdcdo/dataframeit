@@ -8,7 +8,7 @@ Configure diferentes provedores de LLM via LangChain ou pelos SDKs oficiais de f
 |----------|---------------|----------------------|
 | Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
-| OpenAI Codex (experimental) | `codex` | Modelos disponíveis na sessão Codex |
+| OpenAI Codex (experimental) | `codex` | Modelos suportados pelo runtime empacotado |
 | Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
 | Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b, groq/compound |
 | Cohere | `cohere` | command-r, command-r-plus |
@@ -87,18 +87,15 @@ resultado = dataframeit(
 
 ## OpenAI Codex (Experimental)
 
-O provider `codex` usa o [SDK Python oficial](https://github.com/openai/codex/tree/main/sdk/python) e a autenticação já configurada no Codex local. O extra é experimental porque as versões fixadas do SDK e de seu runtime ainda são de pré-lançamento.
+O provider `codex` usa o [SDK Python oficial](https://github.com/openai/codex/tree/main/sdk/python) com autenticação local em arquivo. Ele é opcional, não faz parte do extra `all` e permanece experimental porque as versões fixadas do SDK e do runtime ainda são de pré-lançamento.
 
 ```bash
 pip install dataframeit[codex]
 # ou
 uv add "dataframeit[codex]"
-
-# O extra Python não instala o comando codex
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-codex login
-codex login status
 ```
+
+O extra inclui e fixa o runtime compatível com o SDK. O DataFrameIt sempre executa esse runtime empacotado. Se `auth.json` ainda não existir, use o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli) uma vez para executar `codex --config cli_auth_credentials_store='"file"' login` e criar o arquivo; o CLI externo não participa do processamento do DataFrame.
 
 ```python
 resultado = dataframeit(
@@ -106,28 +103,15 @@ resultado = dataframeit(
     Model,
     PROMPT,
     provider='codex',
-    model='gpt-5.6-luna',
-    model_kwargs={
-        'codex_bin': 'codex',
-        'effort': 'medium',
-    },
+    model='gpt-5.4',
+    model_kwargs={'effort': 'medium'},
     parallel_requests=3,
 )
 ```
 
-Para esse provider, `model_kwargs` aceita apenas `effort` e `codex_bin`. `timeout_seconds` não é aceito porque o SDK beta ainda não expõe um limite rígido por turno. `use_search=True` e campos `dict` com chaves dinâmicas não são suportados pelo structured output estrito. O SDK reutiliza a sessão local, portanto não passe `api_key` ao `dataframeit()` para esse caminho. Cada linha é executada em uma thread efêmera, com aprovações negadas e sandbox somente leitura sobre um diretório temporário vazio.
+Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True`, ferramentas e campos `dict` com chaves dinâmicas não são suportados. A autenticação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
 
-O Luna exige um Codex CLI compatível. O valor `codex_bin='codex'` resolve o executável disponível no `PATH`; se necessário, passe o caminho absoluto retornado por `command -v codex`. O DataFrameIt nunca troca o runtime silenciosamente.
-
-O DataFrameIt cria um `CODEX_HOME` efêmero para cada execução e compartilha somente a autenticação local em arquivo por um link para `auth.json`. Configurações, MCPs, skills, hooks, plugins e sessões globais não são carregados; shell, apps, browser, computer use, geração de imagens e busca também ficam desabilitados. O diretório inteiro é removido quando o DataFrame termina.
-
-O agente Codex ainda tem um contexto-base maior que uma chamada simples à API. Em um smoke local isolado com `gpt-5.6-luna` e Codex CLI 0.144.4, um texto curto consumiu 7.607 tokens de entrada e 42 de saída. Faça um piloto e confira `_input_tokens` e `_cached_input_tokens` antes de executar datasets grandes.
-
-### Escolha da integração
-
-O SDK oficial controla um `codex app-server` local e inclui um runtime do CLI fixado. O DataFrameIt mantém um cliente durante o processamento do DataFrame, em vez de abrir uma execução independente de `codex exec` para cada linha.
-
-O projeto [llm-openai-via-codex](https://github.com/simonw/llm-openai-via-codex/) segue outra arquitetura: sua implementação atual lê e renova as credenciais OAuth do Codex e chama diretamente o endpoint Codex do ChatGPT. O DataFrameIt não interpreta nem copia o conteúdo de `auth.json`; ele o expõe ao runtime oficial por um link temporário e deixa autenticação, renovação e comunicação sob responsabilidade do SDK.
+O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre uma thread efêmera por linha. Cada execução usa `CODEX_HOME` e workspace isolados, compartilha apenas `auth.json`, nega aprovações e aplica sandbox somente leitura. Busca e ferramentas não são disponibilizadas.
 
 ## Anthropic Claude
 

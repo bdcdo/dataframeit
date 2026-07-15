@@ -1,0 +1,51 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Verify Codex remains optional
+        run: uv run --extra dev python -c 'from importlib.metadata import distributions; installed = {dist.metadata["Name"].lower() for dist in distributions()}; assert not {"openai-codex", "openai-codex-cli-bin"} & installed'
+
+      - name: Run tests
+        run: uv run --extra dev pytest
+
+  codex-provider:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Run tests with the Codex SDK and bundled runtime
+        run: uv run --extra dev --extra codex pytest

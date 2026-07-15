@@ -139,6 +139,8 @@ result = dataframeit(
 
 ### Added Columns
 
+With `track_tokens=True`, DataFrameIt creates the three general columns below and, for `provider='codex'`, also `_cached_input_tokens`. Without usage telemetry, values may remain null or be zero. Cached input and reasoning are subsets of total input and output, respectively.
+
 | Column | Description |
 |--------|-------------|
 | `_input_tokens` | Input tokens per row |

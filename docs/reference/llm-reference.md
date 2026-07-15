@@ -24,7 +24,7 @@ export OPENAI_API_KEY="..."     # Para OpenAI
 export ANTHROPIC_API_KEY="..."  # Para Anthropic
 ```
 
-O provider `codex` reutiliza a autenticação local criada por `codex login` e não requer `OPENAI_API_KEY` quando essa sessão estiver ativa.
+O provider `codex` é opcional, não faz parte do extra `all` e sempre executa o runtime pinado por `dataframeit[codex]`. Ele reutiliza `auth.json`, que pode ser criado uma vez com `codex --config cli_auth_credentials_store='"file"' login`, e não requer `OPENAI_API_KEY`.
 
 ---
 
@@ -170,8 +170,8 @@ resultado = dataframeit(
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='codex',
-    model='gpt-5.6-luna',
-    model_kwargs={'codex_bin': 'codex', 'effort': 'medium'}
+    model='gpt-5.4',
+    model_kwargs={'effort': 'medium'}
 )
 
 # Com parâmetros extras
@@ -183,7 +183,7 @@ resultado = dataframeit(
 )
 ```
 
-O provider `codex` aceita somente `effort` e `codex_bin` em `model_kwargs` e não suporta `use_search=True`. Para usar Luna, `codex_bin` seleciona explicitamente um Codex CLI compatível instalado localmente.
+O provider `codex` aceita somente `effort` em `model_kwargs` e não suporta `use_search=True` nem ferramentas. O CLI externo serve apenas para criar `auth.json`; a execução usa sempre o runtime empacotado.
 
 ---
 
@@ -228,6 +228,8 @@ sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
 ---
 
 ## Colunas Adicionadas Automaticamente
+
+Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_output_tokens` e `_reasoning_tokens`; para `provider='codex'`, cria ainda `_cached_input_tokens`. Sem telemetria de uso, esses valores podem permanecer nulos ou ser zero. Cache e raciocínio são subconjuntos do total de entrada e saída, respectivamente.
 
 | Coluna | Descrição |
 |--------|-----------|

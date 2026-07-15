@@ -25,7 +25,7 @@ Configure a autenticação do provider:
 export GOOGLE_API_KEY="sua-chave"  # ou OPENAI_API_KEY, ANTHROPIC_API_KEY
 ```
 
-O provider experimental `codex` reutiliza a autenticação local do Codex. O extra Python inclui o runtime usado pelo SDK, mas não instala o comando `codex`: instale antes o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli) e execute `codex login`. Não é necessário definir `OPENAI_API_KEY` quando a sessão já estiver autenticada.
+O provider experimental `codex` é opcional e não faz parte do extra `all`. `dataframeit[codex]` inclui e fixa o SDK e seu runtime compatível, que é sempre usado na execução. Se ainda não houver autenticação em arquivo, instale o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli) e execute `codex --config cli_auth_credentials_store='"file"' login` uma vez para criar `auth.json`; o CLI externo não é usado para processar o DataFrame e não é necessário definir `OPENAI_API_KEY`.
 
 ## Exemplo Rápido
 

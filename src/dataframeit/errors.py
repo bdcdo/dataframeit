@@ -12,6 +12,23 @@ import time
 import warnings
 from collections.abc import Callable
 
+
+class ProviderError(RuntimeError):
+    """Falha definitiva de execução reportada por um provider."""
+
+
+class ProviderOverloadedError(ProviderError):
+    """Falha transitória causada por sobrecarga ou limitação do provider."""
+
+
+class ProviderConfigurationError(ValueError):
+    """Configuração local incompatível com o contrato de um provider."""
+
+
+class ProviderOutputError(ValueError):
+    """Resposta definitiva incompatível com o contrato de saída."""
+
+
 # Erros considerados recuperáveis (transientes)
 RECOVERABLE_ERRORS = (
     # Timeouts e deadlines
@@ -54,10 +71,6 @@ NON_RECOVERABLE_ERRORS = (
     'MissingAPIKeyError',
     'InvalidAPIKeyError',
     'BadRequestError',
-    # Contratos locais de providers SDK
-    'CodexConfigurationError',
-    'CodexOutputError',
-    'CodexPermanentError',
 )
 
 
@@ -166,8 +179,21 @@ def _infer_provider_info(provider: str) -> dict:
     }
 
 
-def _get_missing_package_message(package: str, install_name: str, friendly_name: str) -> str:
+def _get_missing_package_message(
+    package: str,
+    install_name: str,
+    friendly_name: str,
+    alternative_install: str | None = None,
+) -> str:
     """Gera mensagem amigável para pacote não instalado."""
+    alternative = ""
+    if alternative_install:
+        alternative = f"""║                                                                              ║
+║  Ou, para instalar todas as dependências recomendadas:                       ║
+║                                                                              ║
+║      pip install {alternative_install:<62} ║
+║                                                                              ║
+"""
     return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  BIBLIOTECA NÃO INSTALADA                                                    ║
@@ -181,7 +207,7 @@ def _get_missing_package_message(package: str, install_name: str, friendly_name:
 ║                                                                              ║
 ║      pip install {install_name:<62} ║
 ║                                                                              ║
-║  Após instalar, execute seu código novamente.                                ║
+{alternative}║  Após instalar, execute seu código novamente.                                ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
@@ -212,12 +238,23 @@ def validate_provider_dependencies(provider: str):
     try:
         importlib.import_module('langchain')
     except ImportError:
-        raise ImportError(_get_missing_package_message('langchain', 'langchain', 'LangChain'))
+        raise ImportError(
+            _get_missing_package_message(
+                'langchain', 'langchain', 'LangChain', 'dataframeit[all]'
+            )
+        )
 
     try:
         importlib.import_module('langchain_core')
     except ImportError:
-        raise ImportError(_get_missing_package_message('langchain_core', 'langchain-core', 'LangChain Core'))
+        raise ImportError(
+            _get_missing_package_message(
+                'langchain_core',
+                'langchain-core',
+                'LangChain Core',
+                'dataframeit[all]',
+            )
+        )
 
     # Validar provider específico (inferir dinamicamente)
     if provider:
@@ -227,7 +264,11 @@ def validate_provider_dependencies(provider: str):
         try:
             importlib.import_module(package)
         except ImportError:
-            raise ImportError(_get_missing_package_message(package, install, name))
+            raise ImportError(
+                _get_missing_package_message(
+                    package, install, name, 'dataframeit[all]'
+                )
+            )
 
 
 def validate_search_dependencies(search_provider: str = "tavily"):
@@ -577,6 +618,14 @@ def is_recoverable_error(error: Exception) -> bool:
     Returns:
         True se o erro é recuperável, False caso contrário.
     """
+    if isinstance(error, ProviderOverloadedError):
+        return True
+    if isinstance(
+        error,
+        (ProviderError, ProviderConfigurationError, ProviderOutputError),
+    ):
+        return False
+
     error_str = f"{type(error).__name__}: {error}"
 
     # Verificar se é explicitamente não-recuperável
@@ -602,6 +651,9 @@ def is_rate_limit_error(error: Exception) -> bool:
     Returns:
         True se o erro é de rate limit, False caso contrário.
     """
+    if isinstance(error, ProviderOverloadedError):
+        return True
+
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ('ratelimit', 'resourceexhausted', 'toomanyrequests', '429')
     return any(pattern in error_str for pattern in rate_limit_patterns)

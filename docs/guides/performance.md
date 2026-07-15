@@ -134,6 +134,8 @@ resultado = dataframeit(
 
 ### Colunas Adicionadas
 
+Com `track_tokens=True`, o DataFrameIt cria as três colunas gerais abaixo e, para `provider='codex'`, também `_cached_input_tokens`. Sem telemetria de uso, os valores podem permanecer nulos ou ser zero. Cache e raciocínio são subconjuntos do total de entrada e saída, respectivamente.
+
 | Coluna | Descrição |
 |--------|-----------|
 | `_input_tokens` | Tokens de entrada por linha |

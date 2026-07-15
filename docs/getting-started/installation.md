@@ -36,11 +36,7 @@ O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs o
     uv add "dataframeit[codex]"
     ```
 
-    O extra fixa a versão de pré-lançamento do SDK Python oficial, que por sua vez fixa um runtime compatível, mas não instala o comando `codex`. Instale também o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli):
-
-    ```bash
-    curl -fsSL https://chatgpt.com/codex/install.sh | sh
-    ```
+    O extra fixa o SDK Python oficial e seu runtime compatível. O DataFrameIt sempre usa esse runtime empacotado; uma instalação externa do comando `codex` não participa da execução.
 
 === "Todos os Providers"
 
@@ -96,12 +92,13 @@ Configure as credenciais correspondentes ao seu provider:
 
 === "Codex"
 
+    Se `auth.json` ainda não existir, instale o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli) e autentique uma vez:
+
     ```bash
-    codex login
-    codex login status
+    codex --config cli_auth_credentials_store='"file"' login
     ```
 
-    O SDK reutiliza a autenticação em arquivo configurada no Codex local. O DataFrameIt compartilha apenas `auth.json` com um `CODEX_HOME` efêmero; não passe `api_key` ao `dataframeit()` para esse provider.
+    O CLI externo serve somente para criar `auth.json`; a opção explícita evita armazenar as credenciais apenas no keyring do sistema. O DataFrameIt compartilha somente esse arquivo com um `CODEX_HOME` efêmero e executa o runtime pinado pelo extra; não passe `api_key` ao `dataframeit()` para esse provider.
 
 ## Verificando a Instalação
 

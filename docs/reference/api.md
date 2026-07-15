@@ -61,7 +61,7 @@ def dataframeit(
 | `model` | str | `'gemini-3-flash-preview'` | Nome do modelo LLM |
 | `provider` | str | `'google_genai'` | Identificador do provider; `codex` usa o SDK oficial em vez de LangChain |
 | `api_key` | str | `None` | API key (usa env var se None); não aceito com `provider='codex'` |
-| `model_kwargs` | dict | `None` | Parâmetros extras; com `codex`, aceita apenas `effort` e `codex_bin` |
+| `model_kwargs` | dict | `None` | Parâmetros extras; com `codex`, aceita apenas `effort` |
 
 #### Resiliência
 
@@ -105,14 +105,16 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 
 ### Colunas Adicionadas
 
+Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_output_tokens` e `_reasoning_tokens`; para `provider='codex'`, cria ainda `_cached_input_tokens`. Sem telemetria de uso, esses valores podem permanecer nulos ou ser zero. Cache e raciocínio são subconjuntos do total de entrada e saída, respectivamente.
+
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | `'processed'`, `'error'`, ou `None` |
 | `_error_details` | Detalhes do erro (quando aplicável) |
 | `_input_tokens` | Tokens de entrada (se `track_tokens=True`) |
-| `_cached_input_tokens` | Parcela do input atendida por cache (somente `codex`) |
+| `_cached_input_tokens` | Parcela do input atendida por cache (somente `codex`, se `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (se `track_tokens=True`) |
-| `_reasoning_tokens` | Parcela do output usada em raciocínio |
+| `_reasoning_tokens` | Parcela do output usada em raciocínio (se `track_tokens=True`) |
 
 ### Exemplos
 

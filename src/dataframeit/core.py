@@ -6,7 +6,7 @@ import time
 import warnings
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -56,7 +56,7 @@ _SEARCH_PROVIDER_RATE_LIMITS = {
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
 
-ProviderCall = Callable[[str, Any, str], dict]
+ProviderCall = Callable[[str], dict]
 
 
 @dataclass(frozen=True)
@@ -68,53 +68,68 @@ class ProviderBackend:
 
 
 @contextmanager
-def _provider_backend(config: LLMConfig, pydantic_model) -> Iterator[ProviderBackend]:
-    """Cria uma única implementação de provider para toda a execução."""
-    if config.provider == "codex":
-        from .codex import CodexBackend
+def _codex_provider_backend(
+    config: LLMConfig,
+    pydantic_model,
+    user_prompt: str,
+) -> Iterator[ProviderBackend]:
+    """Adapta o backend stateful do Codex ao contrato comum por linha."""
+    from .codex import CodexBackend
 
-        codex_backend = CodexBackend(config)
-        codex_backend.prepare(pydantic_model)
-        with codex_backend as backend:
-            yield ProviderBackend(label="codex", invoke=backend.call)
-        return
+    with CodexBackend(config, pydantic_model, user_prompt) as backend:
+        yield ProviderBackend(label="codex", invoke=backend.invoke)
+
+
+def _provider_backend(
+    config: LLMConfig,
+    pydantic_model,
+    user_prompt: str,
+    trace_mode: str | None,
+) -> AbstractContextManager[ProviderBackend]:
+    """Seleciona e vincula uma única implementação para toda a execução."""
+    if config.search_config and config.search_config.enabled:
+        from .agent import call_agent, call_agent_per_field, call_agent_per_group
+
+        if not config.search_config.per_field:
+            search_call = call_agent
+        elif config.search_config.groups:
+            search_call = call_agent_per_group
+        else:
+            search_call = call_agent_per_field
+
+        return nullcontext(
+            ProviderBackend(
+                label="langchain",
+                invoke=lambda text: search_call(
+                    text, pydantic_model, user_prompt, config, trace_mode
+                ),
+            )
+        )
+
+    if config.provider == "codex":
+        return _codex_provider_backend(config, pydantic_model, user_prompt)
 
     if config.provider == "claude_code":
         from .claude_code import call_claude_code
 
-        yield ProviderBackend(
-            label="claude_code",
-            invoke=lambda text, model, prompt: call_claude_code(
-                text, model, prompt, config
+        return nullcontext(
+            ProviderBackend(
+                label="claude_code",
+                invoke=lambda text: call_claude_code(
+                    text, pydantic_model, user_prompt, config
+                ),
+            )
+        )
+
+    langchain_call = call_langchain
+    return nullcontext(
+        ProviderBackend(
+            label="langchain",
+            invoke=lambda text: langchain_call(
+                text, pydantic_model, user_prompt, config
             ),
         )
-        return
-
-    yield ProviderBackend(
-        label="langchain",
-        invoke=lambda text, model, prompt: call_langchain(text, model, prompt, config),
     )
-
-
-def _call_row_model(
-    text: str,
-    pydantic_model,
-    user_prompt: str,
-    config: LLMConfig,
-    trace_mode: str | None,
-    backend: ProviderBackend,
-) -> dict:
-    """Despacha uma linha para busca ou para o backend selecionado."""
-    if not (config.search_config and config.search_config.enabled):
-        return backend.invoke(text, pydantic_model, user_prompt)
-
-    from .agent import call_agent, call_agent_per_field, call_agent_per_group
-
-    if not config.search_config.per_field:
-        return call_agent(text, pydantic_model, user_prompt, config, trace_mode)
-    if config.search_config.groups:
-        return call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
-    return call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
 
 
 def _warn_search_rate_limit(
@@ -462,7 +477,6 @@ def dataframeit(
             raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
         if not 1 <= max_results <= 20:
             raise ValueError("max_results deve estar entre 1 e 20")
-        validate_search_dependencies(search_provider)
 
     # Validar e normalizar save_trace
     trace_mode = None
@@ -530,23 +544,6 @@ def dataframeit(
     if not expected_columns:
         raise ValueError("Modelo Pydantic não pode estar vazio")
 
-    # Avisar sobre rate limits de busca quando a configuração parece arriscada.
-    # Cobre tanto paralelismo alto quanto search_per_field em datasets grandes
-    # mesmo sem paralelismo — ambos podem estourar o limite do provedor.
-    if use_search:
-        is_risky = parallel_requests > 1 or (
-            search_per_field and len(expected_columns) * len(df_pandas) > 100
-        )
-        if is_risky:
-            _warn_search_rate_limit(
-                num_rows=len(df_pandas),
-                num_fields=len(expected_columns),
-                parallel_requests=parallel_requests,
-                search_per_field=search_per_field,
-                rate_limit_delay=rate_limit_delay,
-                search_provider=search_provider,
-            )
-
     # Validar e processar search_groups
     if search_groups:
         validated_groups = _validate_search_groups(
@@ -567,6 +564,24 @@ def dataframeit(
                 f"Colunas disponíveis: {expected_columns}"
             )
 
+    status_col = status_column or '_dataframeit_status'
+    complex_fields = get_complex_fields(questions)
+
+    # Entradas vazias têm um resultado bem definido e não dependem de provider.
+    if df_pandas.empty:
+        _setup_columns(
+            df_pandas,
+            expected_columns,
+            status_column,
+            resume,
+            track_tokens,
+            search_config,
+            trace_mode,
+            questions,
+            provider,
+        )
+        return from_pandas(df_pandas, conversion_info)
+
     # Verificar conflitos de colunas
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
@@ -574,9 +589,6 @@ def dataframeit(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
         return from_pandas(df_pandas, conversion_info)
-
-    status_col = status_column or '_dataframeit_status'
-    complex_fields = get_complex_fields(questions)
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
     if (
@@ -588,30 +600,6 @@ def dataframeit(
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
         return from_pandas(df_pandas, conversion_info)
-
-    # Para execuções com trabalho pendente, falha antes de mutar o DataFrame.
-    validate_provider_dependencies(provider)
-
-    # Configurar colunas
-    _setup_columns(
-        df_pandas,
-        expected_columns,
-        status_column,
-        resume,
-        track_tokens,
-        search_config,
-        trace_mode,
-        questions,
-        provider,
-    )
-
-    # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
-    # serializadas como strings JSON ao salvar/carregar de arquivos
-    if complex_fields and resume:
-        normalize_complex_columns(df_pandas, complex_fields)
-
-    # Determinar onde começar
-    start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume, reprocess_columns)
 
     # Criar config do LLM
     config = LLMConfig(
@@ -634,14 +622,49 @@ def dataframeit(
                 "search_depth, max_results) requerem search_per_field=True"
             )
 
-    # O backend vive durante toda a execução; providers de SDK podem compartilhar
-    # uma única conexão sem compartilhar o contexto de cada linha.
-    with _provider_backend(config, questions) as backend:
+    # Só execuções com trabalho pendente validam dependências e rate limits.
+    if use_search:
+        validate_search_dependencies(search_provider)
+        is_risky = parallel_requests > 1 or (
+            search_per_field and len(expected_columns) * len(df_pandas) > 100
+        )
+        if is_risky:
+            _warn_search_rate_limit(
+                num_rows=len(df_pandas),
+                num_fields=len(expected_columns),
+                parallel_requests=parallel_requests,
+                search_per_field=search_per_field,
+                rate_limit_delay=rate_limit_delay,
+                search_provider=search_provider,
+            )
+    validate_provider_dependencies(provider)
+
+    # Entrar no backend conclui o preflight antes de qualquer mutação do DataFrame.
+    with _provider_backend(config, questions, prompt, trace_mode) as backend:
+        _setup_columns(
+            df_pandas,
+            expected_columns,
+            status_column,
+            resume,
+            track_tokens,
+            search_config,
+            trace_mode,
+            questions,
+            provider,
+        )
+
+        # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
+        # serializadas como strings JSON ao salvar/carregar de arquivos.
+        if complex_fields and resume:
+            normalize_complex_columns(df_pandas, complex_fields)
+
+        start_pos, processed_count = _get_processing_indices(
+            df_pandas, status_col, resume, reprocess_columns
+        )
+
         if parallel_requests > 1:
             token_stats = _process_rows_parallel(
                 df_pandas,
-                questions,
-                prompt,
                 text_column,
                 status_col,
                 expected_columns,
@@ -660,8 +683,6 @@ def dataframeit(
         else:
             token_stats = _process_rows(
                 df_pandas,
-                questions,
-                prompt,
                 text_column,
                 status_col,
                 expected_columns,
@@ -896,8 +917,6 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
 
 def _process_rows(
     df: pd.DataFrame,
-    pydantic_model,
-    user_prompt: str,
     text_column: str,
     status_col: str,
     expected_columns: list,
@@ -971,9 +990,7 @@ def _process_rows(
         text = str(row[text_column])
 
         try:
-            result = _call_row_model(
-                text, pydantic_model, user_prompt, config, trace_mode, backend
-            )
+            result = backend.invoke(text)
 
             # Extrair dados e usage metadata
             extracted = result.get('data', result)  # Retrocompatibilidade
@@ -1074,8 +1091,6 @@ def _process_rows(
 
 def _process_rows_parallel(
     df: pd.DataFrame,
-    pydantic_model,
-    user_prompt: str,
     text_column: str,
     status_col: str,
     expected_columns: list,
@@ -1167,9 +1182,7 @@ def _process_rows_parallel(
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
 
         try:
-            result = _call_row_model(
-                text, pydantic_model, user_prompt, config, trace_mode, backend
-            )
+            result = backend.invoke(text)
 
             # Extrair dados
             extracted = result.get('data', result)
