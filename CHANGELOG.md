@@ -20,7 +20,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- O CI valida Python 3.10 e 3.13 nos ambientes base e Codex, exercita o lifecycle de autenticação no Windows e faz build da documentação em pull requests (#111).
+- O CI valida Python 3.10 e 3.13 nos ambientes base e Codex, exercita o lifecycle de autenticação no Windows e faz build da documentação em pull requests; o extra declara o runtime pré-release como limite inferior para permitir resolução limpa pelo `uv`, enquanto o SDK conserva o pin exato (#111).
 - Leitura de `usage_metadata` extraída para helper `_parse_usage_metadata` em `llm.py` e reaproveitada por `agent._extract_usage`, eliminando divergência futura entre os dois caminhos (#107).
 
 ## [0.7.1] - 2026-05-01
