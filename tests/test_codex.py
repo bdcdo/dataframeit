@@ -116,7 +116,7 @@ class FakeServerBusyError(RuntimeError):
 
 def make_config(**overrides):
     values = {
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-luna",
         "provider": "codex",
         "api_key": None,
         "max_retries": 2,
@@ -374,11 +374,13 @@ class TestCodexCall:
             "total_tokens": 130,
         }
         start_kwargs = client.thread_start.call_args.kwargs
+        assert start_kwargs["model"] == "gpt-5.6-luna"
         assert start_kwargs["ephemeral"] is True
         assert start_kwargs["approval_mode"] == ApprovalMode.deny_all
         assert start_kwargs["sandbox"] == Sandbox.read_only
         assert "untrusted data" in start_kwargs["developer_instructions"]
         turn_kwargs = thread.turn.call_args.kwargs
+        assert turn_kwargs["model"] == "gpt-5.6-luna"
         assert turn_kwargs["output_schema"]["additionalProperties"] is False
         assert turn_kwargs["output_schema"]["required"] == ["sentimento", "confianca"]
         assert turn_kwargs["effort"] is ReasoningEffort.medium
@@ -498,7 +500,7 @@ def test_dataframeit_reuses_one_backend_for_all_rows(parallel_requests):
             questions=SampleModel,
             prompt="Analise: {texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-5.6-luna",
             parallel_requests=parallel_requests,
         )
 
@@ -534,7 +536,7 @@ def test_dataframeit_resume_does_not_repeat_completed_row():
             questions=SampleModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-5.6-luna",
             text_column="texto",
             resume=True,
         )
@@ -569,7 +571,7 @@ def test_dataframeit_resume_without_null_status_does_not_open_backend():
             questions=SampleModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-5.6-luna",
             text_column="texto",
             resume=True,
         )
@@ -590,7 +592,7 @@ def test_dataframeit_rejects_invalid_schema_before_opening_client(fake_sdk):
                 questions=ModelWithDynamicKeys,
                 prompt="{texto}",
                 provider="codex",
-                model="gpt-5.4",
+                model="gpt-5.6-luna",
             )
 
     assert FakeCodex.instances == []
@@ -607,7 +609,7 @@ def test_codex_rejects_search_before_opening_backend():
                 questions=SampleModel,
                 prompt="{texto}",
                 provider="codex",
-                model="gpt-5.4",
+                model="gpt-5.6-luna",
                 use_search=True,
             )
 

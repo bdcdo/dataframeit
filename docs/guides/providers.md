@@ -106,8 +106,9 @@ resultado = dataframeit(
     Model,
     PROMPT,
     provider='codex',
-    model='gpt-5.4',
+    model='gpt-5.6-luna',
     model_kwargs={
+        'codex_bin': 'codex',
         'effort': 'medium',
     },
     parallel_requests=3,
@@ -116,11 +117,11 @@ resultado = dataframeit(
 
 Para esse provider, `model_kwargs` aceita apenas `effort` e `codex_bin`. `timeout_seconds` não é aceito porque o SDK beta ainda não expõe um limite rígido por turno. `use_search=True` e campos `dict` com chaves dinâmicas não são suportados pelo structured output estrito. O SDK reutiliza a sessão local, portanto não passe `api_key` ao `dataframeit()` para esse caminho. Cada linha é executada em uma thread efêmera, com aprovações negadas e sandbox somente leitura sobre um diretório temporário vazio.
 
-Por padrão, o SDK usa seu runtime fixado. Se um modelo exigir uma versão mais nova, localize um Codex CLI compatível com `command -v codex` e passe explicitamente o caminho retornado em `codex_bin`, por exemplo `model_kwargs={'codex_bin': '/home/user/.local/bin/codex'}`. O DataFrameIt nunca troca o runtime silenciosamente.
+O Luna exige um Codex CLI compatível. O valor `codex_bin='codex'` resolve o executável disponível no `PATH`; se necessário, passe o caminho absoluto retornado por `command -v codex`. O DataFrameIt nunca troca o runtime silenciosamente.
 
 O DataFrameIt cria um `CODEX_HOME` efêmero para cada execução e compartilha somente a autenticação local em arquivo por um link para `auth.json`. Configurações, MCPs, skills, hooks, plugins e sessões globais não são carregados; shell, apps, browser, computer use, geração de imagens e busca também ficam desabilitados. O diretório inteiro é removido quando o DataFrame termina.
 
-O agente Codex ainda tem um contexto-base maior que uma chamada simples à API. Em um smoke test isolado com `gpt-5.4`, um texto curto consumiu 6.472 tokens de entrada. Faça um piloto e confira `_input_tokens` e `_cached_input_tokens` antes de executar datasets grandes.
+O agente Codex ainda tem um contexto-base maior que uma chamada simples à API. Em um smoke local isolado com `gpt-5.6-luna` e Codex CLI 0.144.4, um texto curto consumiu 7.607 tokens de entrada e 42 de saída. Faça um piloto e confira `_input_tokens` e `_cached_input_tokens` antes de executar datasets grandes.
 
 ### Escolha da integração
 

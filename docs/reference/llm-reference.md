@@ -170,8 +170,8 @@ resultado = dataframeit(
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='codex',
-    model='gpt-5.4',
-    model_kwargs={'effort': 'medium'}
+    model='gpt-5.6-luna',
+    model_kwargs={'codex_bin': 'codex', 'effort': 'medium'}
 )
 
 # Com parâmetros extras
@@ -183,7 +183,7 @@ resultado = dataframeit(
 )
 ```
 
-O provider `codex` aceita somente `effort` e `codex_bin` em `model_kwargs` e não suporta `use_search=True`. `codex_bin` seleciona explicitamente um CLI local quando o runtime fixado pelo SDK é antigo demais para o modelo escolhido.
+O provider `codex` aceita somente `effort` e `codex_bin` em `model_kwargs` e não suporta `use_search=True`. Para usar Luna, `codex_bin` seleciona explicitamente um Codex CLI compatível instalado localmente.
 
 ---
 

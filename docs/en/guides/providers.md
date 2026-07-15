@@ -111,8 +111,9 @@ result = dataframeit(
     PROMPT,
     text_column='text',
     provider='codex',
-    model='gpt-5.4',
+    model='gpt-5.6-luna',
     model_kwargs={
+        'codex_bin': 'codex',
         'effort': 'medium',
     },
     parallel_requests=3,
@@ -121,11 +122,11 @@ result = dataframeit(
 
 For this provider, `model_kwargs` accepts only `effort` and `codex_bin`. `timeout_seconds` is not accepted because the beta SDK does not yet expose a hard per-turn deadline. `use_search=True` and `dict` fields with dynamic keys are not supported by strict structured output. The SDK reuses the local session, so do not pass `api_key` to `dataframeit()` for this path. Each row runs in an ephemeral thread with approvals denied and a read-only sandbox over an empty temporary directory.
 
-By default, the SDK uses its pinned runtime. If a model requires a newer version, locate a compatible Codex CLI with `command -v codex` and explicitly pass the returned path in `codex_bin`, for example `model_kwargs={'codex_bin': '/home/user/.local/bin/codex'}`. DataFrameIt never switches runtimes silently.
+Luna requires a compatible Codex CLI. The value `codex_bin='codex'` resolves the executable available on `PATH`; if needed, pass the absolute path returned by `command -v codex`. DataFrameIt never switches runtimes silently.
 
 DataFrameIt creates an ephemeral `CODEX_HOME` for every run and shares only the local file-backed authentication through a link to `auth.json`. Global configuration, MCP servers, skills, hooks, plugins, and sessions are not loaded; shell, apps, browser, computer use, image generation, and search are disabled as well. The entire directory is removed when the DataFrame run ends.
 
-The Codex agent still has a larger base context than a plain API call. In an isolated smoke test with `gpt-5.4`, one short text consumed 6,472 input tokens. Run a pilot and inspect `_input_tokens` and `_cached_input_tokens` before processing large datasets.
+The Codex agent still has a larger base context than a plain API call. In an isolated local smoke test with `gpt-5.6-luna` and Codex CLI 0.144.4, one short text consumed 7,607 input tokens and 42 output tokens. Run a pilot and inspect `_input_tokens` and `_cached_input_tokens` before processing large datasets.
 
 ### Integration choice
 
