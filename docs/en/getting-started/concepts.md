@@ -113,16 +113,12 @@ For each DataFrame row:
 
 ## Automatic Columns
 
-DataFrameIt automatically adds the status columns. With `track_tokens=True`, it also creates `_input_tokens`, `_output_tokens`, and `_reasoning_tokens`; for `provider='codex'`, it additionally creates `_cached_input_tokens`. Without usage telemetry, these values may remain null or be zero. Cached input and reasoning are subsets of total input and output, respectively.
+DataFrameIt automatically adds the status columns. When `track_tokens=True`, it also adds usage columns; see the [LLM Reference](../reference/llm-reference.md#automatically-added-columns) for the complete table and the semantics of cached input and reasoning.
 
 | Column | Description |
 |--------|-------------|
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, or `None` |
 | `_error_details` | Error details (when status is `'error'`) |
-| `_input_tokens` | Input tokens (with `track_tokens=True`) |
-| `_cached_input_tokens` | Input subset served from cache (`provider='codex'`, with `track_tokens=True`) |
-| `_output_tokens` | Output tokens (with `track_tokens=True`) |
-| `_reasoning_tokens` | Output subset used for reasoning (with `track_tokens=True`) |
 
 ## Next Steps
 

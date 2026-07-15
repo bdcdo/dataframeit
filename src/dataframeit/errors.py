@@ -11,6 +11,10 @@ import random
 import time
 import warnings
 
+CODEX_FILE_AUTH_LOGIN_COMMAND = (
+    "codex --config cli_auth_credentials_store='\"file\"' login"
+)
+
 
 class ProviderError(RuntimeError):
     """Falha definitiva de execução reportada por um provider."""
@@ -102,7 +106,7 @@ _PROVIDER_OVERRIDES = {
         'install': 'dataframeit[codex]',
         'env_var': None,
         'name': 'OpenAI Codex',
-        'auth_hint': 'codex login',
+        'auth_hint': CODEX_FILE_AUTH_LOGIN_COMMAND,
         'uses_langchain': False,
     },
     'google_vertexai': {

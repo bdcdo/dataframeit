@@ -13,10 +13,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- O provider `codex` agora rejeita schemas incompatíveis com Structured Outputs durante o preflight, orienta o login file-backed com o comando correto e compartilha `auth.json` sem depender de symlink privilegiado no Windows (#111).
+- Checkpoints concluídos recompõem campos adicionados ao modelo e colunas de telemetria ausentes antes do retorno, sem abrir o provider nem exigir autenticação (#111).
+- A normalização automática de JSON reconhece tanto colunas `object` do pandas 2 quanto o dtype `str` do pandas 3 (#111).
 - `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto, alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError` (#107).
 
 ### Alterado
 
+- O CI valida Python 3.10 e 3.13 nos ambientes base e Codex, exercita o lifecycle de autenticação no Windows e faz build da documentação em pull requests (#111).
 - Leitura de `usage_metadata` extraída para helper `_parse_usage_metadata` em `llm.py` e reaproveitada por `agent._extract_usage`, eliminando divergência futura entre os dois caminhos (#107).
 
 ## [0.7.1] - 2026-05-01

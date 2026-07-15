@@ -19,6 +19,11 @@ class ResultModel(BaseModel):
     value: str
 
 
+class ExpandedResultModel(BaseModel):
+    value: list[str]
+    new_value: str
+
+
 def make_config(
     provider: str = "codex",
     search_config: SearchConfig | None = None,
@@ -147,7 +152,40 @@ def test_empty_dataframe_adds_result_columns_without_provider(monkeypatch):
     ]
 
 
-def test_completed_checkpoint_does_not_open_provider(monkeypatch):
+def test_completed_checkpoint_adds_new_model_field_and_normalizes_without_provider(
+    monkeypatch,
+):
+    dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
+    backend_factory = Mock(side_effect=AssertionError("backend must not open"))
+    monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
+    monkeypatch.setattr(core, "_provider_backend", backend_factory)
+    data = pd.DataFrame(
+        {
+            "text": ["ready"],
+            "value": ['["previous"]'],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    result = core.dataframeit(
+        data,
+        questions=ExpandedResultModel,
+        prompt="{texto}",
+        provider="codex",
+        model="gpt-5.4",
+        resume=True,
+        track_tokens=False,
+    )
+
+    dependencies.assert_not_called()
+    backend_factory.assert_not_called()
+    assert result["value"].tolist() == [["previous"]]
+    assert result["new_value"].isna().all()
+
+
+def test_completed_codex_checkpoint_adds_missing_cached_token_column_without_provider(
+    monkeypatch,
+):
     dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
     backend_factory = Mock(side_effect=AssertionError("backend must not open"))
     monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
@@ -156,6 +194,9 @@ def test_completed_checkpoint_does_not_open_provider(monkeypatch):
         {
             "text": ["ready"],
             "value": ["previous"],
+            "_input_tokens": [10],
+            "_output_tokens": [5],
+            "_reasoning_tokens": [2],
             "_dataframeit_status": ["processed"],
         }
     )
@@ -172,6 +213,7 @@ def test_completed_checkpoint_does_not_open_provider(monkeypatch):
     dependencies.assert_not_called()
     backend_factory.assert_not_called()
     assert result["value"].tolist() == ["previous"]
+    assert result["_cached_input_tokens"].isna().all()
 
 
 @pytest.mark.parametrize("failure_stage", ["constructor", "enter"])

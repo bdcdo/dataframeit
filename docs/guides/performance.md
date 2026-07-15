@@ -134,14 +134,7 @@ resultado = dataframeit(
 
 ### Colunas Adicionadas
 
-Com `track_tokens=True`, o DataFrameIt cria as três colunas gerais abaixo e, para `provider='codex'`, também `_cached_input_tokens`. Sem telemetria de uso, os valores podem permanecer nulos ou ser zero. Cache e raciocínio são subconjuntos do total de entrada e saída, respectivamente.
-
-| Coluna | Descrição |
-|--------|-----------|
-| `_input_tokens` | Tokens de entrada por linha |
-| `_cached_input_tokens` | Parcela do input atendida por cache (somente `codex`) |
-| `_output_tokens` | Tokens de saída por linha |
-| `_reasoning_tokens` | Parcela do output usada em raciocínio |
+O resultado registra o uso por linha; a [Referência LLM](../reference/llm-reference.md#colunas-adicionadas-automaticamente) define as colunas, quando `_cached_input_tokens` existe e como interpretar valores nulos ou zero.
 
 ### Calculando Custos
 

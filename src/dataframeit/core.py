@@ -582,6 +582,17 @@ def dataframeit(
         and status_col in df_pandas.columns
         and df_pandas[status_col].notna().all()
     ):
+        _setup_columns(
+            df_pandas,
+            expected_columns,
+            status_column,
+            resume,
+            track_tokens,
+            search_config,
+            trace_mode,
+            questions,
+            provider,
+        )
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
         return from_pandas(df_pandas, conversion_info)

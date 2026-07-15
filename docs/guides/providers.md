@@ -101,9 +101,9 @@ resultado = dataframeit(
 )
 ```
 
-Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True`, ferramentas e campos `dict` com chaves dinâmicas não são suportados. A autenticação configurada durante a instalação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
+Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True` não é suportado. O modelo Pydantic deve ter campos no nível raiz e usar o [subconjunto de JSON Schema aceito por Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas); `RootModel`, `Any`, campos `dict` com chaves dinâmicas, tuplas fixas e `set` são rejeitados no preflight. A autenticação configurada durante a instalação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
 
-O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre uma thread efêmera por linha. Cada execução usa `CODEX_HOME` e workspace isolados, compartilha apenas `auth.json`, nega aprovações e aplica sandbox somente leitura. Busca e ferramentas não são disponibilizadas.
+O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre uma thread efêmera por linha. Cada execução usa `CODEX_HOME` e workspace isolados; `auth.json` é o único arquivo do estado persistente do Codex vinculado ao runtime, que ainda herda as variáveis de ambiente do processo. Busca web, shell e servidores MCP ficam desativados; aprovações são negadas e o sandbox somente leitura bloqueia escrita. O runtime ainda pode apresentar utilitários internos, como `apply_patch`, sem conceder permissão para alterar arquivos.
 
 ## Anthropic Claude
 

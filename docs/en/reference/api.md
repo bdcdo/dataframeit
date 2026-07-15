@@ -105,16 +105,12 @@ Returns data in the same format as input with extracted columns added.
 
 ### Added Columns
 
-With `track_tokens=True`, DataFrameIt creates `_input_tokens`, `_output_tokens`, and `_reasoning_tokens`; for `provider='codex'`, it additionally creates `_cached_input_tokens`. Without usage telemetry, these values may remain null or be zero. Cached input and reasoning are subsets of total input and output, respectively.
+The status columns below exist independently of token tracking. When `track_tokens=True`, see the [LLM Reference](llm-reference.md#automatically-added-columns) for the usage columns and their semantics.
 
 | Column | Description |
 |--------|-------------|
 | `_dataframeit_status` | `'processed'`, `'error'`, or `None` |
 | `_error_details` | Error details (when applicable) |
-| `_input_tokens` | Input tokens (if `track_tokens=True`) |
-| `_cached_input_tokens` | Input subset served from cache (`codex` only, if `track_tokens=True`) |
-| `_output_tokens` | Output tokens (if `track_tokens=True`) |
-| `_reasoning_tokens` | Output subset used for reasoning (if `track_tokens=True`) |
 
 ### Examples
 

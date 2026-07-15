@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 from dataframeit.codex import CodexBackend, _to_strict_json_schema
 from dataframeit.errors import (
+    CODEX_FILE_AUTH_LOGIN_COMMAND,
     ProviderConfigurationError,
     ProviderError,
     ProviderOutputError,
     ProviderOverloadedError,
+    get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
 )
@@ -43,6 +46,10 @@ class ModelWithAnyOf(BaseModel):
     note: str | None = None
 
 
+class ModelWithDefault(BaseModel):
+    label: str = "fallback"
+
+
 class CatModel(BaseModel):
     kind: Literal["cat"]
     lives: int
@@ -59,6 +66,26 @@ class ModelWithDiscriminatedUnion(BaseModel):
 
 class ModelWithDynamicKeys(BaseModel):
     values: dict[str, str]
+
+
+class ModelWithFixedTuple(BaseModel):
+    pair: tuple[str, int]
+
+
+class ModelWithSet(BaseModel):
+    tags: set[str]
+
+
+class ModelWithAny(BaseModel):
+    value: Any
+
+
+class ModelWithListAny(BaseModel):
+    values: list[Any]
+
+
+class ListRootModel(RootModel[list[str]]):
+    pass
 
 
 class RecursiveModel(BaseModel):
@@ -140,6 +167,11 @@ def initialized_backend(tmp_path, codex_sdk, result=None):
 
 
 class TestProviderDependency:
+    def test_codex_auth_hint_uses_file_backed_login_command(self):
+        message = get_friendly_error_message(RuntimeError("AuthenticationError"), "codex")
+
+        assert CODEX_FILE_AUTH_LOGIN_COMMAND in message
+
     def test_missing_sdk_reports_only_codex_extra(self):
         from dataframeit.errors import validate_provider_dependencies
 
@@ -215,25 +247,68 @@ class TestStrictPydanticSchema:
         assert "default" not in note
         assert note["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
-    def test_discriminated_one_of_preserves_mapping_and_strict_variants(self):
+    def test_non_null_default_is_removed_and_property_becomes_required(self):
+        schema = _to_strict_json_schema(ModelWithDefault.model_json_schema())
+
+        assert schema["required"] == ["label"]
+        assert "default" not in schema["properties"]["label"]
+
+    def test_discriminated_one_of_becomes_supported_any_of(self):
         schema = _to_strict_json_schema(ModelWithDiscriminatedUnion.model_json_schema())
 
         animal = schema["properties"]["animal"]
-        assert animal["oneOf"] == [
+        assert "oneOf" not in animal
+        assert "discriminator" not in animal
+        assert animal["anyOf"] == [
             {"$ref": "#/$defs/CatModel"},
             {"$ref": "#/$defs/DogModel"},
         ]
-        assert animal["discriminator"]["propertyName"] == "kind"
-        assert animal["discriminator"]["mapping"] == {
-            "cat": "#/$defs/CatModel",
-            "dog": "#/$defs/DogModel",
-        }
         assert schema["$defs"]["CatModel"]["additionalProperties"] is False
         assert schema["$defs"]["DogModel"]["additionalProperties"] is False
 
     def test_dynamic_dict_is_rejected_from_real_pydantic_schema(self):
         with pytest.raises(ProviderConfigurationError, match="chaves dinâmicas"):
             _to_strict_json_schema(ModelWithDynamicKeys.model_json_schema())
+
+    @pytest.mark.parametrize(
+        ("model", "keyword"),
+        [
+            (ModelWithFixedTuple, "prefixItems"),
+            (ModelWithSet, "uniqueItems"),
+        ],
+    )
+    def test_unsupported_pydantic_keywords_are_rejected(self, model, keyword):
+        with pytest.raises(ProviderConfigurationError, match=keyword):
+            _to_strict_json_schema(model.model_json_schema())
+
+    def test_one_of_without_exclusive_discriminator_is_rejected(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+            },
+        }
+
+        with pytest.raises(ProviderConfigurationError, match="oneOf"):
+            _to_strict_json_schema(schema)
+
+    def test_all_of_is_rejected_instead_of_forwarded_to_runtime(self):
+        schema = {
+            "type": "object",
+            "properties": {"value": {"allOf": [{"type": "string"}]}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match="allOf"):
+            _to_strict_json_schema(schema)
+
+    @pytest.mark.parametrize("model", [ModelWithAny, ModelWithListAny])
+    def test_untyped_any_schema_is_rejected(self, model):
+        with pytest.raises(ProviderConfigurationError, match="Any não é suportado"):
+            _to_strict_json_schema(model.model_json_schema())
+
+    def test_root_model_is_rejected_before_processing(self):
+        with pytest.raises(ProviderConfigurationError, match="RootModel não é suportado"):
+            _to_strict_json_schema(ListRootModel.model_json_schema())
 
     def test_recursive_pydantic_schema_remains_finite_and_strict(self):
         schema = _to_strict_json_schema(RecursiveModel.model_json_schema())
@@ -297,18 +372,30 @@ class TestBackendLifecycle:
         client = MagicMock(spec=sdk.Codex)
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
 
-        with patch.object(sdk, "Codex", return_value=client) as codex:
+        with (
+            patch("dataframeit.codex.os.link", wraps=os.link) as hard_link,
+            patch.object(
+                Path,
+                "symlink_to",
+                side_effect=AssertionError("symlink não deve ser usado"),
+            ) as symlink,
+            patch.object(sdk, "Codex", return_value=client) as codex,
+        ):
             with CodexBackend(make_config(), SampleModel, "{texto}") as backend:
                 launch_config = codex.call_args.args[0]
                 assert isinstance(launch_config, sdk.CodexConfig)
                 assert launch_config.codex_bin is None
                 workspace = Path(launch_config.cwd)
                 isolated_home = Path(launch_config.env["CODEX_HOME"])
+                isolated_auth = isolated_home / "auth.json"
                 assert isolated_home.parent == workspace.parent
+                assert workspace.parent.parent == source_home
                 assert launch_config.env["CODEX_SQLITE_HOME"] == str(isolated_home)
                 assert isolated_home != source_home
-                assert (isolated_home / "auth.json").is_symlink()
-                assert (isolated_home / "auth.json").resolve() == source_auth.resolve()
+                assert not isolated_auth.is_symlink()
+                assert os.path.samefile(isolated_auth, source_auth)
+                isolated_auth.write_text('{"updated": true}')
+                assert source_auth.read_text() == '{"updated": true}'
                 assert not (isolated_home / "config.toml").exists()
                 assert "project_doc_max_bytes=0" in launch_config.config_overrides
                 assert "mcp_servers={}" in launch_config.config_overrides
@@ -317,6 +404,9 @@ class TestBackendLifecycle:
                     "model_reasoning_effort" in item for item in launch_config.config_overrides
                 )
                 assert backend._client is client
+
+            hard_link.assert_called_once_with(source_auth.resolve(), isolated_auth)
+            symlink.assert_not_called()
 
         client.close.assert_called_once_with()
         assert not workspace.parent.exists()
@@ -331,9 +421,11 @@ class TestBackendLifecycle:
         backend = CodexBackend(make_config(), SampleModel, "{texto}")
 
         with patch.object(sdk, "Codex", return_value=client) as codex:
-            with pytest.raises(ProviderConfigurationError, match="codex login"):
+            with pytest.raises(ProviderConfigurationError) as exc_info:
                 with backend:
                     pass
+
+        assert CODEX_FILE_AUTH_LOGIN_COMMAND in str(exc_info.value)
 
         launch_config = codex.call_args.args[0]
         runtime_root = Path(launch_config.cwd).parent
@@ -341,6 +433,50 @@ class TestBackendLifecycle:
         assert backend._client is None
         assert backend._runtime is None
         assert not runtime_root.exists()
+
+    def test_hard_link_failure_is_explicit_and_cleans_runtime(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        backend = CodexBackend(make_config(), SampleModel, "{texto}")
+
+        with (
+            patch("dataframeit.codex.os.link", side_effect=OSError("unsupported")),
+            patch.object(Path, "symlink_to") as symlink,
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match="hard link"),
+        ):
+            with backend:
+                pass
+
+        codex.assert_not_called()
+        symlink.assert_not_called()
+        assert backend._runtime is None
+        assert list(source_home.glob("dataframeit-codex-*")) == []
+
+    def test_runtime_directory_failure_has_accurate_error_and_cleans_up(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        backend = CodexBackend(make_config(), SampleModel, "{texto}")
+
+        with (
+            patch.object(Path, "mkdir", side_effect=OSError("read only")),
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match="diretórios do runtime"),
+        ):
+            with backend:
+                pass
+
+        codex.assert_not_called()
+        assert backend._runtime is None
 
 
 class TestCodexInvocation:

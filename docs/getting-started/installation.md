@@ -98,7 +98,7 @@ Configure as credenciais correspondentes ao seu provider:
     codex --config cli_auth_credentials_store='"file"' login
     ```
 
-    O CLI externo serve somente para criar `auth.json`; a opção explícita evita armazenar as credenciais apenas no keyring do sistema. O DataFrameIt compartilha somente esse arquivo com um `CODEX_HOME` efêmero e executa o runtime pinado pelo extra; não passe `api_key` ao `dataframeit()` para esse provider.
+    O CLI externo serve somente para criar `auth.json`; a opção explícita evita armazenar as credenciais apenas no keyring do sistema. Esse é o único arquivo do estado persistente do Codex vinculado ao `CODEX_HOME` efêmero; o app-server ainda herda as variáveis de ambiente do processo. O DataFrameIt executa o runtime pinado pelo extra; não passe `api_key` ao `dataframeit()` para esse provider.
 
 ## Verificando a Instalação
 

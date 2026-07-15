@@ -139,14 +139,7 @@ result = dataframeit(
 
 ### Added Columns
 
-With `track_tokens=True`, DataFrameIt creates the three general columns below and, for `provider='codex'`, also `_cached_input_tokens`. Without usage telemetry, values may remain null or be zero. Cached input and reasoning are subsets of total input and output, respectively.
-
-| Column | Description |
-|--------|-------------|
-| `_input_tokens` | Input tokens per row |
-| `_cached_input_tokens` | Input subset served from cache (`codex` only) |
-| `_output_tokens` | Output tokens per row |
-| `_reasoning_tokens` | Output subset used for reasoning |
+The result records usage per row; the [LLM Reference](../reference/llm-reference.md#automatically-added-columns) defines each column, when `_cached_input_tokens` exists, and how to interpret null or zero values.
 
 ### Calculating Costs
 

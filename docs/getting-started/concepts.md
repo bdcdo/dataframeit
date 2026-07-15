@@ -113,16 +113,12 @@ Para cada linha do DataFrame:
 
 ## Colunas Automáticas
 
-O DataFrameIt adiciona as colunas de status automaticamente. Com `track_tokens=True`, também cria `_input_tokens`, `_output_tokens` e `_reasoning_tokens`; para `provider='codex'`, cria ainda `_cached_input_tokens`. Sem telemetria de uso, esses valores podem permanecer nulos ou ser zero. Cache e raciocínio são subconjuntos do total de entrada e saída, respectivamente.
+O DataFrameIt adiciona as colunas de status automaticamente. Quando `track_tokens=True`, acrescenta também colunas de uso; consulte a [Referência LLM](../reference/llm-reference.md#colunas-adicionadas-automaticamente) para a tabela completa e a semântica de cache e raciocínio.
 
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, ou `None` |
 | `_error_details` | Detalhes do erro (quando status é `'error'`) |
-| `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
-| `_cached_input_tokens` | Parcela do input atendida por cache (`provider='codex'`, com `track_tokens=True`) |
-| `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
-| `_reasoning_tokens` | Parcela do output usada em raciocínio (com `track_tokens=True`) |
 
 ## Próximos Passos
 

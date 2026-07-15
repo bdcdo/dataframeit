@@ -183,7 +183,7 @@ resultado = dataframeit(
 )
 ```
 
-O provider `codex` aceita somente `effort` em `model_kwargs` e não suporta `use_search=True` nem ferramentas. Consulte [Instalação](../getting-started/installation.md) para os requisitos de runtime e autenticação.
+O provider `codex` aceita somente `effort` em `model_kwargs` e não suporta `use_search=True`. A integração desativa busca web, shell e servidores MCP, nega aprovações e usa sandbox somente leitura para bloquear escrita; o runtime ainda pode apresentar utilitários internos, como `apply_patch`, sem conceder permissão para alterar arquivos. Consulte [Instalação](../getting-started/installation.md) para os requisitos de runtime e autenticação.
 
 ---
 
@@ -229,16 +229,16 @@ sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
 
 ## Colunas Adicionadas Automaticamente
 
-Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_output_tokens` e `_reasoning_tokens`; para `provider='codex'`, cria ainda `_cached_input_tokens`. Sem telemetria de uso, esses valores podem permanecer nulos ou ser zero. Cache e raciocínio são subconjuntos do total de entrada e saída, respectivamente.
+Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_output_tokens` e `_reasoning_tokens`; para `provider='codex'`, cria ainda `_cached_input_tokens`. Sem telemetria de uso, esses valores podem permanecer nulos ou ser zero. Tokens de cache são uma parcela do total de entrada, e tokens de raciocínio são uma parcela do total de saída.
 
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | `'processed'`, `'error'`, `None` |
 | `_error_details` | Mensagem de erro |
-| `_input_tokens` | Tokens de entrada |
-| `_cached_input_tokens` | Parcela do input atendida por cache (somente `codex`) |
-| `_output_tokens` | Tokens de saída |
-| `_reasoning_tokens` | Parcela do output usada em raciocínio |
+| `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
+| `_cached_input_tokens` | Parcela da entrada atendida por cache (somente `codex`, com `track_tokens=True`) |
+| `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
+| `_reasoning_tokens` | Parcela da saída usada em raciocínio (com `track_tokens=True`) |
 
 ---
 

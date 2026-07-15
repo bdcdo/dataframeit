@@ -68,7 +68,6 @@ claude-code = [
 ]
 codex = [
     "openai-codex==0.1.0b3",
-    "openai-codex-cli-bin==0.137.0a4",
 ]
 polars = [
     "polars>=0.20",

@@ -1,27 +1,37 @@
-import warnings
 import pandas as pd
 
-from pandas.errors import SettingWithCopyWarning
-
-from dataframeit.core import _setup_columns
 from dataframeit import llm as llm_module
+from dataframeit.core import _setup_columns
 
 
-def test_setup_columns_no_settingwithcopywarning_on_copy():
-    # DataFrame base
+def test_setup_columns_mutates_independent_copy_only():
     df = pd.DataFrame({
         "texto": ["a", "b", "c"],
         "x": [1, 2, 3],
     })
+    df_copy = df.iloc[:2].copy()
 
-    # Criar um slice e então garantir cópia (como o pipeline faz)
-    df_slice = df.iloc[:2]
-    df_copy = df_slice.copy()
+    _setup_columns(
+        df_copy,
+        expected_columns=["campo1", "campo2"],
+        status_column=None,
+        resume=False,
+        track_tokens=False,
+    )
 
-    # Não deve haver SettingWithCopyWarning ao configurar colunas em uma cópia
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", SettingWithCopyWarning)
-        _setup_columns(df_copy, expected_columns=["campo1", "campo2"], status_column=None, resume=False, track_tokens=False)
+    assert list(df.columns) == ["texto", "x"]
+    assert list(df_copy.columns) == [
+        "texto",
+        "x",
+        "campo1",
+        "campo2",
+        "_dataframeit_status",
+        "_error_details",
+    ]
+    generated = df_copy[
+        ["campo1", "campo2", "_dataframeit_status", "_error_details"]
+    ]
+    assert generated.isna().all().all()
 
 
 def test_build_prompt_replaces_placeholder():
