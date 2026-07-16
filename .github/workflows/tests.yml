@@ -81,10 +81,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Verify portable multiprocess authentication lifecycle
+      - name: Verify bundled runtime and portable authentication lifecycle
         run: >-
           uv run --python 3.13 --extra dev --extra codex pytest
           tests/test_codex.py::TestBackendLifecycle
+          tests/test_codex_runtime.py
 
   docs:
     if: github.event_name == 'pull_request'

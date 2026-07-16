@@ -17,10 +17,14 @@ CODEX_FILE_AUTH_LOGIN_COMMAND = (
 
 
 class ProviderError(RuntimeError):
-    """Falha definitiva de execução reportada por um provider."""
+    """Falha de execução reportada por um provider."""
 
 
-class ProviderOverloadedError(ProviderError):
+class ProviderTransientError(ProviderError):
+    """Falha transitória que pode ser repetida sem reduzir o paralelismo."""
+
+
+class ProviderOverloadedError(ProviderTransientError):
     """Falha transitória causada por sobrecarga ou limitação do provider."""
 
 
@@ -621,7 +625,7 @@ def is_recoverable_error(error: Exception) -> bool:
     Returns:
         True se o erro é recuperável, False caso contrário.
     """
-    if isinstance(error, ProviderOverloadedError):
+    if isinstance(error, ProviderTransientError):
         return True
     if isinstance(
         error,
@@ -656,6 +660,8 @@ def is_rate_limit_error(error: Exception) -> bool:
     """
     if isinstance(error, ProviderOverloadedError):
         return True
+    if isinstance(error, ProviderTransientError):
+        return False
 
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ('ratelimit', 'resourceexhausted', 'toomanyrequests', '429')

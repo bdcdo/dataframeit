@@ -51,7 +51,7 @@ def dataframeit(
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
 | `resume` | bool | `True` | Continua de onde parou (pula linhas já processadas) |
-| `reprocess_columns` | list | `None` | Lista de colunas para forçar reprocessamento |
+| `reprocess_columns` | list | `None` | Lista de colunas para forçar reprocessamento; ao retomar com modelo alterado, deve cobrir os campos incompatíveis das linhas já processadas |
 | `status_column` | str | `None` | Nome customizado para coluna de status |
 
 #### Modelo

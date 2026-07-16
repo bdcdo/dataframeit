@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, Field, RootModel
+from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
     CodexBackend,
@@ -25,6 +27,7 @@ from dataframeit.errors import (
     ProviderError,
     ProviderOutputError,
     ProviderOverloadedError,
+    ProviderTransientError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -90,6 +93,10 @@ class ModelWithAny(BaseModel):
 
 class ModelWithListAny(BaseModel):
     values: list[Any]
+
+
+class ModelWithCallable(BaseModel):
+    callback: Callable
 
 
 class ListRootModel(RootModel[list[str]]):
@@ -179,6 +186,21 @@ def make_result(
         items=[],
         usage=thread_usage,
     )
+
+
+def make_failed_turn_read_response(codex_sdk, error_info, message):
+    _, sdk_types, generated = codex_sdk
+    failed_turn = sdk_types.Turn(
+        id="turn-1",
+        items=[],
+        status=sdk_types.TurnStatus.failed,
+        error=sdk_types.TurnError(
+            message=message,
+            codexErrorInfo=error_info,
+        ),
+    )
+    protocol_thread = generated.Thread.model_construct(turns=[failed_turn])
+    return sdk_types.ThreadReadResponse.model_construct(thread=protocol_thread)
 
 
 def initialized_backend(tmp_path, codex_sdk, result=None):
@@ -380,6 +402,15 @@ class TestStrictPydanticSchema:
 
 
 class TestBackendConfiguration:
+    def test_invalid_pydantic_json_schema_is_configuration_error(self):
+        with pytest.raises(
+            ProviderConfigurationError,
+            match="Não foi possível gerar JSON Schema",
+        ) as exc_info:
+            _build_schema(ModelWithCallable)
+
+        assert isinstance(exc_info.value.__cause__, PydanticInvalidForJsonSchema)
+
     def test_effort_defaults_to_real_medium_enum(self, codex_sdk):
         _, sdk_types, _ = codex_sdk
 
@@ -756,23 +787,15 @@ class TestCodexInvocation:
         assert client.thread_start.call_count == 2
 
     def test_failed_turn_overload_uses_real_protocol_error(self, codex_sdk, tmp_path):
-        _, sdk_types, generated = codex_sdk
+        _, _, generated = codex_sdk
         backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
         turn.run.side_effect = [RuntimeError("overloaded"), make_result(codex_sdk)]
-        failed_turn = sdk_types.Turn(
-            id="turn-1",
-            items=[],
-            status=sdk_types.TurnStatus.failed,
-            error=sdk_types.TurnError(
-                message="overloaded",
-                codexErrorInfo=generated.CodexErrorInfo(
-                    root=generated.CodexErrorInfoValue.server_overloaded
-                ),
+        thread.read.return_value = make_failed_turn_read_response(
+            codex_sdk,
+            generated.CodexErrorInfo(
+                root=generated.CodexErrorInfoValue.server_overloaded
             ),
-        )
-        protocol_thread = generated.Thread.model_construct(turns=[failed_turn])
-        thread.read.return_value = sdk_types.ThreadReadResponse.model_construct(
-            thread=protocol_thread
+            "overloaded",
         )
 
         with pytest.warns(UserWarning, match="Tentativa 1/2"):
@@ -780,6 +803,74 @@ class TestCodexInvocation:
 
         assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
+        thread.read.assert_called_once_with(include_turns=True)
+
+    def test_failed_turn_internal_server_error_retries_without_rate_limit(
+        self, codex_sdk, tmp_path
+    ):
+        _, _, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = [RuntimeError("internal failure"), make_result(codex_sdk)]
+        thread.read.return_value = make_failed_turn_read_response(
+            codex_sdk,
+            generated.CodexErrorInfo(
+                root=generated.CodexErrorInfoValue.internal_server_error
+            ),
+            "internal failure",
+        )
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+
+        assert result["_retry_info"]["retries"] == 1
+        assert client.thread_start.call_count == 2
+        thread.read.assert_called_once_with(include_turns=True)
+
+    def test_failed_turn_http_429_is_overload_and_retries(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = RuntimeError("too many requests")
+        thread.read.return_value = make_failed_turn_read_response(
+            codex_sdk,
+            generated.CodexErrorInfo(
+                root=generated.HttpConnectionFailedCodexErrorInfo(
+                    httpConnectionFailed=generated.HttpConnectionFailed(
+                        httpStatusCode=429
+                    )
+                )
+            ),
+            "too many requests",
+        )
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            with pytest.raises(ProviderOverloadedError):
+                backend.invoke("texto")
+
+        assert client.thread_start.call_count == 2
+        assert thread.read.call_count == 2
+
+    def test_failed_turn_http_401_is_definitive(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = RuntimeError("unauthorized")
+        thread.read.return_value = make_failed_turn_read_response(
+            codex_sdk,
+            generated.CodexErrorInfo(
+                root=generated.ResponseStreamConnectionFailedCodexErrorInfo(
+                    responseStreamConnectionFailed=(
+                        generated.ResponseStreamConnectionFailed(httpStatusCode=401)
+                    )
+                )
+            ),
+            "unauthorized",
+        )
+
+        with pytest.warns(UserWarning, match="não-recuperável"):
+            with pytest.raises(ProviderError) as exc_info:
+                backend.invoke("texto")
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+        assert client.thread_start.call_count == 1
         thread.read.assert_called_once_with(include_turns=True)
 
     def test_unknown_sdk_error_is_provider_error_without_retry(self, codex_sdk, tmp_path):
@@ -824,6 +915,12 @@ class TestProviderErrorClassification:
 
         assert is_recoverable_error(error) is True
         assert is_rate_limit_error(error) is True
+
+    def test_typed_transient_error_retries_without_worker_reduction(self):
+        error = ProviderTransientError("internal server error after HTTP 429")
+
+        assert is_recoverable_error(error) is True
+        assert is_rate_limit_error(error) is False
 
     @pytest.mark.parametrize(
         "error",

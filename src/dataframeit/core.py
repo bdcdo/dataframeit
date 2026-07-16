@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
+from pandas.api.types import is_scalar
+from pydantic import ConfigDict, ValidationError
 from tqdm import tqdm
 
 from .errors import (
@@ -31,6 +33,7 @@ from .utils import (
     get_complex_fields,
     get_nested_pydantic_models,
     normalize_complex_columns,
+    normalize_value,
     to_pandas,
 )
 
@@ -63,6 +66,113 @@ class ProviderBackend:
 
     label: str
     invoke: Callable[[str], dict]
+
+
+def _validate_processed_rows(
+    df: pd.DataFrame,
+    status_col: str,
+    pydantic_model,
+    complex_fields: set[str],
+) -> tuple[list[str], dict[tuple[int, str], Any]]:
+    """Valida linhas concluídas sem alterar o checkpoint recebido."""
+    incompatible_fields: set[str] = set()
+    values_to_fill: dict[tuple[int, str], Any] = {}
+    expected_columns = list(pydantic_model.model_fields)
+    field_by_alias = {field_name: field_name for field_name in expected_columns}
+    for field_name, field in pydantic_model.model_fields.items():
+        if isinstance(field.alias, str):
+            field_by_alias[field.alias] = field_name
+        if isinstance(field.validation_alias, str):
+            field_by_alias[field.validation_alias] = field_name
+
+    if status_col not in df.columns:
+        return [], values_to_fill
+
+    validation_model = pydantic_model
+    if any(
+        field.alias is not None or field.validation_alias is not None
+        for field in pydantic_model.model_fields.values()
+    ):
+        validation_model = type(
+            f"{pydantic_model.__name__}CheckpointValidation",
+            (pydantic_model,),
+            {
+                "model_config": ConfigDict(
+                    **{
+                        **pydantic_model.model_config,
+                        "populate_by_name": True,
+                        "validate_by_name": True,
+                    }
+                ),
+                "__module__": pydantic_model.__module__,
+            },
+        )
+
+    processed_positions = [
+        position
+        for position, status in enumerate(df[status_col])
+        if status == 'processed'
+    ]
+    for position in processed_positions:
+        row = df.iloc[position]
+        projected = {}
+        missing_values = set()
+        for field_name, field in pydantic_model.model_fields.items():
+            if field_name not in df.columns:
+                missing_values.add(field_name)
+                continue
+
+            value = row[field_name]
+            is_missing = is_scalar(value) and bool(pd.isna(value))
+            if is_missing:
+                missing_values.add(field_name)
+                if not field.is_required():
+                    continue
+                value = None
+            elif field_name in complex_fields:
+                value = normalize_value(value)
+            projected[field_name] = value
+
+        try:
+            validated = validation_model.model_validate(projected)
+        except ValidationError as error:
+            for detail in error.errors():
+                location = detail.get('loc', ())
+                field_name = field_by_alias.get(location[0]) if location else None
+                if field_name is not None:
+                    incompatible_fields.add(field_name)
+                else:
+                    incompatible_fields.update(expected_columns)
+            for field_name in missing_values:
+                field = pydantic_model.model_fields[field_name]
+                if field.is_required():
+                    continue
+                try:
+                    default = field.get_default(call_default_factory=True)
+                except ValueError:
+                    # This factory needs the fields that are being reprocessed.
+                    incompatible_fields.add(field_name)
+                else:
+                    values_to_fill[(position, field_name)] = default
+            continue
+
+        validated_data = validated.model_dump()
+        for field_name in missing_values:
+            values_to_fill[(position, field_name)] = validated_data[field_name]
+
+    ordered_incompatible = [
+        field for field in expected_columns if field in incompatible_fields
+    ]
+    return ordered_incompatible, values_to_fill
+
+
+def _apply_processed_values(
+    df: pd.DataFrame,
+    values: dict[tuple[int, str], Any],
+) -> None:
+    for (position, field_name), value in values.items():
+        column_position = df.columns.get_loc(field_name)
+        df.iat[position, column_position] = value
 
 
 @contextmanager
@@ -372,7 +482,8 @@ def dataframeit(
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM.
-        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc).
+        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc),
+            'claude_code' ou 'codex'. Codex usa o SDK Python oficial.
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
                     infere dentre TEXT_COLUMN_CANDIDATES ('texto', 'text',
@@ -386,7 +497,8 @@ def dataframeit(
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
         track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
-        model_kwargs: Parâmetros extras para o modelo LangChain (ex: temperature, reasoning_effort).
+        model_kwargs: Parâmetros extras do modelo (ex: temperature, reasoning_effort).
+            Com provider='codex', aceita somente effort.
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
             Se > 1, processa múltiplas linhas simultaneamente.
             Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
@@ -574,22 +686,26 @@ def dataframeit(
         )
         return from_pandas(df_pandas, conversion_info)
 
-    missing_model_columns = [
-        column for column in expected_columns if column not in df_pandas.columns
-    ]
     reprocessed_columns = set(reprocess_columns or [])
+    incompatible_columns = []
+    processed_values = {}
+    if resume or reprocess_columns:
+        incompatible_columns, processed_values = _validate_processed_rows(
+            df_pandas,
+            status_col,
+            questions,
+            complex_fields,
+        )
     uncovered_columns = [
-        column for column in missing_model_columns if column not in reprocessed_columns
+        column
+        for column in incompatible_columns
+        if column not in reprocessed_columns
     ]
-    has_processed_rows = (
-        status_col in df_pandas.columns
-        and df_pandas[status_col].eq('processed').any()
-    )
-    if (resume or reprocess_columns) and has_processed_rows and uncovered_columns:
+    if uncovered_columns:
         raise ValueError(
             "O DataFrame contém linhas processadas incompatíveis com o modelo atual: "
-            f"faltam as colunas {uncovered_columns}. "
-            f"Inclua os novos campos em reprocess_columns={missing_model_columns!r}."
+            f"campos incompatíveis {uncovered_columns}. "
+            f"Inclua-os em reprocess_columns={incompatible_columns!r}."
         )
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
@@ -608,6 +724,7 @@ def dataframeit(
             trace_mode,
             questions,
         )
+        _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
         return from_pandas(df_pandas, conversion_info)
@@ -661,6 +778,7 @@ def dataframeit(
             trace_mode,
             questions,
         )
+        _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
         # serializadas como strings JSON ao salvar/carregar de arquivos.

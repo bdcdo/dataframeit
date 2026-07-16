@@ -560,8 +560,10 @@ def test_call_agent_per_field_sums_usage():
             "data": {field_name: f"valor_{field_name}"},
             "usage": {
                 "input_tokens": 100,
+                "cached_input_tokens": 20,
                 "output_tokens": 50,
                 "total_tokens": 150,
+                "reasoning_tokens": 10,
                 "search_credits": 2,
                 "search_count": 2,
             }
@@ -589,8 +591,10 @@ def test_call_agent_per_field_sums_usage():
 
     # MedicamentoInfo tem 2 campos, então soma 2x
     assert result["usage"]["input_tokens"] == 200
+    assert result["usage"]["cached_input_tokens"] == 40
     assert result["usage"]["output_tokens"] == 100
     assert result["usage"]["total_tokens"] == 300
+    assert result["usage"]["reasoning_tokens"] == 20
     assert result["usage"]["search_credits"] == 4
     assert result["usage"]["search_count"] == 4
 
@@ -1107,8 +1111,10 @@ def test_call_agent_per_group_sums_usage():
             "data": {f: f"valor_{f}" for f in fields},
             "usage": {
                 "input_tokens": 100,
+                "cached_input_tokens": 20,
                 "output_tokens": 50,
                 "total_tokens": 150,
+                "reasoning_tokens": 10,
                 "search_credits": 2,
                 "search_count": 1,
             }
@@ -1139,8 +1145,10 @@ def test_call_agent_per_group_sums_usage():
 
     # 3 chamadas (1 grupo + 2 isolados), 100 tokens cada
     assert result["usage"]["input_tokens"] == 300
+    assert result["usage"]["cached_input_tokens"] == 60
     assert result["usage"]["output_tokens"] == 150
     assert result["usage"]["total_tokens"] == 450
+    assert result["usage"]["reasoning_tokens"] == 30
     assert result["usage"]["search_credits"] == 6
     assert result["usage"]["search_count"] == 3
 

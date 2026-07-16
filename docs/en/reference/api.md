@@ -51,7 +51,7 @@ def dataframeit(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `resume` | bool | `True` | Continue from where it stopped (skips processed rows) |
-| `reprocess_columns` | list | `None` | List of columns to force reprocessing |
+| `reprocess_columns` | list | `None` | Fields to force reprocessing; when resuming with a changed model, it must cover fields incompatible with previously processed rows |
 | `status_column` | str | `None` | Custom name for status column |
 
 #### Model

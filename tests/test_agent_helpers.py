@@ -300,13 +300,17 @@ class TestCollectConfiguredFields:
 # _extract_usage
 # =============================================================================
 
-def _msg_with_usage(input_tokens, output_tokens, total_tokens, reasoning=0):
+def _msg_with_usage(input_tokens, output_tokens, total_tokens, reasoning=0, cache_read=0):
     """Cria mensagem mockada com usage_metadata."""
     return SimpleNamespace(
         usage_metadata={
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
+            "input_token_details": {
+                "cache_read": cache_read,
+                "cache_creation": 99,
+            },
             "output_token_details": {"reasoning": reasoning},
         },
         type="ai",
@@ -338,12 +342,13 @@ class TestExtractUsage:
         result = {
             "messages": [
                 _msg_with_usage(10, 5, 15),
-                _msg_with_usage(20, 10, 30),
+                _msg_with_usage(20, 10, 30, cache_read=7),
             ],
         }
         provider = _make_provider()
         usage = _extract_usage(result, provider, SearchConfig(provider="tavily"))
         assert usage["input_tokens"] == 30
+        assert usage["cached_input_tokens"] == 7
         assert usage["output_tokens"] == 15
         assert usage["total_tokens"] == 45
 
@@ -361,11 +366,13 @@ class TestExtractUsage:
 
         meta = SimpleNamespace(
             input_tokens=1, output_tokens=2, total_tokens=3,
+            input_token_details=SimpleNamespace(cache_read=5, cache_creation=11),
             output_token_details=SimpleNamespace(reasoning=4),
         )
         msg = SimpleNamespace(usage_metadata=meta, type="ai")
         usage = _extract_usage({"messages": [msg]}, _make_provider(), SearchConfig(provider="tavily"))
         assert usage["input_tokens"] == 1
+        assert usage["cached_input_tokens"] == 5
         assert usage["reasoning_tokens"] == 4
 
     def test_search_count_via_padrao_do_provider(self):

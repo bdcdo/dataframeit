@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
+from pydantic.errors import PydanticUserError
 
 from .errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
@@ -19,6 +20,7 @@ from .errors import (
     ProviderError,
     ProviderOutputError,
     ProviderOverloadedError,
+    ProviderTransientError,
     retry_with_backoff,
 )
 from .llm import LLMConfig, build_prompt
@@ -189,6 +191,10 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
 def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
     try:
         schema = pydantic_model.model_json_schema()
+    except PydanticUserError as err:
+        raise ProviderConfigurationError(
+            "Não foi possível gerar JSON Schema para o modelo Pydantic"
+        ) from err
     except (AttributeError, TypeError) as err:
         raise ProviderConfigurationError("questions deve ser um modelo Pydantic v2") from err
     if not isinstance(schema, dict):
@@ -335,9 +341,7 @@ class CodexBackend:
         try:
             result = turn.run()
         except Exception as err:
-            if self._failed_turn_is_overloaded(thread, turn.id):
-                raise ProviderOverloadedError(f"{type(err).__name__}: {err}") from err
-            self._raise_classified_sdk_error(err)
+            self._raise_failed_turn_error(thread, turn.id, err)
 
         if result.status != TurnStatus.completed:
             raise ProviderOutputError(f"Turno Codex terminou com status {result.status.value!r}")
@@ -365,19 +369,64 @@ class CodexBackend:
         return {"data": validated.model_dump(), "usage": usage}
 
     @staticmethod
-    def _failed_turn_is_overloaded(thread, turn_id: str) -> bool:
-        """Recupera o código tipado que o SDK descarta ao levantar RuntimeError."""
+    def _raise_failed_turn_error(thread, turn_id: str, error: Exception) -> None:
+        """Recupera o erro tipado que o SDK descarta ao levantar RuntimeError."""
+        from openai_codex.generated.v2_all import (
+            CodexErrorInfoValue,
+            HttpConnectionFailedCodexErrorInfo,
+            ResponseStreamConnectionFailedCodexErrorInfo,
+            ResponseStreamDisconnectedCodexErrorInfo,
+            ResponseTooManyFailedAttemptsCodexErrorInfo,
+        )
+
         try:
             turns = thread.read(include_turns=True).thread.turns
         except Exception:
-            return False
+            CodexBackend._raise_classified_sdk_error(error)
 
         failed_turn = next((item for item in turns if item.id == turn_id), None)
         if failed_turn is None or failed_turn.error is None:
-            return False
+            CodexBackend._raise_classified_sdk_error(error)
+
+        message = f"{type(error).__name__}: {error}"
         error_info = failed_turn.error.codex_error_info
-        error_code = getattr(getattr(error_info, "root", None), "value", None)
-        return error_code == "serverOverloaded"
+        root = getattr(error_info, "root", None)
+        if root is CodexErrorInfoValue.server_overloaded:
+            raise ProviderOverloadedError(message) from error
+
+        transient_codes = {
+            CodexErrorInfoValue.internal_server_error,
+            CodexErrorInfoValue.thread_rollback_failed,
+        }
+        http_variants = (
+            (HttpConnectionFailedCodexErrorInfo, "http_connection_failed"),
+            (
+                ResponseStreamConnectionFailedCodexErrorInfo,
+                "response_stream_connection_failed",
+            ),
+            (
+                ResponseStreamDisconnectedCodexErrorInfo,
+                "response_stream_disconnected",
+            ),
+            (
+                ResponseTooManyFailedAttemptsCodexErrorInfo,
+                "response_too_many_failed_attempts",
+            ),
+        )
+        for variant_type, payload_field in http_variants:
+            if not isinstance(root, variant_type):
+                continue
+            status = getattr(root, payload_field).http_status_code
+            if status == 429:
+                raise ProviderOverloadedError(message) from error
+            if status is None or status >= 500:
+                raise ProviderTransientError(message) from error
+            raise ProviderError(message) from error
+
+        if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
+            raise ProviderTransientError(message) from error
+
+        raise ProviderError(message) from error
 
     @staticmethod
     def _raise_classified_sdk_error(error: Exception) -> None:
