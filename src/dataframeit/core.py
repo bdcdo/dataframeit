@@ -26,6 +26,7 @@ from .utils import (
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
+    TOKEN_COLUMNS,
     from_pandas,
     get_complex_fields,
     get_nested_pydantic_models,
@@ -91,9 +92,9 @@ def _provider_backend(
         return
 
     if config.provider == "codex":
-        from .codex import CodexBackend
+        from .codex import open_codex_backend
 
-        with CodexBackend(config, pydantic_model, user_prompt) as backend:
+        with open_codex_backend(config, pydantic_model, user_prompt) as backend:
             yield ProviderBackend(label="codex", invoke=backend.invoke)
         return
 
@@ -558,12 +559,10 @@ def dataframeit(
             df_pandas,
             expected_columns,
             status_column,
-            resume,
             track_tokens,
             search_config,
             trace_mode,
             questions,
-            provider,
         )
         return from_pandas(df_pandas, conversion_info)
 
@@ -574,6 +573,24 @@ def dataframeit(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
         return from_pandas(df_pandas, conversion_info)
+
+    missing_model_columns = [
+        column for column in expected_columns if column not in df_pandas.columns
+    ]
+    reprocessed_columns = set(reprocess_columns or [])
+    uncovered_columns = [
+        column for column in missing_model_columns if column not in reprocessed_columns
+    ]
+    has_processed_rows = (
+        status_col in df_pandas.columns
+        and df_pandas[status_col].eq('processed').any()
+    )
+    if (resume or reprocess_columns) and has_processed_rows and uncovered_columns:
+        raise ValueError(
+            "O DataFrame contém linhas processadas incompatíveis com o modelo atual: "
+            f"faltam as colunas {uncovered_columns}. "
+            f"Inclua os novos campos em reprocess_columns={missing_model_columns!r}."
+        )
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
     if (
@@ -586,12 +603,10 @@ def dataframeit(
             df_pandas,
             expected_columns,
             status_column,
-            resume,
             track_tokens,
             search_config,
             trace_mode,
             questions,
-            provider,
         )
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
@@ -641,12 +656,10 @@ def dataframeit(
             df_pandas,
             expected_columns,
             status_column,
-            resume,
             track_tokens,
             search_config,
             trace_mode,
             questions,
-            provider,
         )
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -717,19 +730,15 @@ def _setup_columns(
     df: pd.DataFrame,
     expected_columns: list,
     status_column: str | None,
-    resume: bool,
     track_tokens: bool,
     search_config: SearchConfig | None = None,
     trace_mode: str | None = None,
     pydantic_model=None,
-    provider: str | None = None,
 ):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
-    token_cols = ['_input_tokens', '_output_tokens', '_reasoning_tokens'] if track_tokens else []
-    if track_tokens and provider == 'codex':
-        token_cols.insert(1, '_cached_input_tokens')
+    token_cols = TOKEN_COLUMNS if track_tokens else ()
     search_cols = ['_search_credits'] if (search_config and search_config.enabled) else []
 
     # Colunas de trace
@@ -1009,8 +1018,7 @@ def _process_rows(
             # Armazenar tokens no DataFrame (se habilitado)
             if track_tokens and usage:
                 df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
-                if '_cached_input_tokens' in df.columns:
-                    df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
+                df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
                 df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                 df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
@@ -1198,8 +1206,7 @@ def _process_rows_parallel(
 
                 if track_tokens and usage:
                     df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
-                    if '_cached_input_tokens' in df.columns:
-                        df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
+                    df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
                     df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                     df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 

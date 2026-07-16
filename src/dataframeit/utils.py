@@ -35,6 +35,12 @@ ORIGINAL_TYPE_DICT = 'dict'
 
 # Coluna padrão usada para dados convertidos
 DEFAULT_TEXT_COLUMN = '_texto'
+TOKEN_COLUMNS = (
+    '_input_tokens',
+    '_cached_input_tokens',
+    '_output_tokens',
+    '_reasoning_tokens',
+)
 
 
 @dataclass
@@ -272,7 +278,7 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
     user_cols = []
     trace_cols = []
     search_cols = []
-    token_cols = []
+    token_cols = [col for col in TOKEN_COLUMNS if col in df.columns]
     status_cols = []
 
     for col in df.columns:
@@ -280,13 +286,8 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
             trace_cols.append(col)
         elif col in ['_search_credits']:
             search_cols.append(col)
-        elif col in [
-            '_input_tokens',
-            '_cached_input_tokens',
-            '_output_tokens',
-            '_reasoning_tokens',
-        ]:
-            token_cols.append(col)
+        elif col in TOKEN_COLUMNS:
+            continue
         elif col in ['_dataframeit_status', '_error_details']:
             status_cols.append(col)
         else:

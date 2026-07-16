@@ -139,7 +139,7 @@ result = dataframeit(
 
 ### Added Columns
 
-The result records usage per row; the [LLM Reference](../reference/llm-reference.md#automatically-added-columns) defines each column, when `_cached_input_tokens` exists, and how to interpret null or zero values.
+The result records usage per row; the [LLM Reference](../reference/llm-reference.md#automatically-added-columns) defines each column and how to interpret null or zero values in `_cached_input_tokens`.
 
 ### Calculating Costs
 

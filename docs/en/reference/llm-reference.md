@@ -237,14 +237,14 @@ success = result[result['_dataframeit_status'] == 'processed']
 
 ## Automatically Added Columns
 
-With `track_tokens=True`, DataFrameIt creates `_input_tokens`, `_output_tokens`, and `_reasoning_tokens`; for `provider='codex'`, it additionally creates `_cached_input_tokens`. Without usage telemetry, these values may remain null or be zero. Cached tokens are a subset of total input, and reasoning tokens are a subset of total output.
+With `track_tokens=True`, DataFrameIt creates `_input_tokens`, `_cached_input_tokens`, `_output_tokens`, and `_reasoning_tokens` for every provider. Without usage telemetry, these values may remain null; when a provider reports total usage but omits cached input or reasoning, the corresponding metric is zero. Cached tokens are a subset of total input, and reasoning tokens are a subset of total output.
 
 | Column | Description |
 |--------|-------------|
 | `_dataframeit_status` | `'processed'`, `'error'`, `None` |
 | `_error_details` | Error message |
 | `_input_tokens` | Input tokens (with `track_tokens=True`) |
-| `_cached_input_tokens` | Input subset served from cache (`codex` only, with `track_tokens=True`) |
+| `_cached_input_tokens` | Input subset served from cache (with `track_tokens=True`) |
 | `_output_tokens` | Output tokens (with `track_tokens=True`) |
 | `_reasoning_tokens` | Output subset used for reasoning (with `track_tokens=True`) |
 

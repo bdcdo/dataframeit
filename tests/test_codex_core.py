@@ -24,6 +24,12 @@ class ExpandedResultModel(BaseModel):
     new_value: str
 
 
+class TwiceExpandedResultModel(BaseModel):
+    value: list[str]
+    first_new_value: str
+    second_new_value: str
+
+
 def make_config(
     provider: str = "codex",
     search_config: SearchConfig | None = None,
@@ -48,17 +54,8 @@ class RecordingCodexBackend:
         self.pydantic_model = pydantic_model
         self.user_prompt = user_prompt
         self.calls: list[str] = []
-        self.entered = False
-        self.closed = False
         self._lock = threading.Lock()
         self.instances.append(self)
-
-    def __enter__(self):
-        self.entered = True
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        self.closed = True
 
     def invoke(self, text: str) -> dict:
         with self._lock:
@@ -70,7 +67,12 @@ def install_recording_codex(monkeypatch) -> Mock:
     dependencies = Mock()
     codex_module = importlib.import_module("dataframeit.codex")
     monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
-    monkeypatch.setattr(codex_module, "CodexBackend", RecordingCodexBackend)
+
+    @contextmanager
+    def recording_backend(config, pydantic_model, user_prompt):
+        yield RecordingCodexBackend(config, pydantic_model, user_prompt)
+
+    monkeypatch.setattr(codex_module, "open_codex_backend", recording_backend)
     RecordingCodexBackend.instances.clear()
     return dependencies
 
@@ -95,7 +97,6 @@ def test_codex_backend_is_created_once_for_all_rows(monkeypatch, parallel_reques
     assert backend.config.provider == "codex"
     assert backend.pydantic_model is ResultModel
     assert backend.user_prompt == "Extract: {texto}"
-    assert backend.entered and backend.closed
     assert sorted(backend.calls) == ["a", "b", "c"]
     assert sorted(result["value"].tolist()) == ["a", "b", "c"]
 
@@ -152,9 +153,7 @@ def test_empty_dataframe_adds_result_columns_without_provider(monkeypatch):
     ]
 
 
-def test_completed_checkpoint_adds_new_model_field_and_normalizes_without_provider(
-    monkeypatch,
-):
+def test_completed_checkpoint_rejects_new_model_field_without_reprocessing(monkeypatch):
     dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
     backend_factory = Mock(side_effect=AssertionError("backend must not open"))
     monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
@@ -163,6 +162,38 @@ def test_completed_checkpoint_adds_new_model_field_and_normalizes_without_provid
         {
             "text": ["ready"],
             "value": ['["previous"]'],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    original = data.copy(deep=True)
+
+    with pytest.raises(ValueError, match=r"reprocess_columns=\['new_value'\]"):
+        core.dataframeit(
+            data,
+            questions=ExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-5.4",
+            resume=True,
+            track_tokens=False,
+        )
+
+    dependencies.assert_not_called()
+    backend_factory.assert_not_called()
+    pd.testing.assert_frame_equal(data, original)
+
+
+def test_completed_compatible_checkpoint_normalizes_without_provider(monkeypatch):
+    dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
+    backend_factory = Mock(side_effect=AssertionError("backend must not open"))
+    monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
+    monkeypatch.setattr(core, "_provider_backend", backend_factory)
+    data = pd.DataFrame(
+        {
+            "text": ["ready"],
+            "value": ['["previous"]'],
+            "new_value": ["kept"],
             "_dataframeit_status": ["processed"],
         }
     )
@@ -180,10 +211,106 @@ def test_completed_checkpoint_adds_new_model_field_and_normalizes_without_provid
     dependencies.assert_not_called()
     backend_factory.assert_not_called()
     assert result["value"].tolist() == [["previous"]]
-    assert result["new_value"].isna().all()
+    assert result["new_value"].tolist() == ["kept"]
 
 
-def test_completed_codex_checkpoint_adds_missing_cached_token_column_without_provider(
+def test_partial_checkpoint_rejects_new_model_field_without_reprocessing(monkeypatch):
+    dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
+    backend_factory = Mock(side_effect=AssertionError("backend must not open"))
+    monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
+    monkeypatch.setattr(core, "_provider_backend", backend_factory)
+    data = pd.DataFrame(
+        {
+            "text": ["ready", "pending"],
+            "value": ['["previous"]', None],
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+    original = data.copy(deep=True)
+
+    with pytest.raises(ValueError, match=r"reprocess_columns=\['new_value'\]"):
+        core.dataframeit(
+            data,
+            questions=ExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-5.4",
+            resume=True,
+            track_tokens=False,
+        )
+
+    dependencies.assert_not_called()
+    backend_factory.assert_not_called()
+    pd.testing.assert_frame_equal(data, original)
+
+
+def test_reprocessing_new_field_updates_processed_and_pending_rows(monkeypatch):
+    @contextmanager
+    def expanded_backend(*args):
+        yield core.ProviderBackend(
+            label="codex",
+            invoke=lambda text: {
+                "data": {"value": [text], "new_value": f"new:{text}"},
+                "usage": None,
+            },
+        )
+
+    monkeypatch.setattr(core, "validate_provider_dependencies", Mock())
+    monkeypatch.setattr(core, "_provider_backend", expanded_backend)
+    data = pd.DataFrame(
+        {
+            "text": ["ready", "pending"],
+            "value": [["previous"], None],
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    result = core.dataframeit(
+        data,
+        questions=ExpandedResultModel,
+        prompt="{texto}",
+        provider="codex",
+        model="gpt-5.4",
+        resume=True,
+        reprocess_columns=["new_value"],
+        track_tokens=False,
+    )
+
+    assert result["value"].tolist() == [["previous"], ["pending"]]
+    assert result["new_value"].tolist() == ["new:ready", "new:pending"]
+
+
+def test_reprocessing_must_cover_every_new_model_field(monkeypatch):
+    dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
+    backend_factory = Mock(side_effect=AssertionError("backend must not open"))
+    monkeypatch.setattr(core, "validate_provider_dependencies", dependencies)
+    monkeypatch.setattr(core, "_provider_backend", backend_factory)
+    data = pd.DataFrame(
+        {
+            "text": ["ready"],
+            "value": [["previous"]],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+    original = data.copy(deep=True)
+
+    with pytest.raises(ValueError, match="second_new_value"):
+        core.dataframeit(
+            data,
+            questions=TwiceExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-5.4",
+            reprocess_columns=["first_new_value"],
+            track_tokens=False,
+        )
+
+    dependencies.assert_not_called()
+    backend_factory.assert_not_called()
+    pd.testing.assert_frame_equal(data, original)
+
+
+def test_completed_checkpoint_adds_missing_cached_token_column_without_provider(
     monkeypatch,
 ):
     dependencies = Mock(side_effect=AssertionError("dependency preflight must not run"))
@@ -205,8 +332,7 @@ def test_completed_codex_checkpoint_adds_missing_cached_token_column_without_pro
         data,
         questions=ResultModel,
         prompt="{texto}",
-        provider="codex",
-        model="gpt-5.4",
+        provider="google_genai",
         resume=True,
     )
 
@@ -216,22 +342,15 @@ def test_completed_codex_checkpoint_adds_missing_cached_token_column_without_pro
     assert result["_cached_input_tokens"].isna().all()
 
 
-@pytest.mark.parametrize("failure_stage", ["constructor", "enter"])
-def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch, failure_stage):
-    class FailingCodexBackend:
-        def __init__(self, config, pydantic_model, user_prompt):
-            if failure_stage == "constructor":
-                raise ValueError("invalid schema or configuration")
-
-        def __enter__(self):
-            raise ValueError("authentication failed")
-
-        def __exit__(self, exc_type, exc, traceback):
-            return None
+def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch):
+    @contextmanager
+    def failing_backend(*args):
+        raise ValueError("invalid schema, configuration or authentication")
+        yield
 
     codex_module = importlib.import_module("dataframeit.codex")
     monkeypatch.setattr(core, "validate_provider_dependencies", Mock())
-    monkeypatch.setattr(codex_module, "CodexBackend", FailingCodexBackend)
+    monkeypatch.setattr(codex_module, "open_codex_backend", failing_backend)
     data = pd.DataFrame({"text": ["pending"]})
     original = data.copy(deep=True)
 

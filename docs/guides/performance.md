@@ -134,7 +134,7 @@ resultado = dataframeit(
 
 ### Colunas Adicionadas
 
-O resultado registra o uso por linha; a [Referência LLM](../reference/llm-reference.md#colunas-adicionadas-automaticamente) define as colunas, quando `_cached_input_tokens` existe e como interpretar valores nulos ou zero.
+O resultado registra o uso por linha; a [Referência LLM](../reference/llm-reference.md#colunas-adicionadas-automaticamente) define as colunas e como interpretar valores nulos ou zero em `_cached_input_tokens`.
 
 ### Calculando Custos
 

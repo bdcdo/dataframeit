@@ -15,7 +15,6 @@ def test_setup_columns_mutates_independent_copy_only():
         df_copy,
         expected_columns=["campo1", "campo2"],
         status_column=None,
-        resume=False,
         track_tokens=False,
     )
 

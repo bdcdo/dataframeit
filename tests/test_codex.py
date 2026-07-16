@@ -12,7 +12,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field, RootModel
 
-from dataframeit.codex import CodexBackend, _to_strict_json_schema
+from dataframeit.codex import (
+    CodexBackend,
+    _build_schema,
+    _to_strict_json_schema,
+    _validate_config,
+    open_codex_backend,
+)
 from dataframeit.errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
     ProviderConfigurationError,
@@ -176,10 +182,9 @@ def make_result(
 
 
 def initialized_backend(tmp_path, codex_sdk, result=None):
-    sdk, _, _ = codex_sdk
-    backend = CodexBackend(make_config(), SampleModel, "Analise: {texto}")
-    backend._workspace = tmp_path / "workspace"
-    backend._workspace.mkdir()
+    sdk, sdk_types, _ = codex_sdk
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
 
     turn = MagicMock(spec=sdk.TurnHandle)
     turn.id = "turn-1"
@@ -188,8 +193,29 @@ def initialized_backend(tmp_path, codex_sdk, result=None):
     thread.turn.return_value = turn
     client = MagicMock(spec=sdk.Codex)
     client.thread_start.return_value = thread
-    backend._client = client
+    config = make_config()
+    backend = CodexBackend(
+        config=config,
+        _pydantic_model=SampleModel,
+        _user_prompt="Analise: {texto}",
+        _schema=_build_schema(SampleModel),
+        _effort=sdk_types.ReasoningEffort.medium,
+        _client=client,
+        _workspace=workspace,
+    )
     return backend, client, thread, turn
+
+
+def as_context_manager(client):
+    """Configura o mock com o mesmo contrato de contexto do SDK real."""
+    client.__enter__.return_value = client
+
+    def close_without_suppressing(*_):
+        client.close()
+        return False
+
+    client.__exit__.side_effect = close_without_suppressing
+    return client
 
 
 class TestProviderDependency:
@@ -307,7 +333,7 @@ class TestStrictPydanticSchema:
         with pytest.raises(ProviderConfigurationError, match=keyword):
             _to_strict_json_schema(model.model_json_schema())
 
-    def test_one_of_without_exclusive_discriminator_is_rejected(self):
+    def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
             "type": "object",
             "properties": {
@@ -315,8 +341,12 @@ class TestStrictPydanticSchema:
             },
         }
 
-        with pytest.raises(ProviderConfigurationError, match="oneOf"):
-            _to_strict_json_schema(schema)
+        strict_schema = _to_strict_json_schema(schema)
+
+        assert strict_schema["properties"]["value"]["anyOf"] == [
+            {"type": "string"},
+            {"type": "integer"},
+        ]
 
     def test_all_of_is_rejected_instead_of_forwarded_to_runtime(self):
         schema = {
@@ -353,16 +383,16 @@ class TestBackendConfiguration:
     def test_effort_defaults_to_real_medium_enum(self, codex_sdk):
         _, sdk_types, _ = codex_sdk
 
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
+        effort = _validate_config(make_config())
 
-        assert backend._effort is sdk_types.ReasoningEffort.medium
+        assert effort is sdk_types.ReasoningEffort.medium
 
     def test_effort_is_the_only_supported_model_kwarg(self, codex_sdk):
         _, sdk_types, _ = codex_sdk
 
-        backend = CodexBackend(make_config(model_kwargs={"effort": "high"}), SampleModel, "{texto}")
+        effort = _validate_config(make_config(model_kwargs={"effort": "high"}))
 
-        assert backend._effort is sdk_types.ReasoningEffort.high
+        assert effort is sdk_types.ReasoningEffort.high
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
@@ -378,7 +408,7 @@ class TestBackendConfiguration:
 
         with patch.object(sdk, "Codex") as codex:
             with pytest.raises(ProviderConfigurationError, match=message):
-                CodexBackend(make_config(**overrides), SampleModel, "{texto}")
+                _validate_config(make_config(**overrides))
 
         codex.assert_not_called()
 
@@ -395,7 +425,7 @@ class TestBackendLifecycle:
         (source_home / "config.toml").write_text('[mcp_servers.unsafe]\ncommand="unsafe"\n')
         monkeypatch.setenv("CODEX_HOME", str(source_home))
 
-        client = MagicMock(spec=sdk.Codex)
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
 
         with (
@@ -407,7 +437,7 @@ class TestBackendLifecycle:
             ) as symlink,
             patch.object(sdk, "Codex", return_value=client) as codex,
         ):
-            with CodexBackend(make_config(), SampleModel, "{texto}") as backend:
+            with open_codex_backend(make_config(), SampleModel, "{texto}") as backend:
                 launch_config = codex.call_args.args[0]
                 assert isinstance(launch_config, sdk.CodexConfig)
                 assert launch_config.codex_bin is None
@@ -420,15 +450,12 @@ class TestBackendLifecycle:
                 assert isolated_home != source_home
                 assert not isolated_auth.is_symlink()
                 assert os.path.samefile(isolated_auth, source_auth)
-                lock_path = Path(backend._auth_lock.lock_file)
-                assert lock_path == source_home / "auth.json.dataframeit.lock"
+                lock_path = source_home / "auth.json.dataframeit.lock"
                 assert not auth_lock_is_available(lock_path)
 
-                contender = CodexBackend(make_config(), SampleModel, "{texto}")
                 with pytest.raises(ProviderConfigurationError, match="Outra execução"):
-                    with contender:
+                    with open_codex_backend(make_config(), SampleModel, "{texto}"):
                         pass
-                assert contender._auth_lock is None
                 assert codex.call_count == 1
 
                 def close_while_lock_is_held():
@@ -451,32 +478,26 @@ class TestBackendLifecycle:
             symlink.assert_not_called()
 
         client.close.assert_called_once_with()
-        assert backend._auth_lock is None
         assert auth_lock_is_available(lock_path)
         assert not workspace.parent.exists()
 
-    def test_missing_auth_closes_client_and_removes_runtime(self, codex_sdk, monkeypatch, tmp_path):
-        sdk, sdk_types, _ = codex_sdk
+    def test_missing_auth_fails_before_runtime_or_client(self, codex_sdk, monkeypatch, tmp_path):
+        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         monkeypatch.setenv("CODEX_HOME", str(source_home))
-        client = MagicMock(spec=sdk.Codex)
-        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=True)
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
 
-        with patch.object(sdk, "Codex", return_value=client) as codex:
+        with (
+            patch("dataframeit.codex.tempfile.TemporaryDirectory") as temporary_directory,
+            patch.object(sdk, "Codex") as codex,
+        ):
             with pytest.raises(ProviderConfigurationError) as exc_info:
-                with backend:
+                with open_codex_backend(make_config(), SampleModel, "{texto}"):
                     pass
 
         assert CODEX_FILE_AUTH_LOGIN_COMMAND in str(exc_info.value)
-
-        launch_config = codex.call_args.args[0]
-        runtime_root = Path(launch_config.cwd).parent
-        client.close.assert_called_once_with()
-        assert backend._client is None
-        assert backend._runtime is None
-        assert not runtime_root.exists()
+        temporary_directory.assert_not_called()
+        codex.assert_not_called()
 
     def test_distinct_auth_files_do_not_contend(self, codex_sdk, monkeypatch, tmp_path):
         sdk, sdk_types, _ = codex_sdk
@@ -485,18 +506,17 @@ class TestBackendLifecycle:
         for home in homes:
             home.mkdir()
             (home / "auth.json").write_text("{}")
-            client = MagicMock(spec=sdk.Codex)
+            client = as_context_manager(MagicMock(spec=sdk.Codex))
             client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
             clients.append(client)
 
         monkeypatch.setenv("CODEX_HOME", str(homes[0]))
-        first = CodexBackend(make_config(), SampleModel, "{texto}")
         with patch.object(sdk, "Codex", side_effect=clients) as codex:
-            with first:
+            with open_codex_backend(make_config(), SampleModel, "{texto}"):
                 monkeypatch.setenv("CODEX_HOME", str(homes[1]))
-                second = CodexBackend(make_config(), SampleModel, "{texto}")
-                with second:
-                    assert first._auth_lock.lock_file != second._auth_lock.lock_file
+                with open_codex_backend(make_config(), SampleModel, "{texto}"):
+                    assert not auth_lock_is_available(homes[0] / "auth.json.dataframeit.lock")
+                    assert not auth_lock_is_available(homes[1] / "auth.json.dataframeit.lock")
                     assert codex.call_count == 2
 
         for client in clients:
@@ -511,7 +531,6 @@ class TestBackendLifecycle:
         source_auth = source_home / "auth.json"
         source_auth.write_text("{}")
         monkeypatch.setenv("CODEX_HOME", str(source_home))
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
 
         with (
             patch("dataframeit.codex.os.link", side_effect=OSError("unsupported")),
@@ -519,13 +538,12 @@ class TestBackendLifecycle:
             patch.object(sdk, "Codex") as codex,
             pytest.raises(ProviderConfigurationError, match="hard link"),
         ):
-            with backend:
+            with open_codex_backend(make_config(), SampleModel, "{texto}"):
                 pass
 
         codex.assert_not_called()
         symlink.assert_not_called()
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
-        assert backend._runtime is None
         assert list(source_home.glob("dataframeit-codex-*")) == []
 
     @pytest.mark.parametrize("failure_stage", ["constructor", "account"])
@@ -537,8 +555,7 @@ class TestBackendLifecycle:
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
         monkeypatch.setenv("CODEX_HOME", str(source_home))
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
-        client = MagicMock(spec=sdk.Codex)
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
         client.account.side_effect = RuntimeError("account failed")
         codex_result = RuntimeError("constructor failed") if failure_stage == "constructor" else client
 
@@ -546,14 +563,12 @@ class TestBackendLifecycle:
             patch.object(sdk, "Codex", side_effect=[codex_result]),
             pytest.raises(RuntimeError, match="failed"),
         ):
-            with backend:
+            with open_codex_backend(make_config(), SampleModel, "{texto}"):
                 pass
 
         if failure_stage == "account":
             client.close.assert_called_once_with()
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
-        assert backend._auth_lock is None
-        assert backend._runtime is None
         assert list(source_home.glob("dataframeit-codex-*")) == []
 
     def test_client_close_failure_still_releases_auth_lock(
@@ -564,8 +579,7 @@ class TestBackendLifecycle:
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
         monkeypatch.setenv("CODEX_HOME", str(source_home))
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
-        client = MagicMock(spec=sdk.Codex)
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
         client.close.side_effect = RuntimeError("close failed")
 
@@ -573,12 +587,10 @@ class TestBackendLifecycle:
             patch.object(sdk, "Codex", return_value=client),
             pytest.raises(RuntimeError, match="close failed"),
         ):
-            with backend:
+            with open_codex_backend(make_config(), SampleModel, "{texto}"):
                 pass
 
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
-        assert backend._auth_lock is None
-        assert backend._runtime is None
         assert list(source_home.glob("dataframeit-codex-*")) == []
 
     def test_runtime_directory_failure_has_accurate_error_and_cleans_up(
@@ -589,7 +601,6 @@ class TestBackendLifecycle:
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
         monkeypatch.setenv("CODEX_HOME", str(source_home))
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
         original_mkdir = Path.mkdir
 
         def fail_runtime_directory(path, *args, **kwargs):
@@ -602,12 +613,12 @@ class TestBackendLifecycle:
             patch.object(sdk, "Codex") as codex,
             pytest.raises(ProviderConfigurationError, match="diretórios do runtime"),
         ):
-            with backend:
+            with open_codex_backend(make_config(), SampleModel, "{texto}"):
                 pass
 
         codex.assert_not_called()
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
-        assert backend._runtime is None
+        assert list(source_home.glob("dataframeit-codex-*")) == []
 
     @pytest.mark.parametrize("error_type", [OSError, NotImplementedError])
     def test_auth_lock_failure_is_explicit_before_runtime_creation(
@@ -618,19 +629,16 @@ class TestBackendLifecycle:
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
         monkeypatch.setenv("CODEX_HOME", str(source_home))
-        backend = CodexBackend(make_config(), SampleModel, "{texto}")
 
         with (
             patch("filelock.FileLock.acquire", side_effect=error_type("unsupported")),
             patch.object(sdk, "Codex") as codex,
             pytest.raises(ProviderConfigurationError, match="acesso exclusivo"),
         ):
-            with backend:
+            with open_codex_backend(make_config(), SampleModel, "{texto}"):
                 pass
 
         codex.assert_not_called()
-        assert backend._auth_lock is None
-        assert backend._runtime is None
         assert list(source_home.glob("dataframeit-codex-*")) == []
 
 

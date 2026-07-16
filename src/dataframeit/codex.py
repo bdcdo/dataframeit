@@ -5,6 +5,9 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -95,56 +98,6 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             raise ProviderConfigurationError(f"Referência inválida no schema: {ref}")
         return current
 
-    def discriminated_one_of_is_safe(node: dict[str, Any]) -> bool:
-        """Confirma que ``oneOf`` equivale a ``anyOf`` por discriminador exclusivo."""
-        variants = node.get("oneOf")
-        discriminator = node.get("discriminator")
-        if not isinstance(variants, list) or not isinstance(discriminator, dict):
-            return False
-
-        property_name = discriminator.get("propertyName")
-        mapping = discriminator.get("mapping")
-        if not isinstance(property_name, str):
-            return False
-        if mapping is not None and not isinstance(mapping, dict):
-            return False
-
-        discriminator_values: set[Any] = set()
-        for variant in variants:
-            if not isinstance(variant, dict):
-                return False
-
-            ref = variant.get("$ref")
-            if ref is not None:
-                if len(variant) != 1 or not isinstance(ref, str):
-                    return False
-                target = resolve_ref(ref)
-            else:
-                target = variant
-
-            properties = target.get("properties")
-            required = target.get("required")
-            if not isinstance(properties, dict) or not isinstance(required, list):
-                return False
-            discriminator_schema = properties.get(property_name)
-            if not isinstance(discriminator_schema, dict) or "const" not in discriminator_schema:
-                return False
-            if property_name not in required:
-                return False
-
-            value = discriminator_schema["const"]
-            try:
-                if value in discriminator_values:
-                    return False
-                discriminator_values.add(value)
-            except TypeError:
-                return False
-
-            if mapping is not None and mapping.get(str(value)) != ref:
-                return False
-
-        return bool(discriminator_values)
-
     def visit(node: Any, expanded_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
         if not isinstance(node, dict):
             raise ProviderConfigurationError(
@@ -154,13 +107,13 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
         node.pop("default", None)
 
         if "oneOf" in node:
-            if not discriminated_one_of_is_safe(node):
+            variants = node.pop("oneOf")
+            if not isinstance(variants, list):
                 raise ProviderConfigurationError(
-                    "O structured output do Codex não suporta oneOf sem "
-                    "discriminador exclusivo"
+                    "oneOf inválido no schema Pydantic v2"
                 )
-            node["anyOf"] = node.pop("oneOf")
-            node.pop("discriminator")
+            node["anyOf"] = variants
+            node.pop("discriminator", None)
         elif "discriminator" in node:
             raise ProviderConfigurationError(
                 "O structured output do Codex não suporta discriminator sem oneOf"
@@ -233,72 +186,119 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return strict_schema
 
 
-class CodexBackend:
-    """Mantém um app-server Codex e cria uma thread efêmera por linha."""
+def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
+    try:
+        schema = pydantic_model.model_json_schema()
+    except (AttributeError, TypeError) as err:
+        raise ProviderConfigurationError("questions deve ser um modelo Pydantic v2") from err
+    if not isinstance(schema, dict):
+        raise ProviderConfigurationError(
+            "model_json_schema() deve retornar um objeto JSON Schema"
+        )
+    return _to_strict_json_schema(schema)
 
-    def __init__(
-        self,
-        config: LLMConfig,
-        pydantic_model: type[BaseModel],
-        user_prompt: str,
-    ):
-        self.config = config
-        self._pydantic_model = pydantic_model
-        self._user_prompt = user_prompt
-        self._schema = self._build_schema(pydantic_model)
-        self._effort = self._validate_config()
-        self._client: Any = None
-        self._auth_lock: Any = None
-        self._runtime: tempfile.TemporaryDirectory[str] | None = None
-        self._workspace: Path | None = None
-        self._codex_home: Path | None = None
 
-    def __enter__(self) -> CodexBackend:
-        from openai_codex import Codex, CodexConfig
+def _validate_config(config: LLMConfig):
+    from openai_codex.types import ReasoningEffort
 
+    if config.api_key:
+        raise ProviderConfigurationError(
+            "provider='codex' usa a autenticação do Codex; não passe api_key"
+        )
+
+    model_kwargs = config.model_kwargs or {}
+    unknown = sorted(set(model_kwargs) - _ALLOWED_MODEL_KWARGS)
+    if unknown:
+        raise ProviderConfigurationError(
+            "Parâmetros não suportados em model_kwargs para provider='codex': "
+            + ", ".join(unknown)
+        )
+
+    effort = model_kwargs.get("effort", "medium")
+    try:
+        return ReasoningEffort(effort)
+    except ValueError as err:
+        allowed = ", ".join(item.value for item in ReasoningEffort)
+        raise ProviderConfigurationError(
+            f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
+        ) from err
+
+
+@contextmanager
+def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
+    """Mantém lock, credencial e diretórios isolados pelo tempo da execução."""
+    from filelock import FileLock, Timeout
+
+    configured_home = os.environ.get("CODEX_HOME")
+    source_home = (
+        Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
+    )
+    source_auth = source_home / "auth.json"
+    if not source_auth.is_file():
+        raise ProviderConfigurationError(
+            "Codex não está autenticado. Execute "
+            f"`{CODEX_FILE_AUTH_LOGIN_COMMAND}` antes de usar provider='codex'."
+        )
+
+    try:
+        resolved_auth = source_auth.resolve(strict=True)
+        lock_path = resolved_auth.with_name(resolved_auth.name + _AUTH_LOCK_SUFFIX)
+        auth_lock = FileLock(lock_path, thread_local=False)
+        acquired_lock = auth_lock.acquire(timeout=0)
+    except Timeout as err:
+        raise ProviderConfigurationError(
+            "Outra execução do DataFrameIt já está usando este auth.json do Codex; "
+            "aguarde sua conclusão antes de iniciar outra"
+        ) from err
+    except (OSError, NotImplementedError) as err:
+        raise ProviderConfigurationError(
+            "Não foi possível obter acesso exclusivo ao auth.json do Codex"
+        ) from err
+
+    with acquired_lock:
         try:
-            self._create_isolated_runtime()
-            self._client = Codex(
-                CodexConfig(
-                    cwd=os.fspath(self._workspace),
-                    config_overrides=_CODEX_CONFIG_OVERRIDES,
-                    env={
-                        "CODEX_HOME": os.fspath(self._codex_home),
-                        "CODEX_SQLITE_HOME": os.fspath(self._codex_home),
-                    },
-                )
+            runtime = tempfile.TemporaryDirectory(
+                prefix="dataframeit-codex-",
+                dir=resolved_auth.parent,
             )
-            account = self._client.account()
-            if account.requires_openai_auth and account.account is None:
-                raise ProviderConfigurationError(
-                    "Codex não está autenticado. Execute "
-                    f"`{CODEX_FILE_AUTH_LOGIN_COMMAND}` antes de usar provider='codex'."
-                )
-        except BaseException:
-            self.close()
-            raise
-        return self
+        except OSError as err:
+            raise ProviderConfigurationError(
+                "Não foi possível criar o runtime temporário do Codex"
+            ) from err
 
-    def __exit__(self, exc_type, exc, traceback) -> None:
-        self.close()
-
-    def close(self) -> None:
-        """Encerra o app-server e remove todo o estado temporário."""
-        client, self._client = self._client, None
-        auth_lock, self._auth_lock = self._auth_lock, None
-        runtime, self._runtime = self._runtime, None
-        self._workspace = None
-        self._codex_home = None
-        try:
-            if client is not None:
-                client.close()
-        finally:
+        with runtime:
+            runtime_root = Path(runtime.name)
+            workspace = runtime_root / "workspace"
+            codex_home = runtime_root / "home"
             try:
-                if runtime is not None:
-                    runtime.cleanup()
-            finally:
-                if auth_lock is not None:
-                    auth_lock.release()
+                workspace.mkdir(mode=0o700)
+                codex_home.mkdir(mode=0o700)
+            except OSError as err:
+                raise ProviderConfigurationError(
+                    "Não foi possível criar os diretórios do runtime temporário do Codex"
+                ) from err
+
+            try:
+                os.link(resolved_auth, codex_home / "auth.json")
+            except OSError as err:
+                raise ProviderConfigurationError(
+                    "Não foi possível criar hard link para o auth.json do Codex"
+                ) from err
+
+            yield workspace, codex_home
+
+
+@dataclass(frozen=True, slots=True)
+class CodexBackend:
+    """Backend ativo vinculado a um único app-server Codex."""
+
+    config: LLMConfig
+    _pydantic_model: type[BaseModel]
+    _user_prompt: str
+    _schema: dict[str, Any]
+    _effort: Any
+    _client: Any
+    _workspace: Path
 
     def invoke(self, text: str) -> dict:
         """Processa uma linha com structured output nativo do Codex."""
@@ -309,113 +309,9 @@ class CodexBackend:
             self.config.max_delay,
         )
 
-    @staticmethod
-    def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
-        try:
-            schema = pydantic_model.model_json_schema()
-        except (AttributeError, TypeError) as err:
-            raise ProviderConfigurationError("questions deve ser um modelo Pydantic v2") from err
-        if not isinstance(schema, dict):
-            raise ProviderConfigurationError(
-                "model_json_schema() deve retornar um objeto JSON Schema"
-            )
-        return _to_strict_json_schema(schema)
-
-    def _create_isolated_runtime(self) -> None:
-        """Cria um CODEX_HOME limpo ligado ao arquivo de autenticação local."""
-        configured_home = os.environ.get("CODEX_HOME")
-        source_home = (
-            Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
-        )
-        source_auth = source_home / "auth.json"
-        resolved_auth = self._acquire_auth_lock(source_auth) if source_auth.is_file() else None
-
-        try:
-            runtime = tempfile.TemporaryDirectory(
-                prefix="dataframeit-codex-",
-                dir=resolved_auth.parent if resolved_auth is not None else None,
-            )
-        except OSError as err:
-            raise ProviderConfigurationError(
-                "Não foi possível criar o runtime temporário do Codex"
-            ) from err
-        self._runtime = runtime
-
-        runtime_root = Path(runtime.name)
-        workspace = runtime_root / "workspace"
-        codex_home = runtime_root / "home"
-        try:
-            workspace.mkdir(mode=0o700)
-            codex_home.mkdir(mode=0o700)
-        except OSError as err:
-            raise ProviderConfigurationError(
-                "Não foi possível criar os diretórios do runtime temporário do Codex"
-            ) from err
-
-        if resolved_auth is not None:
-            try:
-                os.link(resolved_auth, codex_home / "auth.json")
-            except OSError as err:
-                raise ProviderConfigurationError(
-                    "Não foi possível criar hard link para o auth.json do Codex"
-                ) from err
-
-        self._workspace = workspace
-        self._codex_home = codex_home
-
-    def _acquire_auth_lock(self, source_auth: Path) -> Path:
-        """Impede runtimes concorrentes de atualizarem a mesma credencial."""
-        from filelock import FileLock, Timeout
-
-        try:
-            resolved_auth = source_auth.resolve(strict=True)
-            lock_path = resolved_auth.with_name(resolved_auth.name + _AUTH_LOCK_SUFFIX)
-            auth_lock = FileLock(lock_path, thread_local=False)
-            auth_lock.acquire(timeout=0)
-        except Timeout as err:
-            raise ProviderConfigurationError(
-                "Outra execução do DataFrameIt já está usando este auth.json do Codex; "
-                "aguarde sua conclusão antes de iniciar outra"
-            ) from err
-        except (OSError, NotImplementedError) as err:
-            raise ProviderConfigurationError(
-                "Não foi possível obter acesso exclusivo ao auth.json do Codex"
-            ) from err
-
-        self._auth_lock = auth_lock
-        return resolved_auth
-
-    def _validate_config(self):
-        from openai_codex.types import ReasoningEffort
-
-        if self.config.api_key:
-            raise ProviderConfigurationError(
-                "provider='codex' usa a autenticação do Codex; não passe api_key"
-            )
-
-        model_kwargs = self.config.model_kwargs or {}
-        unknown = sorted(set(model_kwargs) - _ALLOWED_MODEL_KWARGS)
-        if unknown:
-            raise ProviderConfigurationError(
-                "Parâmetros não suportados em model_kwargs para provider='codex': "
-                + ", ".join(unknown)
-            )
-
-        effort = model_kwargs.get("effort", "medium")
-        try:
-            return ReasoningEffort(effort)
-        except ValueError as err:
-            allowed = ", ".join(item.value for item in ReasoningEffort)
-            raise ProviderConfigurationError(
-                f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
-            ) from err
-
     def _invoke_once(self, text: str) -> dict:
         from openai_codex import ApprovalMode, Sandbox
         from openai_codex.types import TurnStatus
-
-        if self._client is None or self._workspace is None:
-            raise ProviderConfigurationError("O backend Codex não foi inicializado")
 
         prompt = build_prompt(self._user_prompt, text)
 
@@ -433,9 +329,13 @@ class CodexBackend:
                 effort=self._effort,
                 output_schema=self._schema,
             )
+        except Exception as err:
+            self._raise_classified_sdk_error(err)
+
+        try:
             result = turn.run()
         except Exception as err:
-            if "turn" in locals() and self._failed_turn_is_overloaded(thread, turn.id):
+            if self._failed_turn_is_overloaded(thread, turn.id):
                 raise ProviderOverloadedError(f"{type(err).__name__}: {err}") from err
             self._raise_classified_sdk_error(err)
 
@@ -487,3 +387,42 @@ class CodexBackend:
         if is_retryable_error(error):
             raise ProviderOverloadedError(message) from error
         raise ProviderError(message) from error
+
+
+@contextmanager
+def open_codex_backend(
+    config: LLMConfig,
+    pydantic_model: type[BaseModel],
+    user_prompt: str,
+) -> Iterator[CodexBackend]:
+    """Abre um backend ativo e fecha seus recursos na ordem inversa."""
+    from openai_codex import Codex, CodexConfig
+
+    schema = _build_schema(pydantic_model)
+    effort = _validate_config(config)
+
+    with _isolated_runtime() as (workspace, codex_home):
+        codex_config = CodexConfig(
+            cwd=os.fspath(workspace),
+            config_overrides=_CODEX_CONFIG_OVERRIDES,
+            env={
+                "CODEX_HOME": os.fspath(codex_home),
+                "CODEX_SQLITE_HOME": os.fspath(codex_home),
+            },
+        )
+        with Codex(codex_config) as client:
+            account = client.account()
+            if account.requires_openai_auth and account.account is None:
+                raise ProviderConfigurationError(
+                    "Codex não está autenticado. Execute "
+                    f"`{CODEX_FILE_AUTH_LOGIN_COMMAND}` antes de usar provider='codex'."
+                )
+            yield CodexBackend(
+                config=config,
+                _pydantic_model=pydantic_model,
+                _user_prompt=user_prompt,
+                _schema=schema,
+                _effort=effort,
+                _client=client,
+                _workspace=workspace,
+            )

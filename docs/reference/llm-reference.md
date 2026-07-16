@@ -229,14 +229,14 @@ sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
 
 ## Colunas Adicionadas Automaticamente
 
-Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_output_tokens` e `_reasoning_tokens`; para `provider='codex'`, cria ainda `_cached_input_tokens`. Sem telemetria de uso, esses valores podem permanecer nulos ou ser zero. Tokens de cache são uma parcela do total de entrada, e tokens de raciocínio são uma parcela do total de saída.
+Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_cached_input_tokens`, `_output_tokens` e `_reasoning_tokens` para todos os providers. Sem telemetria de uso, esses valores podem permanecer nulos; quando o provider informa uso total, mas não informa cache ou raciocínio, a métrica correspondente fica em zero. Tokens de cache são uma parcela do total de entrada, e tokens de raciocínio são uma parcela do total de saída.
 
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | `'processed'`, `'error'`, `None` |
 | `_error_details` | Mensagem de erro |
 | `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
-| `_cached_input_tokens` | Parcela da entrada atendida por cache (somente `codex`, com `track_tokens=True`) |
+| `_cached_input_tokens` | Parcela da entrada atendida por cache (com `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
 | `_reasoning_tokens` | Parcela da saída usada em raciocínio (com `track_tokens=True`) |
 
