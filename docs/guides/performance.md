@@ -134,10 +134,7 @@ resultado = dataframeit(
 
 ### Colunas Adicionadas
 
-| Coluna | Descrição |
-|--------|-----------|
-| `_input_tokens` | Tokens de entrada por linha |
-| `_output_tokens` | Tokens de saída por linha |
+O resultado registra o uso por linha; a [Referência LLM](../reference/llm-reference.md#colunas-adicionadas-automaticamente) define as colunas e como interpretar valores nulos ou zero em `_cached_input_tokens`.
 
 ### Calculando Custos
 

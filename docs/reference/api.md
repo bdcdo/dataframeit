@@ -51,7 +51,7 @@ def dataframeit(
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
 | `resume` | bool | `True` | Continua de onde parou (pula linhas já processadas) |
-| `reprocess_columns` | list | `None` | Lista de colunas para forçar reprocessamento |
+| `reprocess_columns` | list | `None` | Lista de colunas para forçar reprocessamento; ao retomar com modelo alterado, deve cobrir os campos incompatíveis das linhas já processadas |
 | `status_column` | str | `None` | Nome customizado para coluna de status |
 
 #### Modelo
@@ -59,9 +59,9 @@ def dataframeit(
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
 | `model` | str | `'gemini-3-flash-preview'` | Nome do modelo LLM |
-| `provider` | str | `'google_genai'` | Provider LangChain |
-| `api_key` | str | `None` | API key (usa env var se None) |
-| `model_kwargs` | dict | `None` | Parâmetros extras (temperature, etc.) |
+| `provider` | str | `'google_genai'` | Identificador do provider; `codex` usa o SDK oficial em vez de LangChain |
+| `api_key` | str | `None` | API key (usa env var se None); não aceito com `provider='codex'` |
+| `model_kwargs` | dict | `None` | Parâmetros extras; com `codex`, aceita apenas `effort` |
 
 #### Resiliência
 
@@ -85,7 +85,7 @@ def dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `use_search` | bool | `False` | Habilita busca web via Tavily |
+| `use_search` | bool | `False` | Habilita busca web via Tavily; não suportado com `provider='codex'` |
 | `search_per_field` | bool | `False` | Executa busca separada por campo |
 | `max_results` | int | `5` | Resultados por busca (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` ou `'advanced'` |
@@ -105,12 +105,12 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 
 ### Colunas Adicionadas
 
+As colunas de status abaixo existem independentemente do tracking de tokens. Quando `track_tokens=True`, consulte a [Referência LLM](llm-reference.md#colunas-adicionadas-automaticamente) para as colunas de uso e sua semântica.
+
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | `'processed'`, `'error'`, ou `None` |
 | `_error_details` | Detalhes do erro (quando aplicável) |
-| `_input_tokens` | Tokens de entrada (se `track_tokens=True`) |
-| `_output_tokens` | Tokens de saída (se `track_tokens=True`) |
 
 ### Exemplos
 

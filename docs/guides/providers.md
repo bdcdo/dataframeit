@@ -1,6 +1,6 @@
 # Provedores
 
-Configure diferentes provedores de LLM via LangChain.
+Configure diferentes provedores de LLM via LangChain ou pelos SDKs oficiais de ferramentas locais.
 
 ## Providers Suportados
 
@@ -8,6 +8,7 @@ Configure diferentes provedores de LLM via LangChain.
 |----------|---------------|----------------------|
 | Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
 | OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
+| OpenAI Codex (experimental) | `codex` | Modelos suportados pelo runtime empacotado |
 | Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
 | Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b, groq/compound |
 | Cohere | `cohere` | command-r, command-r-plus |
@@ -83,6 +84,26 @@ resultado = dataframeit(
 | `gpt-5.2-mini` | Uso geral, econômico | Baixo |
 | `gpt-5.2` | Máxima qualidade | Alto |
 | `gpt-4.1` | Coding, instruções precisas | Médio |
+
+## OpenAI Codex (Experimental)
+
+O provider `codex` usa o [SDK Python oficial](https://github.com/openai/codex/tree/main/sdk/python) e permanece experimental. Para instalar o extra, entender qual runtime é executado e configurar a autenticação local em arquivo, consulte [Instalação](../getting-started/installation.md).
+
+```python
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    provider='codex',
+    model='gpt-5.4',
+    model_kwargs={'effort': 'medium'},
+    parallel_requests=3,
+)
+```
+
+Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True` não é suportado. O modelo Pydantic deve ter campos no nível raiz e usar o [subconjunto de JSON Schema aceito por Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas); `RootModel`, `Any`, campos `dict` com chaves dinâmicas, tuplas fixas e `set` são rejeitados no preflight. A autenticação configurada durante a instalação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
+
+O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre uma thread efêmera por linha. Cada execução usa `CODEX_HOME` e workspace isolados; `auth.json` é o único arquivo do estado persistente do Codex vinculado ao runtime, que ainda herda as variáveis de ambiente do processo. Enquanto uma execução usa a credencial, outra execução do DataFrameIt com o mesmo `auth.json` falha antes de iniciar o runtime; isso impede refresh concorrente sem afetar `parallel_requests` dentro da execução ativa. Esse lock coordena somente instâncias do DataFrameIt, portanto não execute o Codex CLI com a mesma credencial até o processamento terminar. Busca web, shell e servidores MCP ficam desativados; aprovações são negadas e o sandbox somente leitura bloqueia escrita. O runtime ainda pode apresentar utilitários internos, como `apply_patch`, sem conceder permissão para alterar arquivos.
 
 ## Anthropic Claude
 

@@ -7,9 +7,33 @@ Este módulo contém funções para:
 - Executar funções com retry e backoff exponencial
 """
 import importlib
-import time
 import random
+import time
 import warnings
+
+CODEX_FILE_AUTH_LOGIN_COMMAND = (
+    "codex --config cli_auth_credentials_store='\"file\"' login"
+)
+
+
+class ProviderError(RuntimeError):
+    """Falha de execução reportada por um provider."""
+
+
+class ProviderTransientError(ProviderError):
+    """Falha transitória que pode ser repetida sem reduzir o paralelismo."""
+
+
+class ProviderOverloadedError(ProviderTransientError):
+    """Falha transitória causada por sobrecarga ou limitação do provider."""
+
+
+class ProviderConfigurationError(ValueError):
+    """Configuração local incompatível com o contrato de um provider."""
+
+
+class ProviderOutputError(ValueError):
+    """Resposta definitiva incompatível com o contrato de saída."""
 
 
 # Erros considerados recuperáveis (transientes)
@@ -73,6 +97,22 @@ _BEDROCK_BASE = {
 # Providers cuja heurística simples (langchain_{provider} + {PROVIDER}_API_KEY) não bate com a realidade.
 # env_var=None indica auth por SDK (ADC, AWS creds), não por API key.
 _PROVIDER_OVERRIDES = {
+    'claude_code': {
+        'package': 'claude_agent_sdk',
+        'install': 'dataframeit[claude-code]',
+        'env_var': None,
+        'name': 'Claude Code',
+        'auth_hint': 'Autentique o Claude Code conforme a documentação do SDK.',
+        'uses_langchain': False,
+    },
+    'codex': {
+        'package': 'openai_codex',
+        'install': 'dataframeit[codex]',
+        'env_var': None,
+        'name': 'OpenAI Codex',
+        'auth_hint': CODEX_FILE_AUTH_LOGIN_COMMAND,
+        'uses_langchain': False,
+    },
     'google_vertexai': {
         'package': 'langchain_google_vertexai',
         'install': 'langchain-google-vertexai',
@@ -146,8 +186,21 @@ def _infer_provider_info(provider: str) -> dict:
     }
 
 
-def _get_missing_package_message(package: str, install_name: str, friendly_name: str) -> str:
+def _get_missing_package_message(
+    package: str,
+    install_name: str,
+    friendly_name: str,
+    alternative_install: str | None = None,
+) -> str:
     """Gera mensagem amigável para pacote não instalado."""
+    alternative = ""
+    if alternative_install:
+        alternative = f"""║                                                                              ║
+║  Ou, para instalar todas as dependências recomendadas:                       ║
+║                                                                              ║
+║      pip install {alternative_install:<62} ║
+║                                                                              ║
+"""
     return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  BIBLIOTECA NÃO INSTALADA                                                    ║
@@ -161,11 +214,7 @@ def _get_missing_package_message(package: str, install_name: str, friendly_name:
 ║                                                                              ║
 ║      pip install {install_name:<62} ║
 ║                                                                              ║
-║  Ou, para instalar todas as dependências recomendadas:                       ║
-║                                                                              ║
-║      pip install dataframeit[all]                                            ║
-║                                                                              ║
-║  Após instalar, execute seu código novamente.                                ║
+{alternative}║  Após instalar, execute seu código novamente.                                ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
@@ -180,13 +229,15 @@ def validate_provider_dependencies(provider: str):
     Raises:
         ImportError: Com mensagem amigável se dependência não estiver instalada.
     """
-    # Claude Code SDK não precisa de LangChain
-    if provider == 'claude_code':
+    provider_data = _infer_provider_info(provider)
+
+    # Providers de SDK falam diretamente com seus runtimes, sem LangChain.
+    if not provider_data.get('uses_langchain', True):
         try:
-            importlib.import_module('claude_agent_sdk')
+            importlib.import_module(provider_data['package'])
         except ImportError as err:
             raise ImportError(_get_missing_package_message(
-                'claude_agent_sdk', 'claude-agent-sdk', 'Claude Code SDK'
+                provider_data['package'], provider_data['install'], provider_data['name']
             )) from err
         return
 
@@ -194,23 +245,37 @@ def validate_provider_dependencies(provider: str):
     try:
         importlib.import_module('langchain')
     except ImportError:
-        raise ImportError(_get_missing_package_message('langchain', 'langchain', 'LangChain'))
+        raise ImportError(
+            _get_missing_package_message(
+                'langchain', 'langchain', 'LangChain', 'dataframeit[all]'
+            )
+        )
 
     try:
         importlib.import_module('langchain_core')
     except ImportError:
-        raise ImportError(_get_missing_package_message('langchain_core', 'langchain-core', 'LangChain Core'))
+        raise ImportError(
+            _get_missing_package_message(
+                'langchain_core',
+                'langchain-core',
+                'LangChain Core',
+                'dataframeit[all]',
+            )
+        )
 
     # Validar provider específico (inferir dinamicamente)
     if provider:
-        provider_data = _infer_provider_info(provider)
         package = provider_data['package']
         install = provider_data['install']
         name = provider_data['name']
         try:
             importlib.import_module(package)
         except ImportError:
-            raise ImportError(_get_missing_package_message(package, install, name))
+            raise ImportError(
+                _get_missing_package_message(
+                    package, install, name, 'dataframeit[all]'
+                )
+            )
 
 
 def validate_search_dependencies(search_provider: str = "tavily"):
@@ -560,6 +625,14 @@ def is_recoverable_error(error: Exception) -> bool:
     Returns:
         True se o erro é recuperável, False caso contrário.
     """
+    if isinstance(error, ProviderTransientError):
+        return True
+    if isinstance(
+        error,
+        (ProviderError, ProviderConfigurationError, ProviderOutputError),
+    ):
+        return False
+
     error_str = f"{type(error).__name__}: {error}"
 
     # Verificar se é explicitamente não-recuperável
@@ -585,12 +658,22 @@ def is_rate_limit_error(error: Exception) -> bool:
     Returns:
         True se o erro é de rate limit, False caso contrário.
     """
+    if isinstance(error, ProviderOverloadedError):
+        return True
+    if isinstance(error, ProviderTransientError):
+        return False
+
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ('ratelimit', 'resourceexhausted', 'toomanyrequests', '429')
     return any(pattern in error_str for pattern in rate_limit_patterns)
 
 
-def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0) -> dict:
+def retry_with_backoff(
+    func,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+) -> dict:
     """Executa função com retry e backoff exponencial.
 
     Args:

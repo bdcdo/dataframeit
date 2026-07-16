@@ -7,13 +7,16 @@ Este módulo contém funções utilitárias para:
 - Conversão de Series, listas e dicionários
 - Normalização de estruturas Python (listas, dicionários, tuplas)
 """
-import re
-import json
 import importlib
+import json
+import re
 import types
-from typing import Tuple, Union, Any, List, get_origin, get_args
+import typing
 from dataclasses import dataclass
+from typing import Any, get_args, get_origin
+
 import pandas as pd
+from pandas.api.types import is_string_dtype
 
 # Import opcional de Polars
 try:
@@ -32,6 +35,12 @@ ORIGINAL_TYPE_DICT = 'dict'
 
 # Coluna padrão usada para dados convertidos
 DEFAULT_TEXT_COLUMN = '_texto'
+TOKEN_COLUMNS = (
+    '_input_tokens',
+    '_cached_input_tokens',
+    '_output_tokens',
+    '_reasoning_tokens',
+)
 
 
 @dataclass
@@ -101,7 +110,7 @@ def check_dependency(package: str, install_name: str = None):
         )
 
 
-def to_pandas(data) -> Tuple[pd.DataFrame, ConversionInfo]:
+def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
     """Converte dados para pandas DataFrame.
 
     Suporta:
@@ -167,7 +176,7 @@ def to_pandas(data) -> Tuple[pd.DataFrame, ConversionInfo]:
     )
 
 
-def from_pandas(df: pd.DataFrame, conversion_info: Union[ConversionInfo, bool]) -> Any:
+def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any:
     """Converte DataFrame pandas de volta para o formato original.
 
     Remove automaticamente as colunas internas de controle (_dataframeit_status
@@ -255,7 +264,8 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
     1. Colunas do usuário (originais + campos do modelo)
     2. Colunas de trace (_trace_*)
     3. Colunas de busca (_search_credits)
-    4. Colunas de tokens (_input_tokens, _output_tokens, _reasoning_tokens)
+    4. Colunas de tokens (_input_tokens, _cached_input_tokens, _output_tokens,
+       _reasoning_tokens)
     5. Colunas de controle (_dataframeit_status, _error_details)
 
     Args:
@@ -268,7 +278,7 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
     user_cols = []
     trace_cols = []
     search_cols = []
-    token_cols = []
+    token_cols = [col for col in TOKEN_COLUMNS if col in df.columns]
     status_cols = []
 
     for col in df.columns:
@@ -276,8 +286,8 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
             trace_cols.append(col)
         elif col in ['_search_credits']:
             search_cols.append(col)
-        elif col in ['_input_tokens', '_output_tokens', '_reasoning_tokens']:
-            token_cols.append(col)
+        elif col in TOKEN_COLUMNS:
+            continue
         elif col in ['_dataframeit_status', '_error_details']:
             status_cols.append(col)
         else:
@@ -310,7 +320,7 @@ def is_complex_type(field_type) -> bool:
 
     # Union types (Optional, Union) - verificar os argumentos internos
     # typing.Union para sintaxe Union[X, Y] e Optional[X]
-    if origin is Union:
+    if origin is typing.Union:
         args = get_args(field_type)
         return any(is_complex_type(arg) for arg in args if arg is not type(None))
 
@@ -492,8 +502,7 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
         df: DataFrame a normalizar.
     """
     for col in df.columns:
-        # Pular colunas não-string
-        if df[col].dtype != 'object':
+        if not is_string_dtype(df[col].dtype):
             continue
 
         # Verificar se algum valor parece JSON
@@ -546,7 +555,7 @@ def is_list_of_pydantic_model(field_type) -> tuple:
             return (True, inner_type)
 
     # Caso 2: Optional[List[Model]] ou Union[List[Model], None]
-    if origin is Union and args:
+    if origin is typing.Union and args:
         for arg in args:
             if arg is type(None):
                 continue
@@ -574,7 +583,7 @@ def is_list_of_pydantic_model(field_type) -> tuple:
     return (False, None)
 
 
-def get_nested_pydantic_models(field_type) -> List:
+def get_nested_pydantic_models(field_type) -> list:
     """Extrai todos os modelos Pydantic de uma anotação de tipo.
 
     Trata List[Model], Optional[List[Model]], Union[Model, None], etc.

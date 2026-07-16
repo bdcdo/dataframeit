@@ -287,7 +287,7 @@ def test_setup_columns_with_search():
     df = pd.DataFrame({"texto": ["a", "b"]})
     search_config = SearchConfig(enabled=True)
 
-    _setup_columns(df, ["campo1"], None, False, True, search_config)
+    _setup_columns(df, ["campo1"], None, True, search_config)
 
     assert "_search_credits" in df.columns
     assert "_search_count" not in df.columns
@@ -299,7 +299,7 @@ def test_setup_columns_without_search():
 
     df = pd.DataFrame({"texto": ["a", "b"]})
 
-    _setup_columns(df, ["campo1"], None, False, True, None)
+    _setup_columns(df, ["campo1"], None, True, None)
 
     assert "_search_credits" not in df.columns
     assert "_search_count" not in df.columns
@@ -560,8 +560,10 @@ def test_call_agent_per_field_sums_usage():
             "data": {field_name: f"valor_{field_name}"},
             "usage": {
                 "input_tokens": 100,
+                "cached_input_tokens": 20,
                 "output_tokens": 50,
                 "total_tokens": 150,
+                "reasoning_tokens": 10,
                 "search_credits": 2,
                 "search_count": 2,
             }
@@ -589,8 +591,10 @@ def test_call_agent_per_field_sums_usage():
 
     # MedicamentoInfo tem 2 campos, então soma 2x
     assert result["usage"]["input_tokens"] == 200
+    assert result["usage"]["cached_input_tokens"] == 40
     assert result["usage"]["output_tokens"] == 100
     assert result["usage"]["total_tokens"] == 300
+    assert result["usage"]["reasoning_tokens"] == 20
     assert result["usage"]["search_credits"] == 4
     assert result["usage"]["search_count"] == 4
 
@@ -1107,8 +1111,10 @@ def test_call_agent_per_group_sums_usage():
             "data": {f: f"valor_{f}" for f in fields},
             "usage": {
                 "input_tokens": 100,
+                "cached_input_tokens": 20,
                 "output_tokens": 50,
                 "total_tokens": 150,
+                "reasoning_tokens": 10,
                 "search_credits": 2,
                 "search_count": 1,
             }
@@ -1139,8 +1145,10 @@ def test_call_agent_per_group_sums_usage():
 
     # 3 chamadas (1 grupo + 2 isolados), 100 tokens cada
     assert result["usage"]["input_tokens"] == 300
+    assert result["usage"]["cached_input_tokens"] == 60
     assert result["usage"]["output_tokens"] == 150
     assert result["usage"]["total_tokens"] == 450
+    assert result["usage"]["reasoning_tokens"] == 30
     assert result["usage"]["search_credits"] == 6
     assert result["usage"]["search_count"] == 3
 
@@ -1254,7 +1262,11 @@ def test_search_groups_setup_columns():
     _setup_columns(
         df,
         ["status_anvisa", "avaliacao_conitec", "nome", "fabricante"],
-        None, False, True, search_config, "full", RegulatoryModel
+        None,
+        True,
+        search_config,
+        "full",
+        RegulatoryModel,
     )
 
     # Deve ter coluna de trace para o grupo
@@ -1675,7 +1687,9 @@ def test_reorder_columns_basic():
         'campo1': ['b'],
         '_input_tokens': [100],
         '_output_tokens': [50],
+        '_reasoning_tokens': [10],
         'campo2': ['c'],
+        '_cached_input_tokens': [20],
         '_trace_grupo1': ['trace1'],
         '_search_credits': [1],
     })
@@ -1697,9 +1711,15 @@ def test_reorder_columns_basic():
     assert cols.index('_search_credits') < cols.index('_input_tokens')
 
     # Tokens no final
-    token_cols = ['_input_tokens', '_output_tokens']
+    token_cols = [
+        '_input_tokens',
+        '_cached_input_tokens',
+        '_output_tokens',
+        '_reasoning_tokens',
+    ]
     for tcol in token_cols:
         assert cols.index(tcol) > cols.index('campo2')
+    assert [col for col in cols if col in token_cols] == token_cols
 
 
 def test_reorder_columns_with_status():

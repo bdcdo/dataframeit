@@ -51,7 +51,7 @@ def dataframeit(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `resume` | bool | `True` | Continue from where it stopped (skips processed rows) |
-| `reprocess_columns` | list | `None` | List of columns to force reprocessing |
+| `reprocess_columns` | list | `None` | Fields to force reprocessing; when resuming with a changed model, it must cover fields incompatible with previously processed rows |
 | `status_column` | str | `None` | Custom name for status column |
 
 #### Model
@@ -59,9 +59,9 @@ def dataframeit(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model` | str | `'gemini-3-flash-preview'` | LLM model name |
-| `provider` | str | `'google_genai'` | LangChain provider |
-| `api_key` | str | `None` | API key (uses env var if None) |
-| `model_kwargs` | dict | `None` | Extra parameters (temperature, etc.) |
+| `provider` | str | `'google_genai'` | Provider identifier; `codex` uses the official SDK instead of LangChain |
+| `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` |
+| `model_kwargs` | dict | `None` | Extra parameters; with `codex`, only `effort` is accepted |
 
 #### Resilience
 
@@ -85,7 +85,7 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `use_search` | bool | `False` | Enable web search via Tavily |
+| `use_search` | bool | `False` | Enable web search via Tavily; not supported with `provider='codex'` |
 | `search_per_field` | bool | `False` | Execute separate search per field |
 | `max_results` | int | `5` | Results per search (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` or `'advanced'` |
@@ -105,12 +105,12 @@ Returns data in the same format as input with extracted columns added.
 
 ### Added Columns
 
+The status columns below exist independently of token tracking. When `track_tokens=True`, see the [LLM Reference](llm-reference.md#automatically-added-columns) for the usage columns and their semantics.
+
 | Column | Description |
 |--------|-------------|
 | `_dataframeit_status` | `'processed'`, `'error'`, or `None` |
 | `_error_details` | Error details (when applicable) |
-| `_input_tokens` | Input tokens (if `track_tokens=True`) |
-| `_output_tokens` | Output tokens (if `track_tokens=True`) |
 
 ### Examples
 

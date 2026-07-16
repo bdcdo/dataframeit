@@ -113,14 +113,12 @@ Para cada linha do DataFrame:
 
 ## Colunas Automáticas
 
-O DataFrameIt adiciona colunas de controle automaticamente:
+O DataFrameIt adiciona as colunas de status automaticamente. Quando `track_tokens=True`, acrescenta também colunas de uso; consulte a [Referência LLM](../reference/llm-reference.md#colunas-adicionadas-automaticamente) para a tabela completa e a semântica de cache e raciocínio.
 
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, ou `None` |
 | `_error_details` | Detalhes do erro (quando status é `'error'`) |
-| `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
-| `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
 
 ## Próximos Passos
 
