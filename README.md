@@ -4,27 +4,29 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Enriqueça DataFrames com LLMs de forma simples e estruturada.**
+**English** · [Português](README.pt-BR.md) · [Español](README.es.md)
 
-DataFrameIt processa textos em DataFrames usando Modelos de Linguagem (LLMs) e extrai informações estruturadas definidas por modelos Pydantic.
+**Enrich DataFrames with LLMs, simply and in a structured way.**
 
-**[Documentação Completa](https://bdcdo.github.io/dataframeit)** | **[Referência para LLMs](https://bdcdo.github.io/dataframeit/reference/llm-reference/)**
+DataFrameIt processes text in DataFrames using Large Language Models (LLMs) and extracts structured information defined by Pydantic models.
 
-## Instalação
+**[Full Documentation](https://bdcdo.github.io/dataframeit)** | **[LLM Reference](https://bdcdo.github.io/dataframeit/reference/llm-reference/)**
+
+## Installation
 
 ```bash
-pip install dataframeit[google]  # Google Gemini (recomendado)
+pip install dataframeit[google]  # Google Gemini (recommended)
 pip install dataframeit[openai]  # OpenAI
 pip install dataframeit[anthropic]  # Anthropic Claude
 ```
 
-Configure sua API key:
+Set your API key:
 
 ```bash
-export GOOGLE_API_KEY="sua-chave"  # ou OPENAI_API_KEY, ANTHROPIC_API_KEY
+export GOOGLE_API_KEY="your-key"  # or OPENAI_API_KEY, ANTHROPIC_API_KEY
 ```
 
-## Exemplo Rápido
+## Quick Example
 
 ```python
 from pydantic import BaseModel
@@ -32,111 +34,113 @@ from typing import Literal
 import pandas as pd
 from dataframeit import dataframeit
 
-# 1. Defina o que extrair
-class Sentimento(BaseModel):
-    sentimento: Literal['positivo', 'negativo', 'neutro']
-    confianca: Literal['alta', 'media', 'baixa']
+# 1. Define what to extract
+class Sentiment(BaseModel):
+    sentiment: Literal['positive', 'negative', 'neutral']
+    confidence: Literal['high', 'medium', 'low']
 
-# 2. Seus dados
+# 2. Your data
 df = pd.DataFrame({
-    'texto': [
-        'Produto excelente! Superou expectativas.',
-        'Péssimo atendimento, nunca mais compro.',
-        'Entrega ok, produto mediano.'
+    'text': [
+        'Excellent product! Exceeded my expectations.',
+        'Terrible service, never buying again.',
+        'Delivery was fine, product is average.'
     ]
 })
 
-# 3. Processe!
-resultado = dataframeit(df, Sentimento, "Analise o sentimento do texto.")
-print(resultado)
+# 3. Process!
+result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.")
+print(result)
 ```
 
-**Saída:**
+**Output:**
 
-| texto | sentimento | confianca |
-|-------|------------|-----------|
-| Produto excelente! ... | positivo | alta |
-| Péssimo atendimento... | negativo | alta |
-| Entrega ok... | neutro | media |
+| text | sentiment | confidence |
+|------|-----------|------------|
+| Excellent product! ... | positive | high |
+| Terrible service... | negative | high |
+| Delivery was fine... | neutral | medium |
 
-## Funcionalidades
+Field and class names are arbitrary — the examples in the [`example/`](example/) notebooks use Portuguese ones.
 
-- **Múltiplos providers**: Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
-- **Múltiplos tipos de entrada**: DataFrame, Series, list, dict
-- **Saída estruturada**: Validação automática com Pydantic
-- **Resiliência**: Retry automático com backoff exponencial
-- **Performance**: Processamento paralelo, rate limiting configurável
-- **Busca web**: Integração com Tavily para enriquecer dados
-- **Tracking**: Monitoramento de tokens e métricas de throughput
-- **Configuração per-field**: Prompts e parâmetros de busca personalizados por campo (v0.5.2+)
+## Features
 
-## Configuração Per-Field (Novo em v0.5.2)
+- **Multiple providers**: Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
+- **Multiple input types**: DataFrame, Series, list, dict
+- **Structured output**: Automatic validation with Pydantic
+- **Resilience**: Automatic retry with exponential backoff
+- **Performance**: Parallel processing, configurable rate limiting
+- **Web search**: Tavily integration to enrich data
+- **Tracking**: Token monitoring and throughput metrics
+- **Per-field configuration**: Custom prompts and search parameters per field (v0.5.2+)
 
-Configure prompts e parâmetros de busca específicos para cada campo usando `json_schema_extra`:
+## Per-Field Configuration (New in v0.5.2)
+
+Set field-specific prompts and search parameters using `json_schema_extra`:
 
 ```python
 from pydantic import BaseModel, Field
 
-class MedicamentoInfo(BaseModel):
-    # Campo com prompt padrão
-    principio_ativo: str = Field(description="Princípio ativo do medicamento")
+class DrugInfo(BaseModel):
+    # Field with the default prompt
+    active_ingredient: str = Field(description="Active ingredient of the drug")
 
-    # Campo com prompt customizado (substitui o prompt base)
-    doenca_rara: str = Field(
-        description="Classificação de doença rara",
+    # Field with a custom prompt (replaces the base prompt)
+    rare_disease: str = Field(
+        description="Rare disease classification",
         json_schema_extra={
-            "prompt": "Busque em Orphanet (orpha.net). Analise: {texto}"
+            "prompt": "Search Orphanet (orpha.net). Analyze: {text}"
         }
     )
 
-    # Campo com prompt adicional (append ao prompt base)
-    avaliacao_conitec: str = Field(
-        description="Avaliação da CONITEC",
+    # Field with an additional prompt (appended to the base prompt)
+    conitec_assessment: str = Field(
+        description="CONITEC assessment",
         json_schema_extra={
-            "prompt_append": "Busque APENAS no site da CONITEC (gov.br/conitec)."
+            "prompt_append": "Search ONLY the CONITEC website (gov.br/conitec)."
         }
     )
 
-    # Campo com parâmetros de busca customizados
-    estudos_clinicos: str = Field(
-        description="Estudos clínicos relevantes",
+    # Field with custom search parameters
+    clinical_trials: str = Field(
+        description="Relevant clinical trials",
         json_schema_extra={
-            "prompt_append": "Busque estudos clínicos recentes.",
+            "prompt_append": "Search for recent clinical trials.",
             "search_depth": "advanced",
             "max_results": 10
         }
     )
 
-# Requer search_per_field=True
-resultado = dataframeit(
+# Requires search_per_field=True
+result = dataframeit(
     df,
-    MedicamentoInfo,
-    "Analise o medicamento: {texto}",
+    DrugInfo,
+    "Analyze the drug: {text}",
     use_search=True,
     search_per_field=True,
 )
 ```
 
-**Opções disponíveis em `json_schema_extra`:**
+**Available options in `json_schema_extra`:**
 
-| Opção | Descrição |
-|-------|-----------|
-| `prompt` ou `prompt_replace` | Substitui completamente o prompt base |
-| `prompt_append` | Adiciona texto ao prompt base |
-| `search_depth` | `"basic"` ou `"advanced"` (override per-field) |
-| `max_results` | Número de resultados de busca (1-20) |
+| Option | Description |
+|--------|-------------|
+| `prompt` or `prompt_replace` | Fully replaces the base prompt |
+| `prompt_append` | Appends text to the base prompt |
+| `search_depth` | `"basic"` or `"advanced"` (per-field override) |
+| `max_results` | Number of search results (1-20) |
 
-## Documentação
+## Documentation
 
-- [Início Rápido](https://bdcdo.github.io/dataframeit/getting-started/quickstart/)
-- [Guias](https://bdcdo.github.io/dataframeit/guides/basic-usage/)
-- [Referência da API](https://bdcdo.github.io/dataframeit/reference/api/)
-- [Referência para LLMs](https://bdcdo.github.io/dataframeit/reference/llm-reference/) - Página compacta otimizada para assistentes de código
+- [Quickstart](https://bdcdo.github.io/dataframeit/getting-started/quickstart/)
+- [Guides](https://bdcdo.github.io/dataframeit/guides/basic-usage/)
+- [API Reference](https://bdcdo.github.io/dataframeit/reference/api/)
+- [LLM Reference](https://bdcdo.github.io/dataframeit/reference/llm-reference/) - Compact page optimized for coding assistants
 
-## Exemplos
+## Examples
 
-Veja a pasta [`example/`](example/) para notebooks Jupyter com casos de uso completos.
+See the [`example/`](example/) folder for Jupyter notebooks with complete use cases.
 
-## Licença
+## License
 
 MIT
