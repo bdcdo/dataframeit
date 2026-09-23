@@ -57,6 +57,33 @@ class TestSearchConfigDefaults:
         assert cfg.groups is None
 
 
+class TestCreateLangchainLLM:
+    """Parametros que chegam ao init_chat_model do LangChain."""
+
+    def _kwargs_repassados(self, extra_kwargs=None, api_key=None):
+        from dataframeit.llm import _create_langchain_llm
+
+        with patch("langchain.chat_models.init_chat_model") as init_chat_model:
+            _create_langchain_llm("modelo-x", "anthropic", api_key, extra_kwargs)
+        init_chat_model.assert_called_once()
+        return init_chat_model.call_args
+
+    def test_nao_injeta_temperature(self):
+        """Varios modelos atuais rejeitam temperature com erro 400."""
+        chamada = self._kwargs_repassados()
+        assert chamada.args == ("modelo-x",)
+        assert chamada.kwargs == {"model_provider": "anthropic"}
+
+    def test_repassa_temperature_explicita(self):
+        chamada = self._kwargs_repassados(extra_kwargs={"temperature": 0, "seed": 42})
+        assert chamada.kwargs["temperature"] == 0
+        assert chamada.kwargs["seed"] == 42
+
+    def test_repassa_api_key(self):
+        chamada = self._kwargs_repassados(api_key="chave")
+        assert chamada.kwargs == {"model_provider": "anthropic", "api_key": "chave"}
+
+
 class TestLLMConfigDefaults:
     def test_model_kwargs_factory(self):
         """model_kwargs deve ser dict independente entre instancias."""

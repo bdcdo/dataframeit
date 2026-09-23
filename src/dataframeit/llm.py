@@ -175,7 +175,10 @@ def _create_langchain_llm(model: str, provider: str, api_key: Optional[str], ext
         except ImportError:
             raise ImportError("LangChain não está disponível. Instale com: pip install langchain langchain-core")
 
-    kwargs = {"model_provider": provider, "temperature": 0}
+    # Nenhum parâmetro de amostragem é injetado: vários modelos rejeitam
+    # `temperature` com erro 400, e a lista muda a cada lançamento. Quem quer
+    # determinismo passa `temperature` em `model_kwargs`, nos modelos que aceitam.
+    kwargs = {"model_provider": provider}
     if api_key:
         kwargs["api_key"] = api_key
 
