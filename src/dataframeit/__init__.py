@@ -1,4 +1,4 @@
-from importlib.metadata import version as _version
+from importlib.metadata import PackageNotFoundError, version as _version
 
 from .core import dataframeit
 from .utils import (
@@ -9,8 +9,13 @@ from .utils import (
 )
 
 # Lida dos metadados do pacote instalado, para que o campo `version` do
-# pyproject.toml seja a única fonte do número.
-__version__ = _version("dataframeit")
+# pyproject.toml seja a única fonte do número. Sem metadados (código
+# copiado para outro projeto, app congelado sem copy_metadata), o import
+# segue funcionando com uma versão local que não se confunde com release.
+try:
+    __version__ = _version("dataframeit")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 __all__ = [
     'dataframeit',

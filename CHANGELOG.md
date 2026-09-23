@@ -9,6 +9,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [0.8.0] - 2026-09-23
 
+Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram publicadas.
+
 ### Adicionado
 
 - Provider experimental `codex` via SDK Python oficial, disponível exclusivamente no extra `dataframeit[codex]`, com runtime pinado, autenticação em arquivo, isolamento por execução e saída estruturada validada (#111).
@@ -22,11 +24,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - A normalização automática de JSON reconhece tanto colunas `object` do pandas 2 quanto o dtype `str` do pandas 3 (#111).
 - `dataframeit.__version__` é lido dos metadados do pacote e deixa de divergir do `pyproject.toml`, onde estava fixo em 0.6.0.
 - O link `Changelog` dos metadados do pacote aponta para o `CHANGELOG.md`, e não para a página de releases.
-- O sdist deixa de levar um `src/dataframeit.egg-info` antigo, da versão 0.1.1, que também fazia `importlib.metadata` responder essa versão quando `src/` estava no `sys.path`.
 - `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto, alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError` (#107).
 
 ### Alterado
 
+- O README passa a ser em inglês, com versões em português (`README.pt-BR.md`) e espanhol (`README.es.md`) (#112, #113).
 - O CI valida Python 3.10 e 3.13 nos ambientes base e Codex, inicia o runtime empacotado e exercita o lifecycle e a exclusão multiprocesso da autenticação no Windows, além de fazer build da documentação em pull requests; o extra declara o runtime pré-release como limite inferior para permitir resolução limpa pelo `uv`, enquanto o SDK conserva o pin exato (#111).
 - A telemetria usa as mesmas quatro colunas de tokens em todos os providers, incluindo `_cached_input_tokens`, mesmo quando a métrica permanece nula ou zero (#111).
 - Leitura de `usage_metadata` extraída para helper `_parse_usage_metadata` em `llm.py` e reaproveitada por `agent._extract_usage`, eliminando divergência futura entre os dois caminhos (#107).
@@ -212,6 +214,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ---
 
+[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/bdcdo/dataframeit/compare/v0.5.4...v0.6.0
 [0.5.4]: https://github.com/bdcdo/dataframeit/compare/v0.5.3...v0.5.4
