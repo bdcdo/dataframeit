@@ -44,7 +44,7 @@ def dataframeit(
 | `data` | DataFrame, Series, list, dict | Yes | Data containing texts to process |
 | `questions` | Pydantic BaseModel | Yes | Pydantic model defining fields to extract |
 | `prompt` | str | Yes | Prompt template. Use `{texto}` to position text |
-| `text_column` | str | No | Column name with texts. If `None`, tries `texto`, `text`, `decisao`, `content`, `content_text` in order (or the single column if the DataFrame has only one) |
+| `text_column` | str | No | Column name with texts. If `None`, tries `texto`, `text`, `decisao`, `content`, `content_text` in order (or the single column if the DataFrame has only one). With no candidate and several columns, raises `ValueError` |
 
 #### Processing
 

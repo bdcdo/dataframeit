@@ -2,14 +2,14 @@
 
 ## Gerenciador de Pacotes
 
-**Sempre utilize `uv`** para gerenciamento de dependências e execução de comandos Python.
+Use `uv` para gerenciar dependências e executar comandos Python. O CI (`tests.yml`) roda os testes com `uv run --extra dev` e o build da documentação com `uv run --extra docs`. Rode localmente com os mesmos extras, porque o `pytest` só existe no extra `dev`.
 
 ```bash
 # Instalar dependências
-uv sync
+uv sync --extra dev
 
 # Executar testes
-uv run pytest
+uv run --extra dev pytest
 
 # Adicionar dependência
 uv add <pacote>
@@ -20,7 +20,7 @@ uv run python script.py
 
 ## Fluxo de Trabalho Git
 
-**Sempre crie uma branch antes de começar a trabalhar no código.**
+Crie uma branch antes de começar a trabalhar no código e integre por PR. É no PR que o CI de testes roda antes da integração, e todo push na `main` que toque `docs/` ou `mkdocs.yml` republica o site no GitHub Pages (`docs.yml`).
 
 ```bash
 # Criar e mudar para nova branch
@@ -33,22 +33,20 @@ git checkout -b <tipo>/<descricao>
 # - refactor/ -> refatoração
 ```
 
-Nunca faça commits diretamente na `main`.
-
 ## Versionamento
 
 ### CHANGELOG
 
-**Sempre atualize o `CHANGELOG.md`** ao fazer alterações no código:
+Atualize o `CHANGELOG.md` ao alterar código. Ele é o registro das mudanças por versão, e a seção `[Unreleased]` guarda o que ainda não tem número:
 
 - Siga o formato [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 - Categorias: `Adicionado`, `Alterado`, `Corrigido`, `Removido`, `Depreciado`, `Segurança`
 - Inclua referência à issue/PR quando aplicável (ex: `(#123)`)
-- **Factual e curto.** Sem subseções de "Migração", "Como migrar", "Impacto para usuários". A lib é de uso interno e esse tipo de nota é ruído.
+- **Factual e curto.** Sem subseções de "Migração", "Como migrar", "Impacto para usuários".
 
 ### Documentação e comentários — sem notas de migração
 
-A lib tem **um único usuário** (Bruno). Portanto, ao mudar comportamento — inclusive breaking:
+A documentação e os comentários descrevem o estado atual, e o histórico fica no `CHANGELOG.md` e no git. Ao mudar comportamento, inclusive breaking:
 
 - **Não** adicione notas do tipo `> Desde v0.X.Y, Z foi removido — migre para W.` em `docs/**/*.md`, `README.md` ou arquivos de exemplo. Atualize a tabela/exemplo para o estado **atual** e pronto.
 - **Não** deixe comentários no código registrando o que era antes (`# antes era X`, `# invisível até v0.6.0`, etc). Comentários documentam invariantes do código atual, não o histórico.
@@ -57,7 +55,7 @@ A lib tem **um único usuário** (Bruno). Portanto, ao mudar comportamento — i
 
 ### Versão
 
-**Sempre pergunte ao usuário** antes de fazer alterações de versão:
+Pergunte ao usuário antes de alterar a versão. O número é o que vai ao PyPI na publicação, e o PyPI não aceita reenviar uma versão já publicada:
 
 > "Deseja manter a versão atual (X.Y.Z) ou fazer bump de versão? (patch/minor/major)"
 
@@ -80,8 +78,8 @@ site/               # Build da documentação (gerado, não commitado)
 
 ## Testes
 
-Sempre execute os testes antes de finalizar alterações:
+Execute os testes antes de finalizar alterações. O CI roda a mesma suíte no PR:
 
 ```bash
-uv run pytest
+uv run --extra dev pytest
 ```
