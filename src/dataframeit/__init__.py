@@ -1,3 +1,5 @@
+from importlib.metadata import version as _version
+
 from .core import dataframeit
 from .utils import (
     normalize_value,
@@ -6,7 +8,9 @@ from .utils import (
     read_df,
 )
 
-__version__ = "0.6.0"
+# Lida dos metadados do pacote instalado, para que o campo `version` do
+# pyproject.toml seja a única fonte do número.
+__version__ = _version("dataframeit")
 
 __all__ = [
     'dataframeit',

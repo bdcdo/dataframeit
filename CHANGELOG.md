@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-23
+
 ### Adicionado
 
 - Provider experimental `codex` via SDK Python oficial, disponível exclusivamente no extra `dataframeit[codex]`, com runtime pinado, autenticação em arquivo, isolamento por execução e saída estruturada validada (#111).
@@ -18,6 +20,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - A telemetria preserva tokens de leitura de cache informados por providers LangChain nos caminhos normal e com busca (#111).
 - Falhas transitórias tipadas do Codex recebem retry sem serem confundidas com rate limit, e falhas de geração do JSON Schema são apresentadas como erro de configuração do provider (#111).
 - A normalização automática de JSON reconhece tanto colunas `object` do pandas 2 quanto o dtype `str` do pandas 3 (#111).
+- `dataframeit.__version__` é lido dos metadados do pacote e deixa de divergir do `pyproject.toml`, onde estava fixo em 0.6.0.
+- O link `Changelog` dos metadados do pacote aponta para o `CHANGELOG.md`, e não para a página de releases.
+- O sdist deixa de levar um `src/dataframeit.egg-info` antigo, da versão 0.1.1, que também fazia `importlib.metadata` responder essa versão quando `src/` estava no `sys.path`.
 - `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto, alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError` (#107).
 
 ### Alterado
@@ -207,6 +212,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ---
 
+[0.8.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/bdcdo/dataframeit/compare/v0.5.4...v0.6.0
 [0.5.4]: https://github.com/bdcdo/dataframeit/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/bdcdo/dataframeit/compare/v0.5.2...v0.5.3
