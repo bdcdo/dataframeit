@@ -167,13 +167,7 @@ def _create_langchain_llm(model: str, provider: str, api_key: Optional[str], ext
     Returns:
         Instância do LLM configurado.
     """
-    try:
-        from langchain.chat_models import init_chat_model
-    except ImportError:
-        try:
-            from langchain_core.chat_models import init_chat_model
-        except ImportError:
-            raise ImportError("LangChain não está disponível. Instale com: pip install langchain langchain-core")
+    from langchain.chat_models import init_chat_model
 
     # Nenhum parâmetro de amostragem é injetado: vários modelos rejeitam
     # `temperature` com erro 400, e a lista muda a cada lançamento. Quem quer

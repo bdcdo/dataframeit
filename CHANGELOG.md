@@ -11,6 +11,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - Os providers LangChain deixam de receber `temperature=0` por padrão; o cliente só recebe o que vier em `model_kwargs`. Vários modelos atuais (Claude Sonnet 5 e Opus 4.7+, OpenAI com raciocínio ligado, Gemini 3.6+) rejeitavam a chamada com erro 400 (#116).
 
+### Removido
+
+- Fallback de import de `init_chat_model` a partir de `langchain_core.chat_models`, módulo que não existe no `langchain-core` 1.x; o import vem de `langchain.chat_models`, dependência obrigatória.
+
 ## [0.8.0] - 2026-09-23
 
 Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram publicadas.
