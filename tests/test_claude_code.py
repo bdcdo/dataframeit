@@ -117,3 +117,192 @@ class TestJsonParsingVariants:
         response = 'Aqui está o resultado: {"sentimento": "neutro", "confianca": 0.5} fim.'
         result = parse_json(response)
         assert result['sentimento'] == 'neutro'
+
+
+# ---------------------------------------------------------------------------
+# call_claude_code com SDK falso
+# ---------------------------------------------------------------------------
+#
+# O SDK falso substitui `claude_agent_sdk` em sys.modules, de modo que estes
+# testes rodam sem o extra `claude-code` instalado. `ClaudeAgentOptions` só
+# guarda os kwargs recebidos, e `query` devolve as mensagens definidas em
+# `mensagens_do_sdk`, na mesma forma que o SDK real emite.
+
+
+class _OpcoesFalsas:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        for chave, valor in kwargs.items():
+            setattr(self, chave, valor)
+
+
+class _TextBlockFalso:
+    def __init__(self, text):
+        self.text = text
+
+
+class _AssistantMessageFalso:
+    def __init__(self, content):
+        self.content = content
+
+
+class _ResultMessageFalso:
+    def __init__(self, usage=None, total_cost_usd=None):
+        self.usage = usage
+        self.total_cost_usd = total_cost_usd
+
+
+@pytest.fixture
+def sdk_falso(monkeypatch):
+    """Instala um `claude_agent_sdk` falso e devolve o estado compartilhado."""
+    import sys
+    import types
+
+    estado = {
+        'opcoes': [],
+        'mensagens_do_sdk': [
+            _AssistantMessageFalso([
+                _TextBlockFalso('{"sentimento": "positivo", "confianca": 0.9}')
+            ]),
+            _ResultMessageFalso(usage=None),
+        ],
+    }
+
+    async def query_falsa(prompt, options):
+        estado['opcoes'].append(options)
+        for mensagem in estado['mensagens_do_sdk']:
+            yield mensagem
+
+    modulo = types.ModuleType('claude_agent_sdk')
+    modulo.ClaudeAgentOptions = _OpcoesFalsas
+    modulo.query = query_falsa
+    modulo.AssistantMessage = _AssistantMessageFalso
+    modulo.ResultMessage = _ResultMessageFalso
+    modulo.TextBlock = _TextBlockFalso
+    monkeypatch.setitem(sys.modules, 'claude_agent_sdk', modulo)
+    return estado
+
+
+def _config_claude_code(**model_kwargs):
+    from dataframeit.llm import LLMConfig
+
+    return LLMConfig(
+        model='haiku',
+        provider='claude_code',
+        api_key=None,
+        max_retries=1,
+        base_delay=0.0,
+        max_delay=0.0,
+        rate_limit_delay=0.0,
+        model_kwargs=model_kwargs,
+    )
+
+
+def _chamar(config=None):
+    from dataframeit.claude_code import call_claude_code
+
+    return call_claude_code(
+        'texto da linha', SampleModel, 'Analise: {texto}', config or _config_claude_code()
+    )
+
+
+class TestOpcoesSemFerramentas:
+    """O texto das linhas é conteúdo não confiável: nenhuma ferramenta pode ficar disponível."""
+
+    def test_nenhuma_ferramenta_disponivel(self, sdk_falso):
+        _chamar()
+
+        opcoes = sdk_falso['opcoes'][0]
+        assert opcoes.kwargs.get('tools') == []
+
+    def test_nao_aprova_ferramentas_automaticamente(self, sdk_falso):
+        _chamar()
+
+        opcoes = sdk_falso['opcoes'][0]
+        assert opcoes.kwargs.get('permission_mode') == 'default'
+        assert not opcoes.kwargs.get('allowed_tools')
+
+    def test_sdk_real_aceita_tools_vazio(self):
+        """A versão instalada do SDK aceita `tools=[]` e o traduz em `--tools ''`."""
+        sdk = pytest.importorskip('claude_agent_sdk')
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+        opcoes = sdk.ClaudeAgentOptions(tools=[], permission_mode='default')
+        transporte = SubprocessCLITransport(prompt='x', options=opcoes)
+        transporte._cli_path = 'claude'
+        comando = transporte._build_command()
+
+        indice = comando.index('--tools')
+        assert comando[indice + 1] == ''
+        assert comando[comando.index('--permission-mode') + 1] == 'default'
+        assert '--allowedTools' not in comando
+
+
+class TestEventLoopAtivo:
+    """Em Jupyter já existe um event loop rodando no thread principal."""
+
+    def test_funciona_dentro_de_loop_ativo(self, sdk_falso):
+        import asyncio
+
+        async def main():
+            return _chamar()
+
+        resultado = asyncio.run(main())
+
+        assert resultado['data'] == {'sentimento': 'positivo', 'confianca': 0.9}
+
+    def test_funciona_sem_loop_ativo(self, sdk_falso):
+        resultado = _chamar()
+
+        assert resultado['data']['sentimento'] == 'positivo'
+
+
+class TestUsageReal:
+    """Tokens vêm do `ResultMessage.usage` do SDK, nunca de valores fixos."""
+
+    def test_tokens_extraidos_do_result_message(self, sdk_falso):
+        sdk_falso['mensagens_do_sdk'][-1] = _ResultMessageFalso(
+            usage={
+                'input_tokens': 100,
+                'cache_read_input_tokens': 40,
+                'cache_creation_input_tokens': 10,
+                'output_tokens': 25,
+                'service_tier': 'standard',
+            },
+            total_cost_usd=0.0012,
+        )
+
+        usage = _chamar()['usage']
+
+        # input_tokens inclui leitura e criação de cache, como no provider LangChain
+        assert usage['input_tokens'] == 150
+        assert usage['cached_input_tokens'] == 40
+        assert usage['output_tokens'] == 25
+        assert usage['total_tokens'] == 175
+        assert usage['reasoning_tokens'] == 0
+
+    def test_sem_usage_do_sdk_devolve_none(self, sdk_falso):
+        sdk_falso['mensagens_do_sdk'][-1] = _ResultMessageFalso(usage=None)
+
+        resultado = _chamar()
+
+        assert resultado['usage'] is None
+
+    def test_sem_usage_core_deixa_colunas_de_token_vazias(self, sdk_falso):
+        """O core aceita usage None: colunas de token ficam nulas e a agregação não quebra."""
+        import pandas as pd
+
+        from dataframeit import dataframeit
+
+        with patch('dataframeit.core.validate_provider_dependencies'):
+            df = dataframeit(
+                pd.DataFrame({'texto': ['um', 'dois']}),
+                questions=SampleModel,
+                prompt='Analise: {texto}',
+                provider='claude_code',
+                model='haiku',
+            )
+
+        assert list(df['sentimento']) == ['positivo', 'positivo']
+        assert df['_input_tokens'].isna().all()
+        assert df['_output_tokens'].isna().all()
