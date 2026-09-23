@@ -106,31 +106,31 @@ def test_resume_functionality():
     })
 
     # Sem resume
-    start, count = _get_processing_indices(df, '_dataframeit_status', False)
-    assert start == 0
+    pending, count = _get_processing_indices(df, '_dataframeit_status', False)
+    assert pending == [True, True, True, True]
     assert count == 0
     print("✅ Resume=False: começa do zero")
 
     # Com resume e nada processado
-    start, count = _get_processing_indices(df, '_dataframeit_status', True)
-    assert start == 0
+    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    assert pending == [True, True, True, True]
     assert count == 0
     print("✅ Resume=True com nada processado: começa do zero")
 
     # Com resume e algumas linhas processadas
     df.at[0, '_dataframeit_status'] = 'processed'
     df.at[1, '_dataframeit_status'] = 'processed'
-    start, count = _get_processing_indices(df, '_dataframeit_status', True)
-    assert start == 2
+    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    assert pending == [False, False, True, True]
     assert count == 2
     print("✅ Resume=True: retoma da posição correta")
 
     # Com todas linhas processadas
     df['_dataframeit_status'] = 'processed'
-    start, count = _get_processing_indices(df, '_dataframeit_status', True)
-    assert start == 4  # len(df)
+    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    assert pending == [False, False, False, False]
     assert count == 4
-    print("✅ Resume=True com tudo processado: start no final")
+    print("✅ Resume=True com tudo processado: nada pendente")
 
 
 def test_utils_functions():

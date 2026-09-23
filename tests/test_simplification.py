@@ -46,16 +46,17 @@ def test_basic_functionality():
 
     # Verificar índices de processamento
     from dataframeit.core import _get_processing_indices
-    start, count = _get_processing_indices(df_test, '_dataframeit_status', False)
-    print(f"Processamento: start={start}, processed={count}")
-    assert start == 0
+    pending, count = _get_processing_indices(df_test, '_dataframeit_status', False)
+    print(f"Processamento: pending={pending}, processed={count}")
+    assert all(pending)
     assert count == 0
 
     # Testar com resume
     df_test.at[0, '_dataframeit_status'] = 'processed'
-    start, count = _get_processing_indices(df_test, '_dataframeit_status', True)
-    print(f"Com resume: start={start}, processed={count}")
-    assert start == 1
+    pending, count = _get_processing_indices(df_test, '_dataframeit_status', True)
+    print(f"Com resume: pending={pending}, processed={count}")
+    assert pending[0] is False
+    assert all(pending[1:])
     assert count == 1
 
     print("\n✅ Funcionalidade básica OK!")
