@@ -2,14 +2,14 @@
 
 ## Gerenciador de Pacotes
 
-Use `uv` para gerenciar dependências e executar comandos Python. O workflow `tests.yml` roda testes e build da documentação com `uv run --extra ...`, então o mesmo comando local reproduz o ambiente do CI.
+Use `uv` para gerenciar dependências e executar comandos Python. O CI (`tests.yml`) roda os testes com `uv run --extra dev` e o build da documentação com `uv run --extra docs`. Rode localmente com os mesmos extras, porque o `pytest` só existe no extra `dev`.
 
 ```bash
 # Instalar dependências
-uv sync
+uv sync --extra dev
 
 # Executar testes
-uv run pytest
+uv run --extra dev pytest
 
 # Adicionar dependência
 uv add <pacote>
@@ -46,7 +46,7 @@ Atualize o `CHANGELOG.md` ao alterar código. Ele é o registro das mudanças po
 
 ### Documentação e comentários — sem notas de migração
 
-Ao mudar comportamento, inclusive breaking:
+A documentação e os comentários descrevem o estado atual, e o histórico fica no `CHANGELOG.md` e no git. Ao mudar comportamento, inclusive breaking:
 
 - **Não** adicione notas do tipo `> Desde v0.X.Y, Z foi removido — migre para W.` em `docs/**/*.md`, `README.md` ou arquivos de exemplo. Atualize a tabela/exemplo para o estado **atual** e pronto.
 - **Não** deixe comentários no código registrando o que era antes (`# antes era X`, `# invisível até v0.6.0`, etc). Comentários documentam invariantes do código atual, não o histórico.
@@ -81,5 +81,5 @@ site/               # Build da documentação (gerado, não commitado)
 Execute os testes antes de finalizar alterações. O CI roda a mesma suíte no PR:
 
 ```bash
-uv run pytest
+uv run --extra dev pytest
 ```

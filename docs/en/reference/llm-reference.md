@@ -100,7 +100,7 @@ print(result)
 ```python
 # DataFrame (text_column inferred by name; see the API reference)
 df = pd.DataFrame({'text': ['A', 'B']})
-result = dataframeit(df, Model, PROMPT, text_column='text')
+result = dataframeit(df, Model, PROMPT)
 
 # List (no text_column needed)
 texts = ['Text 1', 'Text 2']
