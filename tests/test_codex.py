@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from pydantic import BaseModel, Field, RootModel
@@ -505,7 +505,15 @@ class TestBackendLifecycle:
                 )
                 assert backend._client is client
 
-            hard_link.assert_called_once_with(source_auth.resolve(), isolated_auth)
+            # O patch troca `os.link` no módulo `os`, compartilhado pelo processo, e
+            # o filelock 4.x cria um hard link de sonda ao ser importado dentro do
+            # backend. Conta-se só o link que aponta para o home isolado.
+            links_para_home_isolado = [
+                chamada
+                for chamada in hard_link.call_args_list
+                if Path(chamada.args[1]).parent == isolated_home
+            ]
+            assert links_para_home_isolado == [call(source_auth.resolve(), isolated_auth)]
             symlink.assert_not_called()
 
         client.close.assert_called_once_with()
