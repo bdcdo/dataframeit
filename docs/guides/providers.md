@@ -72,7 +72,7 @@ resultado = dataframeit(
     provider='openai',
     model='gpt-5.2',
     model_kwargs={
-        'temperature': 0.2
+        'reasoning_effort': 'medium'
     }
 )
 ```
