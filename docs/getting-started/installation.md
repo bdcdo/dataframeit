@@ -2,7 +2,7 @@
 
 ## Instalação Básica
 
-O DataFrameIt usa [LangChain](https://langchain.com/) para suportar múltiplos provedores de LLM. Escolha o provider que deseja usar:
+O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs oficiais de ferramentas locais. Escolha o provider que deseja usar:
 
 === "Google Gemini (Recomendado)"
 
@@ -28,11 +28,23 @@ O DataFrameIt usa [LangChain](https://langchain.com/) para suportar múltiplos p
 
     Modelos: `claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`
 
+=== "Codex (Experimental)"
+
+    ```bash
+    pip install dataframeit[codex]
+    # ou
+    uv add "dataframeit[codex]"
+    ```
+
+    O extra fixa o SDK Python oficial e seu runtime compatível. O DataFrameIt sempre usa esse runtime empacotado; uma instalação externa do comando `codex` não participa da execução. O provider permanece experimental porque as versões fixadas do SDK e do runtime ainda são de pré-lançamento.
+
 === "Todos os Providers"
 
     ```bash
     pip install dataframeit[all]
     ```
+
+    Enquanto experimental, o provider Codex não faz parte de `all`; instale `dataframeit[codex]` separadamente.
 
 ## Com Polars (Opcional)
 
@@ -50,9 +62,9 @@ Para checkpoints em `.xlsx` ou ler arquivos Excel via `read_df()`:
 pip install dataframeit[excel]
 ```
 
-## Configuração de API Keys
+## Configuração de Autenticação
 
-Configure a variável de ambiente correspondente ao seu provider:
+Configure as credenciais correspondentes ao seu provider:
 
 === "Google Gemini"
 
@@ -77,6 +89,16 @@ Configure a variável de ambiente correspondente ao seu provider:
     ```
 
     Obtenha sua chave em: [Anthropic Console](https://console.anthropic.com/)
+
+=== "Codex"
+
+    Se `auth.json` ainda não existir, instale o [Codex CLI oficial](https://learn.chatgpt.com/docs/codex/cli) e autentique uma vez:
+
+    ```bash
+    codex --config cli_auth_credentials_store='"file"' login
+    ```
+
+    O CLI externo serve somente para criar `auth.json`; a opção explícita evita armazenar as credenciais apenas no keyring do sistema. Esse é o único arquivo do estado persistente do Codex vinculado ao `CODEX_HOME` efêmero; o app-server ainda herda as variáveis de ambiente do processo. O DataFrameIt executa o runtime pinado pelo extra; não passe `api_key` ao `dataframeit()` para esse provider.
 
 ## Verificando a Instalação
 

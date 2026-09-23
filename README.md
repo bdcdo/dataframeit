@@ -18,13 +18,16 @@ DataFrameIt processes text in DataFrames using Large Language Models (LLMs) and 
 pip install dataframeit[google]  # Google Gemini (recommended)
 pip install dataframeit[openai]  # OpenAI
 pip install dataframeit[anthropic]  # Anthropic Claude
+pip install dataframeit[codex]  # Official Codex SDK (experimental)
 ```
 
-Set your API key:
+Set up provider authentication:
 
 ```bash
 export GOOGLE_API_KEY="your-key"  # or OPENAI_API_KEY, ANTHROPIC_API_KEY
 ```
+
+The experimental `codex` provider is optional, is not part of the `all` extra, uses the bundled runtime and requires local file-based authentication. See the [installation docs](https://bdcdo.github.io/dataframeit/en/getting-started/installation/) to set up the extra and the credentials.
 
 ## Quick Example
 
@@ -65,7 +68,7 @@ Field and class names are arbitrary — the examples in the [`example/`](example
 
 ## Features
 
-- **Multiple providers**: Google Gemini, OpenAI, Anthropic, Cohere, Mistral via LangChain
+- **Multiple providers**: Google Gemini, OpenAI, Anthropic, Cohere and Mistral via LangChain, plus Claude Code and Codex through their SDKs
 - **Multiple input types**: DataFrame, Series, list, dict
 - **Structured output**: Automatic validation with Pydantic
 - **Resilience**: Automatic retry with exponential backoff

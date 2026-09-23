@@ -66,6 +66,12 @@ groq = [
 claude-code = [
     "claude-agent-sdk>=0.1.48",
 ]
+codex = [
+    "filelock>=3.13",
+    "openai-codex==0.1.0b3",
+    # The SDK pins the exact runtime; this lower bound exposes its pre-release marker to uv.
+    "openai-codex-cli-bin>=0.137.0a4",
+]
 polars = [
     "polars>=0.20",
     "pyarrow>=10",

@@ -36,7 +36,7 @@ def test_basic_functionality():
     from dataframeit.core import _setup_columns
     df_test = df.copy()
     expected_cols = list(TestModel.model_fields.keys())
-    _setup_columns(df_test, expected_cols, None, False, False)
+    _setup_columns(df_test, expected_cols, None, False)
 
     print("\nColunas após setup:", list(df_test.columns))
     assert 'campo1' in df_test.columns

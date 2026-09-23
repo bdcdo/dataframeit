@@ -1,13 +1,14 @@
 """Testes para a funcionalidade de requisições paralelas."""
 
+import inspect
 import warnings
-import time
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 from pydantic import BaseModel
-from unittest.mock import patch, MagicMock
 
-from dataframeit.core import dataframeit, _process_rows_parallel
+from dataframeit.core import dataframeit
 from dataframeit.errors import is_rate_limit_error
 
 
@@ -18,7 +19,6 @@ class SimpleModel(BaseModel):
 
 def test_parallel_requests_parameter_exists():
     """Testa que o parâmetro parallel_requests existe e tem default=1."""
-    import inspect
     sig = inspect.signature(dataframeit)
     param = sig.parameters.get('parallel_requests')
     assert param is not None
@@ -28,11 +28,6 @@ def test_parallel_requests_parameter_exists():
 def test_parallel_requests_1_uses_sequential():
     """Testa que parallel_requests=1 usa processamento sequencial."""
     df = pd.DataFrame({"texto": ["a"]})
-
-    mock_result = {
-        "data": {"campo1": "v1", "campo2": "v2"},
-        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-    }
 
     with patch("dataframeit.core._process_rows") as mock_seq:
         with patch("dataframeit.core._process_rows_parallel") as mock_par:
@@ -100,8 +95,9 @@ def test_parallel_processes_all_rows():
             assert result["campo2"].notna().all()
 
 
-def test_parallel_tracks_tokens():
-    """Testa que processamento paralelo rastreia tokens corretamente."""
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_tracks_tokens_with_stable_schema(parallel_requests):
+    """Testa o mesmo schema de telemetria nos caminhos sequencial e paralelo."""
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
 
     def mock_llm(*args, **kwargs):
@@ -116,18 +112,22 @@ def test_parallel_tracks_tokens():
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",
-                parallel_requests=2,
+                parallel_requests=parallel_requests,
                 track_tokens=True,
             )
 
             # Verificar colunas de tokens
             assert "_input_tokens" in result.columns
+            assert "_cached_input_tokens" in result.columns
             assert "_output_tokens" in result.columns
+            assert "_reasoning_tokens" in result.columns
             assert "_total_tokens" not in result.columns
 
             # Cada linha deve ter os tokens registrados
             assert result["_input_tokens"].tolist() == [100, 100, 100]
+            assert result["_cached_input_tokens"].tolist() == [0, 0, 0]
             assert result["_output_tokens"].tolist() == [50, 50, 50]
+            assert result["_reasoning_tokens"].tolist() == [0, 0, 0]
 
 
 def test_is_rate_limit_error_detects_429():

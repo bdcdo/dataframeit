@@ -188,7 +188,7 @@ def test_reprocess_columns_does_not_skip_processed_rows():
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",
-                reprocess_columns=["campo1"],
+                reprocess_columns=["campo1", "campo2"],
             )
 
             # Ambas as linhas devem ter sido processadas

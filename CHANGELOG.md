@@ -7,12 +7,23 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Adicionado
+
+- Provider experimental `codex` via SDK Python oficial, disponível exclusivamente no extra `dataframeit[codex]`, com runtime pinado, autenticação em arquivo, isolamento por execução e saída estruturada validada (#111).
+
 ### Corrigido
 
+- O provider `codex` agora rejeita schemas incompatíveis com Structured Outputs durante o preflight, orienta o login file-backed com o comando correto, compartilha `auth.json` sem depender de symlink privilegiado no Windows e impede que duas execuções do DataFrameIt atualizem a mesma credencial concorrentemente (#111).
+- Checkpoints validam as linhas processadas contra o modelo Pydantic atual e exigem `reprocess_columns` somente para campos incompatíveis, evitando resultados marcados como concluídos com valores ausentes sem rejeitar campos opcionais ou com default (#111).
+- A telemetria preserva tokens de leitura de cache informados por providers LangChain nos caminhos normal e com busca (#111).
+- Falhas transitórias tipadas do Codex recebem retry sem serem confundidas com rate limit, e falhas de geração do JSON Schema são apresentadas como erro de configuração do provider (#111).
+- A normalização automática de JSON reconhece tanto colunas `object` do pandas 2 quanto o dtype `str` do pandas 3 (#111).
 - `call_langchain` em `llm.py` agora aceita `usage_metadata` tanto como dict quanto como objeto, alinhando com o tratamento já feito em `agent._extract_usage`. Antes, providers que devolvessem `usage_metadata` como objeto causavam `AttributeError` (#107).
 
 ### Alterado
 
+- O CI valida Python 3.10 e 3.13 nos ambientes base e Codex, inicia o runtime empacotado e exercita o lifecycle e a exclusão multiprocesso da autenticação no Windows, além de fazer build da documentação em pull requests; o extra declara o runtime pré-release como limite inferior para permitir resolução limpa pelo `uv`, enquanto o SDK conserva o pin exato (#111).
+- A telemetria usa as mesmas quatro colunas de tokens em todos os providers, incluindo `_cached_input_tokens`, mesmo quando a métrica permanece nula ou zero (#111).
 - Leitura de `usage_metadata` extraída para helper `_parse_usage_metadata` em `llm.py` e reaproveitada por `agent._extract_usage`, eliminando divergência futura entre os dois caminhos (#107).
 
 ## [0.7.1] - 2026-05-01

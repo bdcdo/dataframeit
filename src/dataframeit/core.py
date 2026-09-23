@@ -4,11 +4,16 @@ import os
 import threading
 import time
 import warnings
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
+from pandas.api.types import is_scalar
+from pydantic import ConfigDict, ValidationError
 from tqdm import tqdm
 
 from .errors import (
@@ -23,10 +28,12 @@ from .utils import (
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
+    TOKEN_COLUMNS,
     from_pandas,
     get_complex_fields,
     get_nested_pydantic_models,
     normalize_complex_columns,
+    normalize_value,
     to_pandas,
 )
 
@@ -52,6 +59,173 @@ _SEARCH_PROVIDER_RATE_LIMITS = {
 
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
+
+@dataclass(frozen=True)
+class ProviderBackend:
+    """Nome e função de chamada vinculados a uma única configuração."""
+
+    label: str
+    invoke: Callable[[str], dict]
+
+
+def _validate_processed_rows(
+    df: pd.DataFrame,
+    status_col: str,
+    pydantic_model,
+    complex_fields: set[str],
+) -> tuple[list[str], dict[tuple[int, str], Any]]:
+    """Valida linhas concluídas sem alterar o checkpoint recebido."""
+    incompatible_fields: set[str] = set()
+    values_to_fill: dict[tuple[int, str], Any] = {}
+    expected_columns = list(pydantic_model.model_fields)
+    field_by_alias = {field_name: field_name for field_name in expected_columns}
+    for field_name, field in pydantic_model.model_fields.items():
+        if isinstance(field.alias, str):
+            field_by_alias[field.alias] = field_name
+        if isinstance(field.validation_alias, str):
+            field_by_alias[field.validation_alias] = field_name
+
+    if status_col not in df.columns:
+        return [], values_to_fill
+
+    validation_model = pydantic_model
+    if any(
+        field.alias is not None or field.validation_alias is not None
+        for field in pydantic_model.model_fields.values()
+    ):
+        validation_model = type(
+            f"{pydantic_model.__name__}CheckpointValidation",
+            (pydantic_model,),
+            {
+                "model_config": ConfigDict(
+                    **{
+                        **pydantic_model.model_config,
+                        "populate_by_name": True,
+                        "validate_by_name": True,
+                    }
+                ),
+                "__module__": pydantic_model.__module__,
+            },
+        )
+
+    processed_positions = [
+        position
+        for position, status in enumerate(df[status_col])
+        if status == 'processed'
+    ]
+    for position in processed_positions:
+        row = df.iloc[position]
+        projected = {}
+        missing_values = set()
+        for field_name, field in pydantic_model.model_fields.items():
+            if field_name not in df.columns:
+                missing_values.add(field_name)
+                continue
+
+            value = row[field_name]
+            is_missing = is_scalar(value) and bool(pd.isna(value))
+            if is_missing:
+                missing_values.add(field_name)
+                if not field.is_required():
+                    continue
+                value = None
+            elif field_name in complex_fields:
+                value = normalize_value(value)
+            projected[field_name] = value
+
+        try:
+            validated = validation_model.model_validate(projected)
+        except ValidationError as error:
+            for detail in error.errors():
+                location = detail.get('loc', ())
+                field_name = field_by_alias.get(location[0]) if location else None
+                if field_name is not None:
+                    incompatible_fields.add(field_name)
+                else:
+                    incompatible_fields.update(expected_columns)
+            for field_name in missing_values:
+                field = pydantic_model.model_fields[field_name]
+                if field.is_required():
+                    continue
+                try:
+                    default = field.get_default(call_default_factory=True)
+                except ValueError:
+                    # This factory needs the fields that are being reprocessed.
+                    incompatible_fields.add(field_name)
+                else:
+                    values_to_fill[(position, field_name)] = default
+            continue
+
+        validated_data = validated.model_dump()
+        for field_name in missing_values:
+            values_to_fill[(position, field_name)] = validated_data[field_name]
+
+    ordered_incompatible = [
+        field for field in expected_columns if field in incompatible_fields
+    ]
+    return ordered_incompatible, values_to_fill
+
+
+def _apply_processed_values(
+    df: pd.DataFrame,
+    values: dict[tuple[int, str], Any],
+) -> None:
+    for (position, field_name), value in values.items():
+        column_position = df.columns.get_loc(field_name)
+        df.iat[position, column_position] = value
+
+
+@contextmanager
+def _provider_backend(
+    config: LLMConfig,
+    pydantic_model,
+    user_prompt: str,
+    trace_mode: str | None,
+) -> Iterator[ProviderBackend]:
+    """Seleciona e vincula uma única implementação para toda a execução."""
+    if config.search_config and config.search_config.enabled:
+        from .agent import call_agent, call_agent_per_field, call_agent_per_group
+
+        if not config.search_config.per_field:
+            search_call = call_agent
+        elif config.search_config.groups:
+            search_call = call_agent_per_group
+        else:
+            search_call = call_agent_per_field
+
+        yield ProviderBackend(
+            label="langchain",
+            invoke=lambda text: search_call(
+                text, pydantic_model, user_prompt, config, trace_mode
+            ),
+        )
+        return
+
+    if config.provider == "codex":
+        from .codex import open_codex_backend
+
+        with open_codex_backend(config, pydantic_model, user_prompt) as backend:
+            yield ProviderBackend(label="codex", invoke=backend.invoke)
+        return
+
+    if config.provider == "claude_code":
+        from .claude_code import call_claude_code
+
+        yield ProviderBackend(
+            label="claude_code",
+            invoke=lambda text: call_claude_code(
+                text, pydantic_model, user_prompt, config
+            ),
+        )
+        return
+
+    langchain_call = call_langchain
+    yield ProviderBackend(
+        label="langchain",
+        invoke=lambda text: langchain_call(
+            text, pydantic_model, user_prompt, config
+        ),
+    )
 
 
 def _warn_search_rate_limit(
@@ -308,7 +482,8 @@ def dataframeit(
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM.
-        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc).
+        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc),
+            'claude_code' ou 'codex'. Codex usa o SDK Python oficial.
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
                     infere dentre TEXT_COLUMN_CANDIDATES ('texto', 'text',
@@ -322,7 +497,8 @@ def dataframeit(
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
         track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
-        model_kwargs: Parâmetros extras para o modelo LangChain (ex: temperature, reasoning_effort).
+        model_kwargs: Parâmetros extras do modelo (ex: temperature, reasoning_effort).
+            Com provider='codex', aceita somente effort.
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
             Se > 1, processa múltiplas linhas simultaneamente.
             Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
@@ -376,9 +552,6 @@ def dataframeit(
     if '{texto}' not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
 
-    # Validar dependências ANTES de iniciar (falha rápido com mensagem clara)
-    validate_provider_dependencies(provider)
-
     # Validar parâmetros de checkpoint
     if (batch_size is None) != (checkpoint_path is None):
         raise ValueError("batch_size e checkpoint_path devem ser usados juntos")
@@ -387,10 +560,10 @@ def dataframeit(
             raise ValueError("batch_size deve ser int >= 1")
         _validate_checkpoint_extension(checkpoint_path)
 
-    # Validar busca web com claude_code
-    if use_search and provider == 'claude_code':
+    # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
+    if use_search and provider in {'claude_code', 'codex'}:
         raise ValueError(
-            "Busca web (use_search=True) não é suportada com provider='claude_code'. "
+            f"Busca web (use_search=True) não é suportada com provider='{provider}'. "
             "Use um provider LangChain como 'google_genai' ou 'openai' para busca web."
         )
 
@@ -402,7 +575,6 @@ def dataframeit(
             raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
         if not 1 <= max_results <= 20:
             raise ValueError("max_results deve estar entre 1 e 20")
-        validate_search_dependencies(search_provider)
 
     # Validar e normalizar save_trace
     trace_mode = None
@@ -470,23 +642,6 @@ def dataframeit(
     if not expected_columns:
         raise ValueError("Modelo Pydantic não pode estar vazio")
 
-    # Avisar sobre rate limits de busca quando a configuração parece arriscada.
-    # Cobre tanto paralelismo alto quanto search_per_field em datasets grandes
-    # mesmo sem paralelismo — ambos podem estourar o limite do provedor.
-    if use_search:
-        is_risky = parallel_requests > 1 or (
-            search_per_field and len(expected_columns) * len(df_pandas) > 100
-        )
-        if is_risky:
-            _warn_search_rate_limit(
-                num_rows=len(df_pandas),
-                num_fields=len(expected_columns),
-                parallel_requests=parallel_requests,
-                search_per_field=search_per_field,
-                rate_limit_delay=rate_limit_delay,
-                search_provider=search_provider,
-            )
-
     # Validar e processar search_groups
     if search_groups:
         validated_groups = _validate_search_groups(
@@ -507,6 +662,22 @@ def dataframeit(
                 f"Colunas disponíveis: {expected_columns}"
             )
 
+    status_col = status_column or '_dataframeit_status'
+    complex_fields = get_complex_fields(questions)
+
+    # Entradas vazias têm um resultado bem definido e não dependem de provider.
+    if df_pandas.empty:
+        _setup_columns(
+            df_pandas,
+            expected_columns,
+            status_column,
+            track_tokens,
+            search_config,
+            trace_mode,
+            questions,
+        )
+        return from_pandas(df_pandas, conversion_info)
+
     # Verificar conflitos de colunas
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
@@ -515,20 +686,48 @@ def dataframeit(
         )
         return from_pandas(df_pandas, conversion_info)
 
-    # Configurar colunas
-    _setup_columns(df_pandas, expected_columns, status_column, resume, track_tokens, search_config, trace_mode, questions)
+    reprocessed_columns = set(reprocess_columns or [])
+    incompatible_columns = []
+    processed_values = {}
+    if resume or reprocess_columns:
+        incompatible_columns, processed_values = _validate_processed_rows(
+            df_pandas,
+            status_col,
+            questions,
+            complex_fields,
+        )
+    uncovered_columns = [
+        column
+        for column in incompatible_columns
+        if column not in reprocessed_columns
+    ]
+    if uncovered_columns:
+        raise ValueError(
+            "O DataFrame contém linhas processadas incompatíveis com o modelo atual: "
+            f"campos incompatíveis {uncovered_columns}. "
+            f"Inclua-os em reprocess_columns={incompatible_columns!r}."
+        )
 
-    # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
-    # serializadas como strings JSON ao salvar/carregar de arquivos
-    complex_fields = get_complex_fields(questions)
-    if complex_fields and resume:
-        normalize_complex_columns(df_pandas, complex_fields)
-
-    # Determinar coluna de status
-    status_col = status_column or '_dataframeit_status'
-
-    # Determinar onde começar
-    start_pos, processed_count = _get_processing_indices(df_pandas, status_col, resume, reprocess_columns)
+    # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
+    if (
+        resume
+        and not reprocess_columns
+        and status_col in df_pandas.columns
+        and df_pandas[status_col].notna().all()
+    ):
+        _setup_columns(
+            df_pandas,
+            expected_columns,
+            status_column,
+            track_tokens,
+            search_config,
+            trace_mode,
+            questions,
+        )
+        _apply_processed_values(df_pandas, processed_values)
+        if complex_fields:
+            normalize_complex_columns(df_pandas, complex_fields)
+        return from_pandas(df_pandas, conversion_info)
 
     # Criar config do LLM
     config = LLMConfig(
@@ -551,44 +750,80 @@ def dataframeit(
                 "search_depth, max_results) requerem search_per_field=True"
             )
 
-    # Processar linhas (escolher entre sequencial e paralelo)
-    if parallel_requests > 1:
-        token_stats = _process_rows_parallel(
-            df_pandas,
-            questions,
-            prompt,
-            text_column,
-            status_col,
-            expected_columns,
-            config,
-            start_pos,
-            processed_count,
-            conversion_info,
-            track_tokens,
-            reprocess_columns,
-            parallel_requests,
-            trace_mode,
-            batch_size,
-            checkpoint_path,
+    # Só execuções com trabalho pendente validam dependências e rate limits.
+    if use_search:
+        validate_search_dependencies(search_provider)
+        is_risky = parallel_requests > 1 or (
+            search_per_field and len(expected_columns) * len(df_pandas) > 100
         )
-    else:
-        token_stats = _process_rows(
+        if is_risky:
+            _warn_search_rate_limit(
+                num_rows=len(df_pandas),
+                num_fields=len(expected_columns),
+                parallel_requests=parallel_requests,
+                search_per_field=search_per_field,
+                rate_limit_delay=rate_limit_delay,
+                search_provider=search_provider,
+            )
+    validate_provider_dependencies(provider)
+
+    # Entrar no backend conclui o preflight antes de qualquer mutação do DataFrame.
+    with _provider_backend(config, questions, prompt, trace_mode) as backend:
+        _setup_columns(
             df_pandas,
-            questions,
-            prompt,
-            text_column,
-            status_col,
             expected_columns,
-            config,
-            start_pos,
-            processed_count,
-            conversion_info,
+            status_column,
             track_tokens,
-            reprocess_columns,
+            search_config,
             trace_mode,
-            batch_size,
-            checkpoint_path,
+            questions,
         )
+        _apply_processed_values(df_pandas, processed_values)
+
+        # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
+        # serializadas como strings JSON ao salvar/carregar de arquivos.
+        if complex_fields and resume:
+            normalize_complex_columns(df_pandas, complex_fields)
+
+        start_pos, processed_count = _get_processing_indices(
+            df_pandas, status_col, resume, reprocess_columns
+        )
+
+        if parallel_requests > 1:
+            token_stats = _process_rows_parallel(
+                df_pandas,
+                text_column,
+                status_col,
+                expected_columns,
+                config,
+                backend,
+                start_pos,
+                processed_count,
+                conversion_info,
+                track_tokens,
+                reprocess_columns,
+                parallel_requests,
+                trace_mode,
+                batch_size,
+                checkpoint_path,
+            )
+        else:
+            token_stats = _process_rows(
+                df_pandas,
+                text_column,
+                status_col,
+                expected_columns,
+                config,
+                backend,
+                start_pos,
+                processed_count,
+                conversion_info,
+                track_tokens,
+                reprocess_columns,
+                trace_mode,
+                batch_size,
+                checkpoint_path,
+            )
 
     # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
@@ -609,11 +844,19 @@ def dataframeit(
     return from_pandas(df_pandas, conversion_info)
 
 
-def _setup_columns(df: pd.DataFrame, expected_columns: list, status_column: str | None, resume: bool, track_tokens: bool, search_config: SearchConfig | None = None, trace_mode: str | None = None, pydantic_model=None):
+def _setup_columns(
+    df: pd.DataFrame,
+    expected_columns: list,
+    status_column: str | None,
+    track_tokens: bool,
+    search_config: SearchConfig | None = None,
+    trace_mode: str | None = None,
+    pydantic_model=None,
+):
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or '_dataframeit_status'
     error_col = '_error_details'
-    token_cols = ['_input_tokens', '_output_tokens', '_reasoning_tokens'] if track_tokens else []
+    token_cols = TOKEN_COLUMNS if track_tokens else ()
     search_cols = ['_search_credits'] if (search_config and search_config.enabled) else []
 
     # Colunas de trace
@@ -709,6 +952,8 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
     print(f"Modelo: {model}")
     print(f"Total de tokens: {token_stats['total_tokens']:,}")
     print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
+    if token_stats.get('cached_input_tokens', 0) > 0:
+        print(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get('reasoning_tokens', 0) > 0:
         print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
@@ -795,12 +1040,11 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
 
 def _process_rows(
     df: pd.DataFrame,
-    pydantic_model,
-    user_prompt: str,
     text_column: str,
     status_col: str,
     expected_columns: list,
     config: LLMConfig,
+    backend: ProviderBackend,
     start_pos: int,
     processed_count: int,
     conversion_info,
@@ -827,8 +1071,7 @@ def _process_rows(
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    backend = 'claude_code' if config.provider == 'claude_code' else 'langchain'
-    desc = f"Processando [{engine}+{backend}{search_mode}]"
+    desc = f"Processando [{engine}+{backend.label}{search_mode}]"
 
     # Adicionar info de rate limiting (se ativo)
     if config.rate_limit_delay > 0:
@@ -843,6 +1086,7 @@ def _process_rows(
     # Inicializar contadores de tokens e busca
     token_stats = {
         'input_tokens': 0,
+        'cached_input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
         'reasoning_tokens': 0,
@@ -869,24 +1113,10 @@ def _process_rows(
         text = str(row[text_column])
 
         try:
-            # Chamar LLM ou agente com busca
-            if config.search_config and config.search_config.enabled:
-                from .agent import call_agent, call_agent_per_field, call_agent_per_group
-                if config.search_config.per_field:
-                    if config.search_config.groups:
-                        result = call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
-                    else:
-                        result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
-                else:
-                    result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
-            elif config.provider == 'claude_code':
-                from .claude_code import call_claude_code
-                result = call_claude_code(text, pydantic_model, user_prompt, config)
-            else:
-                result = call_langchain(text, pydantic_model, user_prompt, config)
+            result = backend.invoke(text)
 
             # Extrair dados e usage metadata
-            extracted = result.get('data', result)  # Retrocompatibilidade
+            extracted = result['data']
             usage = result.get('usage')
             retry_info = result.get('_retry_info', {})
 
@@ -906,11 +1136,13 @@ def _process_rows(
             # Armazenar tokens no DataFrame (se habilitado)
             if track_tokens and usage:
                 df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
+                df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
                 df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                 df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
                 # Acumular estatísticas (total exibido apenas no summary do console)
                 token_stats['input_tokens'] += usage.get('input_tokens', 0)
+                token_stats['cached_input_tokens'] += usage.get('cached_input_tokens', 0)
                 token_stats['output_tokens'] += usage.get('output_tokens', 0)
                 token_stats['total_tokens'] += usage.get('total_tokens', 0)
                 token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
@@ -981,12 +1213,11 @@ def _process_rows(
 
 def _process_rows_parallel(
     df: pd.DataFrame,
-    pydantic_model,
-    user_prompt: str,
     text_column: str,
     status_col: str,
     expected_columns: list,
     config: LLMConfig,
+    backend: ProviderBackend,
     start_pos: int,
     processed_count: int,
     conversion_info,
@@ -1020,6 +1251,7 @@ def _process_rows_parallel(
     # Contadores
     token_stats = {
         'input_tokens': 0,
+        'cached_input_tokens': 0,
         'output_tokens': 0,
         'total_tokens': 0,
         'reasoning_tokens': 0,
@@ -1035,8 +1267,10 @@ def _process_rows_parallel(
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
     search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    backend = 'claude_code' if config.provider == 'claude_code' else 'langchain'
-    desc = f"Processando [{engine}+{backend}{search_mode}] [{parallel_requests} workers]"
+    desc = (
+        f"Processando [{engine}+{backend.label}{search_mode}] "
+        f"[{parallel_requests} workers]"
+    )
 
     if reprocess_columns:
         desc += f" (reprocessando: {', '.join(reprocess_columns)})"
@@ -1070,24 +1304,10 @@ def _process_rows_parallel(
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
 
         try:
-            # Chamar LLM ou agente com busca
-            if config.search_config and config.search_config.enabled:
-                from .agent import call_agent, call_agent_per_field, call_agent_per_group
-                if config.search_config.per_field:
-                    if config.search_config.groups:
-                        result = call_agent_per_group(text, pydantic_model, user_prompt, config, trace_mode)
-                    else:
-                        result = call_agent_per_field(text, pydantic_model, user_prompt, config, trace_mode)
-                else:
-                    result = call_agent(text, pydantic_model, user_prompt, config, trace_mode)
-            elif config.provider == 'claude_code':
-                from .claude_code import call_claude_code
-                result = call_claude_code(text, pydantic_model, user_prompt, config)
-            else:
-                result = call_langchain(text, pydantic_model, user_prompt, config)
+            result = backend.invoke(text)
 
             # Extrair dados
-            extracted = result.get('data', result)
+            extracted = result['data']
             usage = result.get('usage')
             retry_info = result.get('_retry_info', {})
 
@@ -1104,10 +1324,12 @@ def _process_rows_parallel(
 
                 if track_tokens and usage:
                     df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
+                    df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
                     df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
                     df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
 
                     token_stats['input_tokens'] += usage.get('input_tokens', 0)
+                    token_stats['cached_input_tokens'] += usage.get('cached_input_tokens', 0)
                     token_stats['output_tokens'] += usage.get('output_tokens', 0)
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
                     token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
@@ -1206,7 +1428,7 @@ def _process_rows_parallel(
 
                 for future in as_completed(futures):
                     try:
-                        result = future.result()
+                        future.result()
                         pbar.update(1)
                         completed += 1
                     except Exception as e:

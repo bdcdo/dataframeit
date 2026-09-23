@@ -113,14 +113,12 @@ For each DataFrame row:
 
 ## Automatic Columns
 
-DataFrameIt automatically adds control columns:
+DataFrameIt automatically adds the status columns. When `track_tokens=True`, it also adds usage columns; see the [LLM Reference](../reference/llm-reference.md#automatically-added-columns) for the complete table and the semantics of cached input and reasoning.
 
 | Column | Description |
 |--------|-------------|
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, or `None` |
 | `_error_details` | Error details (when status is `'error'`) |
-| `_input_tokens` | Input tokens (with `track_tokens=True`) |
-| `_output_tokens` | Output tokens (with `track_tokens=True`) |
 
 ## Next Steps
 

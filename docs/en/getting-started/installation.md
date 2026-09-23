@@ -2,7 +2,7 @@
 
 ## Basic Installation
 
-DataFrameIt uses [LangChain](https://langchain.com/) to support multiple LLM providers. Choose the provider you want to use:
+DataFrameIt integrates multiple LLM providers through LangChain or official SDKs for local tools. Choose the provider you want to use:
 
 === "Google Gemini (Recommended)"
 
@@ -28,11 +28,23 @@ DataFrameIt uses [LangChain](https://langchain.com/) to support multiple LLM pro
 
     Models: `claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`
 
+=== "Codex (Experimental)"
+
+    ```bash
+    pip install dataframeit[codex]
+    # or
+    uv add "dataframeit[codex]"
+    ```
+
+    This extra pins the official Python SDK and its compatible runtime. DataFrameIt always uses that bundled runtime; an external `codex` command does not participate in execution. The provider remains experimental because the pinned SDK and runtime versions are still prereleases.
+
 === "All Providers"
 
     ```bash
     pip install dataframeit[all]
     ```
+
+    While experimental, the Codex provider is not included in `all`; install `dataframeit[codex]` separately.
 
 ## With Polars (Optional)
 
@@ -50,9 +62,9 @@ For `.xlsx` checkpoints or reading Excel files via `read_df()`:
 pip install dataframeit[excel]
 ```
 
-## API Keys Configuration
+## Authentication Configuration
 
-Set the environment variable for your provider:
+Configure the credentials for your provider:
 
 === "Google Gemini"
 
@@ -77,6 +89,16 @@ Set the environment variable for your provider:
     ```
 
     Get your key at: [Anthropic Console](https://console.anthropic.com/)
+
+=== "Codex"
+
+    If `auth.json` does not exist yet, install the [official Codex CLI](https://learn.chatgpt.com/docs/codex/cli) and authenticate once:
+
+    ```bash
+    codex --config cli_auth_credentials_store='"file"' login
+    ```
+
+    The external CLI is used only to create `auth.json`; the explicit option prevents the credentials from being stored only in the system keyring. This is the only file from Codex's persistent state linked into the ephemeral `CODEX_HOME`; the app server still inherits the process environment variables. DataFrameIt executes the runtime pinned by the extra; do not pass `api_key` to `dataframeit()` for this provider.
 
 ## Verifying Installation
 

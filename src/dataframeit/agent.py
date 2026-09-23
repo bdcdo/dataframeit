@@ -21,6 +21,19 @@ from .utils import get_nested_pydantic_models, is_list_of_pydantic_model
 
 # Chaves de configuração per-field reconhecidas em json_schema_extra
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
+_USAGE_COUNTERS = (
+    'input_tokens',
+    'cached_input_tokens',
+    'output_tokens',
+    'total_tokens',
+    'reasoning_tokens',
+    'search_credits',
+    'search_count',
+)
+
+
+def _empty_usage(**metadata) -> dict:
+    return {**dict.fromkeys(_USAGE_COUNTERS, 0), **metadata}
 
 
 def _get_field_config(extra: dict) -> dict:
@@ -208,13 +221,7 @@ def _enrich_list_items_with_search(
         Tupla (enriched_items, usage, traces).
     """
     enriched_items = []
-    total_usage = {
-        'input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'search_credits': 0,
-        'search_count': 0,
-    }
+    total_usage = _empty_usage()
     traces = [] if save_trace else None
 
     for item_idx, item in enumerate(list_items or []):
@@ -414,13 +421,7 @@ def _run_nested_searches(
         search_context mapeia path -> resultado da busca.
     """
     search_context = {}
-    total_usage = {
-        'input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'search_credits': 0,
-        'search_count': 0,
-    }
+    total_usage = _empty_usage()
     traces = {} if save_trace else None
 
     for path, field_name, field_info, parent_model, has_config in nested_fields:
@@ -506,13 +507,7 @@ def call_agent_per_field(
 
     combined_data = {}
     search_provider = config.search_config.provider if config.search_config else None
-    total_usage = {
-        'input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'search_credits': 0,
-        'search_count': 0,
-    }
+    total_usage = _empty_usage()
     traces = {} if save_trace else None
 
     # Identificar campos List[Model] com configuração de busca interna
@@ -676,13 +671,7 @@ def call_agent_per_group(
         todos os tokens e créditos), e 'traces' (dict por grupo/campo, se habilitado).
     """
     combined_data = {}
-    total_usage = {
-        'input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'search_credits': 0,
-        'search_count': 0,
-    }
+    total_usage = _empty_usage()
     traces = {} if save_trace else None
 
     groups = config.search_config.groups
@@ -825,15 +814,7 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
     """
     from .search import SearchProvider
 
-    usage = {
-        'input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'reasoning_tokens': 0,
-        'search_credits': 0,
-        'search_count': 0,
-        'search_provider': provider.name,
-    }
+    usage = _empty_usage(search_provider=provider.name)
 
     # Extrair token usage das mensagens
     messages = agent_result.get("messages", [])
@@ -877,6 +858,7 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
         if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
             parsed = _parse_usage_metadata(msg.usage_metadata)
             usage['input_tokens'] += parsed['input_tokens']
+            usage['cached_input_tokens'] += parsed['cached_input_tokens']
             usage['output_tokens'] += parsed['output_tokens']
             usage['total_tokens'] += parsed['total_tokens']
             usage['reasoning_tokens'] += parsed['reasoning_tokens']

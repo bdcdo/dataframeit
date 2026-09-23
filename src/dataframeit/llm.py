@@ -70,27 +70,37 @@ def build_prompt(user_prompt: str, text: str) -> str:
 
 
 def _parse_usage_metadata(meta) -> Dict[str, int]:
-    """Extrai input/output/total/reasoning tokens de um usage_metadata
-    que pode vir como dict ou objeto com atributos. Provedores variam.
+    """Extrai tokens de um usage_metadata dict ou objeto.
+
+    ``cache_read`` representa tokens lidos do cache. ``cache_creation`` não
+    entra nessa métrica porque continua sendo consumo de entrada sem cache.
     """
     if isinstance(meta, dict):
         input_tokens = meta.get('input_tokens', 0)
         output_tokens = meta.get('output_tokens', 0)
         total_tokens = meta.get('total_tokens', 0)
-        details = meta.get('output_token_details') or {}
+        output_details = meta.get('output_token_details') or {}
+        input_details = meta.get('input_token_details') or {}
     else:
         input_tokens = getattr(meta, 'input_tokens', 0)
         output_tokens = getattr(meta, 'output_tokens', 0)
         total_tokens = getattr(meta, 'total_tokens', 0)
-        details = getattr(meta, 'output_token_details', None) or {}
+        output_details = getattr(meta, 'output_token_details', None) or {}
+        input_details = getattr(meta, 'input_token_details', None) or {}
 
-    if isinstance(details, dict):
-        reasoning_tokens = details.get('reasoning', 0)
+    if isinstance(output_details, dict):
+        reasoning_tokens = output_details.get('reasoning', 0)
     else:
-        reasoning_tokens = getattr(details, 'reasoning', 0)
+        reasoning_tokens = getattr(output_details, 'reasoning', 0)
+
+    if isinstance(input_details, dict):
+        cached_input_tokens = input_details.get('cache_read', 0)
+    else:
+        cached_input_tokens = getattr(input_details, 'cache_read', 0)
 
     return {
         'input_tokens': input_tokens,
+        'cached_input_tokens': cached_input_tokens,
         'output_tokens': output_tokens,
         'total_tokens': total_tokens,
         'reasoning_tokens': reasoning_tokens,

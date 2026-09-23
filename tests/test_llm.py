@@ -109,6 +109,7 @@ class TestCallLangchain:
             "input_tokens": 10,
             "output_tokens": 5,
             "total_tokens": 15,
+            "input_token_details": {"cache_read": 6, "cache_creation": 4},
             "output_token_details": {"reasoning": 2},
         })
         structured_llm = MagicMock()
@@ -120,6 +121,7 @@ class TestCallLangchain:
         assert result["data"] == {"campo": "valor"}
         assert result["usage"] == {
             "input_tokens": 10,
+            "cached_input_tokens": 6,
             "output_tokens": 5,
             "total_tokens": 15,
             "reasoning_tokens": 2,
@@ -158,6 +160,7 @@ class TestCallLangchain:
 
         meta = SimpleNamespace(
             input_tokens=3, output_tokens=4, total_tokens=7,
+            input_token_details=SimpleNamespace(cache_read=2, cache_creation=1),
             output_token_details=SimpleNamespace(reasoning=2),
         )
         raw = SimpleNamespace(usage_metadata=meta)
@@ -172,6 +175,7 @@ class TestCallLangchain:
             result = call_langchain("t", SampleModel, "{texto}", _make_config())
 
         assert result["usage"]["input_tokens"] == 3
+        assert result["usage"]["cached_input_tokens"] == 2
         assert result["usage"]["output_tokens"] == 4
         assert result["usage"]["total_tokens"] == 7
         assert result["usage"]["reasoning_tokens"] == 2
