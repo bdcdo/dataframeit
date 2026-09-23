@@ -97,7 +97,7 @@ print(resultado)
 ## Tipos de Entrada Suportados
 
 ```python
-# DataFrame (precisa text_column)
+# DataFrame (text_column inferida pelo nome; ver referência da API)
 df = pd.DataFrame({'texto': ['A', 'B']})
 resultado = dataframeit(df, Model, PROMPT)
 

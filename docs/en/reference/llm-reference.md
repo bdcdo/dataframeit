@@ -98,7 +98,7 @@ print(result)
 ## Supported Input Types
 
 ```python
-# DataFrame (requires text_column)
+# DataFrame (text_column inferred by name; see the API reference)
 df = pd.DataFrame({'text': ['A', 'B']})
 result = dataframeit(df, Model, PROMPT, text_column='text')
 
