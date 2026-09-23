@@ -9,7 +9,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- Os providers LangChain deixam de receber `temperature=0` por padrão; o cliente só recebe o que vier em `model_kwargs`. Vários modelos atuais (Claude Sonnet 5 e Opus 4.7+, OpenAI com raciocínio ligado, Gemini 3.6+) rejeitavam a chamada com erro 400 (#116).
+- Os providers LangChain deixam de receber `temperature=0` por padrão; o cliente só recebe o que vier em `model_kwargs`. Vários modelos atuais (Claude Sonnet 5 e Opus 4.7+, OpenAI GPT-6 com raciocínio e série o, Gemini 3.6+) rejeitavam a chamada com erro 400 (#116).
 
 ### Removido
 

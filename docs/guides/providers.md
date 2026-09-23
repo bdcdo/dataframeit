@@ -342,6 +342,6 @@ resultado = dataframeit(
 
 | Parâmetro | Descrição | Providers |
 |-----------|-----------|-----------|
-| `temperature` | Criatividade. O dataframeit não envia valor padrão | Depende do modelo: vários atuais rejeitam (ex.: Claude Sonnet 5, OpenAI com raciocínio ligado) |
+| `temperature` | Criatividade. O dataframeit não envia valor padrão | Depende do modelo: vários atuais rejeitam (ex.: Claude Sonnet 5, OpenAI GPT-6 com raciocínio e série o) |
 | `top_p` | Nucleus sampling | Depende do modelo, como `temperature` |
 | `max_tokens` | Limite de saída | Todos |

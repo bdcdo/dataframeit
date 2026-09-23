@@ -359,6 +359,6 @@ result = dataframeit(
 
 | Parameter | Description | Providers |
 |-----------|-------------|-----------|
-| `temperature` | Creativity. dataframeit sends no default value | Model-dependent: several current models reject it (e.g. Claude Sonnet 5, OpenAI with reasoning enabled) |
+| `temperature` | Creativity. dataframeit sends no default value | Model-dependent: several current models reject it (e.g. Claude Sonnet 5, OpenAI GPT-6 with reasoning and o-series) |
 | `top_p` | Nucleus sampling | Model-dependent, like `temperature` |
 | `max_tokens` | Output limit | All |
