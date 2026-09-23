@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**English** · [Português](README.pt-BR.md) · [Español](README.es.md)
+**English** · [Português](https://github.com/bdcdo/dataframeit/blob/main/README.pt-BR.md) · [Español](https://github.com/bdcdo/dataframeit/blob/main/README.es.md)
 
 **Enrich DataFrames with LLMs, simply and in a structured way.**
 
@@ -64,7 +64,7 @@ print(result)
 | Terrible service... | negative | high |
 | Delivery was fine... | neutral | medium |
 
-Field and class names are arbitrary — the examples in the [`example/`](example/) notebooks use Portuguese ones.
+Field and class names are arbitrary — the examples in the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) notebooks use Portuguese ones.
 
 ## Features
 
@@ -142,7 +142,7 @@ result = dataframeit(
 
 ## Examples
 
-See the [`example/`](example/) folder for Jupyter notebooks with complete use cases.
+See the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) folder for Jupyter notebooks with complete use cases.
 
 ## License
 

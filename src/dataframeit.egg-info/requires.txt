@@ -1,8 +1,0 @@
-langchain
-pandas
-pydantic
-tqdm
-langchain-google-genai
-
-[polars]
-polars>=0.20
