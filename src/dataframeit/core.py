@@ -505,7 +505,7 @@ def dataframeit(
                     DataFrame tiver múltiplas colunas, levanta ValueError.
                     Automático para Series/list/dict.
         api_key: Chave API específica.
-        max_retries: Número máximo de tentativas.
+        max_retries: Número total de tentativas por linha, contando a primeira (int >= 1).
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
@@ -564,6 +564,13 @@ def dataframeit(
     # Se {texto} não estiver no template, adiciona automaticamente ao final
     if '{texto}' not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
+
+    # bool é subclasse de int, mas True não é uma contagem de tentativas.
+    if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 1:
+        raise ValueError(
+            f"max_retries deve ser int >= 1 (número total de tentativas por linha); "
+            f"recebido {max_retries!r}"
+        )
 
     # Validar parâmetros de checkpoint
     if (batch_size is None) != (checkpoint_path is None):
