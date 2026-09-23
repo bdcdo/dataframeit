@@ -42,7 +42,7 @@ Atualize o `CHANGELOG.md` ao alterar código. Ele é o registro das mudanças po
 - Siga o formato [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 - Categorias: `Adicionado`, `Alterado`, `Corrigido`, `Removido`, `Depreciado`, `Segurança`
 - Inclua referência à issue/PR quando aplicável (ex: `(#123)`)
-- **Factual e curto.** Sem subseções de "Migração", "Como migrar", "Impacto para usuários". A lib é de uso interno e esse tipo de nota é ruído.
+- **Factual e curto.** Sem subseções de "Migração", "Como migrar", "Impacto para usuários".
 
 ### Documentação e comentários — sem notas de migração
 
