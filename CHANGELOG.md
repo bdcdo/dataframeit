@@ -14,6 +14,16 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Um campo com `condition` callable falhava em toda linha no modo `search_per_field`: o `json_schema_extra` ia inteiro para o modelo montado por campo ou por grupo, e o Pydantic não serializa a função no JSON Schema. As chaves da biblioteca (`condition`, `depends_on`, `prompt`, `prompt_replace`, `prompt_append`, `search_depth`, `max_results`) deixam de ir no schema enviado ao LLM (#134).
+- `condition` ou `depends_on` em campo de modelo aninhado ou de item de lista era ignorado em silêncio, e a versão callable quebrava o schema em qualquer provider. Agora levanta `ValueError` antes de processar (#129).
+- `search_depth` e `max_results` em `json_schema_extra` passam pela mesma validação dos globais e de `search_groups`, inclusive em campos aninhados (#129).
+- Dependência circular entre campos, ou entre grupo e campo, levanta `ValueError` antes da primeira linha, em vez de marcar cada linha como erro com o prefixo de tentativas (#129).
+- A mensagem de configuração por campo sem busca por campo nomeia o que falta: `use_search=True`, `search_per_field=True` ou os dois (#129).
+- Um campo cujas dependências tinham a mesma raiz (`depends_on=['endereco.cidade', 'endereco.uf']`, ou o mesmo campo repetido) ficava fora da ordem de execução e voltava `None` com status `processed`.
+- `prompt`/`prompt_replace` por campo sem `{texto}` descartava o texto da linha; agora o texto é anexado, como no prompt principal. O prompt de grupo com `{query}` deixa de receber o texto duas vezes.
+- Configuração de busca num campo dentro de uma lista que está dentro de outra lista trocava a lista interna por um dicionário; agora levanta `ValueError`.
+- Um modelo que referencia outro (ou a si mesmo) com `list['Modelo']` tinha a configuração aninhada ignorada, porque o Pydantic deixa a string sem resolver nessa forma.
+- `reprocess_columns` no modo por campo ou por grupo pedia ao agente todos os campos, com as buscas correspondentes, e descartava os que não foram pedidos. Agora só as colunas escolhidas são pedidas, e as condições usam os valores já gravados na linha.
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).
 

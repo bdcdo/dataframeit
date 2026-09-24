@@ -17,7 +17,14 @@ from pandas.api.types import is_scalar
 from pydantic import ConfigDict, ValidationError
 from tqdm import tqdm
 
-from .conditional import _CONDITIONAL_KEYS, _FIELD_CONFIG_KEYS, _collect_configured_fields
+from .conditional import (
+    _CONDITIONAL_KEYS,
+    _FIELD_CONFIG_KEYS,
+    _collect_configured_fields,
+    _walk_fields,
+    get_field_execution_order,
+    get_group_execution_units,
+)
 from .errors import (
     get_friendly_error_message,
     is_rate_limit_error,
@@ -67,10 +74,32 @@ _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
 
 @dataclass(frozen=True)
 class ProviderBackend:
-    """Nome e função de chamada vinculados a uma única configuração."""
+    """Nome e função de chamada vinculados a uma única configuração.
+
+    `invoke_partial(text, only_fields, known)` existe nos backends que extraem
+    campo a campo, e deixa reprocess_columns pedir só as colunas escolhidas.
+    """
 
     label: str
     invoke: Callable[[str], dict]
+    invoke_partial: Callable[[str, set, dict], dict] | None = None
+
+
+def _invoke_row(backend, text, row, row_already_processed, reprocess_columns, expected_columns):
+    """Chama o backend para uma linha, pedindo só as colunas a reprocessar quando dá.
+
+    Numa linha já processada, só as colunas de reprocess_columns são gravadas.
+    Com um backend campo a campo, os demais campos nem são pedidos: voltam com
+    o valor já gravado, que também alimenta as condições.
+    """
+    if row_already_processed and reprocess_columns and backend.invoke_partial:
+        known = {
+            col: None if is_scalar(row[col]) and pd.isna(row[col]) else row[col]
+            for col in expected_columns
+            if col not in reprocess_columns and col in row.index
+        }
+        return backend.invoke_partial(text, set(reprocess_columns), known)
+    return backend.invoke(text)
 
 
 def _validate_processed_rows(
@@ -198,11 +227,20 @@ def _provider_backend(
         else:
             search_call = call_agent_per_field
 
+        invoke_partial = None
+        if search_call is not call_agent:
+            def invoke_partial(text, only_fields, known):
+                return search_call(
+                    text, pydantic_model, user_prompt, config, trace_mode,
+                    only_fields=only_fields, known=known,
+                )
+
         yield ProviderBackend(
             label="langchain",
             invoke=lambda text: search_call(
                 text, pydantic_model, user_prompt, config, trace_mode
             ),
+            invoke_partial=invoke_partial,
         )
         return
 
@@ -304,6 +342,90 @@ def _warn_search_rate_limit(
     warnings.warn(msg, UserWarning, stacklevel=3)
 
 
+def _validate_search_overrides(label: str, search_depth=None, max_results=None) -> None:
+    """Valida os overrides de busca de um grupo ou campo; None é ausência."""
+    if search_depth is not None and search_depth not in ('basic', 'advanced'):
+        raise ValueError(f"{label}: search_depth deve ser 'basic' ou 'advanced'")
+    if max_results is not None and (
+        isinstance(max_results, bool)
+        or not isinstance(max_results, numbers.Real)
+        or not 1 <= max_results <= 20
+    ):
+        raise ValueError(f"{label}: max_results deve estar entre 1 e 20")
+
+
+def _validate_field_configs(questions, search_config, use_search: bool, search_per_field: bool) -> None:
+    """Valida json_schema_extra de todos os campos antes de processar linhas.
+
+    Erro de configuração aparece uma vez aqui, e não linha a linha com o
+    prefixo de tentativas, que sugere uma falha do provider.
+    """
+    per_field = bool(search_config and search_config.per_field)
+
+    configured = _collect_configured_fields(questions)
+    if configured and not per_field:
+        missing = [
+            flag for flag, on in (('use_search=True', use_search), ('search_per_field=True', search_per_field))
+            if not on
+        ]
+        raise ValueError(
+            "Campos com configuração em json_schema_extra (prompt, prompt_append, "
+            f"search_depth, max_results) requerem {' e '.join(missing)}"
+        )
+
+    for path, field_info, list_depth in _walk_fields(questions):
+        extra = field_info.json_schema_extra
+        if not isinstance(extra, dict):
+            continue
+
+        # Condições só são avaliadas entre campos de primeiro nível
+        if '.' in path and any(k in extra for k in _CONDITIONAL_KEYS):
+            raise ValueError(
+                f"Campo '{path}' usa 'condition' ou 'depends_on' em json_schema_extra, "
+                "que só são aplicados a campos de primeiro nível do modelo"
+            )
+
+        if any(k in extra for k in _FIELD_CONFIG_KEYS):
+            # Um item de lista é enriquecido no próprio dicionário; uma segunda
+            # lista no caminho não tem item único onde gravar o valor.
+            if list_depth > 1:
+                raise ValueError(
+                    f"Campo '{path}' tem configuração de busca dentro de uma lista que "
+                    "está dentro de outra lista, o que não é suportado"
+                )
+            _validate_search_overrides(
+                f"Campo '{path}'", extra.get('search_depth'), extra.get('max_results')
+            )
+
+    # Sem busca por campo, todos os campos saem de uma única chamada, e não há
+    # momento para avaliar a condição antes de extrair o campo.
+    if not per_field:
+        conditional_fields = [
+            field_name
+            for field_name, field_info in questions.model_fields.items()
+            if isinstance(field_info.json_schema_extra, dict)
+            and any(k in field_info.json_schema_extra for k in _CONDITIONAL_KEYS)
+        ]
+        if conditional_fields:
+            raise ValueError(
+                f"Campos {conditional_fields} usam 'condition' ou 'depends_on' em "
+                "json_schema_extra, que só são aplicados com use_search=True e "
+                "search_per_field=True"
+            )
+        return
+
+    from .agent import _get_field_config
+
+    field_configs = {
+        field_name: _get_field_config(field_info.json_schema_extra)
+        if isinstance(field_info.json_schema_extra, dict) else {}
+        for field_name, field_info in questions.model_fields.items()
+    }
+    _, dependencies = get_field_execution_order(questions, field_configs)
+    if search_config.groups:
+        get_group_execution_units(questions, search_config.groups, dependencies)
+
+
 def _validate_search_groups(
     search_groups: dict[str, dict],
     pydantic_model,
@@ -375,18 +497,11 @@ def _validate_search_groups(
                         f"per-field (json_schema_extra) ou grupo (search_groups), não ambos."
                     )
 
-        # Validar search_depth se especificado
-        if group_config.get('search_depth') is not None and group_config['search_depth'] not in ('basic', 'advanced'):
-            raise ValueError(
-                f"Grupo '{group_name}': search_depth deve ser 'basic' ou 'advanced'"
-            )
-
-        # Validar max_results se especificado
-        if group_config.get('max_results') is not None:
-            if not 1 <= group_config['max_results'] <= 20:
-                raise ValueError(
-                    f"Grupo '{group_name}': max_results deve estar entre 1 e 20"
-                )
+        _validate_search_overrides(
+            f"Grupo '{group_name}'",
+            group_config.get('search_depth'),
+            group_config.get('max_results'),
+        )
 
         # Criar SearchGroupConfig
         validated_groups[group_name] = SearchGroupConfig(
@@ -731,29 +846,7 @@ def dataframeit(
         search_config=search_config,
     )
 
-    # Validar: campos com json_schema_extra requerem search_per_field=True
-    if _has_field_config(questions):
-        if not (config.search_config and config.search_config.per_field):
-            raise ValueError(
-                "Campos com configuração em json_schema_extra (prompt, prompt_append, "
-                "search_depth, max_results) requerem search_per_field=True"
-            )
-
-    # Sem busca por campo, todos os campos saem de uma única chamada, e não há
-    # momento para avaliar a condição antes de extrair o campo.
-    if not (config.search_config and config.search_config.per_field):
-        conditional_fields = [
-            field_name
-            for field_name, field_info in questions.model_fields.items()
-            if isinstance(field_info.json_schema_extra, dict)
-            and any(k in field_info.json_schema_extra for k in _CONDITIONAL_KEYS)
-        ]
-        if conditional_fields:
-            raise ValueError(
-                f"Campos {conditional_fields} usam 'condition' ou 'depends_on' em "
-                "json_schema_extra, que só são aplicados com use_search=True e "
-                "search_per_field=True"
-            )
+    _validate_field_configs(questions, config.search_config, use_search, search_per_field)
 
     # Só execuções com trabalho pendente validam dependências e rate limits.
     if use_search:
@@ -1112,7 +1205,9 @@ def _process_rows(
         text = str(row[text_column])
 
         try:
-            result = backend.invoke(text)
+            result = _invoke_row(
+                backend, text, row, row_already_processed, reprocess_columns, expected_columns
+            )
 
             # Extrair dados e usage metadata
             extracted = result['data']
@@ -1315,7 +1410,9 @@ def _process_rows_parallel(
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
 
         try:
-            result = backend.invoke(text)
+            result = _invoke_row(
+                backend, text, row, row_already_processed, reprocess_columns, expected_columns
+            )
 
             # Extrair dados
             extracted = result['data']

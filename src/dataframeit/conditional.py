@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from .utils import get_nested_pydantic_models
+from .utils import get_nested_pydantic_models, is_list_of_pydantic_model, resolve_forward_refs
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +45,36 @@ def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set =
         if isinstance(extra, dict) and any(k in extra for k in _FIELD_CONFIG_KEYS):
             results.append((path, field_name, field_info, pydantic_model, True))
 
-        for nested_model in get_nested_pydantic_models(field_info.annotation):
+        annotation = resolve_forward_refs(field_info.annotation, pydantic_model)
+        for nested_model in get_nested_pydantic_models(annotation):
             results.extend(_collect_configured_fields(nested_model, path, _visited))
 
     return results
+
+
+def _walk_fields(pydantic_model, prefix: str = "", list_depth: int = 0, _visited: set = None):
+    """Percorre todos os campos, inclusive aninhados, com a profundidade de lista.
+
+    Yields:
+        Tuplas (path, field_info, list_depth), em que list_depth conta quantos
+        List[Model] o caminho atravessa até o modelo que contém o campo.
+    """
+    if _visited is None:
+        _visited = set()
+    if id(pydantic_model) in _visited:
+        return
+    _visited = _visited | {id(pydantic_model)}
+
+    for field_name, field_info in pydantic_model.model_fields.items():
+        path = f"{prefix}.{field_name}" if prefix else field_name
+        yield path, field_info, list_depth
+
+        annotation = resolve_forward_refs(field_info.annotation, pydantic_model)
+        is_list, _ = is_list_of_pydantic_model(annotation)
+        for nested_model in get_nested_pydantic_models(annotation):
+            yield from _walk_fields(
+                nested_model, path, list_depth + (1 if is_list else 0), _visited
+            )
 
 
 def get_nested_value(data: dict[str, Any], field_path: str) -> Any:
@@ -295,37 +321,25 @@ def topological_sort(dependencies: dict[str, list[str]]) -> list[str]:
             f"Dependências circulares detectadas: {' -> '.join(cycle)}"
         )
 
-    # Grau de entrada (in-degree) para cada nó = número de dependências que tem
-    in_degree = {}
-    for field, deps in dependencies.items():
-        # Contar apenas dependências que existem (ignorar campos aninhados parcialmente)
-        count = 0
-        for dep in deps:
-            root_dep = dep.split('.')[0]
-            if root_dep in dependencies:
-                count += 1
-        in_degree[field] = count
+    # Cada campo depende de um conjunto de raízes: 'endereco.cidade' e
+    # 'endereco.uf' são a mesma dependência, e contá-las duas vezes deixaria o
+    # grau de entrada acima de zero para sempre, com o campo fora da ordem.
+    root_deps = {
+        field: {dep.split('.')[0] for dep in deps if dep.split('.')[0] in dependencies}
+        for field, deps in dependencies.items()
+    }
+    in_degree = {field: len(roots) for field, roots in root_deps.items()}
 
     # Fila com nós sem dependências
     queue = [field for field, degree in in_degree.items() if degree == 0]
     result = []
 
     while queue:
-        # Pega o próximo campo sem dependências
         current = queue.pop(0)
         result.append(current)
 
-        # Reduz in-degree dos campos que dependem deste
-        for field, deps in dependencies.items():
-            # Verifica se o campo depende do current
-            has_dependency = False
-            for dep in deps:
-                root_dep = dep.split('.')[0]
-                if root_dep == current:
-                    has_dependency = True
-                    break
-
-            if has_dependency:
+        for field, roots in root_deps.items():
+            if current in roots:
                 in_degree[field] -= 1
                 if in_degree[field] == 0:
                     queue.append(field)
@@ -416,6 +430,59 @@ def get_field_execution_order(
     ordered = topological_sort(dependencies)
 
     return ordered, dependencies
+
+
+def get_group_execution_units(pydantic_model, groups: dict, dependencies: dict[str, list[str]]):
+    """Monta as unidades de execução do modo por grupo e suas dependências.
+
+    Cada grupo e cada campo fora de grupo é uma unidade. As chaves são índices
+    em texto porque topological_sort interpreta '.' como caminho aninhado, e
+    nome de grupo é livre.
+
+    Returns:
+        Tupla (units, unit_of_field, unit_dependencies): a lista de
+        (tipo, nome, config do grupo ou None), o índice da unidade de cada
+        campo e o grafo de dependências entre unidades.
+
+    Raises:
+        ValueError: Se há ciclo entre unidades, inclusive entre um grupo e um
+            campo de fora dele.
+    """
+    grouped_fields = set()
+    for group_config in groups.values():
+        grouped_fields.update(group_config.fields)
+
+    units = [('group', group_name, group_config) for group_name, group_config in groups.items()]
+    units += [
+        ('field', field_name, None)
+        for field_name in pydantic_model.model_fields
+        if field_name not in grouped_fields
+    ]
+
+    unit_of_field = {}
+    for index, (kind, name, group_config) in enumerate(units):
+        for field_name in (group_config.fields if kind == 'group' else [name]):
+            unit_of_field[field_name] = str(index)
+
+    unit_dependencies = {str(index): [] for index in range(len(units))}
+    for field_name, deps in dependencies.items():
+        unit = unit_of_field[field_name]
+        for dep in deps:
+            dep_unit = unit_of_field[dep.split('.')[0]]
+            if dep_unit != unit and dep_unit not in unit_dependencies[unit]:
+                unit_dependencies[unit].append(dep_unit)
+
+    cycle = detect_circular_dependencies(unit_dependencies)
+    if cycle:
+        labels = [
+            f"grupo '{units[int(key)][1]}'" if units[int(key)][0] == 'group' else f"'{units[int(key)][1]}'"
+            for key in cycle
+        ]
+        raise ValueError(
+            f"Dependências circulares entre grupos e campos: {' -> '.join(labels)}"
+        )
+
+    return units, unit_of_field, unit_dependencies
 
 
 def should_skip_field(

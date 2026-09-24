@@ -12,11 +12,11 @@ from typing import Any
 
 from pydantic import create_model
 
-from .conditional import _collect_configured_fields
+from .conditional import _CONDITIONAL_KEYS, _FIELD_CONFIG_KEYS, _collect_configured_fields
 from .errors import retry_with_backoff
 from .llm import LLMConfig, _create_langchain_llm, _parse_usage_metadata, build_prompt
 from .search import get_provider
-from .utils import is_list_of_pydantic_model
+from .utils import is_list_of_pydantic_model, resolve_forward_refs
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,30 @@ _USAGE_COUNTERS = (
 
 def _empty_usage(**metadata) -> dict:
     return {**dict.fromkeys(_USAGE_COUNTERS, 0), **metadata}
+
+
+_LIBRARY_EXTRA_KEYS = frozenset(_FIELD_CONFIG_KEYS + _CONDITIONAL_KEYS)
+
+
+def _llm_field(field_info):
+    """Cópia do FieldInfo sem as chaves de configuração da biblioteca.
+
+    `condition`, `depends_on` e as chaves de busca por campo servem ao
+    dataframeit e não descrevem o campo para o LLM. Elas iriam no JSON Schema
+    do modelo montado para a chamada, e uma `condition` callable nem
+    serializa. O FieldInfo original fica intacto, porque é do modelo do
+    usuário e é relido a cada linha. Um json_schema_extra callable é do
+    usuário e não carrega essas chaves, então passa como está.
+    """
+    extra = field_info.json_schema_extra
+    if not isinstance(extra, dict) or not (_LIBRARY_EXTRA_KEYS & extra.keys()):
+        return field_info
+
+    cleaned = copy(field_info)
+    cleaned.json_schema_extra = {
+        key: value for key, value in extra.items() if key not in _LIBRARY_EXTRA_KEYS
+    } or None
+    return cleaned
 
 
 def _get_field_config(extra: dict) -> dict:
@@ -57,6 +81,13 @@ def _get_field_config(extra: dict) -> dict:
     }
 
 
+def _with_text_placeholder(prompt: str) -> str:
+    """Garante que o prompt leve o texto da linha, como o prompt principal."""
+    if '{texto}' in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\nTexto a analisar:\n{{texto}}"
+
+
 def _build_field_prompt(
     user_prompt: str,
     field_name: str,
@@ -78,8 +109,8 @@ def _build_field_prompt(
     prompt_append = field_config.get('prompt_append')
 
     if prompt_replace:
-        # Substitui completamente o prompt
-        return prompt_replace
+        # Substitui o prompt do usuário, que é quem levava o {texto}
+        return _with_text_placeholder(prompt_replace)
 
     # Base: prompt original + instrução do campo
     base_prompt = f"{user_prompt}\n\nResponda APENAS o campo: {field_name}"
@@ -140,7 +171,9 @@ def _get_list_fields_with_nested_search(pydantic_model) -> dict:
     list_fields_with_search = {}
 
     for field_name, field_info in pydantic_model.model_fields.items():
-        is_list, inner_model = is_list_of_pydantic_model(field_info.annotation)
+        is_list, inner_model = is_list_of_pydantic_model(
+            resolve_forward_refs(field_info.annotation, pydantic_model)
+        )
 
         if is_list and inner_model:
             # Coletar campos de busca dentro do modelo interno
@@ -210,7 +243,7 @@ def _enrich_list_items_with_search(
             # Criar modelo temporário para a busca
             SingleFieldModel = create_model(
                 f'ItemSearch_{item_idx}_{path.replace(".", "_")}',
-                **{field_name: (field_info.annotation, field_info)}
+                **{field_name: (field_info.annotation, _llm_field(field_info))}
             )
 
             # Construir prompt para busca do campo com contexto do item
@@ -391,7 +424,7 @@ def _run_nested_searches(
         # Criar modelo temporário para a busca
         SingleFieldModel = create_model(
             f'NestedSearch_{path.replace(".", "_")}',
-            **{field_name: (field_info.annotation, field_info)}
+            **{field_name: (field_info.annotation, _llm_field(field_info))}
         )
 
         # Construir prompt para busca do campo aninhado
@@ -428,7 +461,9 @@ def call_agent_per_field(
     pydantic_model,
     user_prompt: str,
     config: LLMConfig,
-    save_trace: str | None = None
+    save_trace: str | None = None,
+    only_fields: set | None = None,
+    known: dict | None = None,
 ) -> dict:
     """Processa cada campo do modelo Pydantic com agente separado.
 
@@ -451,6 +486,10 @@ def call_agent_per_field(
         user_prompt: Template do prompt do usuário.
         config: Configuração do LLM.
         save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
+        only_fields: Campos de primeiro nível a extrair (reprocess_columns). Os
+            demais não são pedidos ao agente e voltam com o valor de `known`,
+            que também alimenta as condições dos campos pedidos.
+        known: Valores já gravados na linha para os campos fora de `only_fields`.
 
     Returns:
         Dicionário com 'data' (todos os campos combinados), 'usage' (soma
@@ -476,6 +515,7 @@ def call_agent_per_field(
     nested_configured_fields = [
         f for f in all_configured_fields
         if '.' in f[0] and not any(f[0].startswith(lf + '.') for lf in list_field_names)
+        and (only_fields is None or f[0].split('.')[0] in only_fields)
     ]
 
     # Executar buscas para campos aninhados configurados (não em listas)
@@ -516,6 +556,10 @@ def call_agent_per_field(
         field_info = pydantic_model.model_fields[field_name]
         field_config = field_configs[field_name]
 
+        if only_fields is not None and field_name not in only_fields:
+            combined_data[field_name] = (known or {}).get(field_name)
+            continue
+
         # Verificar se o campo deve ser pulado (condição não satisfeita)
         if should_skip_field(field_name, field_config, combined_data):
             logger.info(f"Campo '{field_name}' pulado (condição não satisfeita)")
@@ -525,7 +569,7 @@ def call_agent_per_field(
         # Criar modelo temporário com apenas este campo
         SingleFieldModel = create_model(
             f'{pydantic_model.__name__}_{field_name}',
-            **{field_name: (field_info.annotation, field_info)}
+            **{field_name: (field_info.annotation, _llm_field(field_info))}
         )
 
         # Construir prompt para este campo
@@ -608,7 +652,9 @@ def call_agent_per_group(
     pydantic_model,
     user_prompt: str,
     config: LLMConfig,
-    save_trace: str | None = None
+    save_trace: str | None = None,
+    only_fields: set | None = None,
+    known: dict | None = None,
 ) -> dict:
     """Processa campos agrupados com agente compartilhado e campos isolados individualmente.
 
@@ -627,6 +673,8 @@ def call_agent_per_group(
         user_prompt: Template do prompt do usuário.
         config: Configuração do LLM incluindo search_config.groups.
         save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
+        only_fields: Campos a extrair; ver call_agent_per_field.
+        known: Valores já gravados para os campos fora de `only_fields`.
 
     Returns:
         Dicionário com 'data' (todos os campos combinados), 'usage' (soma de
@@ -637,8 +685,8 @@ def call_agent_per_group(
             um grupo e campos de fora dele.
     """
     from .conditional import (
-        detect_circular_dependencies,
         get_field_execution_order,
+        get_group_execution_units,
         should_skip_field,
         topological_sort,
     )
@@ -656,42 +704,9 @@ def call_agent_per_group(
 
     execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
 
-    # Unidades de execução: cada grupo e cada campo isolado. As chaves são
-    # índices porque topological_sort interpreta '.' como caminho aninhado, e
-    # nome de grupo é livre.
-    grouped_fields = set()
-    for group_config in groups.values():
-        grouped_fields.update(group_config.fields)
-
-    units = [('group', group_name, group_config) for group_name, group_config in groups.items()]
-    units += [
-        ('field', field_name, None)
-        for field_name in pydantic_model.model_fields
-        if field_name not in grouped_fields
-    ]
-
-    unit_of_field = {}
-    for index, (kind, name, group_config) in enumerate(units):
-        for field_name in (group_config.fields if kind == 'group' else [name]):
-            unit_of_field[field_name] = str(index)
-
-    unit_dependencies = {str(index): [] for index in range(len(units))}
-    for field_name, deps in dependencies.items():
-        unit = unit_of_field[field_name]
-        for dep in deps:
-            dep_unit = unit_of_field[dep.split('.')[0]]
-            if dep_unit != unit and dep_unit not in unit_dependencies[unit]:
-                unit_dependencies[unit].append(dep_unit)
-
-    cycle = detect_circular_dependencies(unit_dependencies)
-    if cycle:
-        labels = [
-            f"grupo '{units[int(key)][1]}'" if units[int(key)][0] == 'group' else f"'{units[int(key)][1]}'"
-            for key in cycle
-        ]
-        raise ValueError(
-            f"Dependências circulares entre grupos e campos: {' -> '.join(labels)}"
-        )
+    units, _, unit_dependencies = get_group_execution_units(
+        pydantic_model, groups, dependencies
+    )
 
     for unit_key in topological_sort(unit_dependencies):
         kind, name, group_config = units[int(unit_key)]
@@ -702,12 +717,20 @@ def call_agent_per_group(
             # ordem de dependência só importa para as condições avaliadas
             # depois da resposta.
             # Condições que dependem só de campos de fora do grupo já podem ser avaliadas.
+            requested = [
+                f for f in group_config.fields if only_fields is None or f in only_fields
+            ]
+            for field_name in group_config.fields:
+                if field_name not in requested:
+                    combined_data[field_name] = (known or {}).get(field_name)
+
             active_fields = []
             post_call_set = set()
-            for field_name in group_config.fields:
+            for field_name in requested:
+                # Só uma dependência pedida na mesma chamada fica sem valor antes dela
                 deps_in_group = [
                     dep for dep in dependencies[field_name]
-                    if unit_of_field[dep.split('.')[0]] == unit_key
+                    if dep.split('.')[0] in requested
                 ]
                 if deps_in_group:
                     active_fields.append(field_name)
@@ -725,7 +748,7 @@ def call_agent_per_group(
             # Criar modelo com os campos ativos do grupo
             group_field_infos = {
                 field_name: (pydantic_model.model_fields[field_name].annotation,
-                            pydantic_model.model_fields[field_name])
+                             _llm_field(pydantic_model.model_fields[field_name]))
                 for field_name in active_fields
             }
             GroupModel = create_model(
@@ -735,10 +758,10 @@ def call_agent_per_group(
 
             # Construir prompt do grupo
             if group_config.prompt:
-                # Substituir {query} pelo texto se presente
-                group_prompt = group_config.prompt.replace('{query}', text)
-                if '{texto}' not in group_prompt:
-                    group_prompt = f"{group_prompt}\n\nTexto: {{texto}}"
+                # {query} é sinônimo de {texto} no prompt de grupo
+                group_prompt = _with_text_placeholder(
+                    group_config.prompt.replace('{query}', '{texto}')
+                )
             else:
                 # Prompt padrão com instruções sobre os campos do grupo
                 field_list = ', '.join(active_fields)
@@ -768,6 +791,10 @@ def call_agent_per_group(
             field_info = pydantic_model.model_fields[field_name]
             field_config = field_configs[field_name]
 
+            if only_fields is not None and field_name not in only_fields:
+                combined_data[field_name] = (known or {}).get(field_name)
+                continue
+
             if should_skip_field(field_name, field_config, combined_data):
                 combined_data[field_name] = None
                 continue
@@ -775,7 +802,7 @@ def call_agent_per_group(
             # Criar modelo temporário com apenas este campo
             SingleFieldModel = create_model(
                 f'{pydantic_model.__name__}_{field_name}',
-                **{field_name: (field_info.annotation, field_info)}
+                **{field_name: (field_info.annotation, _llm_field(field_info))}
             )
 
             # Construir prompt para este campo

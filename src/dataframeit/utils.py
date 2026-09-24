@@ -7,8 +7,10 @@ Este módulo contém funções utilitárias para:
 - Conversão de Series, listas e dicionários
 - Normalização de estruturas Python (listas, dicionários, tuplas)
 """
+import functools
 import importlib
 import json
+import operator
 import re
 import types
 import typing
@@ -574,6 +576,66 @@ def is_list_of_pydantic_model(field_type) -> tuple:
                     return (True, inner_type)
 
     return (False, None)
+
+
+def _lookup_forward_ref(name: str, owner):
+    """Resolve o nome de uma referência adiantada no contexto do modelo dono.
+
+    O Pydantic resolve `List['X']`, mas deixa a string crua em `list['X']`.
+    A busca segue a ordem de visibilidade do nome: o próprio modelo
+    (auto-referência), o namespace em que ele foi definido (classes locais de
+    função) e o módulo. O namespace de definição guarda weakrefs do Pydantic
+    para modelos, e só esses são desembrulhados.
+    """
+    import sys
+
+    if name == owner.__name__:
+        return owner
+
+    namespaces = (
+        getattr(owner, '__pydantic_parent_namespace__', None) or {},
+        vars(sys.modules[owner.__module__]) if owner.__module__ in sys.modules else {},
+    )
+    for namespace in namespaces:
+        value = namespace.get(name)
+        if value is not None and type(value).__name__.endswith('WeakRef'):
+            value = value()
+        if isinstance(value, type):
+            return value
+    return None
+
+
+def resolve_forward_refs(annotation, owner):
+    """Devolve a anotação com as referências adiantadas trocadas pelas classes.
+
+    Referência que não se resolve fica como está. A forma de cada tipo é
+    preservada: `typing.Union` continua `typing.Union` e `X | Y` continua
+    `types.UnionType`, porque os helpers deste módulo tratam os dois em ramos
+    distintos.
+    """
+    if isinstance(annotation, str):
+        return _lookup_forward_ref(annotation, owner) or annotation
+    if isinstance(annotation, typing.ForwardRef):
+        return _lookup_forward_ref(annotation.__forward_arg__, owner) or annotation
+
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    # Em Literal os argumentos são valores, e uma string ali nunca é referência.
+    if origin is None or origin is typing.Literal or not args:
+        return annotation
+
+    resolved = tuple(resolve_forward_refs(arg, owner) for arg in args)
+    if resolved == args:
+        return annotation
+    if isinstance(annotation, types.UnionType):
+        return functools.reduce(operator.or_, resolved)
+    if origin is typing.Union:
+        return typing.Union[resolved]  # noqa: UP007 (preserva a forma typing.Union)
+    if origin is typing.Annotated:
+        return annotation
+    if isinstance(annotation, types.GenericAlias):
+        return types.GenericAlias(origin, resolved)
+    return annotation.copy_with(resolved)
 
 
 def get_nested_pydantic_models(field_type) -> list:
