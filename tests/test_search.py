@@ -235,7 +235,7 @@ def test_search_agent_uses_initialized_model(monkeypatch):
         captured["kwargs"] = kwargs
         return DummyAgent()
 
-    monkeypatch.setattr("dataframeit.agent._create_langchain_llm", lambda *args, **kwargs: dummy_llm)
+    monkeypatch.setattr("dataframeit.llm._create_langchain_llm", lambda *args, **kwargs: dummy_llm)
     monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
     monkeypatch.setitem(sys.modules, "langchain_tavily", types.SimpleNamespace(TavilySearch=DummyTavily))
 

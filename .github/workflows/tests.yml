@@ -45,6 +45,33 @@ jobs:
       - name: Run tests
         run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all pytest
 
+  # Instala cada dependência direta na menor versão que o pyproject.toml aceita.
+  # Um piso que não resolve, ou que resolve para uma combinação quebrada, falha
+  # aqui. Roda em 3.10 porque os pisos de pandas e pyarrow não têm wheel para
+  # 3.13, onde o instalador escolhe versões mais novas.
+  lowest-direct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Run tests (base)
+        run: uv run --python 3.10 --resolution lowest-direct --extra dev pytest
+
+      - name: Run tests (extras)
+        run: >-
+          uv run --python 3.10 --resolution lowest-direct --extra dev
+          --extra all --extra excel --extra polars --extra search-all pytest
+
   codex-provider:
     runs-on: ubuntu-latest
     strategy:

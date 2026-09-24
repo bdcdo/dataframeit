@@ -662,7 +662,10 @@ def test_langchain_backend_invokes_selected_provider(monkeypatch):
 
     assert backend.label == "langchain"
     assert result["data"]["value"] == "first"
-    selected_call.assert_called_once_with("row", ResultModel, "{texto}", config)
+    selected_call.assert_called_once()
+    args, kwargs = selected_call.call_args
+    assert args == ("row", ResultModel, "{texto}", config)
+    assert set(kwargs) == {"structured_llm"}
 
 
 def test_claude_backend_invokes_selected_provider(monkeypatch):
