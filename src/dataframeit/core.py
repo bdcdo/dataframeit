@@ -1202,7 +1202,9 @@ def _print_token_stats(
         parallel_requests: Número de workers paralelos usados.
         search_provider: Provedor de busca usado, que dá nome à seção de busca.
     """
-    if not token_stats or token_stats.get('total_tokens', 0) == 0:
+    if not token_stats or (
+        token_stats.get('total_tokens', 0) == 0 and not token_stats.get('cost_usd')
+    ):
         return
 
     print("\n" + "=" * 60)
@@ -1216,6 +1218,10 @@ def _print_token_stats(
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get('reasoning_tokens', 0) > 0:
         print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
+    # Só providers que informam o custo, como o claude_code, preenchem este total,
+    # que inclui as tentativas re-tentadas e as linhas que falharam.
+    if token_stats.get('cost_usd', 0) > 0:
+        print(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
 
     # Métricas de throughput (se disponíveis)
     if 'elapsed_seconds' in token_stats and token_stats['elapsed_seconds'] > 0:
@@ -1391,6 +1397,7 @@ def _process_rows(
         'reasoning_tokens': 0,
         'search_credits': 0,
         'search_count': 0,
+        'cost_usd': 0.0,
     }
 
     rows_processed_this_run = 0
@@ -1454,6 +1461,7 @@ def _process_rows(
                 token_stats['output_tokens'] += usage.get('output_tokens', 0)
                 token_stats['total_tokens'] += usage.get('total_tokens', 0)
                 token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
+                token_stats['cost_usd'] += usage.get('cost_usd') or 0
 
             # Armazenar métricas de busca (se habilitado)
             if config.search_config and config.search_config.enabled and usage:
@@ -1490,6 +1498,7 @@ def _process_rows(
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
+            token_stats['cost_usd'] += getattr(e, 'cost_usd', 0) or 0
 
             # Determinar se foi erro recuperável ou não para mensagem correta
             if is_recoverable_error(e):
@@ -1585,6 +1594,7 @@ def _process_rows_parallel(
         'requests_completed': 0,
         'search_credits': 0,
         'search_count': 0,
+        'cost_usd': 0.0,
     }
 
     # Criar descrição para progresso
@@ -1671,6 +1681,7 @@ def _process_rows_parallel(
                     token_stats['output_tokens'] += usage.get('output_tokens', 0)
                     token_stats['total_tokens'] += usage.get('total_tokens', 0)
                     token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
+                    token_stats['cost_usd'] += usage.get('cost_usd') or 0
 
                 if config.search_config and config.search_config.enabled and usage:
                     df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
@@ -1725,6 +1736,7 @@ def _process_rows_parallel(
 
             snapshot = None
             with lock:
+                token_stats['cost_usd'] += getattr(e, 'cost_usd', 0) or 0
                 if is_recoverable_error(e):
                     error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
                 else:

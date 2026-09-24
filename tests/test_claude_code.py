@@ -4,6 +4,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+from dataframeit.errors import (
+    ProviderError,
+    ProviderOverloadedError,
+    ProviderTransientError,
+    is_rate_limit_error,
+    is_recoverable_error,
+)
+
 
 class SampleModel(BaseModel):
     sentimento: str
@@ -170,7 +178,10 @@ def sdk_falso(monkeypatch):
 
     async def query_falsa(prompt, options):
         estado['opcoes'].append(options)
-        for mensagem in estado['mensagens_do_sdk']:
+        # 'por_chamada' dá uma lista de mensagens a cada tentativa, em ordem.
+        por_chamada = estado.get('por_chamada')
+        mensagens = por_chamada.pop(0) if por_chamada else estado['mensagens_do_sdk']
+        for mensagem in mensagens:
             yield mensagem
 
     modulo = types.ModuleType('claude_agent_sdk')
@@ -306,3 +317,152 @@ class TestUsageReal:
         assert list(df['sentimento']) == ['positivo', 'positivo']
         assert df['_input_tokens'].isna().all()
         assert df['_output_tokens'].isna().all()
+
+
+# =============================================================================
+# Isolamento, ResultMessage com erro e custo
+# =============================================================================
+
+def test_claude_code_nao_carrega_settings_nem_mcp_do_usuario(sdk_falso):
+    _chamar()
+    opcoes = sdk_falso['opcoes'][0]
+    assert opcoes.kwargs.get('setting_sources') == []
+    assert 'strict-mcp-config' in opcoes.kwargs.get('extra_args', {})
+
+
+def test_sdk_real_monta_as_flags_de_isolamento():
+    sdk = pytest.importorskip('claude_agent_sdk')
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+    opcoes = sdk.ClaudeAgentOptions(
+        tools=[], setting_sources=[], extra_args={'strict-mcp-config': None},
+    )
+    transporte = SubprocessCLITransport(prompt='x', options=opcoes)
+    transporte._cli_path = 'claude'
+    comando = transporte._build_command()
+
+    # Conforme a versão, o SDK emite '--setting-sources=' ou '--setting-sources', ''
+    if '--setting-sources=' in comando:
+        pass
+    else:
+        assert comando[comando.index('--setting-sources') + 1] == ''
+    assert '--strict-mcp-config' in comando
+
+
+def _resultado(**campos):
+    mensagem = _ResultMessageFalso(usage=None, total_cost_usd=campos.pop('total_cost_usd', None))
+    for chave, valor in campos.items():
+        setattr(mensagem, chave, valor)
+    return mensagem
+
+
+@pytest.mark.parametrize('campos, classe', [
+    ({'subtype': 'error_max_budget_usd'}, ProviderError),
+    ({'subtype': 'error_max_turns'}, ProviderError),
+    ({'subtype': 'success', 'api_error_status': 529}, ProviderOverloadedError),
+    ({'subtype': 'success', 'api_error_status': 429}, ProviderOverloadedError),
+    ({'subtype': 'success', 'api_error_status': 500}, ProviderTransientError),
+    ({'subtype': 'success', 'api_error_status': 400}, ProviderError),
+    ({'subtype': 'error_during_execution'}, ProviderTransientError),
+])
+def test_result_message_com_erro_vira_erro_classificado(sdk_falso, campos, classe):
+    sdk_falso['mensagens_do_sdk'] = [_resultado(is_error=True, **campos)]
+
+    with pytest.raises(classe) as erro:
+        _chamar()
+
+    esperado_recuperavel = issubclass(classe, ProviderTransientError)
+    assert is_recoverable_error(erro.value) is esperado_recuperavel
+    assert is_rate_limit_error(erro.value) is (classe is ProviderOverloadedError)
+
+
+def test_custo_informado_pelo_sdk_entra_no_usage(sdk_falso):
+    sdk_falso['mensagens_do_sdk'] = [
+        _AssistantMessageFalso([_TextBlockFalso('{"sentimento": "positivo", "confianca": 0.9}')]),
+        _resultado(
+            is_error=False, subtype='success', total_cost_usd=0.0125,
+            usage={'input_tokens': 10, 'output_tokens': 5},
+        ),
+    ]
+    resultado = _chamar()
+    assert resultado['usage']['cost_usd'] == pytest.approx(0.0125)
+
+
+def test_custo_somado_nas_estatisticas(capsys):
+    from dataframeit.core import _print_token_stats
+
+    _print_token_stats(
+        {'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15, 'cost_usd': 0.25},
+        model=None,
+    )
+    assert 'US$ 0.2500' in capsys.readouterr().out
+
+
+def _resposta_valida(custo):
+    return [
+        _AssistantMessageFalso([_TextBlockFalso('{"sentimento": "positivo", "confianca": 0.9}')]),
+        _resultado(
+            is_error=False, subtype='success', total_cost_usd=custo,
+            usage={'input_tokens': 10, 'output_tokens': 5},
+        ),
+    ]
+
+
+def test_custo_soma_as_tentativas_re_tentadas(sdk_falso):
+    sdk_falso['por_chamada'] = [
+        [_AssistantMessageFalso([_TextBlockFalso('não é json')]),
+         _resultado(is_error=False, subtype='success', total_cost_usd=0.1)],
+        _resposta_valida(0.2),
+    ]
+    from dataclasses import replace
+
+    resultado = _chamar(replace(_config_claude_code(), max_retries=2))
+    assert resultado['usage']['cost_usd'] == pytest.approx(0.3)
+
+
+def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
+    sdk_falso['mensagens_do_sdk'] = [
+        _resultado(is_error=True, subtype='error_max_budget_usd', total_cost_usd=0.5),
+    ]
+    with pytest.raises(ProviderError) as erro:
+        _chamar()
+    assert erro.value.cost_usd == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize('parallel_requests', [1, 2])
+def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
+    import warnings
+
+    import pandas as pd
+
+    from dataframeit import dataframeit
+
+    def call_claude_code(text, *args, **kwargs):
+        if text.endswith('falha'):
+            erro = ProviderError('orçamento estourado')
+            erro.cost_usd = 0.5
+            raise erro
+        return {
+            'data': {'sentimento': 'positivo', 'confianca': 0.9},
+            'usage': {'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15, 'cost_usd': 0.1},
+        }
+
+    with patch('dataframeit.claude_code.call_claude_code', side_effect=call_claude_code), \
+            patch('dataframeit.core.validate_provider_dependencies'), \
+            warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        dataframeit(
+            pd.DataFrame({'texto': ['a', 'b', 'falha']}), questions=SampleModel,
+            prompt='{texto}', provider='claude_code', parallel_requests=parallel_requests,
+        )
+    assert 'US$ 0.7000' in capsys.readouterr().out
+
+
+def test_custo_sem_tokens_aparece_no_resumo(capsys):
+    from dataframeit.core import _print_token_stats
+
+    _print_token_stats(
+        {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0, 'cost_usd': 0.25},
+        model=None,
+    )
+    assert 'US$ 0.2500' in capsys.readouterr().out

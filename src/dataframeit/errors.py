@@ -17,6 +17,17 @@ CODEX_FILE_AUTH_LOGIN_COMMAND = (
 )
 
 
+# langchain-core >= 1.6 classifica os erros dos providers em ModelError, com
+# is_retryable por classe. Versões anteriores não têm a hierarquia, e a
+# classificação cai no status HTTP e nos padrões de mensagem.
+try:
+    from langchain_core.exceptions import ModelError as _ModelError
+    from langchain_core.exceptions import ModelRateLimitError as _ModelRateLimitError
+except ImportError:
+    _ModelError = None
+    _ModelRateLimitError = None
+
+
 class ProviderError(RuntimeError):
     """Falha de execução reportada por um provider."""
 
@@ -79,6 +90,8 @@ NON_RECOVERABLE_ERRORS = (
     'MissingAPIKeyError',
     'InvalidAPIKeyError',
     'BadRequestError',
+    # Prompt maior que a janela de contexto: repetir não muda o tamanho
+    'ContextOverflowError',
 )
 
 
@@ -126,6 +139,12 @@ _PROVIDER_OVERRIDES = {
     },
     'bedrock': {**_BEDROCK_BASE, 'name': 'AWS Bedrock'},
     'bedrock_converse': {**_BEDROCK_BASE, 'name': 'AWS Bedrock (Converse)'},
+    'mistralai': {
+        'package': 'langchain_mistralai',
+        'install': 'langchain-mistralai',
+        'env_var': 'MISTRAL_API_KEY',
+        'name': 'Mistral AI',
+    },
     'azure_openai': {
         'package': 'langchain_openai',
         'install': 'langchain-openai',
@@ -333,6 +352,16 @@ def _get_missing_search_api_key_message(provider) -> str:
 """.strip()
 
 
+# Textos que só aparecem em erro de chave inválida, qualquer que seja o status.
+_INVALID_KEY_MARKERS = (
+    'api_key_invalid',
+    'api key not valid',
+    'invalid api key',
+    'incorrect api key',
+    'invalid x-api-key',
+)
+
+
 def get_friendly_error_message(error: Exception, provider: str = None) -> str:
     """Converte erro técnico em mensagem amigável para usuários iniciantes.
 
@@ -345,14 +374,101 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
     """
     error_str = f"{type(error).__name__}: {error}".lower()
     error_name = type(error).__name__
+    status = _http_error_status(error)
+    # 'exa' como palavra, contando '_' como separador: casa 'EXA_API_KEY' e
+    # 'exa-py', mas não 'hexagonal'.
+    is_exa = re.search(r'(?<![a-z0-9])exa(?![a-z0-9])', error_str) is not None
+
+    def is_category(patterns, codes=()):
+        """Com status HTTP estruturado, só ele decide; sem, valem os padrões."""
+        if status is not None:
+            return status in codes
+        return any(
+            _matches_error_pattern(pattern, error_str)
+            for pattern in (*patterns, *map(str, codes))
+        )
 
     # Obter informações do provider dinamicamente
     provider_data = _infer_provider_info(provider)
     provider_name = provider_data['name']
     env_var = provider_data['env_var']
 
+    # === ERROS TAVILY ===
+    if 'tavily' in error_str and any(p in error_str for p in ['apikey', 'api_key', 'missing', 'invalid']):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE AUTENTICAÇÃO TAVILY                                                 ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Sua chave de API do Tavily está inválida ou não configurada.                ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Acesse https://app.tavily.com e obtenha sua API key                      ║
+║  2. Configure a variável de ambiente:                                        ║
+║                                                                              ║
+║     export TAVILY_API_KEY="sua-chave-aqui"                                   ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    if 'usagelimitexceeded' in error_str or ('tavily' in error_str and 'limit' in error_str):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você atingiu o limite de buscas do seu plano Tavily.                        ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Aguarde até o próximo mês (plano gratuito renova mensalmente)            ║
+║  2. Ou faça upgrade do plano em https://tavily.com/pricing                   ║
+║  3. Ou continue sem busca web (use_search=False)                             ║
+║  4. Ou mude para outro provedor (search_provider="exa")                      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    # === ERROS EXA ===
+    if is_exa and any(p in error_str for p in ['apikey', 'api_key', 'missing', 'invalid', 'unauthorized']):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ERRO DE AUTENTICAÇÃO EXA                                                    ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Sua chave de API do Exa está inválida ou não configurada.                   ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Acesse https://exa.ai e obtenha sua API key                              ║
+║  2. Configure a variável de ambiente:                                        ║
+║                                                                              ║
+║     export EXA_API_KEY="sua-chave-aqui"                                      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+    if is_exa and any(p in error_str for p in ['limit', 'quota', 'exceeded']):
+        return """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE USO EXA EXCEDIDO                                                  ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você atingiu o limite de buscas do seu plano Exa.                           ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Verifique seu saldo em https://exa.ai                                    ║
+║  2. Adicione créditos à sua conta                                            ║
+║  3. Ou continue sem busca web (use_search=False)                             ║
+║  4. Ou mude para outro provedor (search_provider="tavily")                   ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
+
     # === ERROS DE AUTENTICAÇÃO ===
-    if any(p in error_str for p in ['authenticationerror', 'invalidapikey', '401', 'api_key', 'api key']):
+    # Chave inválida decide pelo texto mesmo com status: o Google a devolve
+    # como 400 INVALID_ARGUMENT, que o status sozinho não distingue.
+    invalid_key = any(marker in error_str for marker in _INVALID_KEY_MARKERS)
+    if invalid_key or is_category(['authenticationerror', 'invalidapikey', 'api_key', 'api key'], (401,)):
         if env_var is None:
             # Auth via credenciais de SDK (Vertex AI ADC, AWS creds, etc).
             auth_hint = provider_data.get(
@@ -411,7 +527,7 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
         return msg.strip()
 
     # === ERROS DE PERMISSÃO ===
-    if any(p in error_str for p in ['permissiondenied', '403', 'forbidden']):
+    if is_category(['permissiondenied', 'forbidden'], (403,)):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  ERRO DE PERMISSÃO - Sua chave não tem acesso a este recurso                 ║
@@ -433,7 +549,7 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 """.strip()
 
     # === ERROS DE RATE LIMIT ===
-    if any(p in error_str for p in ['ratelimit', 'resourceexhausted', 'toomanyrequests', '429']):
+    if is_category(['ratelimit', 'resourceexhausted', 'toomanyrequests'], (429,)):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
@@ -453,7 +569,7 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 """.strip()
 
     # === ERROS DE TIMEOUT ===
-    if any(p in error_str for p in ['timeout', 'deadlineexceeded', '504']):
+    if is_category(['timeout', 'deadlineexceeded'], (408, 504)):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  TEMPO ESGOTADO (TIMEOUT)                                                    ║
@@ -478,7 +594,7 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 """.strip()
 
     # === ERROS DE CONEXÃO ===
-    if any(p in error_str for p in ['connectionerror', 'connectionreset', 'sslerror', 'network']):
+    if is_category(['connectionerror', 'connectionreset', 'sslerror', 'network']):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  ERRO DE CONEXÃO                                                             ║
@@ -495,76 +611,6 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 ║  1. Verifique sua conexão com a internet                                     ║
 ║  2. Tente acessar google.com no navegador                                    ║
 ║  3. Se estiver em rede corporativa, consulte o suporte de TI                 ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
-    # === ERROS TAVILY ===
-    if 'tavily' in error_str and any(p in error_str for p in ['apikey', 'api_key', 'missing', 'invalid']):
-        return """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  ERRO DE AUTENTICAÇÃO TAVILY                                                 ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Sua chave de API do Tavily está inválida ou não configurada.                ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Acesse https://app.tavily.com e obtenha sua API key                      ║
-║  2. Configure a variável de ambiente:                                        ║
-║                                                                              ║
-║     export TAVILY_API_KEY="sua-chave-aqui"                                   ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
-    if 'usagelimitexceeded' in error_str or ('tavily' in error_str and 'limit' in error_str):
-        return """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Você atingiu o limite de buscas do seu plano Tavily.                        ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Aguarde até o próximo mês (plano gratuito renova mensalmente)            ║
-║  2. Ou faça upgrade do plano em https://tavily.com/pricing                   ║
-║  3. Ou continue sem busca web (use_search=False)                             ║
-║  4. Ou mude para outro provedor (search_provider="exa")                      ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
-    # === ERROS EXA ===
-    if 'exa' in error_str and any(p in error_str for p in ['apikey', 'api_key', 'missing', 'invalid', 'unauthorized']):
-        return """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  ERRO DE AUTENTICAÇÃO EXA                                                    ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Sua chave de API do Exa está inválida ou não configurada.                   ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Acesse https://exa.ai e obtenha sua API key                              ║
-║  2. Configure a variável de ambiente:                                        ║
-║                                                                              ║
-║     export EXA_API_KEY="sua-chave-aqui"                                      ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
-    if 'exa' in error_str and any(p in error_str for p in ['limit', 'quota', 'exceeded']):
-        return """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  LIMITE DE USO EXA EXCEDIDO                                                  ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Você atingiu o limite de buscas do seu plano Exa.                           ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Verifique seu saldo em https://exa.ai                                    ║
-║  2. Adicione créditos à sua conta                                            ║
-║  3. Ou continue sem busca web (use_search=False)                             ║
-║  4. Ou mude para outro provedor (search_provider="tavily")                   ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
@@ -643,7 +689,8 @@ def _matches_error_pattern(pattern: str, error_str: str) -> bool:
 def is_recoverable_error(error: Exception) -> bool:
     """Verifica se um erro é recuperável (vale a pena fazer retry).
 
-    A decisão segue esta precedência: as classes Provider*Error; o status HTTP
+    A decisão segue esta precedência: as classes Provider*Error; o
+    `is_retryable` do ModelError do langchain-core, quando existe; o status HTTP
     estruturado da exceção ou da sua causa (408, 409, 429 e 5xx são recuperáveis,
     os demais 4xx não); os padrões de NON_RECOVERABLE_ERRORS e RECOVERABLE_ERRORS
     na mensagem; e, se nada casar, o erro é tratado como recuperável.
@@ -661,6 +708,8 @@ def is_recoverable_error(error: Exception) -> bool:
         (ProviderError, ProviderConfigurationError, ProviderOutputError),
     ):
         return False
+    if _ModelError is not None and isinstance(error, _ModelError):
+        return bool(error.is_retryable)
 
     status = _http_error_status(error)
     if status is not None:
@@ -693,6 +742,10 @@ def is_rate_limit_error(error: Exception) -> bool:
     if isinstance(error, ProviderOverloadedError):
         return True
     if isinstance(error, ProviderTransientError):
+        return False
+    if _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError):
+        return True
+    if _ModelError is not None and isinstance(error, _ModelError):
         return False
 
     status = _http_error_status(error)
