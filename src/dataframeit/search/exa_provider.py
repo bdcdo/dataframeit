@@ -40,6 +40,19 @@ class ExaProvider(SearchProvider):
     def signup_url(self) -> str:
         return "https://exa.ai"
 
+    @property
+    def friendly_name(self) -> str:
+        return "Exa Search"
+
+    @property
+    def free_tier(self) -> str:
+        return "plano pago"
+
+    @property
+    def requests_per_minute(self) -> int:
+        # Plano padrão: ~5 QPS
+        return 300
+
     def create_tool(self, max_results: int, **kwargs) -> Any:
         """Cria ferramenta ExaSearchResults.
 

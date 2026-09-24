@@ -7,6 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Alterado
+
+- O nome exibido, o plano de entrada e o limite aproximado por minuto de cada provedor de busca passam a ser propriedades de `SearchProvider` (`friendly_name`, `free_tier`, `requests_per_minute`). A validação de `search_provider`, a mensagem de API key ausente e o aviso de rate limit leem do registro de provedores em vez de listas próprias (#130).
+
+### Corrigido
+
+- `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
+
 ## [0.9.0] - 2026-09-23
 
 ### Alterado

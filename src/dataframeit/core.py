@@ -17,6 +17,7 @@ from pandas.api.types import is_scalar
 from pydantic import ConfigDict, ValidationError
 from tqdm import tqdm
 
+from .conditional import _CONDITIONAL_KEYS, _FIELD_CONFIG_KEYS, _collect_configured_fields
 from .errors import (
     get_friendly_error_message,
     is_rate_limit_error,
@@ -25,6 +26,7 @@ from .errors import (
     validate_search_dependencies,
 )
 from .llm import LLMConfig, SearchConfig, SearchGroupConfig, call_langchain
+from .search import get_available_providers, get_provider
 from .utils import (
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
@@ -32,7 +34,6 @@ from .utils import (
     TOKEN_COLUMNS,
     from_pandas,
     get_complex_fields,
-    get_nested_pydantic_models,
     normalize_complex_columns,
     normalize_value,
     to_pandas,
@@ -42,13 +43,6 @@ from .utils import (
 logging.getLogger('langchain_google_genai').setLevel(logging.ERROR)
 logging.getLogger('langchain_core').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
-
-# Chaves de configuração per-field reconhecidas em json_schema_extra
-_FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
-
-# Chaves de execução condicional em json_schema_extra. Só call_agent_per_field
-# e call_agent_per_group as aplicam, e só nos campos de primeiro nível.
-_CONDITIONAL_KEYS = ('condition', 'depends_on')
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
@@ -67,12 +61,6 @@ DEFAULT_MODELS = {
 }
 _RUNTIME_DEFAULT_PROVIDERS = frozenset({'codex', 'claude_code'})
 
-
-# Limites aproximados de requisições por minuto por provedor de busca.
-_SEARCH_PROVIDER_RATE_LIMITS = {
-    'tavily': 100,  # plano gratuito/básico: ~100 req/min
-    'exa': 300,     # plano padrão: ~5 QPS = ~300 req/min
-}
 
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
@@ -263,9 +251,7 @@ def _warn_search_rate_limit(
     total_queries = num_rows * queries_per_row
     concurrent_queries = parallel_requests * queries_per_row
 
-    provider_limit = _SEARCH_PROVIDER_RATE_LIMITS.get(
-        search_provider, _SEARCH_PROVIDER_RATE_LIMITS['tavily']
-    )
+    provider_limit = get_provider(search_provider).requests_per_minute
     provider_name = search_provider.capitalize()
 
     issues: list[str] = []
@@ -412,42 +398,9 @@ def _validate_search_groups(
     return validated_groups
 
 
-def _has_field_config(pydantic_model, _visited: set = None) -> bool:
-    """Verifica se algum campo tem configuração customizada em json_schema_extra.
-
-    Busca recursivamente em modelos aninhados dentro de List[Model], Optional[Model], etc.
-
-    Args:
-        pydantic_model: Modelo Pydantic a ser verificado.
-        _visited: Conjunto de modelos já visitados (previne loops infinitos).
-
-    Returns:
-        True se algum campo tiver configuração per-field, False caso contrário.
-    """
-    # Inicializar conjunto de visitados para evitar recursão infinita
-    if _visited is None:
-        _visited = set()
-
-    # Evitar loops em modelos auto-referenciais
-    model_id = id(pydantic_model)
-    if model_id in _visited:
-        return False
-    _visited.add(model_id)
-
-    for field_info in pydantic_model.model_fields.values():
-        # Verificar se este campo tem configuração
-        extra = field_info.json_schema_extra
-        if isinstance(extra, dict):
-            if any(k in extra for k in _FIELD_CONFIG_KEYS):
-                return True
-
-        # Buscar modelos Pydantic aninhados no tipo do campo
-        nested_models = get_nested_pydantic_models(field_info.annotation)
-        for nested_model in nested_models:
-            if _has_field_config(nested_model, _visited):
-                return True
-
-    return False
+def _has_field_config(pydantic_model) -> bool:
+    """Verifica se algum campo, inclusive aninhado, tem configuração per-field."""
+    return bool(_collect_configured_fields(pydantic_model))
 
 
 def dataframeit(
@@ -594,8 +547,9 @@ def dataframeit(
 
     # Validar parâmetros de busca
     if use_search:
-        if search_provider not in ("tavily", "exa"):
-            raise ValueError("search_provider deve ser 'tavily' ou 'exa'")
+        available_providers = get_available_providers()
+        if search_provider not in available_providers:
+            raise ValueError(f"search_provider deve ser um de {available_providers}")
         if search_provider == "tavily" and search_depth not in ("basic", "advanced"):
             raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
         if not 1 <= max_results <= 20:

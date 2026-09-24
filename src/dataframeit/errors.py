@@ -175,7 +175,6 @@ def _infer_provider_info(provider: str) -> dict:
         'fireworks': 'Fireworks AI',
         'together': 'Together AI',
         'groq': 'Groq',
-        'claude_code': 'Claude Code',
     }
     name = name_map.get(provider, provider.replace('_', ' ').title())
 
@@ -291,71 +290,44 @@ def validate_search_dependencies(search_provider: str = "tavily"):
     """
     import os
 
-    # Configurações dos provedores suportados
-    providers_config = {
-        'tavily': {
-            'package': 'langchain_tavily',
-            'install': 'langchain-tavily',
-            'friendly_name': 'Tavily Search',
-            'env_var': 'TAVILY_API_KEY',
-            'signup_url': 'https://app.tavily.com',
-            'free_tier': '1000 buscas/mês',
-        },
-        'exa': {
-            'package': 'langchain_exa',
-            'install': 'langchain-exa',
-            'friendly_name': 'Exa Search',
-            'env_var': 'EXA_API_KEY',
-            'signup_url': 'https://exa.ai',
-            'free_tier': 'plano pago',
-        },
-    }
+    from .search import get_provider
 
-    if search_provider not in providers_config:
-        available = list(providers_config.keys())
-        raise ValueError(
-            f"Provedor de busca '{search_provider}' não suportado. "
-            f"Provedores disponíveis: {available}"
-        )
+    provider = get_provider(search_provider)
 
-    config = providers_config[search_provider]
-
-    # Validar pacote do provedor
     try:
-        importlib.import_module(config['package'])
+        importlib.import_module(provider.package_name)
     except ImportError:
         raise ImportError(_get_missing_package_message(
-            config['package'],
-            config['install'],
-            config['friendly_name']
+            provider.package_name,
+            provider.install_name,
+            provider.friendly_name,
         ))
 
-    # Validar API key
-    if not os.environ.get(config['env_var']):
-        raise ValueError(_get_missing_search_api_key_message(config))
+    if not os.environ.get(provider.env_var):
+        raise ValueError(_get_missing_search_api_key_message(provider))
 
 
-def _get_missing_search_api_key_message(config: dict) -> str:
+def _get_missing_search_api_key_message(provider) -> str:
     """Gera mensagem amigável para API key de busca não configurada."""
     return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║  CHAVE DE API DO {config['friendly_name'].upper()} NÃO CONFIGURADA                                      ║
+║  CHAVE DE API DO {provider.friendly_name.upper()} NÃO CONFIGURADA                                      ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
-║  Para usar busca web com {config['friendly_name']}, você precisa de uma API key.           ║
+║  Para usar busca web com {provider.friendly_name}, você precisa de uma API key.           ║
 ║                                                                              ║
 ║  COMO OBTER:                                                                 ║
-║  1. Acesse {config['signup_url']:<58} ║
-║  2. Crie uma conta ({config['free_tier']})                                          ║
+║  1. Acesse {provider.signup_url:<58} ║
+║  2. Crie uma conta ({provider.free_tier})                                          ║
 ║  3. Copie sua API key                                                        ║
 ║                                                                              ║
 ║  COMO CONFIGURAR:                                                            ║
 ║                                                                              ║
 ║  No Linux/Mac:                                                               ║
-║      export {config['env_var']}="sua-chave-aqui"                                   ║
+║      export {provider.env_var}="sua-chave-aqui"                                   ║
 ║                                                                              ║
 ║  No Windows (PowerShell):                                                    ║
-║      $env:{config['env_var']}="sua-chave-aqui"                                     ║
+║      $env:{provider.env_var}="sua-chave-aqui"                                     ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
