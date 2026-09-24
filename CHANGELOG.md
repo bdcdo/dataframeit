@@ -7,13 +7,15 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-23
+
 ### Alterado
 
 - Os providers LangChain deixam de receber `temperature=0` por padrão; o cliente só recebe o que vier em `model_kwargs`. Vários modelos atuais (Claude Sonnet 5 e Opus 4.7+, OpenAI GPT-6 com raciocínio e série o, Gemini 3.6+) rejeitavam a chamada com erro 400 (#116).
 
 ### Removido
 
-- Fallback de import de `init_chat_model` a partir de `langchain_core.chat_models`, módulo que não existe no `langchain-core` 1.x; o import vem de `langchain.chat_models`, dependência obrigatória.
+- Fallback de import de `init_chat_model` a partir de `langchain_core.chat_models`, módulo que não existe no `langchain-core` 1.x; o import vem de `langchain.chat_models`, dependência obrigatória (#117).
 
 ### Corrigido
 
@@ -226,7 +228,8 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 
 ---
 
-[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/bdcdo/dataframeit/compare/v0.5.4...v0.6.0
 [0.5.4]: https://github.com/bdcdo/dataframeit/compare/v0.5.3...v0.5.4
