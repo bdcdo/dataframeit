@@ -170,7 +170,7 @@ def _chamar_agente(monkeypatch, config, mensagens=()):
     class FerramentaFalsa:
         name = 'busca_web'
 
-    monkeypatch.setattr('dataframeit.agent._create_langchain_llm', lambda *a, **k: object())
+    monkeypatch.setattr('dataframeit.llm._create_langchain_llm', lambda *a, **k: object())
     monkeypatch.setattr('langchain.agents.create_agent', create_agent)
     with patch('dataframeit.agent.get_provider') as get_provider:
         provider = MagicMock()

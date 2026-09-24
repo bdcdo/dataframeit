@@ -43,26 +43,29 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 1.0.4 é a primeira com exit_behavior="continue" no ToolCallLimitMiddleware.
-    "langchain>=1.0.4",
-    "langchain-core>=1.0.0",
-    "pandas",
-    "pydantic>=2.0",
-    "tqdm",
+    # Menores versões com que a suíte passa, conferidas pelo job lowest-direct
+    # do CI (tests.yml). langchain < 1.2.11 fixa langgraph < 1.1, que quebra no
+    # import com o langgraph-prebuilt atual; pydantic < 2.11 falha nos testes;
+    # pandas < 2.1.2 é instalado com numpy 2, com que é binariamente incompatível.
+    "langchain>=1.2.11",
+    "langchain-core>=1.2.10",
+    "pandas>=2.1.2",
+    "pydantic>=2.11.0",
+    "tqdm>=4.1.0",
 ]
 
 [project.optional-dependencies]
 google = [
-    "langchain-google-genai>=2.0.0",
+    "langchain-google-genai>=2.1.11",
 ]
 openai = [
-    "langchain-openai>=0.3.0",
+    "langchain-openai>=0.3.34",
 ]
 anthropic = [
-    "langchain-anthropic>=0.3.0",
+    "langchain-anthropic>=0.3.21",
 ]
 groq = [
-    "langchain-groq>=0.2.0",
+    "langchain-groq>=1.0.0",
 ]
 claude-code = [
     "claude-agent-sdk>=0.1.48",
@@ -81,22 +84,22 @@ excel = [
     "openpyxl>=3.1",
 ]
 search = [
-    "langchain-tavily>=0.1.0",
+    "langchain-tavily>=0.2.12",
 ]
 search-exa = [
-    "langchain-exa>=0.2.0",
+    "langchain-exa>=1.0.0",
 ]
 search-all = [
-    "langchain-tavily>=0.1.0",
-    "langchain-exa>=0.2.0",
+    "langchain-tavily>=0.2.12",
+    "langchain-exa>=1.0.0",
 ]
 all = [
-    "langchain-google-genai>=2.0.0",
-    "langchain-openai>=0.3.0",
-    "langchain-anthropic>=0.3.0",
-    "langchain-groq>=0.2.0",
-    "langchain-tavily>=0.1.0",
-    "langchain-exa>=0.2.0",
+    "langchain-google-genai>=2.1.11",
+    "langchain-openai>=0.3.34",
+    "langchain-anthropic>=0.3.21",
+    "langchain-groq>=1.0.0",
+    "langchain-tavily>=0.2.12",
+    "langchain-exa>=1.0.0",
     "claude-agent-sdk>=0.1.48",
     "polars>=0.20",
     "pyarrow>=10",

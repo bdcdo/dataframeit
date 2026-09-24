@@ -9,7 +9,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
-- `max_search_calls` (padrão 10) limita as buscas por execução do agente, também por grupo (`search_groups`) e por campo (`json_schema_extra`). Ao atingi-lo, as buscas seguintes são bloqueadas e o agente responde com o que encontrou; antes, um modelo insistente buscava até o limite de recursão do grafo. As buscas bloqueadas não entram em `search_count` nem em `search_credits`. O limite de passos do agente acompanha o teto, para que um modelo que ignore o bloqueio pare em poucas chamadas. Exige `langchain>=1.0.4`.
+- `max_search_calls` (padrão 10) limita as buscas por execução do agente, também por grupo (`search_groups`) e por campo (`json_schema_extra`). Ao atingi-lo, as buscas seguintes são bloqueadas e o agente responde com o que encontrou; antes, um modelo insistente buscava até o limite de recursão do grafo. As buscas bloqueadas não entram em `search_count` nem em `search_credits`. O limite de passos do agente acompanha o teto, para que um modelo que ignore o bloqueio pare em poucas chamadas.
 - O provider `claude_code` repassa o custo informado pelo SDK (`total_cost_usd`), somado no resumo de estatísticas ao fim da execução. A soma inclui as tentativas re-tentadas e as linhas que falharam, e aparece mesmo sem contagem de tokens (#129).
 
 ### Alterado
@@ -25,6 +25,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Rodar `dataframeit` sobre uma saída sem erros, que não tem coluna de status, emite aviso: todas as linhas seriam processadas de novo.
 - O nome exibido, o plano de entrada e o limite aproximado por minuto de cada provedor de busca passam a ser propriedades abstratas de `SearchProvider` (`friendly_name`, `free_tier`, `requests_per_minute`), que uma subclasse registrada com `register_provider` precisa implementar. A validação de `search_provider`, a mensagem de API key ausente e o aviso de rate limit leem do registro de provedores em vez de listas próprias (#130).
 - Nos overrides de busca por campo e por grupo, só a ausência (`None`) cai no valor global; `max_results=0` ou `search_depth=''` deixam de ser ignorados em silêncio (#130).
+- Os pisos das dependências passam a ser versões que resolvem e passam na suíte: `langchain>=1.2.11`, `langchain-core>=1.2.10`, `pydantic>=2.11.0`, `pandas>=2.1.2`, `tqdm>=4.1.0`, `langchain-openai>=0.3.34`, `langchain-anthropic>=0.3.21`, `langchain-google-genai>=2.1.11`, `langchain-groq>=1.0.0`, `langchain-tavily>=0.2.12` e `langchain-exa>=1.0.0`. Os anteriores aceitavam versões que não instalam juntas ou que quebram no import. Um job de CI roda a suíte com cada dependência direta no piso, com e sem extras (#130).
+- O modelo LangChain é criado uma vez por execução, e não por linha, em todos os modos; sem busca, o `with_structured_output` também, e com busca num agente só, o agente. Os modos por campo e por grupo montam o agente por chamada sobre o mesmo modelo. Um erro ao criar o modelo, como chave ausente, continua marcando a linha como erro (#130).
 
 ### Corrigido
 
@@ -55,6 +57,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - O trace contava `search_queries` por substring "search" no nome da ferramenta, o que incluía o structured output de modelos como `ResearchResult`; agora compara com o nome da ferramenta de busca, e `total_tool_calls` conta todas as chamadas (#129).
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).
+
+### Removido
+
+- O import de `dataframeit` deixa de mudar o nível dos loggers `langchain_google_genai`, `langchain_core` e `httpx`, que sobrescrevia a configuração de logging do usuário (#130).
 
 ## [0.9.0] - 2026-09-23
 
