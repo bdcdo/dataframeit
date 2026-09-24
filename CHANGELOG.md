@@ -14,7 +14,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha, inclusive na OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
+- Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha quando a resposta os traz, o que inclui a OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
 - O provider `claude_code` roda sem settings de usuário e de projeto (`setting_sources=[]`) e com `--strict-mcp-config`: servidores MCP configurados pelo usuário e regras `permissions.allow` deixam de chegar à execução, que processa texto não confiável (#129).
 
 - `condition` ou `depends_on` em campo de modelo aninhado ou de item de lista levanta `ValueError` antes de processar, em qualquer modo. Antes era ignorado em silêncio, e a versão callable quebrava o schema em todo provider (#129).

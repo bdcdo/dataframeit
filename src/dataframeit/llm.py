@@ -159,7 +159,7 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
             # Responses API) e levanta antes de devolver a mensagem. Só a validação
             # do próprio modelo é resposta recusada: um ValidationError de outro
             # modelo, como a configuração do provider, segue como erro comum.
-            if error.title != pydantic_model.__name__:
+            if error.title != _model_title(pydantic_model):
                 raise
             raw_text, usage = _sdk_rejected_response(error)
             _add_usage(usage_total, usage)
@@ -167,7 +167,13 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
         except OutputParserException as error:
             # Resposta sem tool call quando o modelo não aceita tool_choice forçado,
             # ou com thinking na Anthropic: o parser levanta dentro da chamada.
-            _request_correction(pydantic_model, None, error, correction, raw_text=str(error.llm_output or ''))
+            # Sem llm_output, o texto do erro é aviso interno do LangChain, que não
+            # ajuda o modelo; o pedido fica o genérico de formato. O uso dessa
+            # tentativa não chega até aqui.
+            _request_correction(
+                pydantic_model, None, error if error.llm_output else None, correction,
+                raw_text=str(error.llm_output or ''),
+            )
 
         raw_message = result.get('raw')
         if raw_message is not None and getattr(raw_message, 'usage_metadata', None):
@@ -184,6 +190,11 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
+def _model_title(pydantic_model) -> str:
+    """O título que o Pydantic põe no ValidationError do modelo."""
+    return pydantic_model.model_config.get('title') or pydantic_model.__name__
+
+
 def _add_usage(total: dict, usage: dict | None) -> None:
     for key, value in (usage or {}).items():
         total[key] = total.get(key, 0) + (value or 0)
@@ -195,17 +206,17 @@ def _sdk_rejected_response(error) -> tuple[str, dict | None]:
     O langchain-openai anexa a resposta HTTP à exceção (`error.response`). Sem
     ela, ou com corpo em formato desconhecido, devolve texto vazio e uso None.
     """
-    response = getattr(error, 'response', None)
     try:
-        body = response.json()
+        return _read_sdk_body(error.response.json())
     except Exception:
         return '', None
-    if not isinstance(body, dict):
-        return '', None
+
+
+def _read_sdk_body(body: dict) -> tuple[str, dict | None]:
+    """Chat Completions ou Responses API; falha de formato levanta, e quem chama ignora."""
     usage = body.get('usage') or {}
     if 'choices' in body:
-        choices = body.get('choices') or [{}]
-        text = (choices[0].get('message') or {}).get('content') or ''
+        text = (body['choices'][0].get('message') or {}).get('content') or ''
         input_details = usage.get('prompt_tokens_details') or {}
         output_details = usage.get('completion_tokens_details') or {}
         tokens = (usage.get('prompt_tokens'), usage.get('completion_tokens'))
@@ -220,11 +231,12 @@ def _sdk_rejected_response(error) -> tuple[str, dict | None]:
         tokens = (usage.get('input_tokens'), usage.get('output_tokens'))
     if tokens == (None, None):
         return text, None
+    input_tokens, output_tokens = tokens[0] or 0, tokens[1] or 0
     return text, {
-        'input_tokens': tokens[0] or 0,
+        'input_tokens': input_tokens,
         'cached_input_tokens': input_details.get('cached_tokens') or 0,
-        'output_tokens': tokens[1] or 0,
-        'total_tokens': usage.get('total_tokens') or 0,
+        'output_tokens': output_tokens,
+        'total_tokens': usage.get('total_tokens') or input_tokens + output_tokens,
         'reasoning_tokens': output_details.get('reasoning_tokens') or 0,
     }
 
@@ -308,9 +320,10 @@ def _format_validation_error(error: ValidationError) -> str:
 def _request_correction(pydantic_model, raw_message, error, correction: dict, raw_text: str = ''):
     """Prepara o pedido de correção da tentativa seguinte e levanta ProviderRejectedOutputError.
 
-    A mensagem da exceção leva o caminho e a regra de cada erro, sem o valor
-    recusado: é ela que fica em `_error_details`, e o texto analisado pode ter
-    dados que não devem ir para o log. A classificação da exceção é pela classe.
+    A mensagem da exceção, que fica em `_error_details`, leva o caminho e a regra
+    de cada erro, sem o valor recusado. Caminho e regra ainda podem conter dado do
+    texto quando o esquema o põe ali, como chave de dict ou validador que cita o
+    valor na mensagem. A classificação da exceção é pela classe, não pelo texto.
     """
     payload, raw_from_message = _raw_payload(raw_message)
     raw_text = raw_text or raw_from_message

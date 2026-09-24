@@ -234,13 +234,15 @@ class TestOpenAIReal:
                                     "content": [{"type": "output_text", "text": conteudo, "annotations": []}]}],
                         "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
                         "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
-                                  "input_tokens_details": {"cached_tokens": 0},
-                                  "output_tokens_details": {"reasoning_tokens": 0}}})
+                                  "input_tokens_details": {"cached_tokens": 4},
+                                  "output_tokens_details": {"reasoning_tokens": 2}}})
                 return httpx.Response(200, json={
                     "id": "x", "object": "chat.completion", "created": 0, "model": "gpt-x",
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": conteudo},
                                  "finish_reason": "stop"}],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                              "prompt_tokens_details": {"cached_tokens": 4},
+                              "completion_tokens_details": {"reasoning_tokens": 2}}})
 
             llm = langchain_openai.ChatOpenAI(
                 model="gpt-x", api_key="k", max_retries=0, use_responses_api=responses_api,
@@ -271,8 +273,20 @@ class TestOpenAIReal:
         correcao = json.dumps(segunda[2]["content"], ensure_ascii=False)
         assert "(resposta inteira): Value error, Aplicar exige trecho. Valor recusado:" in correcao
         # As duas tentativas foram cobradas e entram no uso.
-        assert resultado["usage"]["input_tokens"] == 20
-        assert resultado["usage"]["output_tokens"] == 10
+        assert resultado["usage"] == {"input_tokens": 20, "cached_input_tokens": 8, "output_tokens": 10,
+                                      "total_tokens": 30, "reasoning_tokens": 4}
+
+    def test_modelo_com_titulo_proprio(self, openai_falso, monkeypatch):
+        rodar, requisicoes = openai_falso
+        monkeypatch.setitem(ComEvidencia.model_config, "title", "Evidencia do caso")
+        ComEvidencia.model_rebuild(force=True)
+        try:
+            with pytest.warns(UserWarning):
+                rodar([INVALIDO, json.dumps({"aplicou": True, "trecho": "x"})])
+        finally:
+            monkeypatch.undo()
+            ComEvidencia.model_rebuild(force=True)
+        assert [m["role"] for m in self._mensagens(requisicoes[1])] == ["user", "assistant", "user"]
 
 
 class TestCapturaNoInvoke:
@@ -318,6 +332,32 @@ class TestCapturaNoInvoke:
         with pytest.warns(UserWarning):
             _, structured = _chamar([_falha(INVALIDO), do_sdk, _sucesso()])
         assert len(_chamada(structured, 2)) == 1
+
+
+class TestCorpoDoSdk:
+    def test_corpo_estranho_nao_troca_a_recusa(self):
+        from dataframeit.llm import _sdk_rejected_response
+
+        for corpo in ({"choices": [None]}, {"choices": []}, [1, 2], {"output": [None]}):
+            erro = SimpleNamespace(response=SimpleNamespace(json=lambda corpo=corpo: corpo))
+            assert _sdk_rejected_response(erro) == ("", None)
+        assert _sdk_rejected_response(SimpleNamespace()) == ("", None)
+
+    def test_total_ausente_soma_entrada_e_saida(self):
+        from dataframeit.llm import _read_sdk_body
+
+        _, uso = _read_sdk_body({"choices": [{"message": {"content": "x"}}],
+                                 "usage": {"prompt_tokens": 7, "completion_tokens": 3}})
+        assert uso["total_tokens"] == 10
+
+    def test_parser_sem_llm_output_pede_o_formato_generico(self):
+        erro = OutputParserException("Consider `method='json_schema'`")
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([erro, _sucesso()])
+        segunda = _chamada(structured, 1)
+        assert len(segunda) == 1
+        assert "formato estruturado" in segunda[0][1]
+        assert "json_schema" not in segunda[0][1]
 
 
 class TestDiagnostico:
