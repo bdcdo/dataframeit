@@ -104,7 +104,7 @@ all = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
-    "ruff>=0.1.0",
+    "ruff>=0.16,<0.17",
 ]
 docs = [
     "mkdocs>=1.5.0",

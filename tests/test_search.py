@@ -3,7 +3,7 @@
 import os
 import sys
 import types
-from typing import Literal, Optional
+from typing import List, Literal, Optional  # noqa: UP035 (List usado de propósito, ver NodoArvore)
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -1442,7 +1442,9 @@ def test_has_field_config_no_infinite_recursion():
 
     class NodoArvore(BaseModel):
         valor: str
-        filhos: Optional[list['NodoArvore']] = None
+        # typing.List resolve a string como ForwardRef; list['X'] deixaria a
+        # string crua na anotação, e a recursão que o teste exercita não aconteceria.
+        filhos: Optional[List['NodoArvore']] = None  # noqa: UP006
 
     # Atualizar referências forward para Python resolver o tipo
     NodoArvore.model_rebuild()
@@ -1507,7 +1509,9 @@ def test_collect_configured_fields_no_infinite_recursion():
 
     class NodoArvoreConfig(BaseModel):
         valor: str = Field(json_schema_extra={"prompt": "search value"})
-        filhos: Optional[list['NodoArvoreConfig']] = None
+        # typing.List resolve a string como ForwardRef; list['X'] deixaria a
+        # string crua na anotação, e a recursão que o teste exercita não aconteceria.
+        filhos: Optional[List['NodoArvoreConfig']] = None  # noqa: UP006
 
     NodoArvoreConfig.model_rebuild()
 

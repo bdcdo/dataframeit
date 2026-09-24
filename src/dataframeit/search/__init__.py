@@ -5,9 +5,11 @@ Suporta múltiplos provedores de busca:
 - Exa: Mais econômico para alto volume (>2667 buscas/mês com 1-25 resultados)
 """
 
-from .base import SearchProvider, get_available_providers, get_provider
-from .exa_provider import ExaProvider
-from .tavily_provider import TavilyProvider
+# A ordem de import define a ordem do registro de provedores, que aparece em
+# get_available_providers() e nas mensagens de erro. Tavily, o padrão, vem primeiro.
+from .base import SearchProvider, get_available_providers, get_provider  # isort: skip
+from .tavily_provider import TavilyProvider  # isort: skip
+from .exa_provider import ExaProvider  # isort: skip
 
 __all__ = [
     'SearchProvider',
