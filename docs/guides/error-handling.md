@@ -67,11 +67,16 @@ Tentativa 6: falha → marca como erro
 - **Erro de conexão**: Problemas de rede
 - **Erro 5xx**: Problemas no servidor
 
+### Resposta recusada pela validação (retry com o erro)
+
+- **Erro de validação**: a resposta não passa no modelo Pydantic, inclusive nos validadores próprios (`model_validator`, `field_validator`)
+- **Erro de parsing**: a resposta não é JSON válido
+
+Nos providers do LangChain, a tentativa seguinte leva ao modelo a resposta recusada e a lista de erros, campo por campo, com o pedido de responder de novo corrigindo esses pontos. Repetir o mesmo prompt tende a repetir o mesmo erro. Quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens` da linha, porque também são cobrados; se todas falham, a linha fica com status `error` e sem contagem de tokens.
+
 ### Erros Permanentes (sem retry)
 
-- **Erro de validação**: Resposta não segue o modelo Pydantic
 - **Erro de autenticação (401/403)**: API key inválida
-- **Erro de parsing**: Resposta mal formatada
 
 ## Processamento Incremental
 

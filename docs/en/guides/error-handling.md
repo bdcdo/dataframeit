@@ -68,11 +68,16 @@ Attempt 6: fails → mark as error
 - **Connection error**: Network issues
 - **5xx errors**: Server problems
 
+### Response rejected by validation (retry with the error)
+
+- **Validation error**: the response fails the Pydantic model, including custom validators (`model_validator`, `field_validator`)
+- **Parsing error**: the response is not valid JSON
+
+With LangChain providers, the next attempt sends the model the rejected response and the list of errors, field by field, asking it to answer again fixing those points. Repeating the same prompt tends to repeat the same error. When a later attempt succeeds, tokens from the rejected ones are added to the row's `_input_tokens` and `_output_tokens`, because they are billed too; if every attempt fails, the row gets status `error` and no token count.
+
 ### Permanent Errors (no retry)
 
-- **Validation error**: Response doesn't match Pydantic model
 - **Authentication error (401/403)**: Invalid API key
-- **Parsing error**: Malformed response
 
 ## Incremental Processing
 

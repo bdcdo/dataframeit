@@ -40,6 +40,15 @@ class ProviderOverloadedError(ProviderTransientError):
     """Falha transitória causada por sobrecarga ou limitação do provider."""
 
 
+class ProviderRejectedOutputError(ProviderTransientError, ValueError):
+    """Resposta recusada pela validação do modelo; a tentativa seguinte pede a correção.
+
+    É transitória por classe, e não pela mensagem: a mensagem traz trechos da
+    resposta, e um número como '404' no texto analisado a faria parecer erro HTTP
+    definitivo. Continua ValueError para quem já capturava a falha de parsing.
+    """
+
+
 class ProviderConfigurationError(ValueError):
     """Configuração local incompatível com o contrato de um provider."""
 
