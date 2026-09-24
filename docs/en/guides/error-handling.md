@@ -90,7 +90,7 @@ result.to_excel('complete.xlsx', index=False)
 ```
 
 !!! tip "How it works"
-    With `resume=True`, DataFrameIt skips rows that already have `_dataframeit_status == 'processed'`.
+    With `resume=True`, DataFrameIt processes only rows without `_dataframeit_status`. Rows with `'processed'` or `'error'` are left as they are; to retry errors, clear their status as shown in the section below.
 
 ## Reprocessing Errors
 

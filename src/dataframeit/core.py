@@ -1,5 +1,6 @@
 import json
 import logging
+import numbers
 import os
 import threading
 import time
@@ -566,7 +567,7 @@ def dataframeit(
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
 
     # bool é subclasse de int, mas True não é uma contagem de tentativas.
-    if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 1:
+    if not isinstance(max_retries, numbers.Integral) or isinstance(max_retries, bool) or max_retries < 1:
         raise ValueError(
             f"max_retries deve ser int >= 1 (número total de tentativas por linha); "
             f"recebido {max_retries!r}"
