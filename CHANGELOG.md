@@ -15,7 +15,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Removido
 
-- Fallback de import de `init_chat_model` a partir de `langchain_core.chat_models`, módulo que não existe no `langchain-core` 1.x; o import vem de `langchain.chat_models`, dependência obrigatória.
+- Fallback de import de `init_chat_model` a partir de `langchain_core.chat_models`, módulo que não existe no `langchain-core` 1.x; o import vem de `langchain.chat_models`, dependência obrigatória (#117).
 
 ### Corrigido
 
