@@ -43,7 +43,7 @@ jobs:
         run: uv run --python "${{ matrix.python-version }}" --extra dev ruff check src tests
 
       - name: Run tests
-        run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all pytest
+        run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all --extra openai pytest
 
   codex-provider:
     runs-on: ubuntu-latest

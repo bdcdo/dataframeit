@@ -70,13 +70,19 @@ Tentativa 6: falha → marca como erro
 ### Resposta recusada pela validação (retry com o erro)
 
 - **Erro de validação**: a resposta não passa no modelo Pydantic, inclusive nos validadores próprios (`model_validator`, `field_validator`)
-- **Erro de parsing**: a resposta não é JSON válido
+- **Erro de parsing**: a resposta não é JSON válido ou não veio no formato estruturado
 
-Nos providers do LangChain, a tentativa seguinte leva ao modelo a resposta recusada e a lista de erros, campo por campo, com o pedido de responder de novo corrigindo esses pontos. Repetir o mesmo prompt tende a repetir o mesmo erro. Quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens` da linha, porque também são cobrados; se todas falham, a linha fica com status `error` e sem contagem de tokens.
+Nos providers do LangChain, a tentativa seguinte leva ao modelo a resposta recusada e a lista de erros, cada um com o caminho do campo e o valor recusado, e pede que ele responda de novo corrigindo esses pontos. Repetir o mesmo prompt tende a repetir o mesmo erro. Quando a resposta não é JSON, o pedido leva o texto do erro do parser.
+
+Na OpenAI, o SDK valida a resposta dentro da chamada e não devolve a mensagem bruta: o pedido de correção vai junto do prompt, com os valores recusados, e os tokens dessa tentativa não entram na contagem da linha. Nos demais providers, quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens`, porque também são cobrados; se todas falham, a linha fica com status `error` e sem contagem de tokens.
 
 ### Erros Permanentes (sem retry)
 
 - **Erro de autenticação (401/403)**: API key inválida
+- **Recurso inexistente (404)**: modelo ou endpoint que o provider não conhece
+- **Requisição inválida** (`BadRequestError`, `InvalidArgument`): parâmetro que o provider recusa
+- **Prompt maior que a janela de contexto** (`ContextOverflowError`)
+- **Configuração local incompatível com o provider**
 
 ## Processamento Incremental
 

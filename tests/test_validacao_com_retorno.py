@@ -5,8 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError, model_validator
 
+from dataframeit.errors import (
+    ProviderRejectedOutputError,
+    get_friendly_error_message,
+    is_rate_limit_error,
+    is_recoverable_error,
+)
 from dataframeit.llm import LLMConfig, call_langchain
 
 
@@ -21,24 +28,35 @@ class ComEvidencia(BaseModel):
         return self
 
 
-def _config(max_retries=3):
-    return LLMConfig(model="m", provider="openai", api_key="k", max_retries=max_retries,
+def _config(max_retries=3, provider="google_genai"):
+    return LLMConfig(model="m", provider=provider, api_key="k", max_retries=max_retries,
                      base_delay=0.0, max_delay=0.0, rate_limit_delay=0.0)
 
 
-def _raw(conteudo, tokens=(10, 5), tool_calls=None):
+def _raw(conteudo, tokens=(10, 5), tool_calls=None, invalid_tool_calls=None):
     return SimpleNamespace(
-        content=conteudo, tool_calls=tool_calls or [],
+        content=conteudo, tool_calls=tool_calls or [], invalid_tool_calls=invalid_tool_calls or [],
         usage_metadata={"input_tokens": tokens[0], "output_tokens": tokens[1], "total_tokens": sum(tokens)},
     )
 
 
-def _falha(conteudo, erro="falha do parser", **kwargs):
-    return {"parsed": None, "raw": _raw(conteudo, **kwargs), "parsing_error": erro}
+def _erro_do_parser(bruto):
+    """Como o PydanticOutputParser entrega: OutputParserException com a validação na causa."""
+    try:
+        ComEvidencia.model_validate_json(bruto)
+    except ValidationError as causa:
+        erro = OutputParserException(f"Failed to parse ComEvidencia from completion {bruto}. Got: {causa}")
+        erro.__cause__ = causa
+        return erro
+    raise AssertionError("o bruto deveria ser inválido")
 
 
-def _sucesso(modelo, tokens=(20, 7)):
-    return {"parsed": modelo, "raw": _raw("{}", tokens=tokens), "parsing_error": None}
+def _falha(conteudo, erro=None, **kwargs):
+    return {"parsed": None, "raw": _raw(conteudo, **kwargs), "parsing_error": erro or _erro_do_parser(conteudo)}
+
+
+def _sucesso(modelo=None, tokens=(20, 7)):
+    return {"parsed": modelo or ComEvidencia(aplicou=False), "raw": _raw("{}", tokens=tokens), "parsing_error": None}
 
 
 def _chamar(respostas, max_retries=3):
@@ -51,80 +69,204 @@ def _chamar(respostas, max_retries=3):
     return resultado, structured
 
 
-def _segunda_chamada(structured):
-    return structured.invoke.call_args_list[1].args[0]
+def _chamada(structured, i):
+    return structured.invoke.call_args_list[i].args[0]
+
+
+INVALIDO = json.dumps({"aplicou": True, "trecho": None})
 
 
 class TestNovaTentativaComErro:
     def test_erro_e_resposta_voltam_ao_modelo(self):
-        invalido = json.dumps({"aplicou": True, "trecho": None})
         with pytest.warns(UserWarning):
-            resultado, structured = _chamar([_falha(invalido), _sucesso(ComEvidencia(aplicou=True, trecho="x"))])
+            resultado, structured = _chamar([_falha(INVALIDO), _sucesso(ComEvidencia(aplicou=True, trecho="x"))])
         assert resultado["data"] == {"aplicou": True, "trecho": "x"}
-        assert structured.invoke.call_args_list[0].args[0] == "Leia: TEXTO"
-        segunda = _segunda_chamada(structured)
+        assert _chamada(structured, 0) == "Leia: TEXTO"
+        segunda = _chamada(structured, 1)
         assert [papel for papel, _ in segunda] == ["human", "ai", "human"]
         assert segunda[0][1] == "Leia: TEXTO"
-        assert segunda[1][1] == invalido
-        # O erro chega por campo, validado de novo sobre a resposta bruta.
-        assert "Aplicar exige trecho." in segunda[2][1]
+        assert segunda[1][1] == INVALIDO
+        assert "(resposta inteira): Value error, Aplicar exige trecho." in segunda[2][1]
 
-    def test_validation_error_do_parser_e_usado_direto(self):
-        try:
-            ComEvidencia.model_validate({"aplicou": "talvez"})
-        except ValidationError as erro:
-            do_parser = erro
+    def test_validation_error_vem_da_causa_do_parser(self):
+        # A causa é a validação do bruto; revalidar outro conteúdo daria outro erro.
+        bruto = json.dumps({"aplicou": "talvez"})
+        falha = {"parsed": None, "raw": _raw("{}"), "parsing_error": _erro_do_parser(bruto)}
         with pytest.warns(UserWarning):
-            _, structured = _chamar([_falha("{}", erro=do_parser), _sucesso(ComEvidencia(aplicou=False))])
-        assert "- aplicou:" in _segunda_chamada(structured)[2][1]
+            _, structured = _chamar([falha, _sucesso()])
+        correcao = _chamada(structured, 1)[2][1]
+        assert "- aplicou: Input should be a valid boolean" in correcao
+        assert '"talvez"' in correcao
+
+    def test_cada_recusa_substitui_a_anterior(self):
+        outro = json.dumps({"aplicou": True, "trecho": ""})
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([_falha(INVALIDO), _falha(outro), _sucesso()])
+        terceira = _chamada(structured, 2)
+        assert len(terceira) == 3
+        assert terceira[1][1] == outro
 
     def test_uso_soma_as_tentativas_recusadas(self):
-        invalido = json.dumps({"aplicou": True})
         with pytest.warns(UserWarning):
-            resultado, _ = _chamar([_falha(invalido, tokens=(10, 5)), _falha(invalido, tokens=(11, 6)),
-                                    _sucesso(ComEvidencia(aplicou=False), tokens=(20, 7))])
+            resultado, _ = _chamar([_falha(INVALIDO, tokens=(10, 5)), _falha(INVALIDO, tokens=(11, 6)),
+                                    _sucesso(tokens=(20, 7))])
         assert resultado["usage"]["input_tokens"] == 41
         assert resultado["usage"]["output_tokens"] == 18
         assert resultado["usage"]["total_tokens"] == 59
 
+    def test_erro_transitorio_sem_raw_mantem_a_correcao(self):
+        with pytest.warns(UserWarning):
+            resultado, structured = _chamar([_falha(INVALIDO), TimeoutError("lento"), _sucesso()])
+        assert _chamada(structured, 2) == _chamada(structured, 1)
+        assert resultado["usage"]["input_tokens"] == 30
+
     def test_resposta_por_tool_call(self):
         args = {"aplicou": True}
+        falha = {"parsed": None, "raw": _raw("", tool_calls=[{"name": "ComEvidencia", "args": args}]),
+                 "parsing_error": "erro"}
         with pytest.warns(UserWarning):
-            _, structured = _chamar([_falha("", tool_calls=[{"name": "ComEvidencia", "args": args}]),
-                                     _sucesso(ComEvidencia(aplicou=False))])
-        assert _segunda_chamada(structured)[1] == ("ai", json.dumps(args))
-        assert "Aplicar exige trecho." in _segunda_chamada(structured)[2][1]
+            _, structured = _chamar([falha, _sucesso()])
+        assert _chamada(structured, 1)[1] == ("ai", json.dumps(args))
+        assert "Aplicar exige trecho." in _chamada(structured, 1)[2][1]
 
-    def test_resposta_em_blocos(self):
-        bruto = json.dumps({"aplicou": True})
-        blocos = [{"type": "text", "text": bruto[:5]}, {"type": "text", "text": bruto[5:]}]
+    def test_tool_call_invalida_volta_como_texto(self):
+        falha = {"parsed": None, "raw": _raw("", invalid_tool_calls=[{"name": "x", "args": '{"aplicou": tru'}]),
+                 "parsing_error": "json inválido"}
         with pytest.warns(UserWarning):
-            _, structured = _chamar([_falha(blocos), _sucesso(ComEvidencia(aplicou=False))])
-        assert _segunda_chamada(structured)[1] == ("ai", bruto)
+            _, structured = _chamar([falha, _sucesso()])
+        assert _chamada(structured, 1)[1] == ("ai", '{"aplicou": tru')
 
-    def test_json_malformado_tambem_volta_ao_modelo(self):
+    def test_blocos_sem_texto_ficam_de_fora(self):
+        blocos = [{"type": "thinking", "thinking": "pensando"}, {"type": "text", "text": INVALIDO[:5]},
+                  {"type": "text", "text": INVALIDO[5:]}]
+        falha = {"parsed": None, "raw": _raw(blocos), "parsing_error": "erro"}
         with pytest.warns(UserWarning):
-            resultado, structured = _chamar([_falha("{quebrado"), _sucesso(ComEvidencia(aplicou=False))])
-        assert resultado["data"]["aplicou"] is False
-        segunda = _segunda_chamada(structured)
+            _, structured = _chamar([falha, _sucesso()])
+        assert _chamada(structured, 1)[1] == ("ai", INVALIDO)
+
+    def test_sem_resposta_bruta_o_pedido_vai_junto_do_prompt(self):
+        falha = {"parsed": None, "raw": _raw(""), "parsing_error": "vazio"}
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([falha, _sucesso()])
+        segunda = _chamada(structured, 1)
+        assert len(segunda) == 1
+        assert segunda[0][0] == "human"
+        assert segunda[0][1].startswith("Leia: TEXTO\n\n")
+        assert "vazio" in segunda[0][1]
+
+    def test_parsed_none_sem_parsing_error_pede_o_formato(self):
+        sem_parse = {"parsed": None, "raw": _raw("texto livre"), "parsing_error": None}
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([sem_parse, _sucesso()])
+        segunda = _chamada(structured, 1)
+        assert segunda[1] == ("ai", "texto livre")
+        assert "formato estruturado" in segunda[2][1]
+
+    def test_json_malformado(self):
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([_falha("{quebrado", erro="falha do parser"), _sucesso()])
+        segunda = _chamada(structured, 1)
         assert segunda[1] == ("ai", "{quebrado")
         assert "falha do parser" in segunda[2][1]
 
-    def test_numero_na_resposta_nao_impede_o_retry(self):
-        # "404" isolado na mensagem casaria com o padrão de erro HTTP definitivo.
-        invalido = json.dumps({"aplicou": True, "processo": "Rcl 404"})
-        with pytest.warns(UserWarning):
-            resultado, structured = _chamar([_falha(invalido, erro="input 404"), _sucesso(ComEvidencia(aplicou=False))])
-        assert structured.invoke.call_count == 2
-        assert resultado["data"]["aplicou"] is False
+    def test_tetos_do_pedido(self):
+        class Muitos(BaseModel):
+            itens: list[int]
+
+        bruto = json.dumps({"itens": ["x" * 400] * 30})
+        try:
+            Muitos.model_validate_json(bruto)
+        except ValidationError as erro:
+            falha = {"parsed": None, "raw": _raw(bruto), "parsing_error": erro}
+        structured = MagicMock()
+        structured.invoke.side_effect = [falha, {"parsed": Muitos(itens=[1]), "raw": _raw("{}"), "parsing_error": None}]
+        base = MagicMock()
+        base.with_structured_output.return_value = structured
+        with pytest.warns(UserWarning), patch("dataframeit.llm._create_langchain_llm", return_value=base):
+            call_langchain("T", Muitos, "{texto}", _config())
+        correcao = structured.invoke.call_args_list[1].args[0][2][1]
+        linhas = [linha for linha in correcao.splitlines() if linha.startswith("- ")]
+        assert len(linhas) == 20
+        assert all(len(linha) < 450 for linha in linhas)
 
     def test_esgota_as_tentativas(self):
-        invalido = json.dumps({"aplicou": True})
-        with pytest.warns(UserWarning), pytest.raises(ValueError, match="parsing"):
-            _chamar([_falha(invalido)] * 2, max_retries=2)
+        with pytest.warns(UserWarning), pytest.raises(ProviderRejectedOutputError, match="parsing"):
+            _chamar([_falha(INVALIDO)] * 2, max_retries=2)
 
-    def test_sucesso_de_primeira_nao_manda_historico(self):
-        resultado, structured = _chamar([_sucesso(ComEvidencia(aplicou=False))])
-        assert structured.invoke.call_count == 1
-        assert structured.invoke.call_args.args[0] == "Leia: TEXTO"
-        assert resultado["usage"]["input_tokens"] == 20
+
+class TestClassificacaoDaRecusa:
+    def _recusa(self, bruto):
+        with pytest.raises(ProviderRejectedOutputError) as info:
+            _chamar([_falha(bruto)], max_retries=1)
+        return info.value
+
+    def test_numero_no_texto_nao_vira_erro_http(self):
+        erro = self._recusa(json.dumps({"aplicou": True, "processo": "Rcl 401 404 429"}))
+        assert "401" not in str(erro)
+        assert is_recoverable_error(erro)
+        assert not is_rate_limit_error(erro)
+        assert "AUTENTICA" not in get_friendly_error_message(erro, "openai").upper()
+        assert "RECUSADA" in get_friendly_error_message(erro, "openai")
+
+    def test_recusa_nao_e_sobrecarga(self):
+        erro = ProviderRejectedOutputError("429")
+        assert not is_rate_limit_error(erro)
+        assert isinstance(erro, ValueError)
+
+
+class TestOpenAIReal:
+    """ChatOpenAI de verdade sobre transporte HTTP falso: o SDK valida dentro da chamada."""
+
+    @pytest.fixture
+    def openai_falso(self):
+        httpx = pytest.importorskip("httpx")
+        langchain_openai = pytest.importorskip("langchain_openai")
+        requisicoes = []
+
+        def rodar(respostas, responses_api=False):
+            def handler(req):
+                requisicoes.append(json.loads(req.content))
+                conteudo = respostas[min(len(requisicoes) - 1, len(respostas) - 1)]
+                if responses_api:
+                    return httpx.Response(200, json={
+                        "id": "r", "object": "response", "created_at": 0, "model": "gpt-x", "status": "completed",
+                        "output": [{"type": "message", "id": "m", "role": "assistant", "status": "completed",
+                                    "content": [{"type": "output_text", "text": conteudo, "annotations": []}]}],
+                        "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                                  "input_tokens_details": {"cached_tokens": 0},
+                                  "output_tokens_details": {"reasoning_tokens": 0}}})
+                return httpx.Response(200, json={
+                    "id": "x", "object": "chat.completion", "created": 0, "model": "gpt-x",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": conteudo},
+                                 "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+
+            llm = langchain_openai.ChatOpenAI(
+                model="gpt-x", api_key="k", max_retries=0, use_responses_api=responses_api,
+                http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            )
+            with patch("dataframeit.llm._create_langchain_llm", return_value=llm):
+                return call_langchain("TEXTO", ComEvidencia, "Leia: {texto}", _config(provider="openai"))
+
+        return rodar, requisicoes
+
+    @staticmethod
+    def _mensagens(corpo):
+        return corpo.get("messages") or corpo.get("input")
+
+    @pytest.mark.parametrize("responses_api", [False, True])
+    def test_recusa_do_sdk_leva_o_erro_ao_modelo(self, openai_falso, responses_api):
+        rodar, requisicoes = openai_falso
+        # "404" no texto recusado não pode impedir a nova tentativa.
+        invalido = json.dumps({"aplicou": True, "trecho": None, "processo": "Rcl 404"})
+        with pytest.warns(UserWarning):
+            resultado = rodar([invalido, json.dumps({"aplicou": True, "trecho": "x"})], responses_api)
+        assert resultado["data"] == {"aplicou": True, "trecho": "x"}
+        assert len(requisicoes) == 2
+        segunda = self._mensagens(requisicoes[1])
+        assert len(segunda) == 1
+        texto = json.dumps(segunda[0]["content"], ensure_ascii=False)
+        assert "Leia: TEXTO" in texto
+        assert "Aplicar exige trecho." in texto
+        assert "Rcl 404" in texto

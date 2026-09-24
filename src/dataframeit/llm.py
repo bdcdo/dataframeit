@@ -143,15 +143,21 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     structured_llm = llm.with_structured_output(pydantic_model, include_raw=True)
 
     prompt = build_prompt(user_prompt, text)
-    # Estado entre tentativas: a tentativa seguinte a uma resposta inválida leva
-    # ao modelo a resposta e o erro, porque repetir o mesmo prompt tende a
-    # repetir o mesmo erro. O uso soma todas as tentativas, que são cobradas
-    # mesmo quando a resposta é recusada.
-    feedback: list = []
+    # Estado entre tentativas: depois de uma resposta recusada, a tentativa
+    # seguinte leva ao modelo a resposta e o erro, porque repetir o mesmo prompt
+    # tende a repetir o mesmo erro. O uso soma as tentativas cuja resposta chegou,
+    # recusadas ou não, porque todas são cobradas.
+    correction: dict[str, str | None] = {'ai': None, 'human': None}
     usage_total: dict[str, int] = {}
 
     def _call():
-        result = structured_llm.invoke([('human', prompt), *feedback] if feedback else prompt)
+        try:
+            result = structured_llm.invoke(_messages(prompt, correction))
+        except ValidationError as error:
+            # O SDK da OpenAI valida a resposta dentro da chamada (json_schema e
+            # Responses API) e levanta antes de devolver a mensagem bruta; o erro
+            # traz o trecho recusado, e o uso dessa tentativa não chega até aqui.
+            _request_correction(pydantic_model, None, error, correction)
 
         raw_message = result.get('raw')
         if raw_message is not None and getattr(raw_message, 'usage_metadata', None):
@@ -159,29 +165,47 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
                 usage_total[key] = usage_total.get(key, 0) + (value or 0)
 
         if result.get('parsing_error'):
-            _request_correction(pydantic_model, raw_message, result['parsing_error'], feedback)
+            _request_correction(pydantic_model, raw_message, result['parsing_error'], correction)
         parsed = result.get('parsed')
         if parsed is None:
-            raise ValueError("Structured output retornou None")
+            _request_correction(pydantic_model, raw_message, None, correction)
 
         return {'data': parsed.model_dump(), 'usage': dict(usage_total) or None}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
+def _messages(prompt: str, correction: dict):
+    """O prompt sozinho, ou a conversa com a resposta recusada e o pedido de correção.
+
+    Sem a resposta bruta, o pedido vai na mesma mensagem do prompt: duas
+    mensagens seguidas do usuário não são aceitas por todo provider.
+    """
+    if not correction['human']:
+        return prompt
+    if correction['ai']:
+        return [('human', prompt), ('ai', correction['ai']), ('human', correction['human'])]
+    return [('human', f"{prompt}\n\n{correction['human']}")]
+
+
 def _raw_payload(raw_message) -> tuple[dict | None, str]:
     """Resposta bruta do modelo como dict, quando dá, e como texto.
 
     O structured output chega por tool call (function calling) ou no conteúdo
-    da mensagem (json_schema), em texto ou em blocos, conforme o provider.
+    da mensagem (json_schema), em texto ou em blocos, conforme o provider. Tool
+    call com argumentos que não são JSON válido fica em `invalid_tool_calls`.
     """
     if raw_message is None:
         return None, ''
     for call in getattr(raw_message, 'tool_calls', None) or []:
         if isinstance(call.get('args'), dict):
             return call['args'], json.dumps(call['args'], ensure_ascii=False)
+    for call in getattr(raw_message, 'invalid_tool_calls', None) or []:
+        if call.get('args'):
+            return None, str(call['args'])
     content = getattr(raw_message, 'content', '')
     if isinstance(content, list):
+        # Blocos sem texto, como os de raciocínio, não fazem parte da resposta.
         content = ''.join(
             block.get('text', '') if isinstance(block, dict) else str(block) for block in content
         )
@@ -193,36 +217,65 @@ def _raw_payload(raw_message) -> tuple[dict | None, str]:
     return (payload if isinstance(payload, dict) else None), text
 
 
-def _format_validation_error(error) -> str:
-    """Uma linha por erro, com o caminho do campo; texto bruto se não for ValidationError."""
-    if not isinstance(error, ValidationError):
-        return str(error)[:2000]
-    lines = []
-    for detail in error.errors()[:20]:
-        location = '.'.join(str(part) for part in detail.get('loc', ())) or '(modelo)'
-        lines.append(f"- {location}: {detail.get('msg', '')}")
-    return '\n'.join(lines)
+# Tetos do pedido de correção: ele volta ao modelo a cada recusa, e um esquema
+# grande pode gerar dezenas de erros com trechos longos.
+_MAX_ERRORS = 20
+_MAX_INPUT_CHARS = 300
+_MAX_ERROR_TEXT = 2000
 
 
-def _request_correction(pydantic_model, raw_message, parsing_error, feedback: list):
-    """Grava em `feedback` a resposta recusada e o erro, e levanta ProviderRejectedOutputError.
-
-    O retry repete a chamada, e a tentativa seguinte leva os dois ao modelo. O
-    `parsing_error` do LangChain pode vir como exceção do parser que embrulha a
-    validação; nesse caso, validar a resposta bruta recupera o erro por campo.
-    """
-    payload, raw_text = _raw_payload(raw_message)
-    error = parsing_error
-    if not isinstance(error, ValidationError) and payload is not None:
+def _validation_error_of(error, pydantic_model, payload):
+    """O ValidationError por campo, direto, embrulhado pelo parser ou revalidando."""
+    if isinstance(error, ValidationError):
+        return error
+    cause = getattr(error, '__cause__', None)
+    if isinstance(cause, ValidationError):
+        return cause
+    if payload is not None:
         try:
             pydantic_model.model_validate(payload)
         except ValidationError as validation_error:
-            error = validation_error
-    feedback[:] = [
-        ('ai', raw_text or '(resposta vazia)'),
-        ('human', _CORRECTION_REQUEST.format(errors=_format_validation_error(error))),
-    ]
-    raise ProviderRejectedOutputError(f"Falha no parsing do structured output: {parsing_error}")
+            return validation_error
+    return None
+
+
+def _format_validation_error(error: ValidationError) -> str:
+    """Uma linha por erro, com o caminho do campo e o valor recusado."""
+    lines = []
+    for detail in error.errors()[:_MAX_ERRORS]:
+        location = '.'.join(str(part) for part in detail.get('loc', ())) or '(resposta inteira)'
+        value = json.dumps(detail.get('input'), ensure_ascii=False, default=str)
+        if len(value) > _MAX_INPUT_CHARS:
+            value = value[:_MAX_INPUT_CHARS] + '...'
+        lines.append(f"- {location}: {detail.get('msg', '')} Valor recusado: {value}")
+    return '\n'.join(lines)
+
+
+def _request_correction(pydantic_model, raw_message, error, correction: dict):
+    """Prepara o pedido de correção da tentativa seguinte e levanta ProviderRejectedOutputError.
+
+    A mensagem da exceção leva só os caminhos dos campos, sem trecho da resposta:
+    o texto analisado pode ter números como '401' ou '429', que a classificação
+    de erro por texto leria como erro HTTP.
+    """
+    payload, raw_text = _raw_payload(raw_message)
+    validation_error = _validation_error_of(error, pydantic_model, payload)
+    if validation_error is not None:
+        detail = _format_validation_error(validation_error)
+        locations = sorted({
+            '.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'
+            for item in validation_error.errors()
+        })
+        summary = f"{validation_error.error_count()} erro(s) em {', '.join(locations[:_MAX_ERRORS])}"
+    elif error is not None:
+        detail = str(error)[:_MAX_ERROR_TEXT]
+        summary = 'resposta não é JSON válido'
+    else:
+        detail = 'A resposta não veio no formato estruturado pedido.'
+        summary = 'Structured output retornou None'
+    correction['ai'] = raw_text or None
+    correction['human'] = _CORRECTION_REQUEST.format(errors=detail)
+    raise ProviderRejectedOutputError(f"Falha no parsing do structured output: {summary}")
 
 
 _CORRECTION_REQUEST = (
