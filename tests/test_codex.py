@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -151,7 +150,13 @@ def auth_lock_is_available(lock_path: Path) -> bool:
 
 @pytest.fixture
 def codex_sdk():
-    """Carrega o SDK real apenas nos testes que exercitam sua fronteira."""
+    """Carrega o SDK real apenas nos testes que exercitam sua fronteira.
+
+    O filelock é importado aqui, antes de qualquer patch do teste, porque a sua
+    importação roda uma sonda que usa tempfile.TemporaryDirectory e os.link; os
+    patches desses nomes valem para o processo inteiro e capturariam a sonda.
+    """
+    pytest.importorskip("filelock")
     sdk = pytest.importorskip("openai_codex")
     sdk_types = pytest.importorskip("openai_codex.types")
     generated = pytest.importorskip("openai_codex.generated.v2_all")
@@ -528,13 +533,7 @@ class TestBackendLifecycle:
         monkeypatch.setenv("CODEX_HOME", str(source_home))
 
         with (
-            # O patch alcança o tempfile do processo inteiro, e a importação do
-            # filelock abre um TemporaryDirectory próprio; por isso a asserção
-            # conta só os diretórios com o prefixo do runtime do backend.
-            patch(
-                "dataframeit.codex.tempfile.TemporaryDirectory",
-                wraps=tempfile.TemporaryDirectory,
-            ) as temporary_directory,
+            patch("dataframeit.codex.tempfile.TemporaryDirectory") as temporary_directory,
             patch.object(sdk, "Codex") as codex,
         ):
             with pytest.raises(ProviderConfigurationError) as exc_info:
@@ -542,12 +541,7 @@ class TestBackendLifecycle:
                     pass
 
         assert CODEX_FILE_AUTH_LOGIN_COMMAND in str(exc_info.value)
-        runtimes_criados = [
-            chamada
-            for chamada in temporary_directory.call_args_list
-            if chamada.kwargs.get("prefix") == "dataframeit-codex-"
-        ]
-        assert runtimes_criados == []
+        temporary_directory.assert_not_called()
         codex.assert_not_called()
 
     def test_distinct_auth_files_do_not_contend(self, codex_sdk, monkeypatch, tmp_path):
