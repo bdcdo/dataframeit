@@ -17,7 +17,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-- O `description` dos metadados do pacote passa a ser em inglês, como o `README.md` exibido no PyPI (#119).
+- O `description` dos metadados do pacote passa a ser em inglês, e o link `Documentation` e os links de documentação do `README.md` apontam para a versão em inglês do site, como o `README.md` exibido no PyPI (#119).
 
 ## [0.8.0] - 2026-09-23
 

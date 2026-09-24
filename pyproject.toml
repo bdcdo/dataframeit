@@ -114,7 +114,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/bdcdo/dataframeit"
-Documentation = "https://bdcdo.github.io/dataframeit"
+Documentation = "https://bdcdo.github.io/dataframeit/en/"
 Repository = "https://github.com/bdcdo/dataframeit.git"
 Issues = "https://github.com/bdcdo/dataframeit/issues"
 Changelog = "https://github.com/bdcdo/dataframeit/blob/main/CHANGELOG.md"
