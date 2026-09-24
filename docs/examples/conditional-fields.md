@@ -245,7 +245,8 @@ class InfoCompleta(BaseModel):
 
 ## Limitações
 
-1. Condicionais só funcionam com `search_per_field=True`
-2. Não é possível criar dependências de campos que não existem no modelo
-3. Dependências circulares não são permitidas
-4. Condições são avaliadas uma vez antes de processar cada campo
+1. Condicionais só funcionam com `use_search=True` e `search_per_field=True`; sem isso, `condition` ou `depends_on` no modelo levanta `ValueError`
+2. Com `search_groups`, a condição de um campo agrupado é avaliada antes da chamada do grupo, e o campo com condição falsa fica fora dela; se a condição depende de outro campo do mesmo grupo, ela é avaliada com a resposta do grupo, e o campo com condição falsa fica `None`
+3. Não é possível criar dependências de campos que não existem no modelo
+4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele
+5. Condições são avaliadas uma vez antes de processar cada campo

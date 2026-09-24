@@ -659,6 +659,12 @@ def call_agent_per_group(
     Campos em grupos compartilham a mesma busca, reduzindo chamadas de API.
     Campos fora de grupos são processados individualmente como em call_agent_per_field.
 
+    `condition` no json_schema_extra é aplicada como em call_agent_per_field:
+    campo com condição falsa fica None e não é pedido ao agente. Grupos e
+    campos isolados rodam na ordem exigida pelas dependências entre eles. A
+    condição que depende de outro campo do mesmo grupo só pode ser avaliada
+    com a resposta do grupo, e o campo é anulado depois da chamada.
+
     Args:
         text: Texto a ser processado.
         pydantic_model: Modelo Pydantic completo.
@@ -669,101 +675,180 @@ def call_agent_per_group(
     Returns:
         Dicionário com 'data' (todos os campos combinados), 'usage' (soma de
         todos os tokens e créditos), e 'traces' (dict por grupo/campo, se habilitado).
+
+    Raises:
+        ValueError: Se há dependências inválidas ou circulares, inclusive entre
+            um grupo e campos de fora dele.
     """
+    from .conditional import (
+        detect_circular_dependencies,
+        get_field_execution_order,
+        should_skip_field,
+        topological_sort,
+    )
+
     combined_data = {}
     total_usage = _empty_usage()
     traces = {} if save_trace else None
 
     groups = config.search_config.groups
 
-    # Identificar campos em grupos vs campos isolados
+    field_configs = {}
+    for field_name, field_info in pydantic_model.model_fields.items():
+        extra = field_info.json_schema_extra
+        field_configs[field_name] = _get_field_config(extra) if isinstance(extra, dict) else {}
+
+    execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
+
+    # Unidades de execução: cada grupo e cada campo isolado. As chaves são
+    # índices porque topological_sort interpreta '.' como caminho aninhado, e
+    # nome de grupo é livre.
     grouped_fields = set()
     for group_config in groups.values():
         grouped_fields.update(group_config.fields)
 
-    isolated_fields = [f for f in pydantic_model.model_fields.keys() if f not in grouped_fields]
+    units = [('group', group_name, group_config) for group_name, group_config in groups.items()]
+    units += [
+        ('field', field_name, None)
+        for field_name in pydantic_model.model_fields
+        if field_name not in grouped_fields
+    ]
 
-    # 1. Processar cada grupo (busca compartilhada)
-    for group_name, group_config in groups.items():
-        # Criar modelo com campos do grupo
-        group_field_infos = {
-            field_name: (pydantic_model.model_fields[field_name].annotation,
-                        pydantic_model.model_fields[field_name])
-            for field_name in group_config.fields
-        }
-        GroupModel = create_model(
-            f'{pydantic_model.__name__}_group_{group_name}',
-            **group_field_infos
+    unit_of_field = {}
+    for index, (kind, name, group_config) in enumerate(units):
+        for field_name in (group_config.fields if kind == 'group' else [name]):
+            unit_of_field[field_name] = str(index)
+
+    unit_dependencies = {str(index): [] for index in range(len(units))}
+    for field_name, deps in dependencies.items():
+        unit = unit_of_field[field_name]
+        for dep in deps:
+            dep_unit = unit_of_field[dep.split('.')[0]]
+            if dep_unit != unit and dep_unit not in unit_dependencies[unit]:
+                unit_dependencies[unit].append(dep_unit)
+
+    cycle = detect_circular_dependencies(unit_dependencies)
+    if cycle:
+        labels = [
+            f"grupo '{units[int(key)][1]}'" if units[int(key)][0] == 'group' else f"'{units[int(key)][1]}'"
+            for key in cycle
+        ]
+        raise ValueError(
+            f"Dependências circulares entre grupos e campos: {' -> '.join(labels)}"
         )
 
-        # Construir prompt do grupo
-        if group_config.prompt:
-            # Substituir {query} pelo texto se presente
-            group_prompt = group_config.prompt.replace('{query}', text)
-            if '{texto}' not in group_prompt:
-                group_prompt = f"{group_prompt}\n\nTexto: {{texto}}"
+    for unit_key in topological_sort(unit_dependencies):
+        kind, name, group_config = units[int(unit_key)]
+
+        if kind == 'group':
+            group_name = name
+            unit_fields = [f for f in execution_order if f in group_config.fields]
+
+            # Condições que dependem só de campos de fora do grupo já podem ser avaliadas.
+            active_fields = []
+            post_call_fields = []
+            for field_name in unit_fields:
+                deps_in_group = [
+                    dep for dep in dependencies[field_name]
+                    if unit_of_field[dep.split('.')[0]] == unit_key
+                ]
+                if deps_in_group:
+                    active_fields.append(field_name)
+                    post_call_fields.append(field_name)
+                elif should_skip_field(field_name, field_configs[field_name], combined_data):
+                    combined_data[field_name] = None
+                else:
+                    active_fields.append(field_name)
+
+            if not active_fields:
+                continue
+
+            # Criar modelo com os campos ativos do grupo
+            group_field_infos = {
+                field_name: (pydantic_model.model_fields[field_name].annotation,
+                            pydantic_model.model_fields[field_name])
+                for field_name in active_fields
+            }
+            GroupModel = create_model(
+                f'{pydantic_model.__name__}_group_{group_name}',
+                **group_field_infos
+            )
+
+            # Construir prompt do grupo
+            if group_config.prompt:
+                # Substituir {query} pelo texto se presente
+                group_prompt = group_config.prompt.replace('{query}', text)
+                if '{texto}' not in group_prompt:
+                    group_prompt = f"{group_prompt}\n\nTexto: {{texto}}"
+            else:
+                # Prompt padrão com instruções sobre os campos do grupo
+                field_list = ', '.join(active_fields)
+                group_prompt = f"{user_prompt}\n\nResponda os campos: {field_list}"
+
+            # Criar config com overrides do grupo (se houver)
+            effective_config = _apply_group_overrides(config, group_config)
+
+            # Chamar agente para o grupo
+            result = call_agent(text, GroupModel, group_prompt, effective_config, save_trace)
+
+            # Combinar resultados
+            for field_name in active_fields:
+                combined_data[field_name] = result['data'].get(field_name)
+
+            # Em ordem de dependência, para que um campo anulado aqui também
+            # anule quem depende dele no mesmo grupo.
+            for field_name in post_call_fields:
+                if should_skip_field(field_name, field_configs[field_name], combined_data):
+                    combined_data[field_name] = None
+
+            trace_key = group_name
         else:
-            # Prompt padrão com instruções sobre os campos do grupo
-            field_list = ', '.join(group_config.fields)
-            group_prompt = f"{user_prompt}\n\nResponda os campos: {field_list}"
+            field_name = name
+            field_info = pydantic_model.model_fields[field_name]
+            field_config = field_configs[field_name]
 
-        # Criar config com overrides do grupo (se houver)
-        effective_config = _apply_group_overrides(config, group_config)
+            if should_skip_field(field_name, field_config, combined_data):
+                combined_data[field_name] = None
+                continue
 
-        # Chamar agente para o grupo
-        result = call_agent(text, GroupModel, group_prompt, effective_config, save_trace)
+            # Criar modelo temporário com apenas este campo
+            SingleFieldModel = create_model(
+                f'{pydantic_model.__name__}_{field_name}',
+                **{field_name: (field_info.annotation, field_info)}
+            )
 
-        # Combinar resultados
-        for field_name in group_config.fields:
+            # Construir prompt para este campo
+            field_prompt = _build_field_prompt(
+                user_prompt, field_name, field_info.description, field_config
+            )
+
+            # Criar config com overrides do campo (se houver)
+            effective_config = _apply_field_overrides(config, field_config)
+
+            # Chamar agente para este campo
+            result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+
+            # Combinar resultado
             combined_data[field_name] = result['data'].get(field_name)
 
-        # Somar usage
-        if result.get('usage'):
-            for key in total_usage:
-                total_usage[key] += result['usage'].get(key, 0)
-
-        # Coletar trace por grupo
-        if save_trace and result.get('trace'):
-            traces[group_name] = result['trace']
-
-    # 2. Processar campos isolados (um agente por campo)
-    for field_name in isolated_fields:
-        field_info = pydantic_model.model_fields[field_name]
-
-        # Criar modelo temporário com apenas este campo
-        SingleFieldModel = create_model(
-            f'{pydantic_model.__name__}_{field_name}',
-            **{field_name: (field_info.annotation, field_info)}
-        )
-
-        # Extrair configurações do campo (opcional)
-        extra = field_info.json_schema_extra
-        field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
-
-        # Construir prompt para este campo
-        field_prompt = _build_field_prompt(
-            user_prompt, field_name, field_info.description, field_config
-        )
-
-        # Criar config com overrides do campo (se houver)
-        effective_config = _apply_field_overrides(config, field_config)
-
-        # Chamar agente para este campo
-        result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
-
-        # Combinar resultado
-        combined_data[field_name] = result['data'].get(field_name)
+            trace_key = field_name
 
         # Somar usage
         if result.get('usage'):
             for key in total_usage:
                 total_usage[key] += result['usage'].get(key, 0)
 
-        # Coletar trace por campo isolado
+        # Coletar trace por grupo ou campo isolado
         if save_trace and result.get('trace'):
-            traces[field_name] = result['trace']
+            traces[trace_key] = result['trace']
 
-    response = {'data': combined_data, 'usage': total_usage}
+    # Manter a ordem de campos do modelo
+    ordered_data = {
+        field_name: combined_data.get(field_name)
+        for field_name in pydantic_model.model_fields
+    }
+
+    response = {'data': ordered_data, 'usage': total_usage}
     if save_trace:
         response['traces'] = traces
 
