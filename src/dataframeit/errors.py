@@ -623,7 +623,7 @@ _RECOVERABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
 # Atributos em que SDKs e clientes HTTP expõem o status da resposta:
 # status_code (openai, anthropic, groq, mistral, cohere), code (google.genai,
 # google.api_core, urllib) e http_status. O `code` do openai é textual e é
-# descartado pela checagem de tipo em _http_error_status.
+# descartado pela checagem de tipo em _own_http_status.
 _HTTP_STATUS_ATTRIBUTES = ('status_code', 'code', 'http_status')
 
 
@@ -632,8 +632,8 @@ def _own_http_status(error: BaseException) -> int | None:
     candidates = [getattr(error, name, None) for name in _HTTP_STATUS_ATTRIBUTES]
     candidates.append(getattr(getattr(error, 'response', None), 'status_code', None))
     for value in candidates:
-        # bool é subclasse de int; a faixa descarta códigos que não são status HTTP de erro.
-        if isinstance(value, int) and not isinstance(value, bool) and 400 <= value <= 599:
+        # A faixa descarta códigos que não são status HTTP de erro, inclusive bool.
+        if isinstance(value, int) and 400 <= value <= 599:
             return value
     return None
 
@@ -722,6 +722,10 @@ def is_rate_limit_error(error: Exception) -> bool:
         return True
     if isinstance(error, ProviderTransientError):
         return False
+
+    status = _http_error_status(error)
+    if status is not None:
+        return status == 429
 
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ('ratelimit', 'resourceexhausted', 'toomanyrequests', '429')

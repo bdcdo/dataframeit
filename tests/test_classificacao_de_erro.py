@@ -188,3 +188,19 @@ def test_excecoes_reais_do_anthropic():
 
     assert is_recoverable_error(erro_422) is False
     assert is_recoverable_error(erro_429) is True
+
+
+def test_cadeia_de_causas_ciclica_termina():
+    erro_a = ChatGoogleGenerativeAIError("falha a")
+    erro_b = ChatGoogleGenerativeAIError("falha b")
+    erro_a.__cause__ = erro_b
+    erro_b.__cause__ = erro_a
+
+    assert is_recoverable_error(erro_a) is True
+
+
+@pytest.mark.parametrize("status, esperado", [(429, True), (503, False), (400, False)])
+def test_rate_limit_usa_o_status_estruturado(status, esperado):
+    erro = ErroComStatusCode("falha sem pista na mensagem", status)
+
+    assert is_rate_limit_error(erro) is esperado
