@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-24
+
 ### Adicionado
 
 - `max_search_calls` (padrão 10) limita as buscas por execução do agente, também por grupo (`search_groups`) e por campo (`json_schema_extra`). Ao atingi-lo, as buscas seguintes são bloqueadas e o agente responde com o que encontrou; antes, um modelo insistente buscava até o limite de recursão do grafo. As buscas bloqueadas não entram em `search_count` nem em `search_credits`. O limite de passos do agente acompanha o teto, para que um modelo que ignore o bloqueio pare em poucas chamadas.
@@ -312,7 +314,8 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 
 ---
 
-[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/bdcdo/dataframeit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...v0.8.0
