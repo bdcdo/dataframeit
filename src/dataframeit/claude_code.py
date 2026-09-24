@@ -191,8 +191,14 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
 
     options = ClaudeAgentOptions(**options_kwargs)
 
+    # Custo de todas as tentativas da linha: uma tentativa re-tentada ou que
+    # estourou o orçamento também foi cobrada.
+    spent = 0.0
+
     def _call():
+        nonlocal spent
         response_text, result = _run_coroutine(_async_query(prompt, options))
+        spent += getattr(result, 'total_cost_usd', None) or 0
         _raise_for_result_error(result)
 
         if not response_text.strip():
@@ -202,9 +208,12 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
         parsed = parse_json(response_text)
         validated = pydantic_model.model_validate(parsed)
 
-        usage = _usage_from_sdk(
-            getattr(result, 'usage', None), getattr(result, 'total_cost_usd', None)
-        )
+        usage = _usage_from_sdk(getattr(result, 'usage', None), spent)
         return {'data': validated.model_dump(), 'usage': usage}
 
-    return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
+    try:
+        return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
+    except Exception as error:
+        # A linha falhou, mas o custo existiu; o core o soma ao resumo.
+        error.cost_usd = spent
+        raise

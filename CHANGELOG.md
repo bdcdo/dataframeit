@@ -9,7 +9,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
-- O provider `claude_code` repassa o custo informado pelo SDK (`total_cost_usd`), somado no resumo de estatísticas ao fim da execução (#129).
+- O provider `claude_code` repassa o custo informado pelo SDK (`total_cost_usd`), somado no resumo de estatísticas ao fim da execução. A soma inclui as tentativas re-tentadas e as linhas que falharam, e aparece mesmo sem contagem de tokens (#129).
 
 ### Alterado
 
@@ -46,7 +46,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Uma coluna do modelo, de status ou de `_error_details` que já existia como `float` (toda vazia, lida de CSV) ou `int` fazia falhar a gravação de lista, texto ou valor padrão do modelo na retomada, às vezes depois da chamada paga.
 - As estatísticas de busca saíam rotuladas "TAVILY" também com `search_provider='exa'` (#129).
 - A mensagem de erro de API key do Mistral pedia `MISTRALAI_API_KEY`; o `langchain-mistralai` lê `MISTRAL_API_KEY` (#129).
-- A caixa de erro amigável passa a ser escolhida pelo status HTTP estruturado, quando existe; sem ele, códigos só contam como número isolado. "4015 tokens" deixava de ser rate limit mas ainda mostrava a caixa de autenticação, e um erro de busca com "api_key" caía na caixa genérica em vez da do Tavily ou do Exa. "exa" só conta como palavra isolada (#129).
+- A caixa de erro amigável passa a ser escolhida pelo status HTTP estruturado, quando existe; sem ele, códigos só contam como número isolado. "4015 tokens" deixava de ser rate limit mas ainda mostrava a caixa de autenticação, e um erro de busca com "api_key" caía na caixa genérica em vez da do Tavily ou do Exa. "exa" só conta como palavra, com `_` como separador, para que `EXA_API_KEY` escolha a caixa do Exa. Chave inválida escolhe a caixa de autenticação pelo texto também com status: o Google a devolve como 400 `INVALID_ARGUMENT` (#129).
 - Com `langchain-core` >= 1.6, o `is_retryable` do `ModelError` decide o retry, e `ModelRateLimitError` reduz os workers. Um 400 sem status estruturado deixa de ser re-tentado quando o provider levanta `ModelInvalidRequestError`, e `ContextOverflowError` deixa de ser re-tentado em qualquer versão (#129).
 - No provider `claude_code`, um `ResultMessage` com `is_error` virava "resposta vazia" e entrava em retry. Estouro de `max_budget_usd` ou de `max_turns` agora é erro definitivo; o status da API decide entre sobrecarga, falha transitória e falha definitiva (#129).
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).

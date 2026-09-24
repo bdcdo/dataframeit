@@ -1202,7 +1202,9 @@ def _print_token_stats(
         parallel_requests: Número de workers paralelos usados.
         search_provider: Provedor de busca usado, que dá nome à seção de busca.
     """
-    if not token_stats or token_stats.get('total_tokens', 0) == 0:
+    if not token_stats or (
+        token_stats.get('total_tokens', 0) == 0 and not token_stats.get('cost_usd')
+    ):
         return
 
     print("\n" + "=" * 60)
@@ -1216,7 +1218,8 @@ def _print_token_stats(
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get('reasoning_tokens', 0) > 0:
         print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
-    # Só providers que informam o custo, como o claude_code, preenchem este total
+    # Só providers que informam o custo, como o claude_code, preenchem este total,
+    # que inclui as tentativas re-tentadas e as linhas que falharam.
     if token_stats.get('cost_usd', 0) > 0:
         print(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
 
@@ -1495,6 +1498,7 @@ def _process_rows(
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
+            token_stats['cost_usd'] += getattr(e, 'cost_usd', 0) or 0
 
             # Determinar se foi erro recuperável ou não para mensagem correta
             if is_recoverable_error(e):
@@ -1732,6 +1736,7 @@ def _process_rows_parallel(
 
             snapshot = None
             with lock:
+                token_stats['cost_usd'] += getattr(e, 'cost_usd', 0) or 0
                 if is_recoverable_error(e):
                     error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
                 else:

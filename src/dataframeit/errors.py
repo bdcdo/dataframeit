@@ -352,6 +352,16 @@ def _get_missing_search_api_key_message(provider) -> str:
 """.strip()
 
 
+# Textos que só aparecem em erro de chave inválida, qualquer que seja o status.
+_INVALID_KEY_MARKERS = (
+    'api_key_invalid',
+    'api key not valid',
+    'invalid api key',
+    'incorrect api key',
+    'invalid x-api-key',
+)
+
+
 def get_friendly_error_message(error: Exception, provider: str = None) -> str:
     """Converte erro técnico em mensagem amigável para usuários iniciantes.
 
@@ -365,7 +375,9 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
     error_str = f"{type(error).__name__}: {error}".lower()
     error_name = type(error).__name__
     status = _http_error_status(error)
-    is_exa = re.search(r'\bexa\b', error_str) is not None
+    # 'exa' como palavra, contando '_' como separador: casa 'EXA_API_KEY' e
+    # 'exa-py', mas não 'hexagonal'.
+    is_exa = re.search(r'(?<![a-z0-9])exa(?![a-z0-9])', error_str) is not None
 
     def is_category(patterns, codes=()):
         """Com status HTTP estruturado, só ele decide; sem, valem os padrões."""
@@ -453,7 +465,10 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 
 
     # === ERROS DE AUTENTICAÇÃO ===
-    if is_category(['authenticationerror', 'invalidapikey', 'api_key', 'api key'], (401,)):
+    # Chave inválida decide pelo texto mesmo com status: o Google a devolve
+    # como 400 INVALID_ARGUMENT, que o status sozinho não distingue.
+    invalid_key = any(marker in error_str for marker in _INVALID_KEY_MARKERS)
+    if invalid_key or is_category(['authenticationerror', 'invalidapikey', 'api_key', 'api key'], (401,)):
         if env_var is None:
             # Auth via credenciais de SDK (Vertex AI ADC, AWS creds, etc).
             auth_hint = provider_data.get(
