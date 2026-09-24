@@ -80,6 +80,8 @@ plugins:
             API: API
             Referência para LLMs: LLM Reference
             Exemplos: Examples
+            Notebooks: Notebooks
+            Campos Condicionais: Conditional Fields
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -119,7 +121,9 @@ nav:
   - Referência:
     - API: reference/api.md
     - Referência para LLMs: reference/llm-reference.md
-  - Exemplos: examples/index.md
+  - Exemplos:
+    - Notebooks: examples/index.md
+    - Campos Condicionais: examples/conditional-fields.md
 
 extra:
   social:

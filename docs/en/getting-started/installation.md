@@ -38,6 +38,14 @@ DataFrameIt integrates multiple LLM providers through LangChain or official SDKs
 
     This extra pins the official Python SDK and its compatible runtime. DataFrameIt always uses that bundled runtime; an external `codex` command does not participate in execution. The provider remains experimental because the pinned SDK and runtime versions are still prereleases.
 
+=== "Claude Code"
+
+    ```bash
+    pip install dataframeit[claude-code]
+    ```
+
+    The extra installs the Claude Agent SDK, which ships the Claude Code CLI. Authentication is Claude Code's own (a CLI login or `ANTHROPIC_API_KEY`). See [Providers](../guides/providers.md#claude-code).
+
 === "All Providers"
 
     ```bash

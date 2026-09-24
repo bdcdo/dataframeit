@@ -11,6 +11,7 @@ Configure diferentes provedores de LLM via LangChain ou pelos SDKs oficiais de f
 | Anthropic | `anthropic` | claude-sonnet-5, claude-opus-5-5, claude-haiku-4-5 | `claude-sonnet-5` |
 | Groq | `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `openai/gpt-oss-120b` |
 | OpenAI Codex (experimental) | `codex` | Modelos suportados pelo runtime empacotado | Escolhido pelo runtime |
+| Claude Code | `claude_code` | Modelos e aliases aceitos pelo Claude Code (`sonnet`, `haiku`, `opus`) | Escolhido pelo runtime |
 | Cohere | `cohere` | command-r, command-r-plus | Informe `model` |
 | Mistral | `mistralai` | mistral-large, mistral-small | Informe `model` |
 
@@ -97,6 +98,31 @@ resultado = dataframeit(
 Para esse provider, `model_kwargs` aceita somente `effort`. `use_search=True` não é suportado. O modelo Pydantic deve ter campos no nível raiz e usar o [subconjunto de JSON Schema aceito por Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas); `RootModel`, `Any`, campos `dict` com chaves dinâmicas, tuplas fixas e `set` são rejeitados no preflight. A autenticação configurada durante a instalação vem de `auth.json`, portanto não passe `api_key` ao `dataframeit()`.
 
 O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre uma thread efêmera por linha. Cada execução usa `CODEX_HOME` e workspace isolados; `auth.json` é o único arquivo do estado persistente do Codex vinculado ao runtime, que ainda herda as variáveis de ambiente do processo. Enquanto uma execução usa a credencial, outra execução do DataFrameIt com o mesmo `auth.json` falha antes de iniciar o runtime; isso impede refresh concorrente sem afetar `parallel_requests` dentro da execução ativa. Esse lock coordena somente instâncias do DataFrameIt, portanto não execute o Codex CLI com a mesma credencial até o processamento terminar. Busca web, shell e servidores MCP ficam desativados; aprovações são negadas e o sandbox somente leitura bloqueia escrita. O runtime ainda pode apresentar utilitários internos, como `apply_patch`, sem conceder permissão para alterar arquivos.
+
+## Claude Code
+
+O provider `claude_code` usa o [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), que executa o Claude Code CLI. A autenticação é a do próprio Claude Code (login feito no CLI ou `ANTHROPIC_API_KEY`); o parâmetro `api_key` não é usado.
+
+```bash
+pip install dataframeit[claude-code]
+```
+
+```python
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    provider='claude_code',
+    model='haiku',
+    model_kwargs={'max_budget_usd': 0.25, 'effort': 'low'},
+)
+```
+
+`model_kwargs` aceita `max_turns` (padrão 1), `max_budget_usd` (padrão 0.50, teto de gasto por linha) e `effort`. `use_search=True` não é suportado.
+
+O texto das linhas é tratado como conteúdo não confiável. A execução roda sem ferramentas, sem os settings de usuário e de projeto e com `--strict-mcp-config`, de modo que servidores MCP e regras `permissions.allow` configurados no Claude Code não chegam a ela. Uma linha que estoura `max_budget_usd` ou `max_turns` termina em erro definitivo, sem nova tentativa.
+
+Com `track_tokens=True`, o resumo ao fim da execução mostra o custo informado pelo SDK, somando as tentativas re-tentadas e as linhas que falharam.
 
 ## Anthropic Claude
 

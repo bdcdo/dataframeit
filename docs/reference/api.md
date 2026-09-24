@@ -27,9 +27,13 @@ def dataframeit(
     parallel_requests=1,
     # Parâmetros de busca web
     use_search=False,
+    search_provider="tavily",
     search_per_field=False,
     max_results=5,
     search_depth="basic",
+    max_search_calls=10,
+    search_groups=None,
+    save_trace=None,
     batch_size=None,
     checkpoint_path=None,
 ) -> Any
@@ -59,9 +63,9 @@ def dataframeit(
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
 | `model` | str \| None | `None` | Nome do modelo LLM; `None` usa o modelo padrão do provider, listado em [Provedores](../guides/providers.md) |
-| `provider` | str | `'openai'` | Identificador do provider; `codex` usa o SDK oficial em vez de LangChain |
+| `provider` | str | `'openai'` | Identificador do provider; `claude_code` e `codex` usam os SDKs oficiais em vez de LangChain (ver [Provedores](../guides/providers.md)) |
 | `api_key` | str | `None` | API key (usa env var se None); não aceito com `provider='codex'` |
-| `model_kwargs` | dict | `None` | Parâmetros extras; com `codex`, aceita apenas `effort` |
+| `model_kwargs` | dict | `None` | Parâmetros extras; com `claude_code`, `max_turns`, `max_budget_usd` e `effort`; com `codex`, apenas `effort` |
 
 #### Resiliência
 
@@ -85,10 +89,16 @@ def dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `use_search` | bool | `False` | Habilita busca web via Tavily; não suportado com `provider='codex'` |
-| `search_per_field` | bool | `False` | Executa busca separada por campo |
+| `use_search` | bool | `False` | Habilita busca web; não suportado com `provider='claude_code'` nem `'codex'` |
+| `search_provider` | str | `'tavily'` | `'tavily'` (requer `TAVILY_API_KEY`) ou `'exa'` (requer `EXA_API_KEY`) |
+| `search_per_field` | bool | `False` | Executa um agente separado por campo; necessário para `condition` e `search_groups` |
 | `max_results` | int | `5` | Resultados por busca (1-20) |
-| `search_depth` | str | `'basic'` | `'basic'` ou `'advanced'` |
+| `search_depth` | str | `'basic'` | `'basic'` (1 crédito) ou `'advanced'` (2 créditos); só Tavily |
+| `max_search_calls` | int | `10` | Máximo de buscas por execução do agente; as seguintes são bloqueadas e o agente responde com o que encontrou |
+| `search_groups` | dict | `None` | Grupos de campos que compartilham uma busca: `{"grupo": {"fields": [...], "prompt": ..., "max_results": ..., "search_depth": ..., "max_search_calls": ...}}` |
+| `save_trace` | bool \| str | `None` | Salva o trace do agente: `True`/`"full"` ou `"minimal"`; gera `_trace` ou `_trace_{campo}` |
+
+Os campos do modelo aceitam configuração de busca própria em `json_schema_extra` (`prompt`, `prompt_replace`, `prompt_append`, `search_depth`, `max_results`, `max_search_calls`, `condition`, `depends_on`). Ver [Busca Web](../guides/web-search.md) e [Campos Condicionais](../examples/conditional-fields.md).
 
 ### Retorno
 
