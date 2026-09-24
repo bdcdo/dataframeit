@@ -25,6 +25,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Um modelo que referencia outro (ou a si mesmo) com `list['Modelo']` tinha a configuração aninhada ignorada, porque o Pydantic deixa a string sem resolver nessa forma, e no modo por campo cada linha falhava com `PydanticUserError` ao montar o modelo da chamada.
 - O mesmo modelo aninhado em dois campos (`residencial` e `comercial`) só tinha a configuração de busca aplicada no primeiro.
 - `reprocess_columns` no modo por campo ou por grupo pedia ao agente todos os campos, com as buscas correspondentes, e descartava os que não foram pedidos. Agora só as colunas escolhidas são pedidas, e as condições usam os valores já gravados na linha.
+- Uma falha ao gravar o checkpoint (disco cheio, arquivo aberto no Excel, coluna que o parquet não serializa) marcava como `'error'` a linha que tinha acabado de ser processada, com a mensagem de tentativas esgotadas, e podia interromper a execução. Agora vira aviso, o status da linha fica intacto, e a gravação seguinte, ou a final, grava o estado completo (#129).
+- Retomar de checkpoint `.csv` ou `.xlsx` acusava como incompatíveis campos de lista, dict ou modelo aninhado, porque essas células eram gravadas como repr Python. Agora vão como JSON, e `read_df` também lê o repr dos arquivos antigos. Com o modelo, `read_df(caminho, Modelo)` lê como texto os campos de texto, e `"2023"` deixa de voltar como número.
+- Na retomada, um campo com `condition` que ficou `None` porque a condição era falsa deixa de ser acusado como incompatível quando o tipo declarado é obrigatório. Um campo obrigatório de texto vazio num checkpoint textual é lido como `""` quando a coluna tem valor em outras linhas processadas.
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).
 

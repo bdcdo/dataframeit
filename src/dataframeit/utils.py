@@ -7,6 +7,7 @@ Este módulo contém funções utilitárias para:
 - Conversão de Series, listas e dicionários
 - Normalização de estruturas Python (listas, dicionários, tuplas)
 """
+import ast
 import functools
 import importlib
 import json
@@ -299,7 +300,7 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 def is_complex_type(field_type) -> bool:
-    """Verifica se um tipo é complexo (list, dict, tuple).
+    """Verifica se um tipo é complexo (list, dict, tuple ou modelo Pydantic).
 
     Args:
         field_type: Tipo a verificar (pode ser tipo simples ou genérico).
@@ -328,6 +329,11 @@ def is_complex_type(field_type) -> bool:
     if field_type in (list, dict, tuple):
         return True
 
+    # Modelo aninhado: a linha guarda o model_dump, um dict
+    from pydantic import BaseModel
+    if isinstance(field_type, type) and issubclass(field_type, BaseModel):
+        return True
+
     return False
 
 
@@ -347,6 +353,28 @@ def get_complex_fields(pydantic_model) -> set:
             complex_fields.add(field_name)
 
     return complex_fields
+
+
+def accepts_only_text(field_type) -> bool:
+    """True se o tipo só aceita texto: str, Literal de strings ou esses com None."""
+    if field_type is str:
+        return True
+    origin = get_origin(field_type)
+    if origin is typing.Literal:
+        return all(isinstance(arg, str) for arg in get_args(field_type))
+    if origin is typing.Union or isinstance(field_type, types.UnionType):
+        args = [arg for arg in get_args(field_type) if arg is not type(None)]
+        return bool(args) and all(accepts_only_text(arg) for arg in args)
+    return False
+
+
+def get_text_fields(pydantic_model) -> set:
+    """Nomes dos campos que só aceitam texto."""
+    return {
+        field_name
+        for field_name, field_info in pydantic_model.model_fields.items()
+        if accepts_only_text(field_info.annotation)
+    }
 
 
 def normalize_value(value: Any) -> Any:
@@ -389,10 +417,17 @@ def normalize_value(value: Any) -> Any:
     # Verifica se parece com JSON (começa com [ ou {)
     if stripped.startswith(('[', '{')):
         try:
-            parsed = json.loads(stripped)
-            return parsed
+            return json.loads(stripped)
         except (json.JSONDecodeError, ValueError):
             pass
+        # Checkpoints textuais antigos gravavam o repr Python ("['a', 'b']").
+        # literal_eval só aceita literais, nunca executa código.
+        try:
+            parsed = ast.literal_eval(stripped)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            return value
+        if isinstance(parsed, (list, dict, tuple)):
+            return parsed
 
     return value
 
@@ -456,6 +491,13 @@ def read_df(
 
     # Detectar formato pelo sufixo
     _, ext = os.path.splitext(path.lower())
+
+    # Com o modelo, campos de texto são lidos como texto: sem isso, "2023"
+    # volta como número e a retomada acusa o campo como incompatível.
+    if model is not None and ext in ('.xlsx', '.xls', '.csv') and 'dtype' not in kwargs:
+        text_fields = get_text_fields(model)
+        if text_fields:
+            kwargs['dtype'] = dict.fromkeys(text_fields, str)
 
     # Carregar DataFrame baseado na extensão
     if ext in ('.xlsx', '.xls'):

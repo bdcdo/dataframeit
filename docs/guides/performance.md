@@ -99,10 +99,13 @@ resultado = dataframeit(
 ```
 
 Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em caso
-de interrupção, recarregue o DataFrame do disco e re-execute com `resume=True`:
+de interrupção, recarregue o DataFrame com `read_df`, que devolve listas, dicts e
+textos com os tipos do modelo, e re-execute com `resume=True`:
 
 ```python
-df_parcial = pd.read_excel("checkpoint.xlsx")
+from dataframeit import read_df
+
+df_parcial = read_df("checkpoint.xlsx", Model)
 resultado = dataframeit(
     df_parcial, Model, PROMPT,
     resume=True, batch_size=100, checkpoint_path="checkpoint.xlsx",
