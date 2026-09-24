@@ -301,7 +301,7 @@ def test_save_checkpoint_rejects_unsupported_extension(tmp_path):
         _save_checkpoint(df, tmp_path / "out.json")
 
 
-def test_checkpoint_paralelo_serializa_gravacoes_e_descarta_snapshot_antigo(tmp_path):
+def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     """Duas gravações simultâneas disputavam o mesmo .tmp, e o FileNotFoundError
     do os.replace regravava como 'error' uma linha já processada."""
     import threading

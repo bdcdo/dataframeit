@@ -1291,10 +1291,13 @@ def _process_rows_parallel(
     workers_reduced = False
     rate_limit_event = threading.Event()
     checkpoint_counter = 0
-    # A gravação do checkpoint fica fora de `lock` para não bloquear as threads
-    # na I/O, mas precisa de trava própria: duas gravações simultâneas disputam
-    # o mesmo arquivo temporário. O rótulo de cada snapshot descarta um mais
-    # antigo que chegue depois de um mais novo.
+    # A gravação do checkpoint não segura `lock`, para que as threads que
+    # processam linhas sigam durante a I/O, mas tem trava própria: duas
+    # gravações simultâneas disputam o mesmo arquivo temporário. Cada snapshot
+    # é copiado sob `lock` na mesma seção que incrementa checkpoint_counter e
+    # leva esse valor como rótulo; por isso o snapshot de rótulo maior contém
+    # tudo o que os de rótulo menor contêm, e um mais antigo que chegue depois
+    # pode ser descartado sem perda.
     checkpoint_write_lock = threading.Lock()
     last_saved_checkpoint = 0
 
