@@ -324,10 +324,9 @@ def _msg_with_tool_calls(tool_names):
     )
 
 
-def _make_provider(name="tavily", pattern="tavily", credits_fn=None):
+def _make_provider(name="tavily", credits_fn=None):
     provider = MagicMock()
     provider.name = name
-    provider.get_tool_name_pattern.return_value = pattern
     provider.calculate_credits.side_effect = (
         credits_fn if credits_fn else lambda search_count, **kw: search_count
     )
@@ -346,7 +345,7 @@ class TestExtractUsage:
             ],
         }
         provider = _make_provider()
-        usage = _extract_usage(result, provider, SearchConfig(provider="tavily"))
+        usage = _extract_usage(result, provider, SearchConfig(provider="tavily"), "tavily_search")
         assert usage["input_tokens"] == 30
         assert usage["cached_input_tokens"] == 7
         assert usage["output_tokens"] == 15
@@ -357,7 +356,7 @@ class TestExtractUsage:
         from dataframeit.llm import SearchConfig
 
         result = {"messages": [_msg_with_usage(0, 0, 0, reasoning=8)]}
-        usage = _extract_usage(result, _make_provider(), SearchConfig(provider="tavily"))
+        usage = _extract_usage(result, _make_provider(), SearchConfig(provider="tavily"), "tavily_search")
         assert usage["reasoning_tokens"] == 8
 
     def test_usage_metadata_como_objeto(self):
@@ -370,12 +369,12 @@ class TestExtractUsage:
             output_token_details=SimpleNamespace(reasoning=4),
         )
         msg = SimpleNamespace(usage_metadata=meta, type="ai")
-        usage = _extract_usage({"messages": [msg]}, _make_provider(), SearchConfig(provider="tavily"))
+        usage = _extract_usage({"messages": [msg]}, _make_provider(), SearchConfig(provider="tavily"), "tavily_search")
         assert usage["input_tokens"] == 1
         assert usage["cached_input_tokens"] == 5
         assert usage["reasoning_tokens"] == 4
 
-    def test_search_count_via_padrao_do_provider(self):
+    def test_search_count_pelo_nome_da_ferramenta(self):
         from dataframeit.agent import _extract_usage
         from dataframeit.llm import SearchConfig
 
@@ -384,8 +383,8 @@ class TestExtractUsage:
                 _msg_with_tool_calls(["tavily_search", "tavily_search", "outra_tool"]),
             ],
         }
-        provider = _make_provider(pattern="tavily")
-        usage = _extract_usage(result, provider, SearchConfig(provider="tavily"))
+        provider = _make_provider()
+        usage = _extract_usage(result, provider, SearchConfig(provider="tavily"), "tavily_search")
         assert usage["search_count"] == 2
 
     def test_search_count_com_tool_calls_como_objeto(self):
@@ -398,18 +397,27 @@ class TestExtractUsage:
             type="ai",
         )
         usage = _extract_usage(
-            {"messages": [msg]}, _make_provider(pattern="tavily"), SearchConfig(provider="tavily"),
+            {"messages": [msg]}, _make_provider(), SearchConfig(provider="tavily"), "tavily_search",
         )
         assert usage["search_count"] == 1
 
-    def test_search_count_pelo_substring_search(self):
+    def test_search_count_so_conta_a_ferramenta_de_busca(self):
+        """Structured output do ToolStrategy usa o nome do modelo, que pode conter "search"."""
         from dataframeit.agent import _extract_usage
         from dataframeit.llm import SearchConfig
 
-        result = {"messages": [_msg_with_tool_calls(["custom_search_tool"])]}
-        provider = _make_provider(pattern="naoexiste")
-        usage = _extract_usage(result, provider, SearchConfig(provider="tavily"))
+        result = {
+            "messages": [
+                _msg_with_tool_calls(["tavily_search"]),
+                _msg_with_tool_calls(["NestedSearch_pedidos_status", "ResearchResult"]),
+                _msg_with_tool_calls(["ItemSearch_0_status"]),
+            ],
+        }
+        usage = _extract_usage(
+            result, _make_provider(), SearchConfig(provider="tavily"), "tavily_search",
+        )
         assert usage["search_count"] == 1
+        assert usage["search_credits"] == 1
 
     def test_search_credits_calculado_pelo_provider(self):
         from dataframeit.agent import _extract_usage
@@ -417,10 +425,9 @@ class TestExtractUsage:
 
         result = {"messages": [_msg_with_tool_calls(["tavily_search"])]}
         provider = _make_provider(
-            pattern="tavily",
             credits_fn=lambda search_count, **kw: search_count * 2,
         )
-        usage = _extract_usage(result, provider, SearchConfig(provider="tavily", search_depth="advanced"))
+        usage = _extract_usage(result, provider, SearchConfig(provider="tavily", search_depth="advanced"), "tavily_search")
         assert usage["search_credits"] == 2
         assert usage["search_provider"] == "tavily"
 
@@ -428,7 +435,7 @@ class TestExtractUsage:
         from dataframeit.agent import _extract_usage
         from dataframeit.llm import SearchConfig
 
-        usage = _extract_usage({}, _make_provider(), SearchConfig(provider="tavily"))
+        usage = _extract_usage({}, _make_provider(), SearchConfig(provider="tavily"), "tavily_search")
         assert usage["input_tokens"] == 0
         assert usage["search_count"] == 0
         assert usage["search_credits"] == 0

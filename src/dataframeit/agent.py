@@ -389,7 +389,7 @@ def call_agent(
         data = structured.model_dump() if hasattr(structured, 'model_dump') else structured
 
         # Calcular usage (tokens + search credits via provider)
-        usage = _extract_usage(result, provider, search_config)
+        usage = _extract_usage(result, provider, search_config, search_tool.name)
 
         response = {'data': data, 'usage': usage}
 
@@ -801,13 +801,14 @@ def _apply_group_overrides(config: LLMConfig, group_config) -> LLMConfig:
     return new_config
 
 
-def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any]:
+def _extract_usage(agent_result: dict, provider, search_config, search_tool_name: str) -> Dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 
     Args:
         agent_result: Resultado retornado pelo agent.invoke().
         provider: Instância do SearchProvider usado.
         search_config: Configuração de busca (SearchConfig).
+        search_tool_name: Nome da ferramenta de busca passada ao agente.
 
     Returns:
         Dicionário com tokens e créditos de busca.
@@ -863,14 +864,15 @@ def _extract_usage(agent_result: dict, provider, search_config) -> Dict[str, Any
             usage['total_tokens'] += parsed['total_tokens']
             usage['reasoning_tokens'] += parsed['reasoning_tokens']
 
-    # Contar chamadas de busca (tool calls) usando padrão do provider
-    tool_pattern = provider.get_tool_name_pattern()
+    # Só a ferramenta de busca conta. O agente também recebe a ferramenta de
+    # structured output do ToolStrategy, cujo nome é o do modelo Pydantic
+    # (ex.: `NestedSearch_*`, `ResearchResult`), e por isso casar substring
+    # como "search" inflaria search_count e search_credits.
     for msg in messages:
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
             for tc in msg.tool_calls:
                 tool_name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
-                # Identificar tool calls do provider ou genéricos de busca
-                if tool_pattern in tool_name.lower() or 'search' in tool_name.lower():
+                if tool_name == search_tool_name:
                     usage['search_count'] += 1
 
     # Calcular créditos usando método do provider

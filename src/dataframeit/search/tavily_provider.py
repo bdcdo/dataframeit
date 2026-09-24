@@ -82,7 +82,3 @@ class TavilyProvider(SearchProvider):
         """
         depth_cost = 2 if search_depth == "advanced" else 1
         return search_count * depth_cost
-
-    def get_tool_name_pattern(self) -> str:
-        """Padrão para identificar tool calls Tavily."""
-        return "tavily"
