@@ -100,6 +100,25 @@ def _success_details(retry_info: dict) -> str | None:
     return f"Sucesso após {retries} retry(s)" if retries > 0 else None
 
 
+def _missing_text_detail(row_already_processed: bool, reprocess_columns) -> str:
+    """Detalhe da linha sem texto; sob reprocess_columns, a linha mantém os valores."""
+    if row_already_processed and reprocess_columns:
+        return _MISSING_TEXT_DETAIL + _KEPT_VALUES_NOTE
+    return _MISSING_TEXT_DETAIL
+
+
+def _as_object_columns(df: pd.DataFrame, columns) -> None:
+    """Converte para object as colunas que vão receber texto, lista ou None.
+
+    Uma coluna lida de CSV ou XLSX toda vazia volta como float, e gravar texto
+    nela levanta TypeError no pandas 3. Vale para as colunas do modelo e para
+    as de controle (status e detalhe de erro).
+    """
+    for col in columns:
+        if col in df.columns and df[col].dtype != object:
+            df[col] = df[col].astype(object)
+
+
 def _is_missing_text(value) -> bool:
     """None, NaN ou texto só com espaços: não há o que mandar ao LLM."""
     if isinstance(value, str):
@@ -882,7 +901,7 @@ def dataframeit(
         and not reprocess_columns
         and status_col not in df_pandas.columns
         and existing_cols == expected_columns
-        and df_pandas[expected_columns].notna().any(axis=1).all()
+        and df_pandas[expected_columns].notna().to_numpy().any()
     ):
         warnings.warn(
             f"As colunas {expected_columns} já estão preenchidas e não há coluna "
@@ -931,6 +950,7 @@ def dataframeit(
             trace_mode,
             questions,
         )
+        _as_object_columns(df_pandas, expected_columns)
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
@@ -998,6 +1018,8 @@ def dataframeit(
             trace_mode,
             questions,
         )
+        control_columns = [status_col, '_error_details']
+        _as_object_columns(df_pandas, expected_columns + control_columns)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -1005,12 +1027,9 @@ def dataframeit(
         if complex_fields and resume:
             normalize_complex_columns(df_pandas, complex_fields)
 
-        # Uma coluna já existente pode ter vindo como float (toda NaN, lida de
-        # CSV) ou int; gravar lista ou texto nela falharia depois da chamada
-        # paga. Vem depois da normalização, cujo apply volta a inferir float.
-        for col in expected_columns:
-            if df_pandas[col].dtype != object:
-                df_pandas[col] = df_pandas[col].astype(object)
+        # De novo depois da normalização, cujo apply volta a inferir float; sem
+        # isso, gravar lista ou texto falharia depois da chamada paga.
+        _as_object_columns(df_pandas, expected_columns)
 
         is_pending, processed_count = _get_processing_indices(
             df_pandas, status_col, resume
@@ -1388,7 +1407,9 @@ def _process_rows(
 
         if _is_missing_text(row[text_column]):
             df.at[idx, status_col] = 'error'
-            df.at[idx, '_error_details'] = _MISSING_TEXT_DETAIL
+            df.at[idx, '_error_details'] = _missing_text_detail(
+                row_already_processed, reprocess_columns
+            )
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
                 if _try_save_checkpoint(df, checkpoint_path):
@@ -1597,11 +1618,14 @@ def _process_rows_parallel(
         nonlocal current_workers, workers_reduced, checkpoint_counter
 
         i, idx, row = row_data
+        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
         if _is_missing_text(row[text_column]):
             snapshot = None
             with lock:
                 df.at[idx, status_col] = 'error'
-                df.at[idx, '_error_details'] = _MISSING_TEXT_DETAIL
+                df.at[idx, '_error_details'] = _missing_text_detail(
+                    row_already_processed, reprocess_columns
+                )
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
                     snapshot = (df.copy(), checkpoint_counter)
@@ -1610,7 +1634,6 @@ def _process_rows_parallel(
             return {'success': False, 'idx': idx, 'error': _MISSING_TEXT_DETAIL}
 
         text = str(row[text_column])
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
 
         # Verificar se devemos pausar devido a rate limit
         if rate_limit_event.is_set():

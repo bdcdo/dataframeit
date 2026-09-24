@@ -36,8 +36,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Na retomada, um campo com `condition` que ficou `None` porque a condição, avaliada com os valores da linha, era falsa deixa de ser acusado como incompatível quando o tipo declarado é obrigatório. Com a condição verdadeira, o valor ausente continua acusado, e um valor presente continua validado com as restrições do campo.
 - Com `status_column` personalizado, a coluna de status e `_error_details` ficavam na saída de uma execução sem erros e fora do fim da tabela (#129).
 - Um DataFrame com coluna de nome não textual (`pd.DataFrame(textos)`, cuja coluna é `0`) falhava depois de todas as chamadas, ao reordenar as colunas.
-- `_error_details` de uma execução anterior ficava na linha depois que ela passava a `'processed'`. Quando uma linha já processada falha em `reprocess_columns`, o detalhe diz que os valores anteriores foram mantidos.
-- Uma coluna do modelo que já existia como `float` (toda vazia, lida de CSV) ou `int` fazia falhar a gravação de lista ou texto depois da chamada paga.
+- `_error_details` de uma execução anterior ficava na linha depois que ela passava a `'processed'`. Quando uma linha já processada falha em `reprocess_columns`, inclusive por texto ausente, o detalhe diz que os valores anteriores foram mantidos.
+- Uma coluna do modelo, de status ou de `_error_details` que já existia como `float` (toda vazia, lida de CSV) ou `int` fazia falhar a gravação de lista, texto ou valor padrão do modelo na retomada, às vezes depois da chamada paga.
 - As estatísticas de busca saíam rotuladas "TAVILY" também com `search_provider='exa'` (#129).
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).

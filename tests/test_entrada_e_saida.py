@@ -195,3 +195,211 @@ def test_estatisticas_de_busca_usam_o_provider_escolhido(capsys):
     assert 'EXA' in saida
     assert 'TAVILY' not in saida
 
+
+
+# =============================================================================
+# Correções da revisão
+# =============================================================================
+
+class ModeloOpcional(BaseModel):
+    x: str | None = None
+
+
+class ModeloComPadroes(BaseModel):
+    x: str
+    obs: str = ''
+    tags: list[str] = []
+
+
+@pytest.mark.parametrize('parallel_requests', [1, 2])
+def test_retomada_de_csv_com_detalhe_vazio_e_texto_ausente(tmp_path, parallel_requests):
+    """Detalhe de erro todo vazio volta do CSV como float; gravar texto nele não quebra."""
+    caminho = tmp_path / 'c.csv'
+    pd.DataFrame({
+        'texto': ['a', 'b', None],
+        'x': ['x-a', None, None],
+        '_dataframeit_status': ['processed', None, None],
+        '_error_details': [None, None, None],
+    }).to_csv(caminho, index=False)
+    df = pd.read_csv(caminho)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        resultado, llm = _rodar(df, resume=True, parallel_requests=parallel_requests)
+
+    assert llm.call_count == 1
+    assert resultado['_dataframeit_status'].tolist() == ['processed', 'processed', 'error']
+    assert resultado['_error_details'].tolist()[2] == 'Texto ausente'
+
+
+def test_padroes_do_modelo_em_coluna_float_na_retomada():
+    df = pd.DataFrame({
+        'texto': ['a', 'b'],
+        'x': ['x-a', np.nan],
+        'obs': [np.nan, np.nan],
+        'tags': [np.nan, np.nan],
+        '_dataframeit_status': ['processed', np.nan],
+    })
+    resultado, _ = _rodar(
+        df, questions=ModeloComPadroes,
+        llm=_responde(x='x-b', obs='o', tags=['t']), resume=True,
+    )
+    assert resultado['obs'].tolist() == ['', 'o']
+    assert resultado['tags'].tolist() == [[], ['t']]
+
+
+def test_reexecucao_avisa_mesmo_com_linha_toda_nula():
+    primeira, _ = _rodar(
+        pd.DataFrame({'texto': ['a', 'b']}), questions=ModeloOpcional,
+        llm=_responde(x=lambda t: None if t.endswith('b') else 'x'),
+    )
+    assert primeira['x'].tolist() == ['x', None]
+
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter('always')
+        _rodar(primeira, questions=ModeloOpcional, resume=True)
+
+    assert any('já estão preenchidas' in str(a.message) for a in avisos)
+
+
+@pytest.mark.parametrize('opcoes', [
+    {'resume': True, 'status': ['processed', 'processed']},
+    {'resume': True, 'status': None, 'reprocess_columns': ['x']},
+])
+def test_reexecucao_nao_avisa_com_status_ou_reprocess_columns(opcoes):
+    opcoes = dict(opcoes)
+    df = pd.DataFrame({'texto': ['a', 'b'], 'x': ['1', '2']})
+    status = opcoes.pop('status')
+    if status is not None:
+        df['_dataframeit_status'] = status
+
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter('always')
+        _rodar(df, **opcoes)
+
+    assert not any('já estão preenchidas' in str(a.message) for a in avisos)
+
+
+@pytest.mark.parametrize('parallel_requests', [1, 2])
+def test_texto_ausente_em_reprocess_columns_diz_que_os_valores_ficaram(parallel_requests):
+    df = pd.DataFrame({
+        'texto': ['a', None],
+        'x': ['x-a', 'antigo'],
+        '_dataframeit_status': ['processed', 'processed'],
+    })
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        resultado, _ = _rodar(df, reprocess_columns=['x'], parallel_requests=parallel_requests)
+
+    assert resultado['x'].tolist() == ['x-a', 'antigo']
+    detalhe = resultado['_error_details'].tolist()[1]
+    assert detalhe.startswith('Texto ausente')
+    assert 'mantém os valores anteriores' in detalhe
+
+
+def test_aviso_de_texto_ausente_conta_linhas_de_reprocess_columns():
+    df = pd.DataFrame({
+        'texto': ['a', None],
+        'x': ['x-a', 'antigo'],
+        '_dataframeit_status': ['processed', 'processed'],
+    })
+    with pytest.warns(UserWarning, match='1 linha') as avisos:
+        _rodar(df, reprocess_columns=['x'])
+    aviso = next(a for a in avisos if 'sem texto' in str(a.message))
+    assert aviso.filename == __file__
+
+
+def test_aviso_de_texto_ausente_aponta_para_o_chamador():
+    with pytest.warns(UserWarning, match='sem texto') as avisos:
+        _rodar(pd.DataFrame({'texto': ['a', '']}))
+    aviso = next(a for a in avisos if 'sem texto' in str(a.message))
+    assert aviso.filename == __file__
+
+
+@pytest.mark.parametrize('parallel_requests', [1, 2])
+def test_texto_ausente_conta_para_o_checkpoint(tmp_path, parallel_requests):
+    from dataframeit import core
+
+    gravacoes = []
+    original = core._try_save_checkpoint
+
+    def registra(df, path):
+        gravacoes.append(len(df))
+        return original(df, path)
+
+    with patch('dataframeit.core._try_save_checkpoint', side_effect=registra), \
+            warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        _rodar(
+            pd.DataFrame({'texto': [None, None, None, None]}), batch_size=2,
+            checkpoint_path=tmp_path / 'c.csv', parallel_requests=parallel_requests,
+        )
+
+    # Uma gravação a cada duas linhas; a final não se repete quando nada mudou.
+    assert len(gravacoes) == 2
+
+
+def test_status_column_personalizado_em_dataframe_vazio():
+    resultado, _ = _rodar(pd.DataFrame({'texto': pd.Series([], dtype=object)}), status_column='st')
+    assert list(resultado.columns) == ['texto', 'x']
+
+
+def test_status_column_personalizado_em_checkpoint_concluido():
+    df = pd.DataFrame({'texto': ['a'], 'x': ['1'], 'st': ['processed']})
+    resultado, llm = _rodar(df, status_column='st', resume=True)
+    llm.assert_not_called()
+    assert list(resultado.columns) == ['texto', 'x']
+
+
+def test_status_column_personalizado_com_colunas_existentes():
+    df = pd.DataFrame({'texto': ['a'], 'x': ['1'], 'st': ['processed']})
+    with pytest.warns(UserWarning, match='já existem'):
+        resultado, _ = _rodar(df, status_column='st', resume=False)
+    assert list(resultado.columns) == ['texto', 'x']
+
+
+def _entrada(tipo, textos):
+    if tipo == 'pandas':
+        return pd.DataFrame({'texto': textos})
+    if tipo == 'series':
+        return pd.Series(textos)
+    pl = pytest.importorskip('polars')
+    if tipo == 'polars':
+        return pl.DataFrame({'texto': textos})
+    return pl.Series(textos)
+
+
+@pytest.mark.parametrize('tipo', ['pandas', 'series', 'polars', 'polars_series'])
+def test_status_column_personalizado_fica_depois_dos_tokens(tipo):
+    def llm(text, *args, **kwargs):
+        if text.endswith('b'):
+            raise ValueError('falhou')
+        return {'data': {'x': 'ok'}, 'usage': {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2}}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        resultado, _ = _rodar(
+            _entrada(tipo, ['a', 'b']), llm=llm, status_column='st',
+            max_retries=1, track_tokens=True,
+        )
+    colunas = list(resultado.columns)
+    assert colunas[-2:] == ['st', '_error_details']
+    assert colunas.index('_input_tokens') < colunas.index('st')
+
+
+def test_estatisticas_de_busca_de_ponta_a_ponta_usam_o_provider(capsys):
+    resposta = {
+        'data': {'x': 'ok'},
+        'usage': {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2,
+                  'search_count': 1, 'search_credits': 1},
+    }
+    with patch('dataframeit.agent.call_agent', return_value=resposta), \
+            patch('dataframeit.core.validate_provider_dependencies'), \
+            patch('dataframeit.core.validate_search_dependencies'):
+        dataframeit(
+            pd.DataFrame({'texto': ['a']}), questions=Modelo, prompt='{texto}',
+            use_search=True, search_provider='exa',
+        )
+    saida = capsys.readouterr().out
+    assert 'EXA' in saida
+    assert 'TAVILY' not in saida
