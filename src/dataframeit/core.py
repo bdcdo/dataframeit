@@ -251,8 +251,9 @@ def _warn_search_rate_limit(
     total_queries = num_rows * queries_per_row
     concurrent_queries = parallel_requests * queries_per_row
 
-    provider_limit = get_provider(search_provider).requests_per_minute
-    provider_name = search_provider.capitalize()
+    provider = get_provider(search_provider)
+    provider_limit = provider.requests_per_minute
+    provider_name = provider.friendly_name
 
     issues: list[str] = []
 
@@ -375,7 +376,7 @@ def _validate_search_groups(
                     )
 
         # Validar search_depth se especificado
-        if group_config.get('search_depth') and group_config['search_depth'] not in ('basic', 'advanced'):
+        if group_config.get('search_depth') is not None and group_config['search_depth'] not in ('basic', 'advanced'):
             raise ValueError(
                 f"Grupo '{group_name}': search_depth deve ser 'basic' ou 'advanced'"
             )

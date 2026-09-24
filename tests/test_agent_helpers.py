@@ -118,6 +118,98 @@ class TestWithSearchOverrides:
 
 
 # =============================================================================
+# Repasse dos overrides em cada ponto de chamada de call_agent
+# =============================================================================
+
+class TestRepasseDosOverrides:
+    """Cada caminho que chama call_agent aplica o override do seu campo ou grupo."""
+
+    @staticmethod
+    def _registrar(respostas):
+        """call_agent falso: registra (modelo, max_results, search_depth) e responde."""
+        chamadas = []
+
+        def call_agent(text, model, prompt, config, save_trace=None):
+            chamadas.append((
+                model.__name__,
+                config.search_config.max_results,
+                config.search_config.search_depth,
+            ))
+            return {
+                'data': {campo: respostas.get(campo) for campo in model.model_fields},
+                'usage': {},
+            }
+        return call_agent, chamadas
+
+    def test_campo_de_item_de_lista(self):
+        from unittest.mock import patch
+
+        from dataframeit.agent import call_agent_per_field
+
+        class Item(BaseModel):
+            nome: str
+            status: Optional[str] = Field(
+                None, json_schema_extra={'max_results': 8, 'search_depth': 'advanced'}
+            )
+
+        class Modelo(BaseModel):
+            itens: list[Item] = []
+
+        falso, chamadas = self._registrar({'itens': [{'nome': 'a'}], 'status': 'ok'})
+        with patch('dataframeit.agent.call_agent', side_effect=falso):
+            call_agent_per_field('t', Modelo, 'Analise {texto}', _make_config())
+
+        assert (8, 'advanced') in [(m, d) for nome, m, d in chamadas if nome.startswith('ItemSearch')]
+
+    def test_campo_de_modelo_aninhado(self):
+        from unittest.mock import patch
+
+        from dataframeit.agent import call_agent_per_field
+
+        class Interno(BaseModel):
+            valor: Optional[str] = Field(
+                None, json_schema_extra={'max_results': 7, 'search_depth': 'advanced'}
+            )
+
+        class Modelo(BaseModel):
+            interno: Optional[Interno] = None
+
+        falso, chamadas = self._registrar({'valor': 'v', 'interno': None})
+        with patch('dataframeit.agent.call_agent', side_effect=falso):
+            call_agent_per_field('t', Modelo, 'Analise {texto}', _make_config())
+
+        assert [(m, d) for nome, m, d in chamadas if nome.startswith('NestedSearch')] == [
+            (7, 'advanced')
+        ]
+
+    def test_grupo_e_campo_isolado_no_modo_por_grupo(self):
+        from unittest.mock import patch
+
+        from dataframeit.agent import call_agent_per_group
+        from dataframeit.llm import SearchGroupConfig
+
+        class Modelo(BaseModel):
+            a: Optional[str] = None
+            b: Optional[str] = None
+            c: Optional[str] = Field(
+                None, json_schema_extra={'max_results': 11, 'search_depth': 'advanced'}
+            )
+
+        cfg = _make_config()
+        cfg.search_config.per_field = True
+        cfg.search_config.groups = {
+            'g': SearchGroupConfig(fields=['a', 'b'], max_results=9, search_depth='advanced'),
+        }
+        falso, chamadas = self._registrar({'a': '1', 'b': '2', 'c': '3'})
+        with patch('dataframeit.agent.call_agent', side_effect=falso):
+            call_agent_per_group('t', Modelo, 'Analise {texto}', cfg)
+
+        por_modelo = {nome: (m, d) for nome, m, d in chamadas}
+        assert por_modelo['Modelo_group_g'] == (9, 'advanced')
+        assert por_modelo['Modelo_c'] == (11, 'advanced')
+
+
+# =============================================================================
 # _set_nested_value
 # =============================================================================
 

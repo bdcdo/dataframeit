@@ -9,11 +9,13 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- O nome exibido, o plano de entrada e o limite aproximado por minuto de cada provedor de busca passam a ser propriedades de `SearchProvider` (`friendly_name`, `free_tier`, `requests_per_minute`). A validação de `search_provider`, a mensagem de API key ausente e o aviso de rate limit leem do registro de provedores em vez de listas próprias (#130).
+- O nome exibido, o plano de entrada e o limite aproximado por minuto de cada provedor de busca passam a ser propriedades abstratas de `SearchProvider` (`friendly_name`, `free_tier`, `requests_per_minute`), que uma subclasse registrada com `register_provider` precisa implementar. A validação de `search_provider`, a mensagem de API key ausente e o aviso de rate limit leem do registro de provedores em vez de listas próprias (#130).
+- Nos overrides de busca por campo e por grupo, só a ausência (`None`) cai no valor global; `max_results=0` ou `search_depth=''` deixam de ser ignorados em silêncio (#130).
 
 ### Corrigido
 
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
+- `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).
 
 ## [0.9.0] - 2026-09-23
 

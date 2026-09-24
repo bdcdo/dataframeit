@@ -940,13 +940,14 @@ def test_search_groups_validates_field_config_conflict():
     assert "json_schema_extra" in str(exc_info.value)
 
 
-def test_search_groups_validates_search_depth():
-    """Verifica que search_depth inválido no grupo gera erro."""
+@pytest.mark.parametrize("search_depth", ["invalid", ""])
+def test_search_groups_validates_search_depth(search_depth):
+    """Verifica que search_depth inválido no grupo gera erro, inclusive o vazio."""
     from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
-            {"grupo": {"fields": ["nome"], "search_depth": "invalid"}},
+            {"grupo": {"fields": ["nome"], "search_depth": search_depth}},
             RegulatoryModel,
             use_search=True,
             search_per_field=True

@@ -121,6 +121,13 @@ def _with_search_overrides(config: LLMConfig, search_depth=None, max_results=Non
     return new_config
 
 
+def _with_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
+    """Aplica os overrides de busca de um campo, lidos de _get_field_config."""
+    return _with_search_overrides(
+        config, field_config.get('search_depth'), field_config.get('max_results')
+    )
+
+
 def _get_list_fields_with_nested_search(pydantic_model) -> dict:
     """Identifica campos List[Model] que têm configuração de busca em modelos internos.
 
@@ -215,9 +222,7 @@ def _enrich_list_items_with_search(
             )
 
             # Criar config com overrides do campo
-            effective_config = _with_search_overrides(
-                config, field_config.get('search_depth'), field_config.get('max_results')
-            )
+            effective_config = _with_field_overrides(config, field_config)
 
             # Chamar agente para buscar informações
             result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -398,9 +403,7 @@ def _run_nested_searches(
         )
 
         # Criar config com overrides do campo (se houver)
-        effective_config = _with_search_overrides(
-            config, field_config.get('search_depth'), field_config.get('max_results')
-        )
+        effective_config = _with_field_overrides(config, field_config)
 
         # Chamar agente para buscar informações
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -542,9 +545,7 @@ def call_agent_per_field(
             field_prompt += f"\n\nContexto de buscas realizadas para campos aninhados:\n{context_str}"
 
         # Criar config com overrides do campo (se houver)
-        effective_config = _with_search_overrides(
-            config, field_config.get('search_depth'), field_config.get('max_results')
-        )
+        effective_config = _with_field_overrides(config, field_config)
 
         # Chamar agente para este campo
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -783,9 +784,7 @@ def call_agent_per_group(
             )
 
             # Criar config com overrides do campo (se houver)
-            effective_config = _with_search_overrides(
-                config, field_config.get('search_depth'), field_config.get('max_results')
-            )
+            effective_config = _with_field_overrides(config, field_config)
 
             # Chamar agente para este campo
             result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
