@@ -1,14 +1,12 @@
 """Provedor de busca Exa.
 
 Exa é um motor de busca semântico com:
-- $0.005 por busca (1-25 resultados)
-- $0.025 por busca (26-100 resultados)
+- $0.005 por busca na faixa de 1 a 25 resultados, que cobre o teto de 20 de max_results
 - Busca semântica avançada com embeddings
 
 Recomendado para:
-- Alto volume (>2667 buscas/mês com 1-25 resultados)
+- Alto volume (>2667 buscas/mês)
 - Busca semântica mais precisa
-- Quando não precisa de mais de 25 resultados
 """
 
 from typing import Any
@@ -60,13 +58,30 @@ class ExaProvider(SearchProvider):
             max_results: Número de resultados por busca.
 
         Returns:
-            Instância de ExaSearchResults configurada.
+            Ferramenta LangChain que recebe só a consulta.
         """
+        from langchain_core.tools import StructuredTool
         from langchain_exa import ExaSearchResults
 
-        return ExaSearchResults(
-            num_results=max_results,
-            text_contents_options={"max_characters": 1000},
+        # ExaSearchResults aceita num_results e text_contents_options no
+        # construtor sem usá-los: são argumentos do _run, que o modelo escolhe,
+        # e o _run devolve repr(e) em vez de levantar. A ferramenta abaixo usa
+        # só o cliente autenticado, fixa os dois limites e deixa o erro subir
+        # até o retry.
+        exa = ExaSearchResults()
+
+        def exa_search(query: str) -> str:
+            """Busca na web e devolve título, URL e trecho de cada resultado."""
+            return str(exa.client.search_and_contents(
+                query,
+                num_results=max_results,
+                text={"max_characters": 1000},
+            ))
+
+        return StructuredTool.from_function(
+            func=exa_search,
+            name=exa.name,
+            description=exa.description,
         )
 
     def calculate_credits(self, search_count: int, max_results: int = 5, **kwargs) -> int:

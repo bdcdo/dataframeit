@@ -1,0 +1,259 @@
+"""Ferramentas de busca (Exa, Tavily), teto de buscas por execução e contagem."""
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
+from pydantic import BaseModel, Field
+
+from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+
+class Resposta(BaseModel):
+    campo: str
+
+
+def _config(**busca):
+    return LLMConfig(
+        model="m", provider="openai", api_key=None,
+        max_retries=1, base_delay=0.0, max_delay=0.0, rate_limit_delay=0.0,
+        search_config=SearchConfig(enabled=True, provider="tavily", **busca),
+    )
+
+
+# =============================================================================
+# Exa
+# =============================================================================
+
+@pytest.fixture
+def exa_falso(monkeypatch):
+    pytest.importorskip('langchain_exa')
+    import exa_py
+
+    monkeypatch.setenv('EXA_API_KEY', 'chave-de-teste')
+    chamadas = []
+
+    def search_and_contents(self, query, **kwargs):
+        chamadas.append((query, kwargs))
+        return 'resultados'
+
+    monkeypatch.setattr(exa_py.Exa, 'search_and_contents', search_and_contents)
+    return chamadas
+
+
+def test_exa_respeita_max_results_e_limite_de_texto(exa_falso):
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('exa').create_tool(max_results=3)
+    ferramenta.invoke({'query': 'dipirona anvisa'})
+
+    assert exa_falso == [('dipirona anvisa', {'num_results': 3, 'text': {'max_characters': 1000}})]
+
+
+def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('exa').create_tool(max_results=3)
+    assert set(ferramenta.args) == {'query'}
+
+
+def test_exa_levanta_o_erro_do_provider(monkeypatch):
+    pytest.importorskip('langchain_exa')
+    import exa_py
+
+    monkeypatch.setenv('EXA_API_KEY', 'chave-de-teste')
+
+    def falha(self, query, **kwargs):
+        raise RuntimeError('401 Unauthorized: invalid api key')
+
+    monkeypatch.setattr(exa_py.Exa, 'search_and_contents', falha)
+
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('exa').create_tool(max_results=3)
+    with pytest.raises(RuntimeError, match='401'):
+        ferramenta.invoke({'query': 'x'})
+
+
+# =============================================================================
+# Tavily
+# =============================================================================
+
+@pytest.fixture
+def tavily_disponivel(monkeypatch):
+    pytest.importorskip('langchain_tavily')
+    monkeypatch.setenv('TAVILY_API_KEY', 'chave-de-teste')
+    from langchain_tavily import _utilities
+
+    return _utilities.TavilySearchAPIWrapper
+
+
+def test_tavily_levanta_o_erro_do_provider(tavily_disponivel, monkeypatch):
+    class UsageLimitExceededError(Exception):
+        pass
+
+    def falha(self, **kwargs):
+        raise UsageLimitExceededError('quota exceeded')
+
+    monkeypatch.setattr(tavily_disponivel, 'raw_results', falha)
+
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('tavily').create_tool(max_results=3)
+    with pytest.raises(UsageLimitExceededError):
+        ferramenta.invoke({'query': 'x'})
+
+
+def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponivel, monkeypatch):
+    monkeypatch.setattr(tavily_disponivel, 'raw_results', lambda self, **kwargs: {'results': []})
+
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('tavily').create_tool(max_results=3)
+    assert 'No search results' in str(ferramenta.invoke({'query': 'x'}))
+
+
+# =============================================================================
+# Teto de buscas por execução
+# =============================================================================
+
+def _chamar_agente(monkeypatch, config, mensagens=()):
+    from dataframeit.agent import call_agent
+
+    capturado = {}
+
+    class AgenteFalso:
+        def invoke(self, _payload):
+            return {'structured_response': Resposta(campo='ok'), 'messages': list(mensagens)}
+
+    def create_agent(**kwargs):
+        capturado.update(kwargs)
+        return AgenteFalso()
+
+    class FerramentaFalsa:
+        name = 'busca_web'
+
+    monkeypatch.setattr('dataframeit.agent._create_langchain_llm', lambda *a, **k: object())
+    monkeypatch.setattr('langchain.agents.create_agent', create_agent)
+    with patch('dataframeit.agent.get_provider') as get_provider:
+        provider = MagicMock()
+        provider.name = 'tavily'
+        provider.create_tool = lambda **kwargs: FerramentaFalsa()
+        provider.calculate_credits.side_effect = lambda search_count, **kw: search_count
+        get_provider.return_value = provider
+        resultado = call_agent('t', Resposta, 'Responda {texto}', config, save_trace='full')
+    return capturado, resultado
+
+
+def test_agente_recebe_o_teto_de_buscas(monkeypatch):
+    from langchain.agents.middleware import ToolCallLimitMiddleware
+
+    capturado, _ = _chamar_agente(monkeypatch, _config(max_search_calls=4))
+
+    limites = [m for m in capturado['middleware'] if isinstance(m, ToolCallLimitMiddleware)]
+    assert len(limites) == 1
+    assert limites[0].run_limit == 4
+    assert limites[0].tool_name == 'busca_web'
+    assert limites[0].exit_behavior == 'continue'
+
+
+def test_busca_bloqueada_pelo_teto_nao_conta(monkeypatch):
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    mensagens = [
+        AIMessage(content='', tool_calls=[
+            {'name': 'busca_web', 'args': {'query': 'a'}, 'id': '1'},
+            {'name': 'busca_web', 'args': {'query': 'b'}, 'id': '2'},
+        ]),
+        ToolMessage(content='resultado', tool_call_id='1', name='busca_web'),
+        ToolMessage(
+            content="Tool call limit exceeded. Do not call 'busca_web' again.",
+            tool_call_id='2', name='busca_web', status='error',
+        ),
+        AIMessage(content='', tool_calls=[{'name': 'Resposta', 'args': {'campo': 'ok'}, 'id': '3'}]),
+    ]
+    _, resultado = _chamar_agente(monkeypatch, _config(), mensagens)
+
+    assert resultado['usage']['search_count'] == 1
+    assert resultado['trace']['search_queries'] == ['a']
+    assert resultado['trace']['total_tool_calls'] == 3
+
+
+# =============================================================================
+# max_search_calls na API
+# =============================================================================
+
+def _executar(questions, **opcoes):
+    from dataframeit import dataframeit
+
+    with patch('dataframeit.core.validate_provider_dependencies'), \
+            patch('dataframeit.core.validate_search_dependencies'), \
+            patch('dataframeit.agent.call_agent') as call_agent:
+        call_agent.return_value = {'data': {'campo': 'x'}, 'usage': {}}
+        dataframeit(pd.DataFrame({'texto': ['a']}), questions=questions, prompt='{texto}',
+                    use_search=True, track_tokens=False, **opcoes)
+    return call_agent
+
+
+@pytest.mark.parametrize('valor', [0, True, 2.5])
+def test_max_search_calls_invalido(valor):
+    with pytest.raises(ValueError, match='max_search_calls'):
+        _executar(Resposta, max_search_calls=valor)
+
+
+def test_max_search_calls_chega_ao_agente():
+    call_agent = _executar(Resposta, max_search_calls=3)
+    config = call_agent.call_args.args[3]
+    assert config.search_config.max_search_calls == 3
+
+
+def test_max_search_calls_por_campo_e_por_grupo():
+    class Modelo(BaseModel):
+        a: str = Field(json_schema_extra={'max_search_calls': 2})
+        b: str = ''
+        c: str = ''
+
+    from dataframeit import dataframeit
+
+    limites = {}
+
+    def falso(text, model, prompt, config, save_trace=None):
+        limites[tuple(model.model_fields)] = config.search_config.max_search_calls
+        return {'data': {c: 'x' for c in model.model_fields}, 'usage': {}}
+
+    with patch('dataframeit.core.validate_provider_dependencies'), \
+            patch('dataframeit.core.validate_search_dependencies'), \
+            patch('dataframeit.agent.call_agent', side_effect=falso):
+        dataframeit(
+            pd.DataFrame({'texto': ['t']}), questions=Modelo, prompt='{texto}',
+            use_search=True, search_per_field=True, track_tokens=False,
+            search_groups={'g': {'fields': ['b', 'c'], 'max_search_calls': 5}},
+        )
+
+    assert limites == {('a',): 2, ('b', 'c'): 5}
+
+
+def test_max_search_calls_invalido_por_campo():
+    class Modelo(BaseModel):
+        a: str = Field(json_schema_extra={'max_search_calls': 0})
+
+    with pytest.raises(ValueError, match="Campo 'a': max_search_calls"):
+        _executar(Modelo, search_per_field=True)
+
+
+def test_group_config_aceita_max_search_calls():
+    assert SearchGroupConfig(fields=['a'], max_search_calls=2).max_search_calls == 2
+
+
+def test_trace_nao_confunde_structured_output_com_busca():
+    from dataframeit.agent import _extract_trace
+
+    mensagens = [
+        SimpleNamespace(type='ai', content='', tool_calls=[
+            {'name': 'ResearchResult', 'args': {'query': 'nao e busca'}, 'id': '9'},
+        ]),
+    ]
+    trace = _extract_trace({'messages': mensagens}, 'm', 0.1, 'full', None, 'busca_web')
+    assert trace['search_queries'] == []
+    assert trace['total_tool_calls'] == 1

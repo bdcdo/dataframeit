@@ -20,11 +20,14 @@ class SearchGroupConfig:
             Se None, usa o valor global.
         search_depth: Profundidade da busca ("basic" ou "advanced").
             Se None, usa o valor global.
+        max_search_calls: Máximo de buscas por execução do agente do grupo.
+            Se None, usa o valor global.
     """
     fields: list[str]
     prompt: str | None = None
     max_results: int | None = None
     search_depth: str | None = None
+    max_search_calls: int | None = None
 
 
 @dataclass
@@ -40,6 +43,9 @@ class SearchConfig:
     per_field: bool = False  # Um agente por campo
     max_results: int = 5
     search_depth: str = "basic"  # "basic" ou "advanced" (apenas Tavily)
+    # Máximo de buscas por execução do agente; ao atingi-lo, o agente responde
+    # com o que já encontrou.
+    max_search_calls: int = 10
     groups: dict[str, SearchGroupConfig] | None = None
 
 

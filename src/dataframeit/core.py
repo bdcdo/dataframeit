@@ -441,7 +441,9 @@ def _warn_search_rate_limit(
     warnings.warn(msg, UserWarning, stacklevel=3)
 
 
-def _validate_search_overrides(label: str, search_depth=None, max_results=None) -> None:
+def _validate_search_overrides(
+    label: str, search_depth=None, max_results=None, max_search_calls=None
+) -> None:
     """Valida os overrides de busca de um grupo ou campo; None é ausência."""
     if search_depth is not None and search_depth not in ('basic', 'advanced'):
         raise ValueError(f"{label}: search_depth deve ser 'basic' ou 'advanced'")
@@ -451,6 +453,13 @@ def _validate_search_overrides(label: str, search_depth=None, max_results=None) 
         or not 1 <= max_results <= 20
     ):
         raise ValueError(f"{label}: max_results deve estar entre 1 e 20")
+    if max_search_calls is not None and not _is_positive_int(max_search_calls):
+        raise ValueError(f"{label}: max_search_calls deve ser int >= 1")
+
+
+def _is_positive_int(value) -> bool:
+    """Inteiro >= 1; bool é subclasse de int, mas True não é uma contagem."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool) and value >= 1
 
 
 def _validate_field_configs(questions, search_config, use_search: bool, search_per_field: bool) -> None:
@@ -469,7 +478,7 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
         ]
         raise ValueError(
             "Campos com configuração em json_schema_extra (prompt, prompt_append, "
-            f"search_depth, max_results) requerem {' e '.join(missing)}"
+            f"search_depth, max_results, max_search_calls) requerem {' e '.join(missing)}"
         )
 
     for path, field_info, list_depth in _walk_fields(questions):
@@ -493,7 +502,10 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
                     "está dentro de outra lista, o que não é suportado"
                 )
             _validate_search_overrides(
-                f"Campo '{path}'", extra.get('search_depth'), extra.get('max_results')
+                f"Campo '{path}'",
+                extra.get('search_depth'),
+                extra.get('max_results'),
+                extra.get('max_search_calls'),
             )
 
     # Sem busca por campo, todos os campos saem de uma única chamada, e não há
@@ -600,6 +612,7 @@ def _validate_search_groups(
             f"Grupo '{group_name}'",
             group_config.get('search_depth'),
             group_config.get('max_results'),
+            group_config.get('max_search_calls'),
         )
 
         # Criar SearchGroupConfig
@@ -608,6 +621,7 @@ def _validate_search_groups(
             prompt=group_config.get('prompt'),
             max_results=group_config.get('max_results'),
             search_depth=group_config.get('search_depth'),
+            max_search_calls=group_config.get('max_search_calls'),
         )
 
     return validated_groups
@@ -643,6 +657,7 @@ def dataframeit(
     search_per_field=False,
     max_results=5,
     search_depth="basic",
+    max_search_calls=10,
     search_groups: dict[str, dict] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,
     batch_size: int | None = None,
@@ -692,15 +707,19 @@ def dataframeit(
         use_search: Se True, habilita busca web antes de processar. Padrão: False.
         search_provider: Provedor de busca web a usar. Opções:
             - "tavily": Motor de busca otimizado para IA (padrão). Requer TAVILY_API_KEY.
-              Melhor para volume baixo-médio (<2667 buscas/mês) ou quando precisa >25 resultados.
+              Melhor para volume baixo-médio (<2667 buscas/mês).
             - "exa": Motor de busca semântico. Requer EXA_API_KEY.
-              Mais econômico para alto volume (>2667 buscas/mês com 1-25 resultados).
+              Mais econômico para alto volume (>2667 buscas/mês).
         search_per_field: Se True, executa um agente separado para cada campo do modelo Pydantic.
             Útil quando o modelo tem muitos campos e um único contexto ficaria sobrecarregado.
             Padrão: False (um agente responde todos os campos).
         max_results: Número máximo de resultados por busca (1-20). Padrão: 5.
         search_depth: Profundidade da busca - "basic" (1 crédito) ou "advanced" (2 créditos).
             Apenas para Tavily. Padrão: "basic".
+        max_search_calls: Máximo de buscas por execução do agente (int >= 1). Ao atingi-lo,
+            as buscas seguintes são bloqueadas e o agente responde com o que encontrou.
+            Aceita override por grupo (search_groups) e por campo (json_schema_extra).
+            Padrão: 10.
         search_groups: Grupos de campos que compartilham contexto de busca. Formato:
             {"nome_grupo": {"fields": ["campo1", "campo2"], "prompt": "...", ...}}
             Permite reduzir chamadas de API quando múltiplos campos precisam do mesmo contexto.
@@ -774,6 +793,8 @@ def dataframeit(
             raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
         if not 1 <= max_results <= 20:
             raise ValueError("max_results deve estar entre 1 e 20")
+        if not _is_positive_int(max_search_calls):
+            raise ValueError(f"max_search_calls deve ser int >= 1; recebido {max_search_calls!r}")
 
     # Validar e normalizar save_trace
     trace_mode = None
@@ -796,6 +817,7 @@ def dataframeit(
             per_field=search_per_field,
             max_results=max_results,
             search_depth=search_depth,
+            max_search_calls=max_search_calls,
         )
 
     # Converter para pandas se necessário

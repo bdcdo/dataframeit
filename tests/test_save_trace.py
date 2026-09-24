@@ -113,7 +113,9 @@ def test_extract_trace_full_mode():
 
     agent_result = {"messages": [human_msg, ai_msg, tool_msg]}
 
-    trace = _extract_trace(agent_result, "gemini-2.0-flash", 2.5, "full")
+    trace = _extract_trace(
+        agent_result, "gemini-2.0-flash", 2.5, "full", search_tool_name="tavily_search"
+    )
 
     assert trace["model"] == "gemini-2.0-flash"
     assert trace["duration_seconds"] == 2.5
@@ -163,7 +165,7 @@ def test_extract_trace_extracts_search_queries():
 
     agent_result = {"messages": [ai_msg]}
 
-    trace = _extract_trace(agent_result, "model", 1.0, "full")
+    trace = _extract_trace(agent_result, "model", 1.0, "full", search_tool_name="tavily_search")
 
     assert trace["search_queries"] == ["query 1", "query 2"]
     assert trace["total_tool_calls"] == 2

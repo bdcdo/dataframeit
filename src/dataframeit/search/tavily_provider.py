@@ -7,7 +7,6 @@ Tavily é um motor de busca otimizado para IA com:
 
 Recomendado para:
 - Volume baixo-médio (<2667 buscas/mês)
-- Quando precisa de mais de 25 resultados por busca
 """
 
 from typing import Any
@@ -76,7 +75,22 @@ class TavilyProvider(SearchProvider):
             )
             from langchain_tavily import TavilySearch
 
-        return TavilySearch(
+        class _TavilySearchQueLevantaErro(TavilySearch):
+            """TavilySearch que levanta o erro do provedor.
+
+            O _run original devolve {"error": e} para quota, chave inválida ou
+            falha de rede, e o agente segue sem evidência, com a linha marcada
+            como processada. "Sem resultados" continua sendo ToolException,
+            que vira mensagem ao modelo para ele tentar outra consulta.
+            """
+
+            def _run(self, *args, **kwargs):
+                result = super()._run(*args, **kwargs)
+                if isinstance(result, dict) and isinstance(result.get("error"), Exception):
+                    raise result["error"]
+                return result
+
+        return _TavilySearchQueLevantaErro(
             max_results=max_results,
             search_depth=search_depth,
             include_raw_content=False,
