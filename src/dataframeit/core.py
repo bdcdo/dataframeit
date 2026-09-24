@@ -1,5 +1,6 @@
 import json
 import logging
+import numbers
 import os
 import threading
 import time
@@ -505,7 +506,7 @@ def dataframeit(
                     DataFrame tiver múltiplas colunas, levanta ValueError.
                     Automático para Series/list/dict.
         api_key: Chave API específica.
-        max_retries: Número máximo de tentativas.
+        max_retries: Número total de tentativas por linha, contando a primeira (int >= 1).
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
         rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
@@ -564,6 +565,13 @@ def dataframeit(
     # Se {texto} não estiver no template, adiciona automaticamente ao final
     if '{texto}' not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
+
+    # bool é subclasse de int, mas True não é uma contagem de tentativas.
+    if not isinstance(max_retries, numbers.Integral) or isinstance(max_retries, bool) or max_retries < 1:
+        raise ValueError(
+            f"max_retries deve ser int >= 1 (número total de tentativas por linha); "
+            f"recebido {max_retries!r}"
+        )
 
     # Validar parâmetros de checkpoint
     if (batch_size is None) != (checkpoint_path is None):
@@ -807,8 +815,8 @@ def dataframeit(
         if complex_fields and resume:
             normalize_complex_columns(df_pandas, complex_fields)
 
-        start_pos, processed_count = _get_processing_indices(
-            df_pandas, status_col, resume, reprocess_columns
+        is_pending, processed_count = _get_processing_indices(
+            df_pandas, status_col, resume
         )
 
         if parallel_requests > 1:
@@ -819,7 +827,7 @@ def dataframeit(
                 expected_columns,
                 config,
                 backend,
-                start_pos,
+                is_pending,
                 processed_count,
                 conversion_info,
                 track_tokens,
@@ -837,7 +845,7 @@ def dataframeit(
                 expected_columns,
                 config,
                 backend,
-                start_pos,
+                is_pending,
                 processed_count,
                 conversion_info,
                 track_tokens,
@@ -934,27 +942,26 @@ def _setup_columns(
             df[col] = None
 
 
-def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool, reprocess_columns=None) -> tuple[int, int]:
-    """Retorna (posição inicial, contagem de processados).
+def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> tuple[list[bool], int]:
+    """Retorna (linhas pendentes por posição, contagem de linhas com status).
 
-    Nota: quando reprocess_columns está definido, start_pos é ignorado em _process_rows
-    pois todas as linhas são processadas (mas só atualiza colunas específicas nas já processadas).
+    A seleção depende só do status de cada linha, e nunca da ordem dos rótulos do
+    índice, que pode vir fora de ordem (sort_values, sample, filtro), ser textual ou
+    vir das chaves de um dict.
+
+    Com resume=True, só a linha sem status fica pendente: linhas 'processed' e
+    'error' são preservadas, e o usuário limpa o status de um erro para reprocessá-lo.
+    Com resume=False, fica pendente toda linha que não esteja 'processed'.
+    Quando reprocess_columns está definido, _process_rows e _process_rows_parallel
+    ignoram a seleção e percorrem todas as linhas.
     """
+    status = df[status_col]
     if not resume:
-        return 0, 0
+        return status.ne('processed').tolist(), 0
 
-    # Encontrar primeira linha não processada
-    null_mask = df[status_col].isnull()
-    unprocessed_indices = df.index[null_mask]
-
-    if not unprocessed_indices.empty:
-        first_unprocessed = unprocessed_indices.min()
-        start_pos = df.index.get_loc(first_unprocessed)
-    else:
-        start_pos = len(df)
-
-    processed_count = len(df) - len(unprocessed_indices)
-    return start_pos, processed_count
+    is_pending = status.isnull()
+    processed_count = int((~is_pending).sum())
+    return is_pending.tolist(), processed_count
 
 
 def _print_token_stats(token_stats: dict, model: str | None, parallel_requests: int = 1):
@@ -1067,7 +1074,7 @@ def _process_rows(
     expected_columns: list,
     config: LLMConfig,
     backend: ProviderBackend,
-    start_pos: int,
+    is_pending: list[bool],
     processed_count: int,
     conversion_info,
     track_tokens: bool,
@@ -1123,14 +1130,9 @@ def _process_rows(
         # Verificar se linha já foi processada
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
 
-        # Decidir se deve processar esta linha
-        if reprocess_columns:
-            # Com reprocess_columns: processa todas as linhas
-            pass
-        else:
-            # Sem reprocess_columns: pula linhas já processadas (comportamento normal)
-            if i < start_pos or row_already_processed:
-                continue
+        # Com reprocess_columns, todas as linhas são processadas.
+        if not reprocess_columns and not is_pending[i]:
+            continue
 
         text = str(row[text_column])
 
@@ -1240,7 +1242,7 @@ def _process_rows_parallel(
     expected_columns: list,
     config: LLMConfig,
     backend: ProviderBackend,
-    start_pos: int,
+    is_pending: list[bool],
     processed_count: int,
     conversion_info,
     track_tokens: bool,
@@ -1302,13 +1304,8 @@ def _process_rows_parallel(
     # Identificar linhas a processar
     rows_to_process = []
     for i, (idx, row) in enumerate(df.iterrows()):
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
-
-        if reprocess_columns:
+        if reprocess_columns or is_pending[i]:
             rows_to_process.append((i, idx, row))
-        else:
-            if i >= start_pos and not row_already_processed:
-                rows_to_process.append((i, idx, row))
 
     if not rows_to_process:
         return token_stats

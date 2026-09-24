@@ -89,7 +89,7 @@ resultado.to_excel('completo.xlsx', index=False)
 ```
 
 !!! tip "Como funciona"
-    Com `resume=True`, o DataFrameIt pula linhas que já têm `_dataframeit_status == 'processed'`.
+    Com `resume=True`, o DataFrameIt processa só as linhas sem `_dataframeit_status`. Linhas com `'processed'` ou `'error'` ficam como estão; para re-tentar erros, limpe o status delas, como na seção abaixo.
 
 ## Reprocessando Erros
 
