@@ -8,13 +8,14 @@ Suporta múltiplos provedores de busca:
 import logging
 import time
 from copy import copy
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import create_model
 
 from .conditional import _CONDITIONAL_KEYS, _FIELD_CONFIG_KEYS, _collect_configured_fields
 from .errors import retry_with_backoff
-from .llm import LLMConfig, _create_langchain_llm, _parse_usage_metadata, build_prompt
+from .llm import LLMConfig, _BuildOnce, _parse_usage_metadata, build_prompt, chat_model
 from .search import get_provider
 from .utils import is_list_of_pydantic_model, resolve_forward_refs
 
@@ -362,25 +363,20 @@ def _recursion_limit(max_search_calls: int) -> int:
     return 3 * max_search_calls + 20
 
 
-def call_agent(
-    text: str,
-    pydantic_model,
-    user_prompt: str,
-    config: LLMConfig,
-    save_trace: str | None = None
-) -> dict:
-    """Processa texto usando agente LangChain com busca web.
+@dataclass(frozen=True)
+class SearchAgent:
+    """Agente de busca montado para um modelo Pydantic e uma SearchConfig."""
+    agent: Any
+    provider: Any
+    tool_name: str
 
-    Args:
-        text: Texto a ser processado (ex: nome do medicamento, país, etc.).
-        pydantic_model: Modelo Pydantic para estruturar resposta.
-        user_prompt: Template do prompt do usuário.
-        config: Configuração do LLM incluindo SearchConfig.
-        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
 
-    Returns:
-        Dicionário com 'data' (dados extraídos), 'usage' (metadata incluindo
-        search_credits e search_count) e 'trace' (se save_trace habilitado).
+def build_search_agent(pydantic_model, config: LLMConfig) -> SearchAgent:
+    """Monta o agente com a ferramenta de busca e o teto de buscas.
+
+    O agente compilado pode ser compartilhado entre linhas e threads: o
+    ToolCallLimitMiddleware conta as chamadas no estado de cada invocação, e
+    não na instância.
     """
     from langchain.agents import create_agent
     from langchain.agents.middleware import ToolCallLimitMiddleware
@@ -395,15 +391,11 @@ def call_agent(
         search_depth=search_config.search_depth,
     )
 
-    # Criar modelo LLM inicializado
-    llm = _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
-
-    # Criar agente com structured output
     # Sem teto, um modelo que insiste em buscar gasta créditos até o limite de
     # recursão do grafo. "continue" bloqueia as buscas excedentes e deixa o
     # modelo responder com o que já tem.
     agent = create_agent(
-        model=llm,
+        model=chat_model(config),
         tools=[search_tool],
         response_format=ToolStrategy(pydantic_model),
         middleware=[ToolCallLimitMiddleware(
@@ -412,6 +404,39 @@ def call_agent(
             exit_behavior="continue",
         )],
     )
+    return SearchAgent(agent=agent, provider=provider, tool_name=search_tool.name)
+
+
+def call_agent(
+    text: str,
+    pydantic_model,
+    user_prompt: str,
+    config: LLMConfig,
+    save_trace: str | None = None,
+    search_agent: _BuildOnce | None = None,
+) -> dict:
+    """Processa texto usando agente LangChain com busca web.
+
+    Args:
+        text: Texto a ser processado (ex: nome do medicamento, país, etc.).
+        pydantic_model: Modelo Pydantic para estruturar resposta.
+        user_prompt: Template do prompt do usuário.
+        config: Configuração do LLM incluindo SearchConfig.
+        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
+        search_agent: Agente compartilhado pela execução. Se None, é montado
+            nesta chamada, como nos modos por campo e por grupo, em que o
+            modelo Pydantic de cada chamada é criado na hora.
+
+    Returns:
+        Dicionário com 'data' (dados extraídos), 'usage' (metadata incluindo
+        search_credits e search_count) e 'trace' (se save_trace habilitado).
+    """
+    search_config = config.search_config
+    if search_agent is not None:
+        built = search_agent()
+    else:
+        built = build_search_agent(pydantic_model, config)
+    agent, provider, tool_name = built.agent, built.provider, built.tool_name
 
     def _call():
         prompt = build_prompt(user_prompt, text)
@@ -432,14 +457,14 @@ def call_agent(
         data = structured.model_dump() if hasattr(structured, 'model_dump') else structured
 
         # Calcular usage (tokens + search credits via provider)
-        usage = _extract_usage(result, provider, search_config, search_tool.name)
+        usage = _extract_usage(result, provider, search_config, tool_name)
 
         response = {'data': data, 'usage': usage}
 
         # Extrair trace se habilitado
         if save_trace:
             response['trace'] = _extract_trace(
-                result, config.model, duration, save_trace, provider, search_tool.name
+                result, config.model, duration, save_trace, provider, tool_name
             )
 
         return response

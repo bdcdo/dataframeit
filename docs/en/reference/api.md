@@ -27,9 +27,13 @@ def dataframeit(
     parallel_requests=1,
     # Web search parameters
     use_search=False,
+    search_provider="tavily",
     search_per_field=False,
     max_results=5,
     search_depth="basic",
+    max_search_calls=10,
+    search_groups=None,
+    save_trace=None,
     batch_size=None,
     checkpoint_path=None,
 ) -> Any
@@ -59,9 +63,9 @@ def dataframeit(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model` | str \| None | `None` | LLM model name; `None` uses the provider's default model, listed in [Providers](../guides/providers.md) |
-| `provider` | str | `'openai'` | Provider identifier; `codex` uses the official SDK instead of LangChain |
-| `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` |
-| `model_kwargs` | dict | `None` | Extra parameters; with `codex`, only `effort` is accepted |
+| `provider` | str | `'openai'` | Provider identifier; `claude_code` and `codex` use the official SDKs instead of LangChain (see [Providers](../guides/providers.md)) |
+| `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` and ignored with `provider='claude_code'` |
+| `model_kwargs` | dict | `None` | Extra parameters; with `claude_code`, only `max_turns`, `max_budget_usd` and `effort` are read and the rest is ignored; with `codex`, only `effort` is accepted |
 
 #### Resilience
 
@@ -85,10 +89,16 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `use_search` | bool | `False` | Enable web search via Tavily; not supported with `provider='codex'` |
-| `search_per_field` | bool | `False` | Execute separate search per field |
+| `use_search` | bool | `False` | Enable web search; not supported with `provider='claude_code'` or `'codex'` |
+| `search_provider` | str | `'tavily'` | `'tavily'` (requires `TAVILY_API_KEY`) or `'exa'` (requires `EXA_API_KEY`) |
+| `search_per_field` | bool | `False` | Run a separate agent per field; required for `condition` and `search_groups` |
 | `max_results` | int | `5` | Results per search (1-20) |
-| `search_depth` | str | `'basic'` | `'basic'` or `'advanced'` |
+| `search_depth` | str | `'basic'` | `'basic'` (1 credit) or `'advanced'` (2 credits); Tavily only |
+| `max_search_calls` | int | `10` | Maximum searches per agent run; later ones are blocked and the agent answers with what it found |
+| `search_groups` | dict | `None` | Groups of fields that share one search: `{"group": {"fields": [...], "prompt": ..., "max_results": ..., "search_depth": ..., "max_search_calls": ...}}` |
+| `save_trace` | bool \| str | `None` | Save the agent trace: `True`/`"full"` or `"minimal"`; requires `use_search=True`; creates `_trace`, `_trace_{field}` or `_trace_{group}` |
+
+With `use_search=True` and `search_per_field=True`, model fields accept their own search settings in `json_schema_extra` (`prompt`, `prompt_replace`, `prompt_append`, `search_depth`, `max_results`, `max_search_calls`, `condition`, `depends_on`). See [Web Search](../guides/web-search.md) and [Conditional Fields](../examples/conditional-fields.md).
 
 ### Return
 

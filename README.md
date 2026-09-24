@@ -19,6 +19,7 @@ pip install dataframeit[openai]  # OpenAI (default provider)
 pip install dataframeit[google]  # Google Gemini
 pip install dataframeit[anthropic]  # Anthropic Claude
 pip install dataframeit[codex]  # Official Codex SDK (experimental)
+pip install dataframeit[claude-code]  # Claude Code via the Claude Agent SDK
 ```
 
 Set up provider authentication:

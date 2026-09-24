@@ -15,6 +15,7 @@ pip install dataframeit[openai]    # OpenAI (padrão)
 pip install dataframeit[google]    # Google Gemini
 pip install dataframeit[anthropic] # Anthropic Claude
 pip install dataframeit[codex]     # Codex SDK oficial (experimental)
+pip install dataframeit[claude-code]  # Claude Code pelo Claude Agent SDK
 ```
 
 **Variáveis de ambiente:**
@@ -39,7 +40,7 @@ resultado = dataframeit(
     prompt,                  # Template do prompt
     text_column=None,        # Coluna com textos (None = inferência automática)
     model=None,              # None = modelo padrão do provider
-    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'codex'
+    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'claude_code', 'codex'
     resume=True,             # Continua de onde parou
     parallel_requests=1,     # Workers paralelos
     rate_limit_delay=0.0,    # Delay entre requisições (segundos)
@@ -47,11 +48,15 @@ resultado = dataframeit(
     track_tokens=True,       # Rastreia uso de tokens
     api_key=None,            # API key (usa env var se None)
     model_kwargs=None,       # Parâmetros extras (temperature, etc)
-    # Busca web (requer TAVILY_API_KEY)
+    # Busca web (requer TAVILY_API_KEY ou EXA_API_KEY)
     use_search=False,        # Habilita busca web
+    search_provider='tavily',  # 'tavily' ou 'exa'
     search_per_field=False,  # Busca separada por campo
     max_results=5,           # Resultados por busca
     search_depth='basic',    # 'basic' ou 'advanced'
+    max_search_calls=10,     # Máximo de buscas por execução do agente
+    search_groups=None,      # Campos que compartilham uma busca
+    save_trace=None,         # True/'full' ou 'minimal'
 )
 ```
 
@@ -174,6 +179,14 @@ resultado = dataframeit(
     model_kwargs={'effort': 'medium'}
 )
 
+# Claude Code, pelo Claude Agent SDK
+resultado = dataframeit(
+    df, Model, PROMPT,
+    provider='claude_code',
+    model='haiku',
+    model_kwargs={'max_budget_usd': 0.25}
+)
+
 # Com parâmetros extras
 resultado = dataframeit(
     df, Model, PROMPT,
@@ -184,6 +197,8 @@ resultado = dataframeit(
 ```
 
 O provider `codex` aceita somente `effort` em `model_kwargs` e não suporta `use_search=True`. A integração desativa busca web, shell e servidores MCP, nega aprovações e usa sandbox somente leitura para bloquear escrita; o runtime ainda pode apresentar utilitários internos, como `apply_patch`, sem conceder permissão para alterar arquivos. Consulte [Instalação](../getting-started/installation.md) para os requisitos de runtime e autenticação.
+
+O provider `claude_code` usa a autenticação do Claude Code (credenciais de um login do Claude Code na máquina, ou `ANTHROPIC_API_KEY`) e ignora `api_key`. Em `model_kwargs`, lê só `max_turns`, `max_budget_usd` (teto por tentativa) e `effort`. Não suporta `use_search=True`. Roda sem ferramentas e sem os settings e servidores MCP do usuário. Ver [Provedores](../guides/providers.md#claude-code).
 
 ---
 

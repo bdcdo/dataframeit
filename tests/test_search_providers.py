@@ -499,7 +499,7 @@ def test_call_agent_uses_provider_factory(monkeypatch):
         captured_tools.extend(tools)
         return DummyAgent()
 
-    monkeypatch.setattr("dataframeit.agent._create_langchain_llm", lambda *args, **kwargs: dummy_llm)
+    monkeypatch.setattr("dataframeit.llm._create_langchain_llm", lambda *args, **kwargs: dummy_llm)
     monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
 
     # Mock do provider (no caminho correto: dataframeit.agent.get_provider)
@@ -557,7 +557,7 @@ def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
     class FerramentaFalsa:
         name = "busca_web"
 
-    monkeypatch.setattr("dataframeit.agent._create_langchain_llm", lambda *a, **k: object())
+    monkeypatch.setattr("dataframeit.llm._create_langchain_llm", lambda *a, **k: object())
     monkeypatch.setattr("langchain.agents.create_agent", lambda **kwargs: AgenteFalso())
 
     with patch("dataframeit.agent.get_provider") as get_provider:

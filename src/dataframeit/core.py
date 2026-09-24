@@ -1,5 +1,4 @@
 import json
-import logging
 import numbers
 import os
 import threading
@@ -33,7 +32,15 @@ from .errors import (
     validate_provider_dependencies,
     validate_search_dependencies,
 )
-from .llm import LLMConfig, SearchConfig, SearchGroupConfig, call_langchain
+from .llm import (
+    LLMConfig,
+    SearchConfig,
+    SearchGroupConfig,
+    _BuildOnce,
+    build_structured_llm,
+    call_langchain,
+    with_shared_chat_model,
+)
 from .search import get_available_providers, get_provider
 from .utils import (
     DEFAULT_TEXT_COLUMN,
@@ -46,11 +53,6 @@ from .utils import (
     normalize_value,
     to_pandas,
 )
-
-# Suprimir mensagens de retry do LangChain (elas são redundantes com nossos warnings)
-logging.getLogger('langchain_google_genai').setLevel(logging.ERROR)
-logging.getLogger('langchain_core').setLevel(logging.WARNING)
-logging.getLogger('httpx').setLevel(logging.WARNING)
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
@@ -317,22 +319,34 @@ def _provider_backend(
 ) -> Iterator[ProviderBackend]:
     """Seleciona e vincula uma única implementação para toda a execução."""
     if config.search_config and config.search_config.enabled:
-        from .agent import call_agent, call_agent_per_field, call_agent_per_group
+        config = with_shared_chat_model(config)
+        from .agent import (
+            build_search_agent,
+            call_agent,
+            call_agent_per_field,
+            call_agent_per_group,
+        )
 
         if not config.search_config.per_field:
-            search_call = call_agent
-        elif config.search_config.groups:
-            search_call = call_agent_per_group
-        else:
-            search_call = call_agent_per_field
-
-        invoke_partial = None
-        if search_call is not call_agent:
-            def invoke_partial(text, only_fields, known):
-                return search_call(
+            # Schema fixo: o agente é montado uma vez. Nos modos por campo e por
+            # grupo, o modelo de cada chamada é criado na hora, e o agente também.
+            search_agent = _BuildOnce(lambda: build_search_agent(pydantic_model, config))
+            yield ProviderBackend(
+                label="langchain",
+                invoke=lambda text: call_agent(
                     text, pydantic_model, user_prompt, config, trace_mode,
-                    only_fields=only_fields, known=known,
-                )
+                    search_agent=search_agent,
+                ),
+            )
+            return
+
+        search_call = call_agent_per_group if config.search_config.groups else call_agent_per_field
+
+        def invoke_partial(text, only_fields, known):
+            return search_call(
+                text, pydantic_model, user_prompt, config, trace_mode,
+                only_fields=only_fields, known=known,
+            )
 
         yield ProviderBackend(
             label="langchain",
@@ -362,10 +376,11 @@ def _provider_backend(
         return
 
     langchain_call = call_langchain
+    structured_llm = _BuildOnce(lambda: build_structured_llm(pydantic_model, config))
     yield ProviderBackend(
         label="langchain",
         invoke=lambda text: langchain_call(
-            text, pydantic_model, user_prompt, config
+            text, pydantic_model, user_prompt, config, structured_llm=structured_llm
         ),
     )
 
@@ -670,8 +685,8 @@ def dataframeit(
     - polars.DataFrame: Retorna DataFrame polars com colunas extraídas
     - pandas.Series: Retorna DataFrame com resultados indexados
     - polars.Series: Retorna DataFrame polars com resultados
-    - list: Retorna lista de dicionários com os resultados
-    - dict: Retorna dicionário {chave: {campos extraídos}}
+    - list: Retorna DataFrame pandas com índice numérico
+    - dict: Retorna DataFrame pandas com as chaves como índice
 
     Args:
         data: Dados contendo textos (DataFrame, Series, list ou dict).

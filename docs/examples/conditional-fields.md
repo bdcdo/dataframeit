@@ -1,131 +1,108 @@
 # Campos Condicionais
 
-O DataFrameIt suporta execução condicional de campos quando usando `search_per_field=True`. Isso permite que você:
+Com `use_search=True` e `search_per_field=True`, cada campo do modelo é preenchido por uma chamada própria do agente. Nesse modo, um campo pode depender do valor de outro:
 
-1. **Execute campos condicionalmente** baseado em valores de outros campos
-2. **Acesse campos aninhados** nas condições
-3. **Controle a ordem de execução** — derivada automaticamente da condição
+1. **Execução condicional**: o campo só é pedido ao LLM quando a condição vale; caso contrário, fica `None` e não gasta busca.
+2. **Campos aninhados** podem ser lidos na condição, com notação de ponto.
+3. **Ordem de execução** derivada da condição: o campo lido vem antes do campo que depende dele.
 
 ## Configuração Básica
 
-Use a chave `condition` no `json_schema_extra` de cada campo:
+Use a chave `condition` no `json_schema_extra` do campo:
 
-- `condition` (dict): condição para executar o campo. A dependência (e portanto a ordem de execução) é **derivada automaticamente** do campo referenciado em `condition['field']`.
-- `condition` (callable): função que recebe os campos já processados e retorna bool. Para que a ordem seja respeitada, declare os campos lidos via `depends_on`.
+- `condition` (dict): a dependência, e portanto a ordem de execução, é derivada do campo em `condition['field']`.
+- `condition` (callable): recebe os campos já preenchidos e devolve bool. Declare os campos lidos em `depends_on`, para que venham antes.
+
+Como o campo pulado fica `None`, declare-o como opcional (`str | None = None`).
 
 ## Exemplo 1: Pessoa Física vs Jurídica
 
-Este exemplo mostra como processar campos diferentes baseado no tipo de pessoa:
-
 ```python
 from pydantic import BaseModel, Field
-import dataframeit as dfi
+from dataframeit import dataframeit
 
 class PessoaInfo(BaseModel):
     tipo: str = Field(
         description="Tipo de pessoa: 'pf' para pessoa física ou 'pj' para pessoa jurídica"
     )
-
-    cpf: str = Field(
+    cpf: str | None = Field(
+        default=None,
         description="CPF da pessoa física",
-        json_schema_extra={
-            'condition': {'field': 'tipo', 'equals': 'pf'}
-        }
+        json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pf'}},
     )
-
-    cnpj: str = Field(
+    cnpj: str | None = Field(
+        default=None,
         description="CNPJ da pessoa jurídica",
-        json_schema_extra={
-            'condition': {'field': 'tipo', 'equals': 'pj'}
-        }
+        json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pj'}},
     )
-
-    razao_social: str = Field(
+    razao_social: str | None = Field(
+        default=None,
         description="Razão social da empresa",
-        json_schema_extra={
-            'condition': {'field': 'tipo', 'equals': 'pj'}
-        }
+        json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pj'}},
     )
 
-# Dados de exemplo
-data = [
+textos = [
     "João Silva, CPF 123.456.789-00",
-    "Empresa XYZ LTDA, CNPJ 12.345.678/0001-90"
+    "Empresa XYZ LTDA, CNPJ 12.345.678/0001-90",
 ]
 
-# Processar
-result = dfi.dataframeit(
-    data=data,
-    pydantic_model=PessoaInfo,
-    user_prompt="Extraia as informações da pessoa ou empresa: {texto}",
-    search_per_field=True,  # Necessário para usar condicionais
-    search_enabled=True,
-    model="gpt-4o-mini",
-    provider="openai"
+resultado = dataframeit(
+    textos,
+    PessoaInfo,
+    "Extraia as informações da pessoa ou empresa: {texto}",
+    use_search=True,
+    search_per_field=True,  # condition exige busca por campo
 )
-
-print(result)
-# Para a primeira linha: tipo='pf', cpf='123.456.789-00', cnpj=None, razao_social=None
-# Para a segunda linha: tipo='pj', cpf=None, cnpj='12.345.678/0001-90', razao_social='Empresa XYZ LTDA'
+# Linha 1: tipo='pf', cpf='123.456.789-00', cnpj=None, razao_social=None
+# Linha 2: tipo='pj', cpf=None, cnpj='12.345.678/0001-90', razao_social='Empresa XYZ LTDA'
 ```
 
 ## Exemplo 2: Campos Encadeados
 
-Este exemplo mostra como encadear condições em sequência:
-
 ```python
 class EnderecoInfo(BaseModel):
     pais: str = Field(description="País")
-
-    estado: str = Field(
+    estado: str | None = Field(
+        default=None,
         description="Estado (apenas para Brasil)",
-        json_schema_extra={
-            'condition': {'field': 'pais', 'equals': 'Brasil'}
-        }
+        json_schema_extra={'condition': {'field': 'pais', 'equals': 'Brasil'}},
     )
-
-    cep: str = Field(
+    cep: str | None = Field(
+        default=None,
         description="CEP (apenas para Brasil)",
-        json_schema_extra={
-            'condition': {'field': 'estado', 'exists': True}
-        }
+        json_schema_extra={'condition': {'field': 'estado', 'exists': True}},
     )
-
-    zip_code: str = Field(
-        description="ZIP Code (apenas para outros países)",
-        json_schema_extra={
-            'condition': {'field': 'pais', 'not_equals': 'Brasil'}
-        }
+    zip_code: str | None = Field(
+        default=None,
+        description="Código postal (apenas para outros países)",
+        json_schema_extra={'condition': {'field': 'pais', 'not_equals': 'Brasil'}},
     )
 ```
 
+A ordem de execução é `pais → estado → cep` e `pais → zip_code`.
+
 ## Exemplo 3: Condição Callable com Múltiplas Dependências
 
-Quando a condição combina vários campos, use um callable e declare os campos lidos via `depends_on`:
+Quando a condição combina vários campos, use um callable e declare os campos lidos em `depends_on`:
 
 ```python
 class PedidoInfo(BaseModel):
     tipo_cliente: str = Field(description="Tipo do cliente: 'novo' ou 'vip'")
-
     valor_pedido: float = Field(description="Valor total do pedido")
-
-    desconto: float = Field(
+    desconto: float | None = Field(
+        default=None,
         description="Desconto aplicado",
         json_schema_extra={
             'depends_on': ['tipo_cliente', 'valor_pedido'],
-            'condition': lambda data: (
-                data.get('tipo_cliente') == 'vip' and
-                data.get('valor_pedido', 0) > 1000
-            )
-        }
+            'condition': lambda dados: (
+                dados.get('tipo_cliente') == 'vip'
+                and (dados.get('valor_pedido') or 0) > 1000
+            ),
+        },
     )
 ```
 
 ## Operadores de Condição
-
-As condições suportam os seguintes operadores:
-
-### Dicionário com operadores
 
 ```python
 # Igualdade
@@ -140,113 +117,81 @@ As condições suportam os seguintes operadores:
 # Não está na lista
 {'field': 'status', 'not_in': ['inativo', 'cancelado']}
 
-# Campo existe (não é None)
+# Campo preenchido (não é None)
 {'field': 'campo_opcional', 'exists': True}
 ```
 
-### Função Callable
-
-Para condições mais complexas, use uma função:
-
-```python
-{
-    'condition': lambda data: (
-        data.get('idade', 0) >= 18 and
-        data.get('pais') == 'Brasil'
-    )
-}
-```
-
-Lembre-se de declarar `depends_on` com os campos lidos pelo lambda — sem isso, a ordem de execução não é garantida.
+Sem `depends_on`, a ordem de um callable não é garantida.
 
 ## Campos Aninhados em Condições
 
-Você pode acessar campos aninhados usando notação de ponto. A dependência derivada é o campo raiz:
+A condição pode ler um campo de modelo aninhado com notação de ponto. A dependência derivada é o campo raiz:
 
 ```python
-class ProdutoInfo(BaseModel):
-    endereco: dict = Field(description="Endereço de entrega")
+class Endereco(BaseModel):
+    cidade: str = Field(description="Cidade")
+    uf: str = Field(description="UF")
 
-    taxa_entrega: float = Field(
+class Entrega(BaseModel):
+    endereco: Endereco = Field(description="Endereço de entrega")
+    taxa_entrega: float | None = Field(
+        default=None,
         description="Taxa de entrega",
         json_schema_extra={
             'condition': {'field': 'endereco.cidade', 'in': ['São Paulo', 'Rio de Janeiro']}
-        }
+        },
     )
 ```
 
-## Ordem de Execução
+A condição fica no campo de nível superior. `condition` ou `depends_on` num campo de modelo aninhado, ou de item de lista, levanta `ValueError` antes de processar.
 
-O DataFrameIt deriva a ordem automaticamente do campo referenciado em cada `condition`:
+## Dependências Circulares
 
-```python
-class ModeloEncadeado(BaseModel):
-    a: str
-    b: str = Field(json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
-    c: str = Field(json_schema_extra={'condition': {'field': 'b', 'equals': 'y'}})
-    d: str = Field(json_schema_extra={'condition': {'field': 'c', 'equals': 'z'}})
-```
-
-A ordem de execução será: `a → b → c → d`.
-
-## Detecção de Dependências Circulares
-
-O sistema detecta automaticamente dependências circulares e gera um erro:
+Um ciclo é detectado antes da primeira linha:
 
 ```python
 class ModeloInvalido(BaseModel):
-    a: str = Field(json_schema_extra={'condition': {'field': 'b', 'equals': 'x'}})
-    b: str = Field(json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
+    a: str | None = Field(default=None, json_schema_extra={'condition': {'field': 'b', 'equals': 'x'}})
+    b: str | None = Field(default=None, json_schema_extra={'condition': {'field': 'a', 'equals': 'x'}})
 
 # ValueError: Dependências circulares detectadas: a -> b -> a
 ```
 
 ## Logging e Debug
 
-Para ver detalhes sobre a execução condicional, ative o logging em nível DEBUG:
+A ordem de execução, as dependências e a avaliação de cada condição saem em nível DEBUG, e os campos pulados, em INFO, nos loggers `dataframeit.conditional` e `dataframeit.agent`:
 
 ```python
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger('dataframeit.agent')
-logger.setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('dataframeit').setLevel(logging.DEBUG)
 ```
-
-Isso mostrará:
-- Ordem de execução determinada
-- Mapa de dependências
-- Campos que foram pulados e por quê
-- Avaliação de cada condição
-
-## Considerações de Performance
-
-- Campos condicionais são processados sequencialmente na ordem de dependência
-- Campos que são pulados não consomem créditos de busca
-- Use condições para otimizar custos pulando campos desnecessários
 
 ## Combinando com Outras Configurações
 
-Condicionais funcionam em conjunto com outras configurações per-field:
+A condição convive com as outras chaves de busca por campo:
 
 ```python
 class InfoCompleta(BaseModel):
     tipo: str
-
-    detalhes_pf: str = Field(
+    detalhes_pf: str | None = Field(
+        default=None,
         json_schema_extra={
             'condition': {'field': 'tipo', 'equals': 'pf'},
-            'search_depth': 'advanced',  # Busca mais profunda
-            'max_results': 10,  # Mais resultados
-            'prompt_append': 'Inclua informações detalhadas sobre histórico.'
-        }
+            'search_depth': 'advanced',
+            'max_results': 10,
+            'max_search_calls': 3,
+            'prompt_append': 'Inclua informações detalhadas sobre histórico.',
+        },
     )
 ```
 
 ## Limitações
 
-1. Condicionais só funcionam com `use_search=True` e `search_per_field=True`; sem isso, `condition` ou `depends_on` no modelo levanta `ValueError`
-2. Com `search_groups`, a condição de um campo agrupado é avaliada antes da chamada do grupo, e o campo com condição falsa fica fora dela; se a condição depende de outro campo do mesmo grupo, ela é avaliada com a resposta do grupo, e o campo com condição falsa fica `None`
-3. Não é possível criar dependências de campos que não existem no modelo
-4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele
-5. Cada condição é avaliada uma vez: antes da chamada do campo, ou depois da resposta do grupo quando depende de outro campo do mesmo grupo
+1. Condicionais só funcionam com `use_search=True` e `search_per_field=True`; sem isso, `condition` ou `depends_on` no modelo levanta `ValueError`.
+2. Com `search_groups`, a condição de um campo agrupado é avaliada antes da chamada do grupo, e o campo com condição falsa fica fora dela; se a condição depende de outro campo do mesmo grupo, ela é avaliada com a resposta do grupo, e o campo com condição falsa fica `None`.
+3. A condição só pode ler campos que existem no modelo.
+4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele.
+5. Cada condição é avaliada uma vez: antes da chamada do campo, ou depois da resposta do grupo quando depende de outro campo do mesmo grupo.
+6. Os campos com condição são processados em sequência, na ordem das dependências; um campo pulado não consome busca.
