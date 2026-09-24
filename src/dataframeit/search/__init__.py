@@ -5,9 +5,9 @@ Suporta múltiplos provedores de busca:
 - Exa: Mais econômico para alto volume (>2667 buscas/mês com 1-25 resultados)
 """
 
-from .base import SearchProvider, get_provider, get_available_providers
-from .tavily_provider import TavilyProvider
+from .base import SearchProvider, get_available_providers, get_provider
 from .exa_provider import ExaProvider
+from .tavily_provider import TavilyProvider
 
 __all__ = [
     'SearchProvider',

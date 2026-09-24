@@ -17,16 +17,16 @@ except ImportError:
     HAS_POLARS = False
 
 from dataframeit.utils import (
-    to_pandas,
-    from_pandas,
-    ConversionInfo,
     DEFAULT_TEXT_COLUMN,
-    ORIGINAL_TYPE_PANDAS_DF,
-    ORIGINAL_TYPE_POLARS_DF,
-    ORIGINAL_TYPE_PANDAS_SERIES,
-    ORIGINAL_TYPE_POLARS_SERIES,
-    ORIGINAL_TYPE_LIST,
     ORIGINAL_TYPE_DICT,
+    ORIGINAL_TYPE_LIST,
+    ORIGINAL_TYPE_PANDAS_DF,
+    ORIGINAL_TYPE_PANDAS_SERIES,
+    ORIGINAL_TYPE_POLARS_DF,
+    ORIGINAL_TYPE_POLARS_SERIES,
+    ConversionInfo,
+    from_pandas,
+    to_pandas,
 )
 
 

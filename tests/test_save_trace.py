@@ -1,13 +1,14 @@
 """Testes para a funcionalidade save_trace."""
 
 import json
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
 import pytest
 from pydantic import BaseModel
-from unittest.mock import patch, MagicMock
 
-from dataframeit.core import dataframeit
 from dataframeit.agent import _extract_trace
+from dataframeit.core import dataframeit
 
 
 class SimpleModel(BaseModel):

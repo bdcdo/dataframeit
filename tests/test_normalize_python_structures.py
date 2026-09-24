@@ -4,28 +4,25 @@ Estes testes verificam que estruturas Python são preservadas corretamente
 mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 """
 
-import pandas as pd
-from pydantic import BaseModel, Field
-from typing import Literal, Optional
-
-import tempfile
+import importlib.util
 import os
-import pytest
+import tempfile
+from typing import Literal
 
-# Verificar se openpyxl está instalado
-try:
-    import openpyxl
-    HAS_OPENPYXL = True
-except ImportError:
-    HAS_OPENPYXL = False
+import pandas as pd
+import pytest
+from pydantic import BaseModel
 
 from dataframeit.utils import (
-    normalize_value,
-    normalize_complex_columns,
     get_complex_fields,
     is_complex_type,
+    normalize_complex_columns,
+    normalize_value,
     read_df,
 )
+
+# Verificar se openpyxl está instalado
+HAS_OPENPYXL = importlib.util.find_spec("openpyxl") is not None
 
 
 # =============================================================================

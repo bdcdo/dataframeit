@@ -78,6 +78,7 @@ def test_claude_code_sem_modelo_deixa_o_runtime_escolher():
 
 def test_codex_sem_modelo_deixa_o_runtime_escolher():
     from contextlib import contextmanager
+
     from dataframeit.core import dataframeit
 
     configs = []

@@ -39,6 +39,9 @@ jobs:
           "openai-codex-cli-bin"};
           assert not packages & installed'
 
+      - name: Lint
+        run: uv run --python "${{ matrix.python-version }}" --extra dev ruff check src tests
+
       - name: Run tests
         run: uv run --python "${{ matrix.python-version }}" --extra dev pytest
 

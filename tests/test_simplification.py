@@ -1,10 +1,9 @@
 """Teste funcional para validar a simplificação do código."""
 
-import pandas as pd
-from pydantic import BaseModel, Field
 from typing import Literal
 
-from dataframeit.core import dataframeit
+import pandas as pd
+from pydantic import BaseModel, Field
 
 
 class TestModel(BaseModel):
@@ -87,7 +86,7 @@ def test_llm_config():
 
 def test_utils():
     """Testa funções de utilidade."""
-    from dataframeit.utils import to_pandas, from_pandas, parse_json, ORIGINAL_TYPE_PANDAS_DF
+    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, parse_json, to_pandas
 
     # Testar conversão pandas
     df_pd = pd.DataFrame({'a': [1, 2, 3]})

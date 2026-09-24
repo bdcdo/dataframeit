@@ -1,8 +1,9 @@
 """Teste de compatibilidade entre código antigo e novo."""
 
+from typing import Literal
+
 import pandas as pd
 from pydantic import BaseModel, Field
-from typing import Literal
 
 
 class TestModel(BaseModel):
@@ -51,7 +52,7 @@ def test_api_compatibility():
 
     # Verificar que ValueError é lançado sem questions/perguntas
     try:
-        result = dataframeit_new(df, prompt=template)
+        dataframeit_new(df, prompt=template)
         assert False, "Deveria ter lançado ValueError"
     except ValueError as e:
         assert "questions" in str(e).lower()
@@ -59,7 +60,7 @@ def test_api_compatibility():
 
     # Verificar que ValueError é lançado sem prompt
     try:
-        result = dataframeit_new(df, questions=TestModel)
+        dataframeit_new(df, questions=TestModel)
         assert False, "Deveria ter lançado ValueError"
     except ValueError as e:
         assert "prompt" in str(e).lower()
@@ -135,7 +136,7 @@ def test_resume_functionality():
 
 def test_utils_functions():
     """Testa funções de utilidade."""
-    from dataframeit.utils import parse_json, to_pandas, from_pandas
+    from dataframeit.utils import from_pandas, parse_json, to_pandas
 
     # Parse JSON básico
     result = parse_json('{"a": 1, "b": "test"}')
@@ -153,7 +154,7 @@ def test_utils_functions():
     print("✅ parse_json com texto extra")
 
     # Conversão pandas
-    from dataframeit.utils import ConversionInfo, ORIGINAL_TYPE_PANDAS_DF
+    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, ConversionInfo
     df = pd.DataFrame({'a': [1, 2, 3]})
     df_result, conversion_info = to_pandas(df)
     assert isinstance(df_result, pd.DataFrame)
