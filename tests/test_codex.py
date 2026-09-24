@@ -150,7 +150,13 @@ def auth_lock_is_available(lock_path: Path) -> bool:
 
 @pytest.fixture
 def codex_sdk():
-    """Carrega o SDK real apenas nos testes que exercitam sua fronteira."""
+    """Carrega o SDK real apenas nos testes que exercitam sua fronteira.
+
+    O filelock é importado aqui, antes de qualquer patch do teste, porque a sua
+    importação roda uma sonda que usa tempfile.TemporaryDirectory e os.link; os
+    patches desses nomes valem para o processo inteiro e capturariam a sonda.
+    """
+    pytest.importorskip("filelock")
     sdk = pytest.importorskip("openai_codex")
     sdk_types = pytest.importorskip("openai_codex.types")
     generated = pytest.importorskip("openai_codex.generated.v2_all")
