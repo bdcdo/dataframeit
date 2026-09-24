@@ -41,6 +41,24 @@ class SearchProvider(ABC):
         """URL para criar conta e obter API key."""
         pass
 
+    @property
+    @abstractmethod
+    def friendly_name(self) -> str:
+        """Nome exibido nas mensagens de erro (ex: 'Tavily Search')."""
+        pass
+
+    @property
+    @abstractmethod
+    def free_tier(self) -> str:
+        """Descrição curta do plano de entrada, exibida na mensagem de API key ausente."""
+        pass
+
+    @property
+    @abstractmethod
+    def requests_per_minute(self) -> int:
+        """Limite aproximado de requisições por minuto, usado no aviso de rate limit."""
+        pass
+
     @abstractmethod
     def create_tool(self, max_results: int, **kwargs) -> Any:
         """Cria a ferramenta de busca do LangChain.

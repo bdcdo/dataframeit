@@ -55,7 +55,7 @@ def parse_json(resposta: str) -> dict:
     """Extrai e faz parse de JSON da resposta de um LLM.
 
     Args:
-        resposta: String de resposta do LLM ou objeto com atributo 'content'.
+        resposta: Texto da resposta do LLM.
 
     Returns:
         Dicionário com os dados do JSON.
@@ -63,14 +63,7 @@ def parse_json(resposta: str) -> dict:
     Raises:
         ValueError: Se o JSON não puder ser extraído ou decodificado.
     """
-    # Extrair conteúdo se for objeto do LangChain
-    if hasattr(resposta, 'content'):
-        if isinstance(resposta.content, list):
-            content = "".join(str(item) for item in resposta.content)
-        else:
-            content = resposta.content
-    else:
-        content = str(resposta)
+    content = str(resposta)
 
     # Tentar extrair JSON de bloco de código markdown
     match = re.search(r"```json\n(.*?)\n```", content, re.DOTALL)
@@ -615,7 +608,8 @@ def get_nested_pydantic_models(field_type) -> list:
         models.append(field_type)
         return models
 
-    # Caso 2: Tipos genéricos (List[X], Optional[X], Union[X, Y], etc.)
+    # Caso 2: Tipos genéricos (List[X], Optional[X], Union[X, Y], X | Y etc.).
+    # get_origin também reconhece types.UnionType, então `X | None` cai aqui.
     if origin is not None:
         args = get_args(field_type)
 
@@ -629,17 +623,6 @@ def get_nested_pydantic_models(field_type) -> list:
                 models.append(arg)
             else:
                 # Recursivamente buscar em tipos aninhados (e.g., List[List[Model]])
-                models.extend(get_nested_pydantic_models(arg))
-
-    # Caso 3: types.UnionType para sintaxe X | Y (Python 3.10+)
-    if isinstance(field_type, types.UnionType):
-        args = get_args(field_type)
-        for arg in args:
-            if arg is type(None):
-                continue
-            if isinstance(arg, type) and issubclass(arg, BaseModel):
-                models.append(arg)
-            else:
                 models.extend(get_nested_pydantic_models(arg))
 
     return models

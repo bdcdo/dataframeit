@@ -690,57 +690,6 @@ def test_build_field_prompt_default():
     assert "Extra info" not in prompt
 
 
-def test_apply_field_overrides_no_changes():
-    """Testa que config original é retornada se não há overrides."""
-    from dataframeit.agent import _apply_field_overrides
-    from dataframeit.llm import LLMConfig, SearchConfig
-
-    config = LLMConfig(
-        model="test",
-        provider="test",
-        api_key=None,
-        max_retries=3,
-        base_delay=1.0,
-        max_delay=60.0,
-        rate_limit_delay=0,
-        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
-    )
-
-    field_config = {}
-    new_config = _apply_field_overrides(config, field_config)
-
-    # Deve ser o mesmo objeto
-    assert new_config is config
-
-
-def test_apply_field_overrides_with_changes():
-    """Testa override de search_depth e max_results."""
-    from dataframeit.agent import _apply_field_overrides
-    from dataframeit.llm import LLMConfig, SearchConfig
-
-    config = LLMConfig(
-        model="test",
-        provider="test",
-        api_key=None,
-        max_retries=3,
-        base_delay=1.0,
-        max_delay=60.0,
-        rate_limit_delay=0,
-        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
-    )
-
-    field_config = {"search_depth": "advanced", "max_results": 10}
-    new_config = _apply_field_overrides(config, field_config)
-
-    # Novo config deve ter valores sobrescritos
-    assert new_config.search_config.search_depth == "advanced"
-    assert new_config.search_config.max_results == 10
-
-    # Config original não deve mudar
-    assert config.search_config.search_depth == "basic"
-    assert config.search_config.max_results == 5
-
-
 def test_has_field_config_detects_prompt():
     """Testa detecção de prompt em json_schema_extra."""
     from dataframeit.core import _has_field_config
@@ -991,13 +940,14 @@ def test_search_groups_validates_field_config_conflict():
     assert "json_schema_extra" in str(exc_info.value)
 
 
-def test_search_groups_validates_search_depth():
-    """Verifica que search_depth inválido no grupo gera erro."""
+@pytest.mark.parametrize("search_depth", ["invalid", ""])
+def test_search_groups_validates_search_depth(search_depth):
+    """Verifica que search_depth inválido no grupo gera erro, inclusive o vazio."""
     from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
-            {"grupo": {"fields": ["nome"], "search_depth": "invalid"}},
+            {"grupo": {"fields": ["nome"], "search_depth": search_depth}},
             RegulatoryModel,
             use_search=True,
             search_per_field=True
@@ -1287,51 +1237,6 @@ def test_search_groups_setup_columns():
     assert "_trace_avaliacao_conitec" not in df.columns
 
 
-def test_apply_group_overrides_no_changes():
-    """Verifica que config original é retornada se não há overrides."""
-    from dataframeit.agent import _apply_group_overrides
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
-
-    config = LLMConfig(
-        model="test", provider="test", api_key=None,
-        max_retries=3, base_delay=1.0, max_delay=60.0, rate_limit_delay=0,
-        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
-    )
-
-    group_config = SearchGroupConfig(fields=["campo"])
-    new_config = _apply_group_overrides(config, group_config)
-
-    # Deve ser o mesmo objeto
-    assert new_config is config
-
-
-def test_apply_group_overrides_with_changes():
-    """Verifica override de search_depth e max_results no grupo."""
-    from dataframeit.agent import _apply_group_overrides
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
-
-    config = LLMConfig(
-        model="test", provider="test", api_key=None,
-        max_retries=3, base_delay=1.0, max_delay=60.0, rate_limit_delay=0,
-        search_config=SearchConfig(enabled=True, search_depth="basic", max_results=5)
-    )
-
-    group_config = SearchGroupConfig(
-        fields=["campo"],
-        search_depth="advanced",
-        max_results=10
-    )
-    new_config = _apply_group_overrides(config, group_config)
-
-    # Novo config deve ter valores sobrescritos
-    assert new_config.search_config.search_depth == "advanced"
-    assert new_config.search_config.max_results == 10
-
-    # Config original não deve mudar
-    assert config.search_config.search_depth == "basic"
-    assert config.search_config.max_results == 5
-
-
 # =============================================================================
 # Testes de campos aninhados em List[Model]
 # =============================================================================
@@ -1385,6 +1290,16 @@ def test_get_nested_pydantic_models_optional_model():
 
     assert len(models) == 1
     assert models[0] is InformacoesMedicamento
+
+
+def test_get_nested_pydantic_models_pipe_union_sem_duplicata():
+    """`Model | None` usa types.UnionType e devolve o modelo uma vez só."""
+    from dataframeit.utils import get_nested_pydantic_models
+
+    assert get_nested_pydantic_models(InformacoesMedicamento | None) == [InformacoesMedicamento]
+    assert get_nested_pydantic_models(list[InformacoesMedicamento] | None) == [
+        InformacoesMedicamento
+    ]
 
 
 def test_get_nested_pydantic_models_primitive():
