@@ -28,6 +28,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - `search_count` e `search_credits` contam só as chamadas da ferramenta de busca passada ao agente; antes, qualquer tool call com "search" no nome contava, inclusive a de structured output dos modelos `NestedSearch_*`, `ItemSearch_*` ou de modelos do usuário como `ResearchResult` (#125).
 - `search_groups` aplica `condition`: campo com condição falsa fica `None` e não é pedido ao agente, e grupos e campos isolados rodam na ordem das dependências (#125).
 - A ordem de execução entre campos independentes segue a do modelo, e os campos de um grupo seguem a ordem de `search_groups`; antes, ambas variavam de um processo para outro (#125).
+- Com `parallel_requests > 1` e `batch_size`, duas gravações de checkpoint simultâneas disputavam o mesmo arquivo temporário, e o `FileNotFoundError` resultante regravava como `'error'` uma linha já processada. As gravações passam a ser serializadas, e um snapshot mais antigo que chegue depois de um mais novo é descartado.
 
 ### Segurança
 

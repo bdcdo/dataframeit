@@ -299,3 +299,43 @@ def test_save_checkpoint_rejects_unsupported_extension(tmp_path):
     df = pd.DataFrame({"a": [1]})
     with pytest.raises(ValueError, match="Extensão"):
         _save_checkpoint(df, tmp_path / "out.json")
+
+
+def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
+    """Duas gravações simultâneas disputavam o mesmo .tmp, e o FileNotFoundError
+    do os.replace regravava como 'error' uma linha já processada."""
+    import threading
+    import time
+
+    df = pd.DataFrame({"texto": [f"t{i}" for i in range(24)]})
+    ckpt = tmp_path / "ckpt.csv"
+    ativas = [0]
+    max_ativas = [0]
+    processadas_por_gravacao = []
+    trava = threading.Lock()
+
+    def gravacao_lenta(df_arg, path_arg):
+        with trava:
+            ativas[0] += 1
+            max_ativas[0] = max(max_ativas[0], ativas[0])
+        time.sleep(0.02)
+        processadas_por_gravacao.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
+        with trava:
+            ativas[0] -= 1
+
+    def llm_lento(*args, **kwargs):
+        time.sleep(0.005)
+        return {"data": {"campo1": "ok"}, "usage": None}
+
+    with patch("dataframeit.core.call_langchain", side_effect=llm_lento), \
+            patch("dataframeit.core.validate_provider_dependencies"), \
+            patch("dataframeit.core._save_checkpoint", side_effect=gravacao_lenta):
+        resultado = dataframeit(
+            df, SimpleModel, "p {texto}",
+            parallel_requests=6, batch_size=1, checkpoint_path=str(ckpt),
+            track_tokens=False,
+        )
+
+    assert max_ativas[0] == 1
+    assert processadas_por_gravacao == sorted(processadas_por_gravacao)
+    assert resultado["campo1"].tolist() == ["ok"] * 24
