@@ -12,15 +12,14 @@ from typing import Any
 
 from pydantic import create_model
 
+from .conditional import _collect_configured_fields
 from .errors import retry_with_backoff
 from .llm import LLMConfig, _create_langchain_llm, _parse_usage_metadata, build_prompt
 from .search import get_provider
-from .utils import get_nested_pydantic_models, is_list_of_pydantic_model
+from .utils import is_list_of_pydantic_model
 
 logger = logging.getLogger(__name__)
 
-# Chaves de configuração per-field reconhecidas em json_schema_extra
-_FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
 _USAGE_COUNTERS = (
     'input_tokens',
     'cached_input_tokens',
@@ -94,82 +93,32 @@ def _build_field_prompt(
     return base_prompt
 
 
-def _apply_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
-    """Cria novo LLMConfig com overrides do campo (se houver).
+def _with_search_overrides(config: LLMConfig, search_depth=None, max_results=None) -> LLMConfig:
+    """Cria novo LLMConfig com os overrides de busca de um campo ou grupo.
 
     Args:
         config: Configuração base do LLM.
-        field_config: Configurações extraídas do json_schema_extra.
+        search_depth: Profundidade que substitui a global, ou None.
+        max_results: Número de resultados que substitui o global, ou None.
 
     Returns:
-        LLMConfig original se não há overrides, ou novo LLMConfig com
-        parâmetros de busca sobrescritos.
+        LLMConfig original se não há overrides, ou cópia com a SearchConfig
+        sobrescrita. A config original nunca é mutada, porque é compartilhada
+        entre linhas e threads.
     """
-    search_depth = field_config.get('search_depth')
-    max_results = field_config.get('max_results')
-
-    # Se não há overrides, retorna config original
-    if not search_depth and not max_results:
+    if search_depth is None and max_results is None:
         return config
 
-    # Criar nova SearchConfig com overrides
     new_config = copy(config)
     new_search_config = copy(config.search_config)
 
-    if search_depth:
+    if search_depth is not None:
         new_search_config.search_depth = search_depth
-    if max_results:
+    if max_results is not None:
         new_search_config.max_results = max_results
 
     new_config.search_config = new_search_config
     return new_config
-
-
-def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set = None) -> list:
-    """Coleta todos os campos com json_schema_extra de busca, incluindo aninhados.
-
-    Args:
-        pydantic_model: Modelo Pydantic a analisar.
-        prefix: Prefixo do caminho (usado internamente para recursão).
-        _visited: Conjunto de modelos já visitados (previne loops infinitos).
-
-    Returns:
-        Lista de tuplas: (path, field_name, field_info, parent_model, has_config)
-        Ex: ("pedidos.info_medicamento", "status_anvisa_atual", <FieldInfo>, InformacoesMedicamento, True)
-    """
-    if _visited is None:
-        _visited = set()
-
-    # Evitar loops em modelos auto-referenciais
-    model_id = id(pydantic_model)
-    if model_id in _visited:
-        return []
-    _visited.add(model_id)
-
-    results = []
-
-    for field_name, field_info in pydantic_model.model_fields.items():
-        # Construir caminho completo
-        path = f"{prefix}.{field_name}" if prefix else field_name
-
-        # Verificar se este campo tem configuração de busca
-        extra = field_info.json_schema_extra
-        has_config = False
-        if isinstance(extra, dict):
-            has_config = any(k in extra for k in _FIELD_CONFIG_KEYS)
-
-        # Adicionar este campo se tiver configuração
-        if has_config:
-            results.append((path, field_name, field_info, pydantic_model, True))
-
-        # Buscar modelos Pydantic aninhados no tipo do campo
-        nested_models = get_nested_pydantic_models(field_info.annotation)
-        for nested_model in nested_models:
-            # Recursivamente coletar campos do modelo aninhado
-            nested_results = _collect_configured_fields(nested_model, path, _visited)
-            results.extend(nested_results)
-
-    return results
 
 
 def _get_list_fields_with_nested_search(pydantic_model) -> dict:
@@ -266,7 +215,9 @@ def _enrich_list_items_with_search(
             )
 
             # Criar config com overrides do campo
-            effective_config = _apply_field_overrides(config, field_config)
+            effective_config = _with_search_overrides(
+                config, field_config.get('search_depth'), field_config.get('max_results')
+            )
 
             # Chamar agente para buscar informações
             result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -447,7 +398,9 @@ def _run_nested_searches(
         )
 
         # Criar config com overrides do campo (se houver)
-        effective_config = _apply_field_overrides(config, field_config)
+        effective_config = _with_search_overrides(
+            config, field_config.get('search_depth'), field_config.get('max_results')
+        )
 
         # Chamar agente para buscar informações
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -589,7 +542,9 @@ def call_agent_per_field(
             field_prompt += f"\n\nContexto de buscas realizadas para campos aninhados:\n{context_str}"
 
         # Criar config com overrides do campo (se houver)
-        effective_config = _apply_field_overrides(config, field_config)
+        effective_config = _with_search_overrides(
+            config, field_config.get('search_depth'), field_config.get('max_results')
+        )
 
         # Chamar agente para este campo
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -789,7 +744,9 @@ def call_agent_per_group(
                 group_prompt = f"{user_prompt}\n\nResponda os campos: {field_list}"
 
             # Criar config com overrides do grupo (se houver)
-            effective_config = _apply_group_overrides(config, group_config)
+            effective_config = _with_search_overrides(
+                config, group_config.search_depth, group_config.max_results
+            )
 
             # Chamar agente para o grupo
             result = call_agent(text, GroupModel, group_prompt, effective_config, save_trace)
@@ -826,7 +783,9 @@ def call_agent_per_group(
             )
 
             # Criar config com overrides do campo (se houver)
-            effective_config = _apply_field_overrides(config, field_config)
+            effective_config = _with_search_overrides(
+                config, field_config.get('search_depth'), field_config.get('max_results')
+            )
 
             # Chamar agente para este campo
             result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
@@ -856,37 +815,6 @@ def call_agent_per_group(
         response['traces'] = traces
 
     return response
-
-
-def _apply_group_overrides(config: LLMConfig, group_config) -> LLMConfig:
-    """Cria novo LLMConfig com overrides do grupo (se houver).
-
-    Args:
-        config: Configuração base do LLM.
-        group_config: SearchGroupConfig com possíveis overrides.
-
-    Returns:
-        LLMConfig original se não há overrides, ou novo LLMConfig com
-        parâmetros de busca sobrescritos.
-    """
-    search_depth = group_config.search_depth
-    max_results = group_config.max_results
-
-    # Se não há overrides, retorna config original
-    if not search_depth and not max_results:
-        return config
-
-    # Criar nova SearchConfig com overrides
-    new_config = copy(config)
-    new_search_config = copy(config.search_config)
-
-    if search_depth:
-        new_search_config.search_depth = search_depth
-    if max_results:
-        new_search_config.max_results = max_results
-
-    new_config.search_config = new_search_config
-    return new_config
 
 
 def _extract_usage(agent_result: dict, provider, search_config, search_tool_name: str) -> dict[str, Any]:

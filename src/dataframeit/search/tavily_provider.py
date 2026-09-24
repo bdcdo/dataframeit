@@ -39,6 +39,19 @@ class TavilyProvider(SearchProvider):
     def signup_url(self) -> str:
         return "https://app.tavily.com"
 
+    @property
+    def friendly_name(self) -> str:
+        return "Tavily Search"
+
+    @property
+    def free_tier(self) -> str:
+        return "1000 buscas/mês"
+
+    @property
+    def requests_per_minute(self) -> int:
+        # Plano gratuito/básico
+        return 100
+
     def create_tool(self, max_results: int, search_depth: str = "basic", **kwargs) -> Any:
         """Cria ferramenta TavilySearch.
 

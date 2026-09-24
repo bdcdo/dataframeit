@@ -64,76 +64,56 @@ class TestBuildFieldPrompt:
 
 
 # =============================================================================
-# _apply_field_overrides
+# _with_search_overrides
 # =============================================================================
 
-class TestApplyFieldOverrides:
+class TestWithSearchOverrides:
     def test_sem_overrides_retorna_config_original(self):
-        from dataframeit.agent import _apply_field_overrides
+        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
-        result = _apply_field_overrides(cfg, {})
-        assert result is cfg
+        assert _with_search_overrides(cfg) is cfg
 
     def test_search_depth_override(self):
-        from dataframeit.agent import _apply_field_overrides
+        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
-        result = _apply_field_overrides(cfg, {"search_depth": "advanced"})
+        result = _with_search_overrides(cfg, search_depth="advanced")
         assert result is not cfg
         assert result.search_config.search_depth == "advanced"
         # max_results preservado
         assert result.search_config.max_results == 5
 
     def test_max_results_override(self):
-        from dataframeit.agent import _apply_field_overrides
+        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
-        result = _apply_field_overrides(cfg, {"max_results": 20})
+        result = _with_search_overrides(cfg, max_results=20)
         assert result.search_config.max_results == 20
         assert result.search_config.search_depth == "basic"
 
     def test_ambos_overrides(self):
-        from dataframeit.agent import _apply_field_overrides
+        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
-        result = _apply_field_overrides(
-            cfg, {"search_depth": "advanced", "max_results": 10}
-        )
+        result = _with_search_overrides(cfg, search_depth="advanced", max_results=10)
         assert result.search_config.search_depth == "advanced"
         assert result.search_config.max_results == 10
 
+    def test_valor_falsy_nao_e_ignorado(self):
+        """0 é um valor dado, não ausência; a validação de entrada é que o recusa."""
+        from dataframeit.agent import _with_search_overrides
+
+        cfg = _make_config()
+        result = _with_search_overrides(cfg, max_results=0)
+        assert result.search_config.max_results == 0
+
     def test_nao_muta_config_original(self):
-        from dataframeit.agent import _apply_field_overrides
+        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
-        _apply_field_overrides(cfg, {"max_results": 99})
+        _with_search_overrides(cfg, search_depth="advanced", max_results=99)
         assert cfg.search_config.max_results == 5
-
-
-# =============================================================================
-# _apply_group_overrides
-# =============================================================================
-
-class TestApplyGroupOverrides:
-    def test_sem_overrides_retorna_config_original(self):
-        from dataframeit.agent import _apply_group_overrides
-        from dataframeit.llm import SearchGroupConfig
-
-        cfg = _make_config()
-        group = SearchGroupConfig(fields=["a"])
-        assert _apply_group_overrides(cfg, group) is cfg
-
-    def test_aplica_search_depth_e_max_results(self):
-        from dataframeit.agent import _apply_group_overrides
-        from dataframeit.llm import SearchGroupConfig
-
-        cfg = _make_config()
-        group = SearchGroupConfig(fields=["a"], search_depth="advanced", max_results=15)
-        result = _apply_group_overrides(cfg, group)
-        assert result.search_config.search_depth == "advanced"
-        assert result.search_config.max_results == 15
-        # original intacto
         assert cfg.search_config.search_depth == "basic"
 
 

@@ -3,7 +3,52 @@
 import logging
 from typing import Any
 
+from .utils import get_nested_pydantic_models
+
 logger = logging.getLogger(__name__)
+
+# Chaves de configuração per-field reconhecidas em json_schema_extra
+_FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
+
+# Chaves de execução condicional em json_schema_extra. Só call_agent_per_field
+# e call_agent_per_group as aplicam, e só nos campos de primeiro nível.
+_CONDITIONAL_KEYS = ('condition', 'depends_on')
+
+
+def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set = None) -> list:
+    """Coleta todos os campos com json_schema_extra de busca, incluindo aninhados.
+
+    Args:
+        pydantic_model: Modelo Pydantic a analisar.
+        prefix: Prefixo do caminho (usado internamente para recursão).
+        _visited: Conjunto de modelos já visitados (previne loops infinitos).
+
+    Returns:
+        Lista de tuplas: (path, field_name, field_info, parent_model, has_config)
+        Ex: ("pedidos.info_medicamento", "status_anvisa_atual", <FieldInfo>, InformacoesMedicamento, True)
+    """
+    if _visited is None:
+        _visited = set()
+
+    # Evitar loops em modelos auto-referenciais
+    model_id = id(pydantic_model)
+    if model_id in _visited:
+        return []
+    _visited.add(model_id)
+
+    results = []
+
+    for field_name, field_info in pydantic_model.model_fields.items():
+        path = f"{prefix}.{field_name}" if prefix else field_name
+
+        extra = field_info.json_schema_extra
+        if isinstance(extra, dict) and any(k in extra for k in _FIELD_CONFIG_KEYS):
+            results.append((path, field_name, field_info, pydantic_model, True))
+
+        for nested_model in get_nested_pydantic_models(field_info.annotation):
+            results.extend(_collect_configured_fields(nested_model, path, _visited))
+
+    return results
 
 
 def get_nested_value(data: dict[str, Any], field_path: str) -> Any:
