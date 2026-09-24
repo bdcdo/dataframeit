@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Alterado
+
+- Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha quando a resposta os traz, o que inclui a OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
+
 ## [0.10.0] - 2026-09-24
 
 ### Adicionado

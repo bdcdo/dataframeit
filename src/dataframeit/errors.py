@@ -40,6 +40,15 @@ class ProviderOverloadedError(ProviderTransientError):
     """Falha transitória causada por sobrecarga ou limitação do provider."""
 
 
+class ProviderRejectedOutputError(ProviderTransientError, ValueError):
+    """Resposta recusada pela validação do modelo; a tentativa seguinte pede a correção.
+
+    É transitória por classe, e não pela mensagem: um número como '404' no texto
+    analisado faria a classificação por texto tratá-la como erro HTTP definitivo.
+    Continua ValueError para quem já capturava a falha de parsing.
+    """
+
+
 class ProviderConfigurationError(ValueError):
     """Configuração local incompatível com o contrato de um provider."""
 
@@ -372,6 +381,16 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
     Returns:
         Mensagem de erro amigável com instruções de como resolver.
     """
+    if isinstance(error, ProviderRejectedOutputError):
+        # Decidida pela classe: a mensagem não traz o texto analisado, mas um
+        # número como '401' no caminho de um campo não pode virar erro de chave.
+        return (
+            "RESPOSTA RECUSADA PELA VALIDAÇÃO DO MODELO PYDANTIC\n"
+            f"{error}\n"
+            "As tentativas levaram o erro de volta ao modelo, sem sucesso. Veja as regras "
+            "do modelo que falharam; se o texto é ambíguo, a instrução do campo pode ajudar."
+        )
+
     error_str = f"{type(error).__name__}: {error}".lower()
     error_name = type(error).__name__
     status = _http_error_status(error)

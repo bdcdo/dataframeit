@@ -67,11 +67,22 @@ Tentativa 6: falha → marca como erro
 - **Erro de conexão**: Problemas de rede
 - **Erro 5xx**: Problemas no servidor
 
+### Resposta recusada pela validação (retry com o erro)
+
+- **Erro de validação**: a resposta não passa no modelo Pydantic, inclusive nos validadores próprios (`model_validator`, `field_validator`)
+- **Erro de parsing**: a resposta não é JSON válido ou não veio no formato estruturado
+
+Nos providers do LangChain, a tentativa seguinte leva ao modelo a resposta recusada e a lista de erros, cada um com o caminho do campo e o valor recusado, e pede que ele responda de novo corrigindo esses pontos. Repetir o mesmo prompt tende a repetir o mesmo erro. Quando a resposta não é JSON, o pedido leva o texto do erro do parser.
+
+Na OpenAI, o SDK valida a resposta dentro da chamada e levanta o erro antes de devolver a mensagem; a resposta recusada e os tokens são lidos da resposta HTTP anexada ao erro. Quando nenhuma resposta bruta está disponível, o pedido de correção vai junto do prompt, com os valores recusados. Quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens`, porque também são cobrados; se todas falham, a linha fica com status `error`, sem contagem de tokens, e `_error_details` diz o campo e a regra de cada erro.
+
 ### Erros Permanentes (sem retry)
 
-- **Erro de validação**: Resposta não segue o modelo Pydantic
 - **Erro de autenticação (401/403)**: API key inválida
-- **Erro de parsing**: Resposta mal formatada
+- **Recurso inexistente (404)**: modelo ou endpoint que o provider não conhece
+- **Requisição inválida** (`BadRequestError`, `InvalidArgument`): parâmetro que o provider recusa
+- **Prompt maior que a janela de contexto** (`ContextOverflowError`)
+- **Configuração local incompatível com o provider**
 
 ## Processamento Incremental
 
