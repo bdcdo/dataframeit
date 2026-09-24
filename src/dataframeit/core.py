@@ -685,8 +685,8 @@ def dataframeit(
     - polars.DataFrame: Retorna DataFrame polars com colunas extraídas
     - pandas.Series: Retorna DataFrame com resultados indexados
     - polars.Series: Retorna DataFrame polars com resultados
-    - list: Retorna lista de dicionários com os resultados
-    - dict: Retorna dicionário {chave: {campos extraídos}}
+    - list: Retorna DataFrame pandas com índice numérico
+    - dict: Retorna DataFrame pandas com as chaves como índice
 
     Args:
         data: Dados contendo textos (DataFrame, Series, list ou dict).

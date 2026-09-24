@@ -65,11 +65,12 @@ Examples:
 
 ### By Provider
 
-| Provider | Free Tier | Recommended Delay |
-|----------|-----------|-------------------|
-| Google Gemini | 60 req/min | 1.0s |
-| OpenAI (Tier 1) | 500 req/min | 0.15s |
-| Anthropic (Free) | 50 req/min | 1.2s |
+The requests-per-minute limit depends on the model and on the account tier, and changes often. Look up your account's value on the official page and apply the formula above:
+
+- [Google Gemini](https://ai.google.dev/gemini-api/docs/rate-limits)
+- [OpenAI](https://developers.openai.com/api/docs/guides/rate-limits)
+- [Anthropic](https://platform.claude.com/docs/en/api/rate-limits)
+- [Groq](https://console.groq.com/docs/rate-limits)
 
 ### Combining with Parallelism
 
