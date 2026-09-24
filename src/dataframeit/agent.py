@@ -742,19 +742,20 @@ def call_agent_per_group(
 
         if kind == 'group':
             group_name = name
-            unit_fields = [f for f in execution_order if f in group_config.fields]
-
+            # O modelo e o prompt do grupo seguem a ordem de search_groups; a
+            # ordem de dependência só importa para as condições avaliadas
+            # depois da resposta.
             # Condições que dependem só de campos de fora do grupo já podem ser avaliadas.
             active_fields = []
-            post_call_fields = []
-            for field_name in unit_fields:
+            post_call_set = set()
+            for field_name in group_config.fields:
                 deps_in_group = [
                     dep for dep in dependencies[field_name]
                     if unit_of_field[dep.split('.')[0]] == unit_key
                 ]
                 if deps_in_group:
                     active_fields.append(field_name)
-                    post_call_fields.append(field_name)
+                    post_call_set.add(field_name)
                 elif should_skip_field(field_name, field_configs[field_name], combined_data):
                     combined_data[field_name] = None
                 else:
@@ -762,6 +763,8 @@ def call_agent_per_group(
 
             if not active_fields:
                 continue
+
+            post_call_fields = [f for f in execution_order if f in post_call_set]
 
             # Criar modelo com os campos ativos do grupo
             group_field_infos = {

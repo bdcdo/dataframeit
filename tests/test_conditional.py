@@ -707,9 +707,46 @@ class TestCondicaoNoModoPorGrupo:
         config = _config_por_grupo({'g': ['a', 'c']})
 
         with patch('dataframeit.agent.call_agent') as call_agent:
-            with pytest.raises(ValueError, match="circular"):
+            with pytest.raises(ValueError, match="grupo 'g'"):
                 call_agent_per_group('texto', ModeloCiclico, 'Analise {texto}', config)
         call_agent.assert_not_called()
+
+    def test_grupo_segue_a_ordem_de_search_groups(self):
+        from dataframeit.agent import call_agent_per_group
+
+        chamadas = []
+        valores = {'tipo': 'pj', 'cpf': '123', 'cnpj': '999', 'razao_social': 'XYZ'}
+        config = _config_por_grupo({'empresa': ['razao_social', 'cnpj']})
+
+        with patch('dataframeit.agent.call_agent', side_effect=_call_agent_falso(valores, chamadas)):
+            call_agent_per_group('texto', ModeloPessoaCondicional, 'Analise {texto}', config)
+
+        assert ['razao_social', 'cnpj'] in chamadas
+
+
+def test_ordem_de_execucao_nao_depende_do_hash_seed():
+    """A ordem entre campos independentes segue o modelo em qualquer processo."""
+    import os
+    import subprocess
+    import sys
+
+    codigo = (
+        "from pydantic import BaseModel\n"
+        "from dataframeit.conditional import get_field_execution_order\n"
+        "class M(BaseModel):\n"
+        "    zeta: str\n    alfa: str\n    meio: str\n    beta: str\n"
+        "print(get_field_execution_order(M, {})[0])\n"
+    )
+    saidas = set()
+    for semente in ('0', '1', '2', '3'):
+        ambiente = {**os.environ, 'PYTHONHASHSEED': semente}
+        saida = subprocess.run(
+            [sys.executable, '-c', codigo], env=ambiente,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        saidas.add(saida)
+
+    assert saidas == {"['zeta', 'alfa', 'meio', 'beta']"}
 
 
 _RESPOSTA_PF = {

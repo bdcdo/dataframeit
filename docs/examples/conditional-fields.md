@@ -249,4 +249,4 @@ class InfoCompleta(BaseModel):
 2. Com `search_groups`, a condição de um campo agrupado é avaliada antes da chamada do grupo, e o campo com condição falsa fica fora dela; se a condição depende de outro campo do mesmo grupo, ela é avaliada com a resposta do grupo, e o campo com condição falsa fica `None`
 3. Não é possível criar dependências de campos que não existem no modelo
 4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele
-5. Condições são avaliadas uma vez antes de processar cada campo
+5. Cada condição é avaliada uma vez: antes da chamada do campo, ou depois da resposta do grupo quando depende de outro campo do mesmo grupo

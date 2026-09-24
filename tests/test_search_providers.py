@@ -518,7 +518,6 @@ def test_call_agent_uses_provider_factory(monkeypatch):
         assert len(captured_tools) == 1
 
 
-
 def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
     """O nome do modelo de structured output não conta como busca, mesmo contendo "search"."""
     from types import SimpleNamespace
@@ -561,6 +560,7 @@ def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
 
     assert resultado["usage"]["search_count"] == 1
     assert resultado["usage"]["search_credits"] == 1
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

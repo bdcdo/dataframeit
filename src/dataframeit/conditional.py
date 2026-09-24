@@ -354,7 +354,9 @@ def get_field_execution_order(
     all_fields = set(pydantic_model.model_fields.keys())
     dependencies = {}
 
-    for field_name in all_fields:
+    # A ordem do modelo, e não a do set, fixa a ordem entre campos
+    # independentes: topological_sort segue a ordem de inserção do dict.
+    for field_name in pydantic_model.model_fields:
         config = field_configs.get(field_name, {})
         depends_on = _resolve_depends_on(field_name, config)
 
