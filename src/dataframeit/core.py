@@ -86,6 +86,58 @@ class ProviderBackend:
     invoke_partial: Callable[[str, set, dict], dict] | None = None
 
 
+# Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
+_MISSING_TEXT_DETAIL = 'Texto ausente'
+
+
+# Sufixo do erro de uma linha já processada cujo reprocessamento falhou.
+_KEPT_VALUES_NOTE = ' (reprocess_columns falhou; a linha mantém os valores anteriores)'
+
+
+def _success_details(retry_info: dict) -> str | None:
+    """Detalhe gravado numa linha bem-sucedida: os retries, se houve."""
+    retries = retry_info.get('retries', 0)
+    return f"Sucesso após {retries} retry(s)" if retries > 0 else None
+
+
+def _missing_text_detail(row_already_processed: bool, reprocess_columns) -> str:
+    """Detalhe da linha sem texto; sob reprocess_columns, a linha mantém os valores."""
+    if row_already_processed and reprocess_columns:
+        return _MISSING_TEXT_DETAIL + _KEPT_VALUES_NOTE
+    return _MISSING_TEXT_DETAIL
+
+
+def _as_object_columns(df: pd.DataFrame, columns) -> None:
+    """Converte para object as colunas que vão receber texto, lista ou None.
+
+    Uma coluna lida de CSV ou XLSX toda vazia volta como float, e gravar texto
+    nela levanta TypeError no pandas 3. Vale para as colunas do modelo e para
+    as de controle (status e detalhe de erro).
+    """
+    for col in columns:
+        if col in df.columns and df[col].dtype != object:
+            df[col] = df[col].astype(object)
+
+
+def _is_missing_text(value) -> bool:
+    """None, NaN ou texto só com espaços: não há o que mandar ao LLM."""
+    if isinstance(value, str):
+        return not value.strip()
+    return is_scalar(value) and bool(pd.isna(value))
+
+
+def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows) -> None:
+    """Avisa uma vez quantas linhas a processar não têm texto."""
+    missing = sum(1 for idx in rows if _is_missing_text(df.at[idx, text_column]))
+    if missing:
+        warnings.warn(
+            f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
+            f"('{_MISSING_TEXT_DETAIL}').",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def _invoke_row(backend, text, row, row_already_processed, reprocess_columns, expected_columns):
     """Chama o backend para uma linha, pedindo só as colunas a reprocessar quando dá.
 
@@ -675,6 +727,11 @@ def dataframeit(
     """
     # Compatibilidade com API antiga
     if questions is None and perguntas is not None:
+        warnings.warn(
+            "O parâmetro 'perguntas' está depreciado; use 'questions'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         questions = perguntas
     elif questions is None:
         raise ValueError("Parâmetro 'questions' é obrigatório")
@@ -697,8 +754,8 @@ def dataframeit(
     if (batch_size is None) != (checkpoint_path is None):
         raise ValueError("batch_size e checkpoint_path devem ser usados juntos")
     if batch_size is not None:
-        if not isinstance(batch_size, int) or batch_size < 1:
-            raise ValueError("batch_size deve ser int >= 1")
+        if not isinstance(batch_size, numbers.Integral) or isinstance(batch_size, bool) or batch_size < 1:
+            raise ValueError(f"batch_size deve ser int >= 1; recebido {batch_size!r}")
         _validate_checkpoint_extension(checkpoint_path)
 
     # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
@@ -784,6 +841,14 @@ def dataframeit(
     if not expected_columns:
         raise ValueError("Modelo Pydantic não pode estar vazio")
 
+    # Cada campo extraído é gravado numa coluna de mesmo nome, que não pode ser
+    # a do texto de entrada.
+    if text_column in expected_columns:
+        raise ValueError(
+            f"O campo '{text_column}' do modelo tem o nome da coluna de texto, e a "
+            "resposta sobrescreveria o texto de entrada. Renomeie o campo ou a coluna."
+        )
+
     # Validar e processar search_groups
     if search_groups:
         validated_groups = _validate_search_groups(
@@ -818,7 +883,7 @@ def dataframeit(
             trace_mode,
             questions,
         )
-        return from_pandas(df_pandas, conversion_info)
+        return from_pandas(df_pandas, conversion_info, status_col)
 
     # Verificar conflitos de colunas
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
@@ -826,7 +891,26 @@ def dataframeit(
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
-        return from_pandas(df_pandas, conversion_info)
+        return from_pandas(df_pandas, conversion_info, status_col)
+
+    # Sem coluna de status, resume=True trata toda linha como pendente. Numa
+    # saída anterior sem erros a coluna foi removida, e rodar de novo refaria
+    # todas as chamadas.
+    if (
+        resume
+        and not reprocess_columns
+        and status_col not in df_pandas.columns
+        and existing_cols == expected_columns
+        and df_pandas[expected_columns].notna().to_numpy().any()
+    ):
+        warnings.warn(
+            f"As colunas {expected_columns} já estão preenchidas e não há coluna "
+            f"'{status_col}': todas as linhas serão processadas de novo. Se o "
+            "DataFrame já é uma saída do dataframeit, não é preciso rodar outra vez; "
+            "para refazer só algumas colunas, use reprocess_columns.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     reprocessed_columns = set(reprocess_columns or [])
     incompatible_columns = []
@@ -866,10 +950,21 @@ def dataframeit(
             trace_mode,
             questions,
         )
+        _as_object_columns(df_pandas, expected_columns)
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
-        return from_pandas(df_pandas, conversion_info)
+        return from_pandas(df_pandas, conversion_info, status_col)
+
+    # Os resultados são gravados por rótulo (df.at); com rótulo repetido, o
+    # resultado de uma linha cairia em outra. Um checkpoint já concluído, que
+    # retornou acima, só é completado por posição e não passa por aqui.
+    if not df_pandas.index.is_unique:
+        duplicated = df_pandas.index[df_pandas.index.duplicated()].unique().tolist()
+        raise ValueError(
+            f"O índice tem rótulos repetidos ({duplicated[:5]}). "
+            "Use df.reset_index(drop=True) antes de chamar dataframeit."
+        )
 
     if model is None and provider not in _RUNTIME_DEFAULT_PROVIDERS:
         if provider not in DEFAULT_MODELS:
@@ -923,6 +1018,8 @@ def dataframeit(
             trace_mode,
             questions,
         )
+        control_columns = [status_col, '_error_details']
+        _as_object_columns(df_pandas, expected_columns + control_columns)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -930,8 +1027,17 @@ def dataframeit(
         if complex_fields and resume:
             normalize_complex_columns(df_pandas, complex_fields)
 
+        # De novo depois da normalização, cujo apply volta a inferir float; sem
+        # isso, gravar lista ou texto falharia depois da chamada paga.
+        _as_object_columns(df_pandas, expected_columns)
+
         is_pending, processed_count = _get_processing_indices(
             df_pandas, status_col, resume
+        )
+        _warn_missing_texts(
+            df_pandas,
+            text_column,
+            [idx for idx, pending in zip(df_pandas.index, is_pending) if pending or reprocess_columns],
         )
 
         if parallel_requests > 1:
@@ -972,7 +1078,10 @@ def dataframeit(
 
     # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
-        _print_token_stats(token_stats, model, parallel_requests)
+        _print_token_stats(
+            token_stats, model, parallel_requests,
+            search_provider=search_provider if use_search else None,
+        )
 
     # Aviso de workers reduzidos (aparece SEMPRE, independente de track_tokens)
     if token_stats.get('workers_reduced'):
@@ -986,7 +1095,7 @@ def dataframeit(
         print("=" * 60 + "\n")
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
-    return from_pandas(df_pandas, conversion_info)
+    return from_pandas(df_pandas, conversion_info, status_col)
 
 
 def _setup_columns(
@@ -1079,13 +1188,19 @@ def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> 
     return is_pending.tolist(), processed_count
 
 
-def _print_token_stats(token_stats: dict, model: str | None, parallel_requests: int = 1):
+def _print_token_stats(
+    token_stats: dict,
+    model: str | None,
+    parallel_requests: int = 1,
+    search_provider: str | None = None,
+):
     """Exibe estatísticas de uso de tokens e throughput.
 
     Args:
         token_stats: Dict com contadores de tokens e métricas de tempo.
         model: Nome do modelo usado; None quando o runtime do provider escolhe.
         parallel_requests: Número de workers paralelos usados.
+        search_provider: Provedor de busca usado, que dá nome à seção de busca.
     """
     if not token_stats or token_stats.get('total_tokens', 0) == 0:
         return
@@ -1124,7 +1239,7 @@ def _print_token_stats(token_stats: dict, model: str | None, parallel_requests: 
     # Métricas de busca (se houver)
     if token_stats.get('search_count', 0) > 0:
         print("-" * 60)
-        print("METRICAS DE BUSCA (TAVILY)")
+        print(f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})")
         print("-" * 60)
         print(f"Total de buscas: {token_stats['search_count']}")
         print(f"Creditos usados: {token_stats['search_credits']}")
@@ -1290,6 +1405,17 @@ def _process_rows(
         if not reprocess_columns and not is_pending[i]:
             continue
 
+        if _is_missing_text(row[text_column]):
+            df.at[idx, status_col] = 'error'
+            df.at[idx, '_error_details'] = _missing_text_detail(
+                row_already_processed, reprocess_columns
+            )
+            rows_processed_this_run += 1
+            if batch_size and rows_processed_this_run % batch_size == 0:
+                if _try_save_checkpoint(df, checkpoint_path):
+                    rows_saved = rows_processed_this_run
+            continue
+
         text = str(row[text_column])
 
         try:
@@ -1351,10 +1477,8 @@ def _process_rows(
                         df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
 
             df.at[idx, status_col] = 'processed'
-
-            # Registrar se houve retries (mesmo em caso de sucesso)
-            if retry_info.get('retries', 0) > 0:
-                df.at[idx, '_error_details'] = f"Sucesso após {retry_info['retries']} retry(s)"
+            # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
+            df.at[idx, '_error_details'] = _success_details(retry_info)
 
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
@@ -1374,6 +1498,8 @@ def _process_rows(
             else:
                 # Erro não-recuperável (não fez retry)
                 error_details = f"[Erro não-recuperável] {error_msg}"
+            if row_already_processed and reprocess_columns:
+                error_details += _KEPT_VALUES_NOTE
 
             # Exibir mensagem amigável para o usuário
             friendly_msg = get_friendly_error_message(e, config.provider)
@@ -1492,8 +1618,22 @@ def _process_rows_parallel(
         nonlocal current_workers, workers_reduced, checkpoint_counter
 
         i, idx, row = row_data
-        text = str(row[text_column])
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
+        if _is_missing_text(row[text_column]):
+            snapshot = None
+            with lock:
+                df.at[idx, status_col] = 'error'
+                df.at[idx, '_error_details'] = _missing_text_detail(
+                    row_already_processed, reprocess_columns
+                )
+                checkpoint_counter += 1
+                if batch_size and checkpoint_counter % batch_size == 0:
+                    snapshot = (df.copy(), checkpoint_counter)
+            if snapshot is not None:
+                _save_snapshot(*snapshot)
+            return {'success': False, 'idx': idx, 'error': _MISSING_TEXT_DETAIL}
+
+        text = str(row[text_column])
 
         # Verificar se devemos pausar devido a rate limit
         if rate_limit_event.is_set():
@@ -1550,9 +1690,7 @@ def _process_rows_parallel(
 
                 token_stats['requests_completed'] += 1
                 df.at[idx, status_col] = 'processed'
-
-                if retry_info.get('retries', 0) > 0:
-                    df.at[idx, '_error_details'] = f"Sucesso após {retry_info['retries']} retry(s)"
+                df.at[idx, '_error_details'] = _success_details(retry_info)
 
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
@@ -1591,6 +1729,8 @@ def _process_rows_parallel(
                     error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
                 else:
                     error_details = f"[Erro não-recuperável] {error_msg}"
+                if row_already_processed and reprocess_columns:
+                    error_details += _KEPT_VALUES_NOTE
 
                 friendly_msg = get_friendly_error_message(e, config.provider)
                 print(f"\n{friendly_msg}\n")
