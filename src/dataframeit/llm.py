@@ -44,8 +44,11 @@ class SearchConfig:
 
 @dataclass
 class LLMConfig:
-    """Configuração para chamadas de LLM."""
-    model: str
+    """Configuração para chamadas de LLM.
+
+    `model` é None só com providers cujo runtime escolhe o modelo (codex, claude_code).
+    """
+    model: Optional[str]
     provider: str
     api_key: Optional[str]
     max_retries: int

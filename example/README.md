@@ -29,10 +29,10 @@ Clique nos badges abaixo para abrir os notebooks diretamente no Google Colab:
 
 ```bash
 # Instalar DataFrameIt
-pip install dataframeit[google]
+pip install dataframeit[openai]
 
 # Configurar variável de ambiente
-export GOOGLE_API_KEY="sua-chave-google"
+export OPENAI_API_KEY="sua-chave-openai"
 
 # Abrir Jupyter
 jupyter notebook
@@ -41,16 +41,16 @@ jupyter notebook
 ### Para outros providers
 
 ```bash
-# OpenAI
-pip install dataframeit[openai]
-export OPENAI_API_KEY="sua-chave-openai"
+# Google Gemini (usado também na seção 7 do 08_rate_limiting)
+pip install dataframeit[google]
+export GOOGLE_API_KEY="sua-chave-google"
 
 # Anthropic
 pip install dataframeit[anthropic]
 export ANTHROPIC_API_KEY="sua-chave-anthropic"
 
 # Polars (opcional)
-pip install dataframeit[google,polars]
+pip install dataframeit[openai,polars]
 ```
 
 ## Ordem Sugerida de Aprendizado

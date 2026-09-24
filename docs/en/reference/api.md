@@ -58,7 +58,7 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | str | `None` | LLM model name; `None` uses the provider's default model, listed in [Providers](../guides/providers.md) |
+| `model` | str \| None | `None` | LLM model name; `None` uses the provider's default model, listed in [Providers](../guides/providers.md) |
 | `provider` | str | `'openai'` | Provider identifier; `codex` uses the official SDK instead of LangChain |
 | `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` |
 | `model_kwargs` | dict | `None` | Extra parameters; with `codex`, only `effort` is accepted |

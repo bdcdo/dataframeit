@@ -12,7 +12,7 @@ Configure diferentes provedores de LLM via LangChain ou pelos SDKs oficiais de f
 | Groq | `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `openai/gpt-oss-120b` |
 | OpenAI Codex (experimental) | `codex` | Modelos suportados pelo runtime empacotado | Escolhido pelo runtime |
 | Cohere | `cohere` | command-r, command-r-plus | Informe `model` |
-| Mistral | `mistral` | mistral-large, mistral-small | Informe `model` |
+| Mistral | `mistralai` | mistral-large, mistral-small | Informe `model` |
 
 Sem `provider`, o dataframeit usa `openai` com `gpt-6-luna`. Com `provider` e sem `model`, usa o modelo padrão do provider da tabela; para providers sem modelo padrão, `model` é obrigatório.
 
@@ -74,8 +74,8 @@ resultado = dataframeit(
 
 | Modelo | Uso | Preço (1M tokens, input / output) |
 |--------|-----|-----------------------------------|
-| `gemini-3.8-flash` | Uso geral, mais recente | $0.75 / $3.75 |
-| `gemini-3.6-flash` | Uso geral | $0.75 / $3.75 |
+| `gemini-3.8-flash` | Uso geral, mais recente | $0.75 / $3.75 até 31/12/2026; $1.50 / $7.50 a partir de 2027 |
+| `gemini-3.6-flash` | Uso geral | $0.75 / $3.75 até 31/12/2026; $1.50 / $7.50 a partir de 2027 |
 | `gemini-3.5-flash-lite` | Alto volume, econômico | $0.30 / $2.50 |
 
 ## OpenAI Codex (Experimental)
@@ -164,7 +164,7 @@ Preview (podem mudar ou ser descontinuados):
 
 | Modelo | Uso |
 |--------|-----|
-| `qwen/qwen3.6-27b` | Qwen 3.6, modos thinking e instruct |
+| `qwen/qwen3.8-27b` | Qwen 3.8, modos thinking e instruct |
 
 !!! note "Disponibilidade e free tier"
     O Groq oferece free tier com limites de requisições por minuto por modelo. A lista de modelos muda com frequência (especialmente os `preview`); verifique [console.groq.com/docs/models](https://console.groq.com/docs/models) para o catálogo atual e limites.
@@ -194,7 +194,7 @@ export MISTRAL_API_KEY="sua-chave"
 ```python
 resultado = dataframeit(
     df, Model, PROMPT,
-    provider='mistral',
+    provider='mistralai',
     model='mistral-large-latest'
 )
 ```
@@ -254,12 +254,12 @@ aws configure  # ou exporte AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='bedrock_converse',
-    model='anthropic.claude-sonnet-5',
+    model='global.anthropic.claude-sonnet-5',
     model_kwargs={'region_name': 'sa-east-1'},
 )
 ```
 
-Os IDs de modelo disponíveis em `sa-east-1` mudam — confira o console Bedrock antes. Para inferência cross-region, use o prefixo `us.` (ex.: `us.anthropic.claude-...`) e ajuste `region_name` ao que sua conta tiver habilitado.
+No Bedrock, a Converse API só aceita o Claude Sonnet 5 por perfil de inferência, e em `sa-east-1` o único perfil oferecido é o global (`global.`), que pode processar a requisição fora do Brasil. Se residência de dados for exigência, confira no console Bedrock quais modelos a região oferece com perfil regional.
 
 Para a API Bedrock legada (não-converse), troque por `provider='bedrock'` mantendo o mesmo `model_kwargs`. A nova API (`bedrock_converse`) é recomendada para novos projetos.
 
@@ -286,7 +286,7 @@ A região é codificada no `AZURE_OPENAI_ENDPOINT` — provisione o recurso em "
 A versão da API (`OPENAI_API_VERSION`) muda com frequência. Confira a versão estável mais recente em [aka.ms/azure-openai-api-versions](https://aka.ms/azure-openai-api-versions).
 
 !!! note "Preços mudam"
-    Os preços das tabelas acima são os de tabela padrão, por 1M tokens. Verifique os valores atuais nos sites oficiais dos providers.
+    Os preços das tabelas acima são os de tabela padrão, por 1M tokens, com as mudanças já anunciadas indicadas na própria tabela. Verifique os valores atuais nos sites oficiais dos providers.
 
 ## Passando API Key Diretamente
 

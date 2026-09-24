@@ -561,14 +561,6 @@ def dataframeit(
     if prompt is None:
         raise ValueError("Parâmetro 'prompt' é obrigatório")
 
-    if model is None and provider not in _RUNTIME_DEFAULT_PROVIDERS:
-        if provider not in DEFAULT_MODELS:
-            raise ValueError(
-                f"provider='{provider}' não tem modelo padrão; informe 'model'. "
-                f"Providers com modelo padrão: {', '.join(DEFAULT_MODELS)}."
-            )
-        model = DEFAULT_MODELS[provider]
-
     # Se {texto} não estiver no template, adiciona automaticamente ao final
     if '{texto}' not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
@@ -749,6 +741,15 @@ def dataframeit(
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
         return from_pandas(df_pandas, conversion_info)
+
+    if model is None and provider not in _RUNTIME_DEFAULT_PROVIDERS:
+        if provider not in DEFAULT_MODELS:
+            raise ValueError(
+                f"provider='{provider}' não tem modelo padrão em DEFAULT_MODELS. "
+                f"Confira o nome do provider ou informe 'model'. "
+                f"Providers com modelo padrão: {', '.join(DEFAULT_MODELS)}."
+            )
+        model = DEFAULT_MODELS[provider]
 
     # Criar config do LLM
     config = LLMConfig(
@@ -956,12 +957,12 @@ def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool, rep
     return start_pos, processed_count
 
 
-def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1):
+def _print_token_stats(token_stats: dict, model: str | None, parallel_requests: int = 1):
     """Exibe estatísticas de uso de tokens e throughput.
 
     Args:
         token_stats: Dict com contadores de tokens e métricas de tempo.
-        model: Nome do modelo usado.
+        model: Nome do modelo usado; None quando o runtime do provider escolhe.
         parallel_requests: Número de workers paralelos usados.
     """
     if not token_stats or token_stats.get('total_tokens', 0) == 0:
@@ -970,7 +971,7 @@ def _print_token_stats(token_stats: dict, model: str, parallel_requests: int = 1
     print("\n" + "=" * 60)
     print("ESTATISTICAS DE USO")
     print("=" * 60)
-    print(f"Modelo: {model}")
+    print(f"Modelo: {model or 'escolhido pelo runtime do provider'}")
     print(f"Total de tokens: {token_stats['total_tokens']:,}")
     print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
     if token_stats.get('cached_input_tokens', 0) > 0:
