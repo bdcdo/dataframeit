@@ -95,9 +95,9 @@ DataFrame, Series, list, dictionary — everything works. Polars included.
 ## Quick Installation
 
 ```bash
-pip install dataframeit[google]  # Google Gemini 3 (recommended)
-pip install dataframeit[openai]  # OpenAI GPT-5
-pip install dataframeit[anthropic]  # Anthropic Claude 4.5
+pip install dataframeit[openai]  # OpenAI GPT-6 (default provider)
+pip install dataframeit[google]  # Google Gemini 3.8
+pip install dataframeit[anthropic]  # Anthropic Claude 5
 ```
 
 ## Next Steps

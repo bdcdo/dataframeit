@@ -15,8 +15,8 @@ DataFrameIt processa textos em DataFrames usando Modelos de Linguagem (LLMs) e e
 ## Instalação
 
 ```bash
-pip install dataframeit[google]  # Google Gemini (recomendado)
-pip install dataframeit[openai]  # OpenAI
+pip install dataframeit[openai]  # OpenAI (provider padrão)
+pip install dataframeit[google]  # Google Gemini
 pip install dataframeit[anthropic]  # Anthropic Claude
 pip install dataframeit[codex]  # Codex SDK oficial (experimental)
 ```
@@ -24,7 +24,7 @@ pip install dataframeit[codex]  # Codex SDK oficial (experimental)
 Configure a autenticação do provider:
 
 ```bash
-export GOOGLE_API_KEY="sua-chave"  # ou OPENAI_API_KEY, ANTHROPIC_API_KEY
+export OPENAI_API_KEY="sua-chave"  # ou GOOGLE_API_KEY, ANTHROPIC_API_KEY
 ```
 
 O provider experimental `codex` é opcional, não faz parte do extra `all`, usa o runtime empacotado e requer autenticação local em arquivo. Consulte a [documentação de instalação](https://bdcdo.github.io/dataframeit/getting-started/installation/) para configurar o extra e as credenciais.

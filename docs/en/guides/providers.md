@@ -4,57 +4,19 @@ Configure different LLM providers through LangChain or official SDKs for local t
 
 ## Supported Providers
 
-| Provider | Identifier | Current Models (2025) |
-|----------|------------|----------------------|
-| Google | `google_genai` | gemini-3-flash-preview, gemini-2.5-flash, gemini-2.5-pro |
-| OpenAI | `openai` | gpt-5.2, gpt-5.2-mini, gpt-4.1 |
-| OpenAI Codex (experimental) | `codex` | Models supported by the bundled runtime |
-| Anthropic | `anthropic` | claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5 |
-| Groq | `groq` | llama-3.3-70b-versatile, llama-3.1-8b-instant, openai/gpt-oss-120b, openai/gpt-oss-20b, groq/compound |
-| Cohere | `cohere` | command-r, command-r-plus |
-| Mistral | `mistral` | mistral-large, mistral-small |
+| Provider | Identifier | Current models | Default model |
+|----------|------------|----------------|---------------|
+| OpenAI | `openai` | gpt-6-luna, gpt-6-sol, gpt-6-astra | `gpt-6-luna` |
+| Google | `google_genai` | gemini-3.8-flash, gemini-3.6-flash, gemini-3.5-flash-lite | `gemini-3.8-flash` |
+| Anthropic | `anthropic` | claude-sonnet-5, claude-opus-5-5, claude-haiku-4-5 | `claude-sonnet-5` |
+| Groq | `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `openai/gpt-oss-120b` |
+| OpenAI Codex (experimental) | `codex` | Models supported by the bundled runtime | Chosen by the runtime |
+| Cohere | `cohere` | command-r, command-r-plus | Pass `model` |
+| Mistral | `mistralai` | mistral-large, mistral-small | Pass `model` |
 
-## Google Gemini (Default)
+Without `provider`, dataframeit uses `openai` with `gpt-6-luna`. With `provider` and no `model`, it uses that provider's default model from the table; providers without a default model require `model`.
 
-```bash
-pip install dataframeit[google]
-export GOOGLE_API_KEY="your-key"
-```
-
-```python
-# Default - no need to specify
-result = dataframeit(df, Model, PROMPT, text_column='text')
-
-# Explicit
-result = dataframeit(
-    df, Model, PROMPT,
-    text_column='text',
-    provider='google_genai',
-    model='gemini-3-flash-preview'
-)
-
-# With extra parameters
-result = dataframeit(
-    df, Model, PROMPT,
-    text_column='text',
-    provider='google_genai',
-    model='gemini-2.5-pro',
-    model_kwargs={
-        'temperature': 0.2,
-        'top_p': 0.9
-    }
-)
-```
-
-### Recommended Models
-
-| Model | Use | Cost |
-|-------|-----|------|
-| `gemini-3-flash-preview` | General use, newest | Low |
-| `gemini-2.5-flash` | General use, fast | Low |
-| `gemini-2.5-pro` | Complex tasks, reasoning | Medium |
-
-## OpenAI
+## OpenAI (Default)
 
 ```bash
 pip install dataframeit[openai]
@@ -62,19 +24,15 @@ export OPENAI_API_KEY="your-key"
 ```
 
 ```python
-result = dataframeit(
-    df, Model, PROMPT,
-    text_column='text',
-    provider='openai',
-    model='gpt-5.2-mini'
-)
+# Default - no need to specify
+result = dataframeit(df, Model, PROMPT, text_column='text')
 
-# With advanced model
+# With a more advanced model
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='openai',
-    model='gpt-5.2',
+    model='gpt-6-sol',
     model_kwargs={
         'reasoning_effort': 'medium'
     }
@@ -83,11 +41,45 @@ result = dataframeit(
 
 ### Recommended Models
 
-| Model | Use | Cost |
-|-------|-----|------|
-| `gpt-5.2-mini` | General use, economical | Low |
-| `gpt-5.2` | Maximum quality | High |
-| `gpt-4.1` | Coding, precise instructions | Medium |
+| Model | Use | Price (1M tokens, input / output) |
+|-------|-----|-----------------------------------|
+| `gpt-6-luna` | High volume, focused tasks | $0.10 / $0.50 |
+| `gpt-6-sol` | Complex and agentic tasks | $2.00 / $10.00 |
+| `gpt-6-astra` | Maximum quality | $10.00 / $50.00 |
+
+## Google Gemini
+
+```bash
+pip install dataframeit[google]
+export GOOGLE_API_KEY="your-key"
+```
+
+```python
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='google_genai'  # uses gemini-3.8-flash
+)
+
+# With extra parameters
+result = dataframeit(
+    df, Model, PROMPT,
+    text_column='text',
+    provider='google_genai',
+    model='gemini-3.5-flash-lite',
+    model_kwargs={
+        'thinking_level': 'low'
+    }
+)
+```
+
+### Recommended Models
+
+| Model | Use | Price (1M tokens, input / output) |
+|-------|-----|-----------------------------------|
+| `gemini-3.8-flash` | General use, newest | $0.75 / $3.75 through 12/31/2026; $1.50 / $7.50 from 2027 |
+| `gemini-3.6-flash` | General use | $0.75 / $3.75 through 12/31/2026; $1.50 / $7.50 from 2027 |
+| `gemini-3.5-flash-lite` | High volume, economical | $0.30 / $2.50 |
 
 ## OpenAI Codex (Experimental)
 
@@ -121,8 +113,7 @@ export ANTHROPIC_API_KEY="your-key"
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
-    provider='anthropic',
-    model='claude-sonnet-4-5'
+    provider='anthropic'  # uses claude-sonnet-5
 )
 
 # With max_tokens
@@ -130,7 +121,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-opus-4-6',
+    model='claude-opus-5-5',
     model_kwargs={
         'max_tokens': 4096
     }
@@ -139,11 +130,11 @@ result = dataframeit(
 
 ### Recommended Models
 
-| Model | Use | Cost |
-|-------|-----|------|
-| `claude-sonnet-4-5` | General use, excellent quality | Medium |
-| `claude-opus-4-6` | Maximum quality, agentic | High |
-| `claude-haiku-4-5` | Fast, economical | Low |
+| Model | Use | Price (1M tokens, input / output) |
+|-------|-----|-----------------------------------|
+| `claude-sonnet-5` | General use, speed and quality | $2.00 / $10.00 |
+| `claude-opus-5-5` | Maximum quality, agentic | $4.00 / $20.00 |
+| `claude-haiku-4-5` | Fast, economical | $1.00 / $5.00 |
 
 ## Groq
 
@@ -156,27 +147,15 @@ export GROQ_API_KEY="your-key"
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
-    provider='groq',
-    model='llama-3.3-70b-versatile'
+    provider='groq'  # uses openai/gpt-oss-120b
 )
 
-# Faster / cheaper model
+# Faster/cheaper model
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='groq',
-    model='llama-3.1-8b-instant',
-    model_kwargs={
-        'temperature': 0.2
-    }
-)
-
-# GPT-OSS for heavier reasoning tasks
-result = dataframeit(
-    df, Model, PROMPT,
-    text_column='text',
-    provider='groq',
-    model='openai/gpt-oss-120b'
+    model='openai/gpt-oss-20b'
 )
 ```
 
@@ -186,18 +165,14 @@ Production:
 
 | Model | Context | Throughput | Use |
 |-------|---------|-----------|-----|
-| `llama-3.3-70b-versatile` | 131K | ~280 t/s | General use, good quality |
-| `llama-3.1-8b-instant` | 131K | ~560 t/s | High speed, economical |
-| `openai/gpt-oss-120b` | 131K | ~500 t/s | Reasoning, complex tasks |
+| `openai/gpt-oss-120b` | 131K | ~500 t/s | General use, reasoning |
 | `openai/gpt-oss-20b` | 131K | ~1000 t/s | Faster than 120b, low cost |
-| `groq/compound` | - | ~450 t/s | Agentic system with built-in web search and code execution |
 
-Preview (may change or be deprecated):
+Preview (may change or be discontinued):
 
 | Model | Use |
 |-------|-----|
-| `meta-llama/llama-4-scout-17b-16e-instruct` | Llama 4 Scout, high speed |
-| `qwen/qwen3-32b` | Qwen3, good for reasoning |
+| `qwen/qwen3.8-27b` | Qwen 3.8, thinking and instruct modes |
 
 !!! note "Availability and free tier"
     Groq offers a free tier with per-minute request limits per model. The model catalog changes frequently (especially `preview` models); check [console.groq.com/docs/models](https://console.groq.com/docs/models) for the current list and limits.
@@ -229,7 +204,7 @@ export MISTRAL_API_KEY="your-key"
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
-    provider='mistral',
+    provider='mistralai',
     model='mistral-large-latest'
 )
 ```
@@ -248,7 +223,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='google_genai',
-    model='gemini-2.5-flash',
+    model='gemini-3.8-flash',
     model_kwargs={
         'vertexai': True,
         'project': '<gcp-project-id>',
@@ -264,7 +239,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='google_vertexai',
-    model='gemini-2.5-flash',
+    model='gemini-3.8-flash',
     model_kwargs={
         'project': '<gcp-project-id>',
         'location': 'southamerica-east1',
@@ -292,12 +267,12 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='bedrock_converse',
-    model='anthropic.claude-3-5-sonnet-20240620-v1:0',
+    model='global.anthropic.claude-sonnet-5',
     model_kwargs={'region_name': 'sa-east-1'},
 )
 ```
 
-Available model IDs in `sa-east-1` change — check the Bedrock console first. For cross-region inference, use the `us.` prefix (e.g. `us.anthropic.claude-...`) and set `region_name` to whatever your account has enabled.
+On Bedrock, the Converse API only accepts Claude Sonnet 5 through an inference profile, and in `sa-east-1` the only profile offered is the global one (`global.`), which may process the request outside Brazil. If data residency is a requirement, check in the Bedrock console which models the region offers with a regional profile.
 
 For the legacy Bedrock API (non-converse), switch to `provider='bedrock'` keeping the same `model_kwargs`. The newer API (`bedrock_converse`) is recommended for new projects.
 
@@ -324,19 +299,8 @@ The region is encoded in `AZURE_OPENAI_ENDPOINT` — provision the resource in "
 
 The API version (`OPENAI_API_VERSION`) changes often. Check the latest stable version at [aka.ms/azure-openai-api-versions](https://aka.ms/azure-openai-api-versions).
 
-## Price Comparison (Approximate - 2025)
-
-| Provider | Model | Input (1M tokens) | Output (1M tokens) |
-|----------|-------|-------------------|-------------------|
-| Google | gemini-3-flash-preview | $0.50 | $3.00 |
-| Google | gemini-2.5-pro | $1.25 | $5.00 |
-| OpenAI | gpt-5.2-mini | $0.30 | $1.20 |
-| OpenAI | gpt-5.2 | $5.00 | $15.00 |
-| Anthropic | claude-sonnet-4-5 | $3.00 | $15.00 |
-| Anthropic | claude-haiku-4-5 | $1.00 | $5.00 |
-
 !!! note "Prices change"
-    Check current prices on provider official websites.
+    Prices in the tables above are standard-tier list prices per 1M tokens, with already announced changes shown in the table itself. Check current prices on the providers' official websites.
 
 ## Passing API Key Directly
 
@@ -347,7 +311,6 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='openai',
-    model='gpt-5.2-mini',
     api_key='sk-...'  # Your key directly
 )
 ```

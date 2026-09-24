@@ -113,15 +113,15 @@ result = dataframeit(series, Sentiment, PROMPT)
 ## Using Different Providers
 
 ```python
-# Google Gemini (default)
+# OpenAI with gpt-6-luna (default)
 result = dataframeit(df, Model, PROMPT, text_column='text')
 
-# OpenAI
+# Google Gemini
 result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
-    provider='openai',
-    model='gpt-5.2-mini'
+    provider='google_genai',
+    model='gemini-3.8-flash'
 )
 
 # Anthropic Claude
@@ -129,7 +129,7 @@ result = dataframeit(
     df, Model, PROMPT,
     text_column='text',
     provider='anthropic',
-    model='claude-sonnet-4-5'
+    model='claude-sonnet-5'
 )
 ```
 

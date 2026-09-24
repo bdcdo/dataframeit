@@ -11,16 +11,16 @@ DataFrameIt processa textos em DataFrames usando LLMs e extrai informações est
 ## Instalação
 
 ```bash
-pip install dataframeit[google]    # Google Gemini (padrão)
-pip install dataframeit[openai]    # OpenAI
+pip install dataframeit[openai]    # OpenAI (padrão)
+pip install dataframeit[google]    # Google Gemini
 pip install dataframeit[anthropic] # Anthropic Claude
 pip install dataframeit[codex]     # Codex SDK oficial (experimental)
 ```
 
 **Variáveis de ambiente:**
 ```bash
-export GOOGLE_API_KEY="..."     # Para Gemini
 export OPENAI_API_KEY="..."     # Para OpenAI
+export GOOGLE_API_KEY="..."     # Para Gemini
 export ANTHROPIC_API_KEY="..."  # Para Anthropic
 ```
 
@@ -38,8 +38,8 @@ resultado = dataframeit(
     questions,               # Modelo Pydantic
     prompt,                  # Template do prompt
     text_column=None,        # Coluna com textos (None = inferência automática)
-    model='gemini-3-flash-preview',
-    provider='google_genai', # 'google_genai', 'openai', 'anthropic', 'codex'
+    model=None,              # None = modelo padrão do provider
+    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'codex'
     resume=True,             # Continua de onde parou
     parallel_requests=1,     # Workers paralelos
     rate_limit_delay=0.0,    # Delay entre requisições (segundos)
@@ -149,21 +149,21 @@ class Pessoa(BaseModel):
 ## Providers
 
 ```python
-# Google Gemini (padrão)
+# OpenAI com gpt-6-luna (padrão)
 resultado = dataframeit(df, Model, PROMPT)
 
-# OpenAI
+# Google Gemini
 resultado = dataframeit(
     df, Model, PROMPT,
-    provider='openai',
-    model='gpt-5.2-mini'
+    provider='google_genai',
+    model='gemini-3.8-flash'
 )
 
 # Anthropic
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='anthropic',
-    model='claude-sonnet-4-5'
+    model='claude-sonnet-5'
 )
 
 # Codex SDK oficial (experimental)

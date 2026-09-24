@@ -7,6 +7,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Alterado
+
+- O provider padrão passa a ser `openai`, e `model` passa a ter default `None`: sem `model`, cada provider usa o próprio modelo padrão (`DEFAULT_MODELS`: `gpt-6-luna` na OpenAI, `gemini-3.8-flash` no Google, `claude-sonnet-5` na Anthropic, `openai/gpt-oss-120b` na Groq). Providers fora dessa tabela exigem `model`, e `codex` e `claude_code` deixam a escolha ao runtime (#121).
+- Documentação, READMEs e notebooks de exemplo atualizados para os modelos atuais; saem modelos desligados, restritos ou deprecados (`gemini-3-flash-preview`, Gemini 2.5, Llama, `qwen3-32b` e `groq/compound` na Groq, `claude-3-5-sonnet`). O identificador do Mistral na documentação passa a ser `mistralai`, o que o LangChain aceita (#121).
+
 ## [0.8.1] - 2026-09-23
 
 ### Alterado
