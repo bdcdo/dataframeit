@@ -7,7 +7,12 @@ import asyncio
 import concurrent.futures
 import json
 
-from .errors import retry_with_backoff
+from .errors import (
+    ProviderError,
+    ProviderOverloadedError,
+    ProviderTransientError,
+    retry_with_backoff,
+)
 from .llm import LLMConfig, _parse_usage_metadata, build_prompt
 from .utils import check_dependency, parse_json
 
@@ -40,13 +45,13 @@ async def _async_query(prompt: str, options):
         options: ClaudeAgentOptions configurado.
 
     Returns:
-        Tupla (response_text, usage), em que ``usage`` é o dict bruto de
-        ``ResultMessage.usage`` ou None quando o SDK não o informa.
+        Tupla (response_text, result), em que ``result`` é o ``ResultMessage``
+        final ou None quando o SDK não o envia.
     """
     from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
 
     response_text = ""
-    usage = None
+    result = None
 
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -54,9 +59,40 @@ async def _async_query(prompt: str, options):
                 if isinstance(block, TextBlock):
                     response_text += block.text
         elif isinstance(message, ResultMessage):
-            usage = getattr(message, "usage", None)
+            result = message
 
-    return response_text, usage
+    return response_text, result
+
+
+# Subtipos de ResultMessage que repetir não resolve: o limite configurado é o mesmo.
+_FINAL_RESULT_SUBTYPES = frozenset({'error_max_budget_usd', 'error_max_turns'})
+
+
+def _raise_for_result_error(result) -> None:
+    """Converte um ResultMessage com is_error na exceção que o retry entende.
+
+    Sem isso, o erro virava "resposta vazia", que é re-tentada. Estouro de
+    orçamento ou de turnos é definitivo; o status da API, quando o SDK o
+    informa, decide entre sobrecarga (reduz o paralelismo), falha transitória
+    e falha definitiva. Erro de execução sem status é tratado como transitório.
+    """
+    if result is None or not getattr(result, 'is_error', False):
+        return
+
+    subtype = getattr(result, 'subtype', None)
+    status = getattr(result, 'api_error_status', None)
+    detail = getattr(result, 'errors', None) or getattr(result, 'result', None) or ''
+    message = f"Claude Code SDK retornou erro ({subtype}, status {status}): {detail}".strip()
+
+    if subtype in _FINAL_RESULT_SUBTYPES:
+        raise ProviderError(message)
+    if status in (429, 529):
+        raise ProviderOverloadedError(message)
+    if isinstance(status, int) and status >= 500:
+        raise ProviderTransientError(message)
+    if isinstance(status, int):
+        raise ProviderError(message)
+    raise ProviderTransientError(message)
 
 
 def _run_coroutine(coro):
@@ -75,7 +111,7 @@ def _run_coroutine(coro):
         return executor.submit(asyncio.run, coro).result()
 
 
-def _usage_from_sdk(usage) -> dict | None:
+def _usage_from_sdk(usage, cost_usd=None) -> dict | None:
     """Converte ``ResultMessage.usage`` para o formato de tokens do core.
 
     O SDK repassa o usage da API da Anthropic, em que ``input_tokens`` exclui
@@ -84,19 +120,22 @@ def _usage_from_sdk(usage) -> dict | None:
     cache, a mesma convenção do provider LangChain.
     """
     if not usage:
-        return None
+        return {'cost_usd': cost_usd} if cost_usd else None
 
     cache_read = usage.get("cache_read_input_tokens") or 0
     cache_creation = usage.get("cache_creation_input_tokens") or 0
     input_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
     output_tokens = usage.get("output_tokens") or 0
 
-    return _parse_usage_metadata({
+    parsed = _parse_usage_metadata({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
         "input_token_details": {"cache_read": cache_read},
     })
+    if cost_usd:
+        parsed['cost_usd'] = cost_usd
+    return parsed
 
 
 def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
@@ -129,9 +168,15 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
     # `permission_mode="default"` explícito sobrepõe um `defaultMode` vindo
     # dos settings do usuário. Como nenhum `can_use_tool` é registrado, o SDK
     # não liga canal de pergunta ao CLI, e pedido de permissão é negado.
+    # `setting_sources=[]` e `--strict-mcp-config` impedem que settings de
+    # usuário e de projeto tragam servidores MCP ou regras `permissions.allow`
+    # que os pré-aprovem. A flag vai por `extra_args` porque o campo
+    # `strict_mcp_config` não existe nas versões mais antigas aceitas do SDK.
     options_kwargs = {
         "system_prompt": system_prompt,
         "tools": [],
+        "setting_sources": [],
+        "extra_args": {"strict-mcp-config": None},
         "permission_mode": "default",
         "max_turns": model_kwargs.get("max_turns", 1),
         "max_budget_usd": model_kwargs.get("max_budget_usd", 0.50),
@@ -147,7 +192,8 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
     options = ClaudeAgentOptions(**options_kwargs)
 
     def _call():
-        response_text, sdk_usage = _run_coroutine(_async_query(prompt, options))
+        response_text, result = _run_coroutine(_async_query(prompt, options))
+        _raise_for_result_error(result)
 
         if not response_text.strip():
             raise ValueError("Claude Code SDK retornou resposta vazia")
@@ -156,6 +202,9 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
         parsed = parse_json(response_text)
         validated = pydantic_model.model_validate(parsed)
 
-        return {'data': validated.model_dump(), 'usage': _usage_from_sdk(sdk_usage)}
+        usage = _usage_from_sdk(
+            getattr(result, 'usage', None), getattr(result, 'total_cost_usd', None)
+        )
+        return {'data': validated.model_dump(), 'usage': usage}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)

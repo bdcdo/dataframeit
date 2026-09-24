@@ -7,7 +7,13 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Adicionado
+
+- O provider `claude_code` repassa o custo informado pelo SDK (`total_cost_usd`), somado no resumo de estatísticas ao fim da execução (#129).
+
 ### Alterado
+
+- O provider `claude_code` roda sem settings de usuário e de projeto (`setting_sources=[]`) e com `--strict-mcp-config`: servidores MCP configurados pelo usuário e regras `permissions.allow` deixam de chegar à execução, que processa texto não confiável (#129).
 
 - `condition` ou `depends_on` em campo de modelo aninhado ou de item de lista levanta `ValueError` antes de processar, em qualquer modo. Antes era ignorado em silêncio, e a versão callable quebrava o schema em todo provider (#129).
 - Linhas com texto ausente (`None`, `NaN` ou só espaços) não vão mais ao LLM: ficam com status `'error'` e detalhe `'Texto ausente'`, e um aviso diz quantas são. Antes, a string `'nan'` era enviada e a resposta gravada como resultado.
@@ -39,6 +45,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - `_error_details` de uma execução anterior ficava na linha depois que ela passava a `'processed'`. Quando uma linha já processada falha em `reprocess_columns`, inclusive por texto ausente, o detalhe diz que os valores anteriores foram mantidos.
 - Uma coluna do modelo, de status ou de `_error_details` que já existia como `float` (toda vazia, lida de CSV) ou `int` fazia falhar a gravação de lista, texto ou valor padrão do modelo na retomada, às vezes depois da chamada paga.
 - As estatísticas de busca saíam rotuladas "TAVILY" também com `search_provider='exa'` (#129).
+- A mensagem de erro de API key do Mistral pedia `MISTRALAI_API_KEY`; o `langchain-mistralai` lê `MISTRAL_API_KEY` (#129).
+- A caixa de erro amigável passa a ser escolhida pelo status HTTP estruturado, quando existe; sem ele, códigos só contam como número isolado. "4015 tokens" deixava de ser rate limit mas ainda mostrava a caixa de autenticação, e um erro de busca com "api_key" caía na caixa genérica em vez da do Tavily ou do Exa. "exa" só conta como palavra isolada (#129).
+- Com `langchain-core` >= 1.6, o `is_retryable` do `ModelError` decide o retry, e `ModelRateLimitError` reduz os workers. Um 400 sem status estruturado deixa de ser re-tentado quando o provider levanta `ModelInvalidRequestError`, e `ContextOverflowError` deixa de ser re-tentado em qualquer versão (#129).
+- No provider `claude_code`, um `ResultMessage` com `is_error` virava "resposta vazia" e entrava em retry. Estouro de `max_budget_usd` ou de `max_turns` agora é erro definitivo; o status da API decide entre sobrecarga, falha transitória e falha definitiva (#129).
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).
 
