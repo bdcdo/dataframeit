@@ -33,7 +33,18 @@ class TestBuildFieldPrompt:
             "prompt original", "campo_x", "descricao",
             {"prompt": "novo prompt completo"},
         )
-        assert result == "novo prompt completo"
+        assert result.startswith("novo prompt completo")
+        assert "prompt original" not in result
+        assert "{texto}" in result
+
+    def test_prompt_replace_com_texto_fica_como_esta(self):
+        from dataframeit.agent import _build_field_prompt
+
+        result = _build_field_prompt(
+            "prompt original", "campo_x", "descricao",
+            {"prompt": "Busque no texto: {texto}"},
+        )
+        assert result == "Busque no texto: {texto}"
 
     def test_sem_overrides_inclui_nome_e_descricao(self):
         from dataframeit.agent import _build_field_prompt
