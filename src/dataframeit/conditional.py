@@ -54,11 +54,21 @@ def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set =
     return results
 
 
-def _list_layers(annotation) -> int:
-    """Quantas listas envolvem os modelos da anotação: list[list[X]] dá 2."""
-    args = [arg for arg in get_args(annotation) if arg is not type(None)]
-    inner = max((_list_layers(arg) for arg in args), default=0)
-    return inner + 1 if get_origin(annotation) is list else inner
+def _list_layers(annotation, target) -> int | None:
+    """Quantas listas envolvem `target` na anotação: list[list[X]] dá 2.
+
+    Só conta os ramos que chegam ao modelo; em Union[list[str], X], a lista
+    de strings não envolve X. Devolve None quando `target` não aparece.
+    """
+    if annotation is target:
+        return 0
+    depths = [
+        depth for depth in (_list_layers(arg, target) for arg in get_args(annotation))
+        if depth is not None
+    ]
+    if not depths:
+        return None
+    return max(depths) + (1 if get_origin(annotation) is list else 0)
 
 
 def _walk_fields(pydantic_model, prefix: str = "", list_depth: int = 0, _visited: set = None):
@@ -81,7 +91,8 @@ def _walk_fields(pydantic_model, prefix: str = "", list_depth: int = 0, _visited
         annotation = resolve_forward_refs(field_info.annotation, pydantic_model)
         for nested_model in get_nested_pydantic_models(annotation):
             yield from _walk_fields(
-                nested_model, path, list_depth + _list_layers(annotation), _visited
+                nested_model, path,
+                list_depth + (_list_layers(annotation, nested_model) or 0), _visited
             )
 
 

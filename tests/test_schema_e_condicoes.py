@@ -6,7 +6,7 @@ não serializa.
 """
 
 import json
-from typing import Optional
+from typing import Optional, Union
 from unittest.mock import patch
 
 import pandas as pd
@@ -611,3 +611,68 @@ def test_mesmo_modelo_em_dois_campos_e_coletado_nos_dois():
 
     caminhos = [path for path, *_ in _collect_configured_fields(Pessoa)]
     assert caminhos == ['residencial.cidade', 'comercial.cidade']
+
+
+def test_lista_de_outro_tipo_na_uniao_nao_conta_como_camada():
+    class End(BaseModel):
+        cidade: Optional[str] = Field(None, json_schema_extra={'prompt_append': 'x'})
+
+    class Parte(BaseModel):
+        endereco: Union[list[str], End, None] = None
+
+    class Processo(BaseModel):
+        partes: list[Parte] = []
+
+    from dataframeit.conditional import _walk_fields
+
+    profundidades = {path: depth for path, _, depth in _walk_fields(Processo)}
+    assert profundidades['partes.endereco.cidade'] == 1
+
+
+def test_llm_field_limpa_attributes_set_sem_mexer_no_original():
+    from dataframeit.agent import _llm_field
+
+    class Modelo(BaseModel):
+        a: Optional[str] = Field(None, json_schema_extra={'condition': {'field': 'b', 'equals': 1}})
+
+    original = Modelo.model_fields['a']
+    limpo = _llm_field(original)
+    assert 'json_schema_extra' not in limpo._attributes_set
+    assert original._attributes_set['json_schema_extra'] == {'condition': {'field': 'b', 'equals': 1}}
+
+
+def test_reprocess_columns_em_grupo_nao_pede_campo_de_condicao_falsa():
+    class Modelo(BaseModel):
+        tipo: Optional[str] = None
+        cpf: Optional[str] = Field(
+            None, json_schema_extra={'condition': {'field': 'tipo', 'equals': 'pf'}}
+        )
+        nome: Optional[str] = None
+
+    df = pd.DataFrame({
+        'texto': ['a', 'b', 'c'],
+        'tipo': ['pf', 'pj', None],
+        'cpf': ['111', None, None],
+        'nome': ['Ana', 'Beta', None],
+        '_dataframeit_status': ['processed', 'processed', None],
+    })
+    chamadas = []
+
+    def call_agent(text, model, prompt, config, save_trace=None):
+        chamadas.append((text, list(model.model_fields)))
+        valores = {'tipo': 'pf', 'cpf': 'novo', 'nome': 'Nome'}
+        return {'data': {campo: valores[campo] for campo in model.model_fields}, 'usage': {}}
+
+    provider, busca = _patches_de_execucao()
+    with provider, busca, patch('dataframeit.agent.call_agent', side_effect=call_agent):
+        dataframeit(
+            df, questions=Modelo, prompt='Analise {texto}',
+            use_search=True, search_per_field=True, reprocess_columns=['cpf'],
+            search_groups={'g': {'fields': ['tipo', 'cpf']}},
+        )
+
+    # A linha pj não pede cpf: `tipo` vem da linha gravada e não da mesma chamada
+    assert ('b', ['cpf']) not in chamadas
+    assert ('a', ['cpf']) in chamadas
+    assert ('c', ['tipo', 'cpf']) in chamadas
+

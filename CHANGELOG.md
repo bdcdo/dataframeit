@@ -21,7 +21,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - A mensagem de configuração por campo sem busca por campo nomeia o que falta: `use_search=True`, `search_per_field=True` ou os dois (#129).
 - Um campo cujas dependências tinham a mesma raiz (`depends_on=['endereco.cidade', 'endereco.uf']`, ou o mesmo campo repetido) ficava fora da ordem de execução e voltava `None` com status `processed`.
 - `prompt`/`prompt_replace` por campo sem `{texto}` descartava o texto da linha; agora o texto é anexado, como no prompt principal. O prompt de grupo com `{query}` deixa de receber o texto duas vezes.
-- Configuração de busca num campo dentro de uma lista que está dentro de outra lista (inclusive `list[list[Modelo]]`) trocava a lista interna por um dicionário; agora levanta `ValueError`.
+- Configuração de busca num campo de modelo que está numa lista dentro de outra lista trocava a lista interna por um dicionário. Agora levanta `ValueError`, também para `list[list[Modelo]]`, que caía numa busca única em vez de uma por item.
 - Um modelo que referencia outro (ou a si mesmo) com `list['Modelo']` tinha a configuração aninhada ignorada, porque o Pydantic deixa a string sem resolver nessa forma, e no modo por campo cada linha falhava com `PydanticUserError` ao montar o modelo da chamada.
 - O mesmo modelo aninhado em dois campos (`residencial` e `comercial`) só tinha a configuração de busca aplicada no primeiro.
 - `reprocess_columns` no modo por campo ou por grupo pedia ao agente todos os campos, com as buscas correspondentes, e descartava os que não foram pedidos. Agora só as colunas escolhidas são pedidas, e as condições usam os valores já gravados na linha.
