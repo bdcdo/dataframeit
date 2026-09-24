@@ -1291,6 +1291,20 @@ def _process_rows_parallel(
     workers_reduced = False
     rate_limit_event = threading.Event()
     checkpoint_counter = 0
+    # A gravação do checkpoint fica fora de `lock` para não bloquear as threads
+    # na I/O, mas precisa de trava própria: duas gravações simultâneas disputam
+    # o mesmo arquivo temporário. O rótulo de cada snapshot descarta um mais
+    # antigo que chegue depois de um mais novo.
+    checkpoint_write_lock = threading.Lock()
+    last_saved_checkpoint = 0
+
+    def _save_snapshot(snapshot: pd.DataFrame, label: int) -> None:
+        nonlocal last_saved_checkpoint
+        with checkpoint_write_lock:
+            if label <= last_saved_checkpoint:
+                return
+            _save_checkpoint(snapshot, checkpoint_path)
+            last_saved_checkpoint = label
 
     # Contadores
     token_stats = {
@@ -1398,10 +1412,10 @@ def _process_rows_parallel(
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
                     # Copia sob lock, serializa fora — evita bloquear threads na I/O.
-                    snapshot = df.copy()
+                    snapshot = (df.copy(), checkpoint_counter)
 
             if snapshot is not None:
-                _save_checkpoint(snapshot, checkpoint_path)
+                _save_snapshot(*snapshot)
 
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
@@ -1442,10 +1456,10 @@ def _process_rows_parallel(
 
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
-                    snapshot = df.copy()
+                    snapshot = (df.copy(), checkpoint_counter)
 
             if snapshot is not None:
-                _save_checkpoint(snapshot, checkpoint_path)
+                _save_snapshot(*snapshot)
 
             return {'success': False, 'idx': idx, 'error': error_msg}
 
