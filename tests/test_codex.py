@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -527,7 +528,13 @@ class TestBackendLifecycle:
         monkeypatch.setenv("CODEX_HOME", str(source_home))
 
         with (
-            patch("dataframeit.codex.tempfile.TemporaryDirectory") as temporary_directory,
+            # O patch alcança o tempfile do processo inteiro, e a importação do
+            # filelock abre um TemporaryDirectory próprio; por isso a asserção
+            # conta só os diretórios com o prefixo do runtime do backend.
+            patch(
+                "dataframeit.codex.tempfile.TemporaryDirectory",
+                wraps=tempfile.TemporaryDirectory,
+            ) as temporary_directory,
             patch.object(sdk, "Codex") as codex,
         ):
             with pytest.raises(ProviderConfigurationError) as exc_info:
@@ -535,7 +542,12 @@ class TestBackendLifecycle:
                     pass
 
         assert CODEX_FILE_AUTH_LOGIN_COMMAND in str(exc_info.value)
-        temporary_directory.assert_not_called()
+        runtimes_criados = [
+            chamada
+            for chamada in temporary_directory.call_args_list
+            if chamada.kwargs.get("prefix") == "dataframeit-codex-"
+        ]
+        assert runtimes_criados == []
         codex.assert_not_called()
 
     def test_distinct_auth_files_do_not_contend(self, codex_sdk, monkeypatch, tmp_path):
