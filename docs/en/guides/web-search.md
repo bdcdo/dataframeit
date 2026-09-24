@@ -66,6 +66,7 @@ result = dataframeit(
 | `search_per_field` | bool | `False` | Execute separate search for each model field |
 | `max_results` | int | `5` | Results per search (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` (1 credit) or `'advanced'` (2 credits) |
+| `max_search_calls` | int | `10` | Maximum searches per agent run; later ones are blocked and the agent answers with what it found |
 | `save_trace` | bool/str | `None` | Save agent trace: `True`/`"full"` or `"minimal"` |
 
 ## Examples
@@ -133,7 +134,7 @@ To debug and audit agent reasoning, use the `save_trace` parameter.
         {"type": "tool", "content": "[search results]", "tool_call_id": "..."}
     ],
     "search_queries": ["query1", "query2"],
-    "total_tool_calls": 2,
+    "total_tool_calls": 3,  # the two searches and the structured answer
     "duration_seconds": 3.45,
     "model": "gpt-4o-mini"
 }
@@ -209,6 +210,7 @@ Without groups, if you have 6 fields with `search_per_field=True`, 6 searches ar
 | `prompt` | str | No | Custom prompt for the group. Use `{query}` for the text |
 | `max_results` | int | No | Results override (1-20) |
 | `search_depth` | str | No | Override: `"basic"` or `"advanced"` |
+| `max_search_calls` | int | No | Override of the group agent's maximum searches |
 
 ### Basic Example
 

@@ -97,6 +97,7 @@ def _get_field_config(extra: dict) -> dict:
         'prompt_append': extra.get('prompt_append'),
         'search_depth': extra.get('search_depth'),
         'max_results': extra.get('max_results'),
+        'max_search_calls': extra.get('max_search_calls'),
         'depends_on': extra.get('depends_on', []),
         'condition': extra.get('condition'),
     }
@@ -145,20 +146,23 @@ def _build_field_prompt(
     return base_prompt
 
 
-def _with_search_overrides(config: LLMConfig, search_depth=None, max_results=None) -> LLMConfig:
+def _with_search_overrides(
+    config: LLMConfig, search_depth=None, max_results=None, max_search_calls=None
+) -> LLMConfig:
     """Cria novo LLMConfig com os overrides de busca de um campo ou grupo.
 
     Args:
         config: Configuração base do LLM.
         search_depth: Profundidade que substitui a global, ou None.
         max_results: Número de resultados que substitui o global, ou None.
+        max_search_calls: Teto de buscas que substitui o global, ou None.
 
     Returns:
         LLMConfig original se não há overrides, ou cópia com a SearchConfig
         sobrescrita. A config original nunca é mutada, porque é compartilhada
         entre linhas e threads.
     """
-    if search_depth is None and max_results is None:
+    if search_depth is None and max_results is None and max_search_calls is None:
         return config
 
     new_config = copy(config)
@@ -168,6 +172,8 @@ def _with_search_overrides(config: LLMConfig, search_depth=None, max_results=Non
         new_search_config.search_depth = search_depth
     if max_results is not None:
         new_search_config.max_results = max_results
+    if max_search_calls is not None:
+        new_search_config.max_search_calls = max_search_calls
 
     new_config.search_config = new_search_config
     return new_config
@@ -176,7 +182,10 @@ def _with_search_overrides(config: LLMConfig, search_depth=None, max_results=Non
 def _with_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
     """Aplica os overrides de busca de um campo, lidos de _get_field_config."""
     return _with_search_overrides(
-        config, field_config.get('search_depth'), field_config.get('max_results')
+        config,
+        field_config.get('search_depth'),
+        field_config.get('max_results'),
+        field_config.get('max_search_calls'),
     )
 
 
@@ -341,6 +350,18 @@ def _set_nested_value(obj: dict, path: str, value):
     current[parts[-1]] = value
 
 
+def _recursion_limit(max_search_calls: int) -> int:
+    """Passos do grafo que uma execução do agente pode dar.
+
+    Cada busca custa 3 passos (modelo, middleware do teto, ferramenta), e a
+    resposta final, outros 3. Um modelo que insiste em buscar depois do teto
+    gasta 2 passos por insistência, e sem este limite chegaria ao do LangGraph,
+    com milhares de chamadas ao modelo. A folga de 20 cobre umas oito
+    insistências ou novas tentativas do structured output.
+    """
+    return 3 * max_search_calls + 20
+
+
 def call_agent(
     text: str,
     pydantic_model,
@@ -362,6 +383,7 @@ def call_agent(
         search_credits e search_count) e 'trace' (se save_trace habilitado).
     """
     from langchain.agents import create_agent
+    from langchain.agents.middleware import ToolCallLimitMiddleware
     from langchain.agents.structured_output import ToolStrategy
 
     search_config = config.search_config
@@ -377,10 +399,18 @@ def call_agent(
     llm = _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
 
     # Criar agente com structured output
+    # Sem teto, um modelo que insiste em buscar gasta créditos até o limite de
+    # recursão do grafo. "continue" bloqueia as buscas excedentes e deixa o
+    # modelo responder com o que já tem.
     agent = create_agent(
         model=llm,
         tools=[search_tool],
         response_format=ToolStrategy(pydantic_model),
+        middleware=[ToolCallLimitMiddleware(
+            tool_name=search_tool.name,
+            run_limit=search_config.max_search_calls,
+            exit_behavior="continue",
+        )],
     )
 
     def _call():
@@ -388,7 +418,10 @@ def call_agent(
 
         # Medir tempo de execução
         start_time = time.perf_counter()
-        result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": prompt}]},
+            config={"recursion_limit": _recursion_limit(search_config.max_search_calls)},
+        )
         duration = time.perf_counter() - start_time
 
         # Extrair resposta estruturada
@@ -405,7 +438,9 @@ def call_agent(
 
         # Extrair trace se habilitado
         if save_trace:
-            response['trace'] = _extract_trace(result, config.model, duration, save_trace, provider)
+            response['trace'] = _extract_trace(
+                result, config.model, duration, save_trace, provider, search_tool.name
+            )
 
         return response
 
@@ -789,7 +824,10 @@ def call_agent_per_group(
 
             # Criar config com overrides do grupo (se houver)
             effective_config = _with_search_overrides(
-                config, group_config.search_depth, group_config.max_results
+                config,
+                group_config.search_depth,
+                group_config.max_results,
+                group_config.max_search_calls,
             )
 
             # Chamar agente para o grupo
@@ -863,6 +901,22 @@ def call_agent_per_group(
     return response
 
 
+# Início do texto que o ToolCallLimitMiddleware grava na ToolMessage de uma
+# chamada bloqueada ("Tool call limit exceeded. Do not call 'x' again.").
+_TOOL_LIMIT_MESSAGE_PREFIX = 'Tool call limit exceeded'
+
+
+def _blocked_tool_call_ids(messages) -> set:
+    """Ids das chamadas de ferramenta que o teto de buscas bloqueou."""
+    return {
+        msg.tool_call_id
+        for msg in messages
+        if getattr(msg, 'type', None) == 'tool'
+        and getattr(msg, 'status', None) == 'error'
+        and str(getattr(msg, 'content', '')).startswith(_TOOL_LIMIT_MESSAGE_PREFIX)
+    }
+
+
 def _extract_usage(agent_result: dict, provider, search_config, search_tool_name: str) -> dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 
@@ -929,11 +983,14 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
     # structured output do ToolStrategy, cujo nome é o do modelo Pydantic
     # (ex.: `NestedSearch_*`, `ResearchResult`), e por isso casar substring
     # como "search" inflaria search_count e search_credits.
+    # Chamada bloqueada pelo teto de buscas não executa nem é cobrada.
+    blocked = _blocked_tool_call_ids(messages)
     for msg in messages:
         if hasattr(msg, 'tool_calls') and msg.tool_calls:
             for tc in msg.tool_calls:
                 tool_name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
-                if tool_name == search_tool_name:
+                tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                if tool_name == search_tool_name and tool_id not in blocked:
                     usage['search_count'] += 1
 
     # Calcular créditos usando método do provider
@@ -949,7 +1006,14 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
     return usage
 
 
-def _extract_trace(agent_result: dict, model: str, duration: float, mode: str, provider=None) -> dict:
+def _extract_trace(
+    agent_result: dict,
+    model: str,
+    duration: float,
+    mode: str,
+    provider=None,
+    search_tool_name: str | None = None,
+) -> dict:
     """Extrai trace do resultado do agente LangChain.
 
     Args:
@@ -958,11 +1022,15 @@ def _extract_trace(agent_result: dict, model: str, duration: float, mode: str, p
         duration: Tempo de execução em segundos.
         mode: "full" ou "minimal".
         provider: Instância do SearchProvider usado (opcional).
+        search_tool_name: Nome da ferramenta de busca; só as chamadas dela
+            executadas entram em search_queries.
 
     Returns:
-        Dicionário com trace estruturado.
+        Dicionário com trace estruturado. total_tool_calls conta todas as
+        chamadas de ferramenta, inclusive a de structured output.
     """
     messages = agent_result.get("messages", [])
+    blocked = _blocked_tool_call_ids(messages)
     trace = {
         "messages": [],
         "search_queries": [],
@@ -991,12 +1059,11 @@ def _extract_trace(agent_result: dict, model: str, duration: float, mode: str, p
                     "id": tc.get("id", ""),
                     "type": tc.get("type", "tool_call"),
                 })
-                # Track search queries
-                if "search" in tc.get("name", "").lower():
+                trace["total_tool_calls"] += 1
+                if tc.get("name") == search_tool_name and tc.get("id") not in blocked:
                     query = tc.get("args", {}).get("query", "")
                     if query:
                         trace["search_queries"].append(query)
-                    trace["total_tool_calls"] += 1
 
         # Tool call reference (ToolMessage)
         if hasattr(msg, 'tool_call_id') and msg.tool_call_id:

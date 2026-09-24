@@ -220,7 +220,7 @@ def test_search_agent_uses_initialized_model(monkeypatch):
         result: str
 
     class DummyAgent:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
             return {"structured_response": TestOutput(result="ok"), "messages": []}
 
     class DummyTavily:

@@ -580,9 +580,10 @@ class TestExtractTrace:
                 ]),
             ],
         }
-        trace = _extract_trace(result, "m", 0.0, "full")
+        trace = _extract_trace(result, "m", 0.0, "full", search_tool_name="tavily_search")
         assert trace["search_queries"] == ["q1", "q2"]
-        assert trace["total_tool_calls"] == 2
+        # Toda chamada de ferramenta conta, não só as de busca
+        assert trace["total_tool_calls"] == 3
 
     def test_provider_preenche_search_provider(self):
         from dataframeit.agent import _extract_trace

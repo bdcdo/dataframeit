@@ -65,6 +65,7 @@ resultado = dataframeit(
 | `search_per_field` | bool | `False` | Executa busca separada para cada campo do modelo |
 | `max_results` | int | `5` | Resultados por busca (1-20) |
 | `search_depth` | str | `'basic'` | `'basic'` (1 crédito) ou `'advanced'` (2 créditos) |
+| `max_search_calls` | int | `10` | Máximo de buscas por execução do agente; as seguintes são bloqueadas e o agente responde com o que encontrou |
 | `save_trace` | bool/str | `None` | Salva trace do agente: `True`/`"full"` ou `"minimal"` |
 
 ## Exemplos
@@ -114,6 +115,7 @@ A partir da versão 0.5.2, você pode configurar prompts e parâmetros de busca 
 | `prompt_append` | Adiciona texto ao prompt base |
 | `search_depth` | Override de profundidade: `"basic"` ou `"advanced"` |
 | `max_results` | Override de número de resultados (1-20) |
+| `max_search_calls` | Override do máximo de buscas do agente deste campo |
 
 !!! note "Requer search_per_field=True"
     A configuração per-field só funciona quando `search_per_field=True`. Se você usar `json_schema_extra` com configurações de prompt ou busca sem habilitar `search_per_field`, um erro será levantado.
@@ -216,7 +218,7 @@ Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
         {"type": "tool", "content": "[resultados da busca]", "tool_call_id": "..."}
     ],
     "search_queries": ["query1", "query2"],
-    "total_tool_calls": 2,
+    "total_tool_calls": 3,  # as duas buscas e a resposta estruturada
     "duration_seconds": 3.45,
     "model": "gpt-4o-mini"
 }
@@ -292,6 +294,7 @@ Sem grupos, se você tiver 6 campos com `search_per_field=True`, serão feitas 6
 | `prompt` | str | Não | Prompt customizado para o grupo. Use `{query}` para o texto |
 | `max_results` | int | Não | Override de número de resultados (1-20) |
 | `search_depth` | str | Não | Override: `"basic"` ou `"advanced"` |
+| `max_search_calls` | int | Não | Override do máximo de buscas do agente do grupo |
 
 ### Exemplo Básico
 

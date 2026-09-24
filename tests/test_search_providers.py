@@ -294,22 +294,36 @@ def test_create_tool_tavily(monkeypatch):
 
 
 def test_create_tool_exa(monkeypatch):
-    """Verifica que ExaProvider.create_tool cria ExaSearchResults."""
+    """A ferramenta do Exa fixa max_results e o limite de texto na chamada ao cliente.
+
+    ExaSearchResults aceita num_results no construtor sem usá-lo; por isso a
+    classe falsa tem cliente, e o teste confere os argumentos da busca.
+    """
     from dataframeit.search import ExaProvider
 
-    class DummyExaSearchResults:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+    chamadas = []
 
-    # Mock do módulo langchain_exa
+    class ClienteFalso:
+        def search_and_contents(self, query, **kwargs):
+            chamadas.append((query, kwargs))
+            return "resultados"
+
+    class DummyExaSearchResults:
+        name = "exa_search_results_json"
+        description = "Exa Search"
+
+        def __init__(self, **kwargs):
+            self.client = ClienteFalso()
+
     mock_module = types.SimpleNamespace(ExaSearchResults=DummyExaSearchResults)
     monkeypatch.setitem(sys.modules, "langchain_exa", mock_module)
 
-    provider = ExaProvider()
-    tool = provider.create_tool(max_results=15)
+    tool = ExaProvider().create_tool(max_results=15)
+    tool.invoke({"query": "dipirona"})
 
-    assert isinstance(tool, DummyExaSearchResults)
-    assert tool.kwargs["num_results"] == 15
+    assert tool.name == "exa_search_results_json"
+    assert set(tool.args) == {"query"}
+    assert chamadas == [("dipirona", {"num_results": 15, "text": {"max_characters": 1000}})]
 
 
 # =============================================================================
@@ -471,7 +485,7 @@ def test_call_agent_uses_provider_factory(monkeypatch):
     from dataframeit.llm import LLMConfig, SearchConfig
 
     class DummyAgent:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
             return {"structured_response": SampleModel(campo="ok"), "messages": []}
 
     class DummySearchTool:
@@ -537,7 +551,7 @@ def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
     ]
 
     class AgenteFalso:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
             return {"structured_response": ResearchResult(campo="ok"), "messages": mensagens}
 
     class FerramentaFalsa:

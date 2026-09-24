@@ -8,7 +8,9 @@ from .utils import get_nested_pydantic_models, resolve_forward_refs
 logger = logging.getLogger(__name__)
 
 # Chaves de configuração per-field reconhecidas em json_schema_extra
-_FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
+_FIELD_CONFIG_KEYS = (
+    'prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results', 'max_search_calls',
+)
 
 # Chaves de execução condicional em json_schema_extra. Só call_agent_per_field
 # e call_agent_per_group as aplicam, e só nos campos de primeiro nível.

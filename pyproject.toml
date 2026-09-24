@@ -43,7 +43,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "langchain>=1.0.0",
+    # 1.0.4 é a primeira com exit_behavior="continue" no ToolCallLimitMiddleware.
+    "langchain>=1.0.4",
     "langchain-core>=1.0.0",
     "pandas",
     "pydantic>=2.0",
