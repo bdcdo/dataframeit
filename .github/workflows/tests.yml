@@ -45,12 +45,18 @@ jobs:
       - name: Run tests
         run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all pytest
 
-  # Instala cada dependência direta na menor versão que o pyproject.toml aceita.
-  # Um piso que não resolve, ou que resolve para uma combinação quebrada, falha
-  # aqui. Roda em 3.10 porque os pisos de pandas e pyarrow não têm wheel para
-  # 3.13, onde o instalador escolhe versões mais novas.
+  # Instala cada dependência direta na menor versão que o pyproject.toml aceita,
+  # resolvendo cada conjunto de extras à parte: num lock universal, um extra
+  # pode subir o piso de uma dependência base (claude-agent-sdk puxa pydantic
+  # >= 2.12) e esconder um piso quebrado. Uma dependência transitiva na versão
+  # mais alta ainda pode subir um piso direto, como o langgraph faz com o
+  # langchain-core. Roda em 3.10 porque o pandas no piso não tem wheel para 3.13.
   lowest-direct:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extras: ['', 'all excel polars search-all']
     steps:
       - uses: actions/checkout@v7
 
@@ -64,13 +70,18 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Run tests (base)
-        run: uv run --python 3.10 --resolution lowest-direct --extra dev pytest
-
-      - name: Run tests (extras)
-        run: >-
-          uv run --python 3.10 --resolution lowest-direct --extra dev
-          --extra all --extra excel --extra polars --extra search-all pytest
+      - name: Run tests
+        env:
+          EXTRAS: ${{ matrix.extras }}
+        run: |
+          flags="--extra dev"
+          for extra in $EXTRAS; do flags="$flags --extra $extra"; done
+          uv pip compile pyproject.toml $flags --resolution lowest-direct --python-version 3.10 -o "$RUNNER_TEMP/requisitos.txt"
+          uv venv --python 3.10 "$RUNNER_TEMP/venv"
+          export VIRTUAL_ENV="$RUNNER_TEMP/venv"
+          uv pip install -r "$RUNNER_TEMP/requisitos.txt"
+          uv pip install --no-deps -e .
+          "$VIRTUAL_ENV/bin/python" -m pytest
 
   codex-provider:
     runs-on: ubuntu-latest

@@ -375,7 +375,6 @@ def _provider_backend(
         )
         return
 
-    config = with_shared_chat_model(config)
     langchain_call = call_langchain
     structured_llm = _BuildOnce(lambda: build_structured_llm(pydantic_model, config))
     yield ProviderBackend(

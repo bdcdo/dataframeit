@@ -4,11 +4,12 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dataframeit.core import dataframeit
 from dataframeit.llm import _BuildOnce
@@ -112,6 +113,54 @@ def test_por_campo_e_por_grupo_reusam_o_modelo(parallel_requests, kwargs):
     # grupo é criado na hora; todos recebem o mesmo modelo LangChain.
     assert len(montagens) >= len(TEXTOS)
     assert len({id(m['model']) for m in montagens}) == 1
+
+
+class ComOverrides(BaseModel):
+    primeiro: str = Field(json_schema_extra={'max_results': 3, 'max_search_calls': 2})
+    segundo: str
+    terceiro: str
+
+
+@pytest.mark.filterwarnings('ignore::UserWarning')
+@pytest.mark.parametrize('parallel_requests', [1, 3])
+def test_overrides_por_campo_e_por_grupo_mantem_o_modelo_compartilhado(parallel_requests):
+    """A cópia da config com override de busca herda o mesmo modelo."""
+    resultado, criar, montagens = _rodar_com_busca(
+        ComOverrides, parallel_requests, search_per_field=True,
+        search_groups={'g': {'fields': ['segundo', 'terceiro'], 'search_depth': 'advanced'}},
+    )
+
+    assert resultado['primeiro'].tolist() == ['ok'] * len(TEXTOS)
+    assert criar.call_count == 1
+    assert len({id(m['model']) for m in montagens}) == 1
+
+
+@pytest.mark.parametrize('kwargs', [
+    {},
+    {'use_search': True},
+    {'use_search': True, 'search_per_field': True},
+    {'use_search': True, 'search_per_field': True,
+     'search_groups': {'g': {'fields': ['primeiro', 'segundo']}}},
+])
+@pytest.mark.parametrize('parallel_requests', [1, 3])
+def test_erro_de_construcao_e_erro_da_linha_em_todos_os_modos(parallel_requests, kwargs):
+    modelo = DoisCampos if kwargs.get('search_per_field') else Resposta
+    provider = MagicMock()
+    provider.create_tool = lambda **kw: MagicMock(name='ferramenta')
+    with patch('dataframeit.llm._create_langchain_llm', side_effect=ValueError('sem chave')) as criar, \
+            patch('dataframeit.agent.get_provider', return_value=provider), \
+            patch('dataframeit.core.validate_provider_dependencies'), \
+            patch('dataframeit.core.validate_search_dependencies'), \
+            warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        resultado = dataframeit(
+            pd.DataFrame({'texto': ['a', 'b']}), modelo, 'Responda {texto}',
+            max_retries=1, parallel_requests=parallel_requests, **kwargs,
+        )
+
+    assert resultado['_dataframeit_status'].tolist() == ['error', 'error']
+    # A falha não fica em cache: cada linha tenta construir de novo.
+    assert criar.call_count >= 2
 
 
 def test_build_once_nao_guarda_falha():
