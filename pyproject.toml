@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "dataframeit"
 version = "0.8.0"
-description = "Enriqueça DataFrames com análises de texto usando LLMs. Extraia informações estruturadas de textos com Pydantic."
+description = "Enrich DataFrames with LLM-based text analysis. Extract structured information from text with Pydantic."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -114,7 +114,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/bdcdo/dataframeit"
-Documentation = "https://bdcdo.github.io/dataframeit"
+Documentation = "https://bdcdo.github.io/dataframeit/en/"
 Repository = "https://github.com/bdcdo/dataframeit.git"
 Issues = "https://github.com/bdcdo/dataframeit/issues"
 Changelog = "https://github.com/bdcdo/dataframeit/blob/main/CHANGELOG.md"

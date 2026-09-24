@@ -10,7 +10,7 @@
 
 DataFrameIt processes text in DataFrames using Large Language Models (LLMs) and extracts structured information defined by Pydantic models.
 
-**[Full Documentation](https://bdcdo.github.io/dataframeit)** | **[LLM Reference](https://bdcdo.github.io/dataframeit/reference/llm-reference/)**
+**[Full Documentation](https://bdcdo.github.io/dataframeit/en/)** | **[LLM Reference](https://bdcdo.github.io/dataframeit/en/reference/llm-reference/)**
 
 ## Installation
 
@@ -135,10 +135,10 @@ result = dataframeit(
 
 ## Documentation
 
-- [Quickstart](https://bdcdo.github.io/dataframeit/getting-started/quickstart/)
-- [Guides](https://bdcdo.github.io/dataframeit/guides/basic-usage/)
-- [API Reference](https://bdcdo.github.io/dataframeit/reference/api/)
-- [LLM Reference](https://bdcdo.github.io/dataframeit/reference/llm-reference/) - Compact page optimized for coding assistants
+- [Quickstart](https://bdcdo.github.io/dataframeit/en/getting-started/quickstart/)
+- [Guides](https://bdcdo.github.io/dataframeit/en/guides/basic-usage/)
+- [API Reference](https://bdcdo.github.io/dataframeit/en/reference/api/)
+- [LLM Reference](https://bdcdo.github.io/dataframeit/en/reference/llm-reference/) - Compact page optimized for coding assistants
 
 ## Examples
 

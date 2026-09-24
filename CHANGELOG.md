@@ -15,6 +15,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - Fallback de import de `init_chat_model` a partir de `langchain_core.chat_models`, módulo que não existe no `langchain-core` 1.x; o import vem de `langchain.chat_models`, dependência obrigatória.
 
+### Corrigido
+
+- O `description` dos metadados do pacote passa a ser em inglês, e o link `Documentation` e os links de documentação do `README.md` apontam para a versão em inglês do site, como o `README.md` exibido no PyPI (#119).
+
 ## [0.8.0] - 2026-09-23
 
 Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram publicadas.
