@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 import pandas as pd
 from pandas.api.types import is_scalar
-from pydantic import ConfigDict, ValidationError
+from pydantic import ConfigDict, ValidationError, create_model
 from tqdm import tqdm
 
 from .conditional import (
@@ -22,6 +22,7 @@ from .conditional import (
     _FIELD_CONFIG_KEYS,
     _collect_configured_fields,
     _walk_fields,
+    evaluate_condition,
     get_field_execution_order,
     get_group_execution_units,
 )
@@ -102,6 +103,18 @@ def _invoke_row(backend, text, row, row_already_processed, reprocess_columns, ex
     return backend.invoke(text)
 
 
+def _condition_holds(condition, row_values: dict, field_name: str) -> bool:
+    """Avalia a condição com os valores da linha; erro conta como verdadeira.
+
+    Verdadeira é o lado conservador: o campo ausente continua acusado, e a
+    retomada pede para reprocessá-lo.
+    """
+    try:
+        return bool(evaluate_condition(condition, row_values, field_name))
+    except Exception:
+        return True
+
+
 def _validate_processed_rows(
     df: pd.DataFrame,
     status_col: str,
@@ -142,6 +155,28 @@ def _validate_processed_rows(
             },
         )
 
+    # Campo com `condition` fica None quando a condição é falsa na linha, mesmo
+    # que o tipo declarado seja obrigatório. Só nesse caso o None é aceito, e só
+    # o campo pulado sai da validação: um valor presente passa pelas restrições
+    # do modelo, e a condição verdadeira com valor ausente continua acusada.
+    conditions = {
+        field_name: field.json_schema_extra['condition']
+        for field_name, field in pydantic_model.model_fields.items()
+        if isinstance(field.json_schema_extra, dict) and 'condition' in field.json_schema_extra
+    }
+    skipping_models: dict[frozenset, Any] = {}
+
+    def model_skipping(skipped: frozenset):
+        if not skipped:
+            return validation_model
+        if skipped not in skipping_models:
+            skipping_models[skipped] = create_model(
+                f"{pydantic_model.__name__}CheckpointSkipped",
+                __base__=validation_model,
+                **dict.fromkeys(skipped, (Any, None)),
+            )
+        return skipping_models[skipped]
+
     processed_positions = [
         position
         for position, status in enumerate(df[status_col])
@@ -149,26 +184,38 @@ def _validate_processed_rows(
     ]
     for position in processed_positions:
         row = df.iloc[position]
+        row_values = {}
+        for field_name in pydantic_model.model_fields:
+            if field_name not in df.columns:
+                row_values[field_name] = None
+                continue
+            value = row[field_name]
+            if is_scalar(value) and bool(pd.isna(value)):
+                row_values[field_name] = None
+            elif field_name in complex_fields:
+                row_values[field_name] = normalize_value(value)
+            else:
+                row_values[field_name] = value
+
+        skipped = frozenset(
+            field_name
+            for field_name, condition in conditions.items()
+            if row_values[field_name] is None
+            and not _condition_holds(condition, row_values, field_name)
+        )
+
         projected = {}
         missing_values = set()
         for field_name, field in pydantic_model.model_fields.items():
-            if field_name not in df.columns:
+            value = row_values[field_name]
+            if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
                 missing_values.add(field_name)
-                continue
-
-            value = row[field_name]
-            is_missing = is_scalar(value) and bool(pd.isna(value))
-            if is_missing:
-                missing_values.add(field_name)
-                if not field.is_required():
+                if not field.is_required() or field_name in skipped:
                     continue
-                value = None
-            elif field_name in complex_fields:
-                value = normalize_value(value)
             projected[field_name] = value
 
         try:
-            validated = validation_model.model_validate(projected)
+            validated = model_skipping(skipped).model_validate(projected)
         except ValidationError as error:
             for detail in error.errors():
                 location = detail.get('loc', ())
@@ -1116,15 +1163,33 @@ def _validate_checkpoint_extension(path: str | Path) -> None:
             )
 
 
+def _structures_as_json(df: pd.DataFrame) -> pd.DataFrame:
+    """Cópia com listas, dicts e tuplas serializados como JSON.
+
+    CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
+    de volta. JSON é o que read_df e a retomada normalizam.
+    """
+    def to_json(value):
+        if isinstance(value, (list, dict, tuple)):
+            return json.dumps(value, ensure_ascii=False, default=str)
+        return value
+
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            out[col] = out[col].map(to_json)
+    return out
+
+
 def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão."""
     path = Path(path)
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + '.tmp')
     if ext == '.csv':
-        df.to_csv(tmp, index=False)
+        _structures_as_json(df).to_csv(tmp, index=False)
     elif ext == '.xlsx':
-        df.to_excel(tmp, index=False)
+        _structures_as_json(df).to_excel(tmp, index=False)
     elif ext == '.parquet':
         df.to_parquet(tmp, index=False)
     else:
@@ -1133,6 +1198,28 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
             f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
         )
     os.replace(tmp, path)
+
+
+def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
+    """Grava o checkpoint e devolve se deu certo; falha vira aviso.
+
+    Uma falha de gravação (disco cheio, arquivo aberto no Excel, coluna que o
+    parquet não serializa) não diz nada sobre a linha que acabou de ser
+    processada, e por isso nunca muda o status dela nem interrompe a execução.
+    A próxima gravação tenta de novo, com o estado completo.
+    """
+    try:
+        _save_checkpoint(df, path)
+    except Exception as error:
+        warnings.warn(
+            f"Falha ao gravar o checkpoint em {path}: {type(error).__name__}: {error}. "
+            "O processamento continua, e a próxima gravação tenta de novo.",
+            # usuário -> dataframeit -> _process_rows -> aqui; no modo paralelo
+            # o aviso sai de uma thread do executor e não tem quadro do usuário.
+            stacklevel=4,
+        )
+        return False
+    return True
 
 
 def _process_rows(
@@ -1192,6 +1279,7 @@ def _process_rows(
     }
 
     rows_processed_this_run = 0
+    rows_saved = 0
 
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
@@ -1270,7 +1358,8 @@ def _process_rows(
 
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
-                _save_checkpoint(df, checkpoint_path)
+                if _try_save_checkpoint(df, checkpoint_path):
+                    rows_saved = rows_processed_this_run
 
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
@@ -1296,11 +1385,12 @@ def _process_rows(
 
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
-                _save_checkpoint(df, checkpoint_path)
+                if _try_save_checkpoint(df, checkpoint_path):
+                    rows_saved = rows_processed_this_run
 
-    # Save final: garante que a cauda (< batch_size) também fica no disco.
-    if batch_size and rows_processed_this_run > 0 and rows_processed_this_run % batch_size != 0:
-        _save_checkpoint(df, checkpoint_path)
+    # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
+    if batch_size and rows_processed_this_run > rows_saved:
+        _try_save_checkpoint(df, checkpoint_path)
 
     return token_stats
 
@@ -1356,8 +1446,8 @@ def _process_rows_parallel(
         with checkpoint_write_lock:
             if label <= last_saved_checkpoint:
                 return
-            _save_checkpoint(snapshot, checkpoint_path)
-            last_saved_checkpoint = label
+            if _try_save_checkpoint(snapshot, checkpoint_path):
+                last_saved_checkpoint = label
 
     # Contadores
     token_stats = {
@@ -1544,9 +1634,9 @@ def _process_rows_parallel(
                         completed += 1
                         warnings.warn(f"Erro inesperado no executor: {e}")
 
-    # Save final: garante que a cauda (< batch_size) também fica no disco.
-    if batch_size and checkpoint_counter > 0 and checkpoint_counter % batch_size != 0:
-        _save_checkpoint(df, checkpoint_path)
+    # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
+    if batch_size and checkpoint_counter > last_saved_checkpoint:
+        _try_save_checkpoint(df, checkpoint_path)
 
     elapsed = time.time() - start_time
     token_stats['elapsed_seconds'] = elapsed

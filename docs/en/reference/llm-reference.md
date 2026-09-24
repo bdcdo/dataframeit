@@ -258,7 +258,9 @@ result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
 result.to_excel('partial.xlsx', index=False)
 
 # Load and continue
-df = pd.read_excel('partial.xlsx')
+from dataframeit import read_df
+
+df = read_df('partial.xlsx', Model)
 result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
 ```
 

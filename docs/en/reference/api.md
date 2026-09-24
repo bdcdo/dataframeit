@@ -146,10 +146,10 @@ result = dataframeit(
 
 ## read_df()
 
-Reads files in various formats to DataFrame.
+Reads files in various formats to a DataFrame and turns lists, dicts and nested models saved as JSON (or as Python repr) back into their original structures. Use it to reload a checkpoint or a saved result before resuming with `resume=True`.
 
 ```python
-def read_df(path: str, **kwargs) -> pd.DataFrame
+def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataFrame
 ```
 
 ### Parameters
@@ -157,7 +157,11 @@ def read_df(path: str, **kwargs) -> pd.DataFrame
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | str | File path |
+| `model` | type[BaseModel] | Pydantic model. With it, only structured fields are normalized, and in `.csv`/`.xlsx` text fields are read as raw text: `"2023"` does not become a number and `"N/A"` does not become missing. Passing `dtype`, `converters`, `na_values`, `keep_default_na`, `na_filter` or `usecols` turns this off. |
+| `normalize` | bool | If `False`, no column is converted |
 | `**kwargs` | | Arguments passed to pandas |
+
+CSV and XLSX store `""` and missing values the same way. A required text field that was `""` comes back missing, and resuming flags it for reprocessing; use a `.parquet` checkpoint to keep that difference.
 
 ### Supported Formats
 

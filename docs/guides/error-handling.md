@@ -83,7 +83,9 @@ resultado = dataframeit(df, Model, PROMPT, resume=True)
 resultado.to_excel('parcial.xlsx', index=False)
 
 # Se houver interrupção, carregue e continue
-df = pd.read_excel('parcial.xlsx')
+from dataframeit import read_df
+
+df = read_df('parcial.xlsx', Model)
 resultado = dataframeit(df, Model, PROMPT, resume=True)
 resultado.to_excel('completo.xlsx', index=False)
 ```
@@ -94,8 +96,10 @@ resultado.to_excel('completo.xlsx', index=False)
 ## Reprocessando Erros
 
 ```python
+from dataframeit import read_df
+
 # Carregar resultado com erros
-df = pd.read_excel('resultado.xlsx')
+df = read_df('resultado.xlsx', Model)
 
 # Limpar status das linhas com erro para reprocessar
 df.loc[df['_dataframeit_status'] == 'error', '_dataframeit_status'] = None

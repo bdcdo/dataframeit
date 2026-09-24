@@ -102,11 +102,13 @@ result = dataframeit(
 ```
 
 The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`).
-If execution is interrupted, reload the DataFrame from disk and re-run with
-`resume=True`:
+If execution is interrupted, reload the DataFrame with `read_df`, which returns
+lists, dicts and text with the model's types, and re-run with `resume=True`:
 
 ```python
-partial = pd.read_excel("checkpoint.xlsx")
+from dataframeit import read_df
+
+partial = read_df("checkpoint.xlsx", Model)
 result = dataframeit(
     partial, Model, PROMPT,
     resume=True, batch_size=100, checkpoint_path="checkpoint.xlsx",

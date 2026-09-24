@@ -145,10 +145,10 @@ resultado = dataframeit(
 
 ## read_df()
 
-Lê arquivos em diversos formatos para DataFrame.
+Lê arquivos em diversos formatos para DataFrame e devolve listas, dicts e modelos aninhados gravados como JSON (ou como repr Python) às estruturas originais. É a forma de recarregar um checkpoint ou uma saída salva para retomar com `resume=True`.
 
 ```python
-def read_df(path: str, **kwargs) -> pd.DataFrame
+def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataFrame
 ```
 
 ### Parâmetros
@@ -156,7 +156,11 @@ def read_df(path: str, **kwargs) -> pd.DataFrame
 | Parâmetro | Tipo | Descrição |
 |-----------|------|-----------|
 | `path` | str | Caminho do arquivo |
+| `model` | type[BaseModel] | Modelo Pydantic. Com ele, só os campos de estrutura são normalizados, e em `.csv`/`.xlsx` os campos de texto são lidos como texto cru: `"2023"` não vira número e `"N/A"` não vira ausência. Passar `dtype`, `converters`, `na_values`, `keep_default_na`, `na_filter` ou `usecols` desliga essa leitura. |
+| `normalize` | bool | Se `False`, não converte nenhuma coluna |
 | `**kwargs` | | Argumentos passados para pandas |
+
+CSV e XLSX gravam `""` e ausência do mesmo jeito. Um campo obrigatório de texto que era `""` volta ausente, e a retomada o acusa para reprocessar; para guardar essa diferença, use checkpoint `.parquet`.
 
 ### Formatos Suportados
 
