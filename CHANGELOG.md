@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-23
+
 ### Alterado
 
 - O provider padrão passa a ser `openai`, e `model` passa a ter default `None`: sem `model`, cada provider usa o próprio modelo padrão (`DEFAULT_MODELS`: `gpt-6-luna` na OpenAI, `gemini-3.8-flash` no Google, `claude-sonnet-5` na Anthropic, `openai/gpt-oss-120b` na Groq). Providers fora dessa tabela exigem `model`, e `codex` e `claude_code` deixam a escolha ao runtime (#121).
@@ -28,7 +30,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - `search_count` e `search_credits` contam só as chamadas da ferramenta de busca passada ao agente; antes, qualquer tool call com "search" no nome contava, inclusive a de structured output dos modelos `NestedSearch_*`, `ItemSearch_*` ou de modelos do usuário como `ResearchResult` (#125).
 - `search_groups` aplica `condition`: campo com condição falsa fica `None` e não é pedido ao agente, e grupos e campos isolados rodam na ordem das dependências (#125).
 - A ordem de execução entre campos independentes segue a do modelo, e os campos de um grupo seguem a ordem de `search_groups`; antes, ambas variavam de um processo para outro (#125).
-- Com `parallel_requests > 1` e `batch_size`, duas gravações de checkpoint simultâneas disputavam o mesmo arquivo temporário, e o `FileNotFoundError` resultante regravava como `'error'` uma linha já processada. As gravações passam a ser serializadas, e um snapshot mais antigo que chegue depois de um mais novo é descartado.
+- Com `parallel_requests > 1` e `batch_size`, duas gravações de checkpoint simultâneas disputavam o mesmo arquivo temporário, e o `FileNotFoundError` resultante regravava como `'error'` uma linha já processada. As gravações passam a ser serializadas, e um snapshot mais antigo que chegue depois de um mais novo é descartado (#128).
 
 ### Segurança
 
@@ -255,7 +257,8 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 
 ---
 
-[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/bdcdo/dataframeit/compare/v0.5.4...v0.6.0
