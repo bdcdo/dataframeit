@@ -73,7 +73,3 @@ class ExaProvider(SearchProvider):
         # Representamos em unidades de $0.005 para facilitar comparação
         cost_per_search = 1 if max_results <= 25 else 5
         return search_count * cost_per_search
-
-    def get_tool_name_pattern(self) -> str:
-        """Padrão para identificar tool calls Exa."""
-        return "exa"

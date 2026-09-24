@@ -46,6 +46,10 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 # Chaves de configuração per-field reconhecidas em json_schema_extra
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
 
+# Chaves de execução condicional em json_schema_extra. Só call_agent_per_field
+# e call_agent_per_group as aplicam, e só nos campos de primeiro nível.
+_CONDITIONAL_KEYS = ('condition', 'depends_on')
+
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
 # e convenções comuns de ETL ('content', 'content_text').
@@ -778,6 +782,22 @@ def dataframeit(
             raise ValueError(
                 "Campos com configuração em json_schema_extra (prompt, prompt_append, "
                 "search_depth, max_results) requerem search_per_field=True"
+            )
+
+    # Sem busca por campo, todos os campos saem de uma única chamada, e não há
+    # momento para avaliar a condição antes de extrair o campo.
+    if not (config.search_config and config.search_config.per_field):
+        conditional_fields = [
+            field_name
+            for field_name, field_info in questions.model_fields.items()
+            if isinstance(field_info.json_schema_extra, dict)
+            and any(k in field_info.json_schema_extra for k in _CONDITIONAL_KEYS)
+        ]
+        if conditional_fields:
+            raise ValueError(
+                f"Campos {conditional_fields} usam 'condition' ou 'depends_on' em "
+                "json_schema_extra, que só são aplicados com use_search=True e "
+                "search_per_field=True"
             )
 
     # Só execuções com trabalho pendente validam dependências e rate limits.

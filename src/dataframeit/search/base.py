@@ -67,15 +67,6 @@ class SearchProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_tool_name_pattern(self) -> str:
-        """Retorna padrão para identificar tool calls deste provedor.
-
-        Returns:
-            String que aparece no nome da ferramenta nas mensagens do agente.
-        """
-        pass
-
 
 # Registry de provedores disponíveis
 _PROVIDERS: dict[str, type[SearchProvider]] = {}

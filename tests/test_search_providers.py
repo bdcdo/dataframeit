@@ -89,14 +89,6 @@ def test_tavily_calculate_credits_advanced():
     assert credits == 6  # 3 buscas × 2 créditos
 
 
-def test_tavily_tool_name_pattern():
-    """Verifica padrão de nome de ferramenta Tavily."""
-    from dataframeit.search import TavilyProvider
-
-    provider = TavilyProvider()
-    assert "tavily" in provider.get_tool_name_pattern()
-
-
 # =============================================================================
 # Testes de ExaProvider
 # =============================================================================
@@ -129,14 +121,6 @@ def test_exa_calculate_credits_large_results():
     provider = ExaProvider()
     credits = provider.calculate_credits(search_count=3, max_results=50)
     assert credits == 15  # 3 buscas × 5 créditos
-
-
-def test_exa_tool_name_pattern():
-    """Verifica padrão de nome de ferramenta Exa."""
-    from dataframeit.search import ExaProvider
-
-    provider = ExaProvider()
-    assert "exa" in provider.get_tool_name_pattern()
 
 
 # =============================================================================
@@ -348,7 +332,7 @@ def test_extract_usage_includes_provider_name():
         ],
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     assert usage["search_provider"] == "tavily"
 
@@ -366,12 +350,12 @@ def test_extract_usage_with_exa_provider():
         "messages": [
             MagicMock(
                 usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
-                tool_calls=[{"name": "exa_search"}, {"name": "exa_search"}]
+                tool_calls=[{"name": "exa_search_results_json"}, {"name": "exa_search_results_json"}]
             ),
         ],
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "exa_search_results_json")
 
     assert usage["search_provider"] == "exa"
     assert usage["search_count"] == 2
@@ -412,7 +396,7 @@ def test_extract_usage_accumulates_reasoning_tokens():
         ],
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     assert usage["reasoning_tokens"] == 65
     assert usage["input_tokens"] == 180
@@ -437,7 +421,7 @@ def test_extract_usage_reasoning_tokens_default_zero():
         ],
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
     assert usage["reasoning_tokens"] == 0
 
 
@@ -510,7 +494,6 @@ def test_call_agent_uses_provider_factory(monkeypatch):
         mock_provider = MagicMock()
         mock_provider.name = "tavily"
         mock_provider.create_tool = mock_create_tool
-        mock_provider.get_tool_name_pattern.return_value = "tavily"
         mock_provider.calculate_credits.return_value = 0
         mock_get_provider.return_value = mock_provider
 
@@ -533,6 +516,50 @@ def test_call_agent_uses_provider_factory(monkeypatch):
 
         # Verifica que a ferramenta foi criada e passada
         assert len(captured_tools) == 1
+
+
+def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
+    """O nome do modelo de structured output não conta como busca, mesmo contendo "search"."""
+    from types import SimpleNamespace
+
+    from dataframeit.agent import call_agent
+    from dataframeit.llm import LLMConfig, SearchConfig
+
+    class ResearchResult(BaseModel):
+        campo: str
+
+    mensagens = [
+        SimpleNamespace(type="ai", tool_calls=[{"name": "busca_web", "args": {}, "id": "1"}]),
+        SimpleNamespace(type="ai", tool_calls=[{"name": "ResearchResult", "args": {}, "id": "2"}]),
+        SimpleNamespace(type="ai", tool_calls=[{"name": "NestedSearch_x", "args": {}, "id": "3"}]),
+    ]
+
+    class AgenteFalso:
+        def invoke(self, _payload):
+            return {"structured_response": ResearchResult(campo="ok"), "messages": mensagens}
+
+    class FerramentaFalsa:
+        name = "busca_web"
+
+    monkeypatch.setattr("dataframeit.agent._create_langchain_llm", lambda *a, **k: object())
+    monkeypatch.setattr("langchain.agents.create_agent", lambda **kwargs: AgenteFalso())
+
+    with patch("dataframeit.agent.get_provider") as get_provider:
+        provider = MagicMock()
+        provider.name = "tavily"
+        provider.create_tool = lambda **kwargs: FerramentaFalsa()
+        provider.calculate_credits.side_effect = lambda search_count, **kw: search_count
+        get_provider.return_value = provider
+
+        config = LLMConfig(
+            model="m", provider="openai", api_key=None,
+            max_retries=1, base_delay=0.0, max_delay=0.0, rate_limit_delay=0.0,
+            search_config=SearchConfig(enabled=True, provider="tavily"),
+        )
+        resultado = call_agent("teste", ResearchResult, "Responda {texto}", config)
+
+    assert resultado["usage"]["search_count"] == 1
+    assert resultado["usage"]["search_credits"] == 1
 
 
 if __name__ == "__main__":

@@ -371,7 +371,7 @@ def test_call_agent_returns_expected_structure():
         "structured_response": MagicMock(),
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     assert "input_tokens" in usage
     assert "output_tokens" in usage
@@ -402,7 +402,7 @@ def test_extract_usage_advanced_depth():
         ],
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     assert usage["search_count"] == 2
     assert usage["search_credits"] == 4  # advanced = 2 créditos × 2 buscas
@@ -435,7 +435,7 @@ def test_extract_usage_with_object_metadata():
         ],
     }
 
-    usage = _extract_usage(mock_result, provider, search_config)
+    usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     assert usage["input_tokens"] == 150
     assert usage["output_tokens"] == 75
@@ -479,7 +479,7 @@ def test_extract_usage_with_debug_logging(caplog):
 
     # Ativar logging de debug
     with caplog.at_level(logging.DEBUG, logger="dataframeit.agent"):
-        usage = _extract_usage(mock_result, provider, search_config)
+        usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     # Verificar que os tokens foram extraídos corretamente
     assert usage["input_tokens"] == 300  # 100 + 200

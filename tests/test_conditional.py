@@ -1,5 +1,7 @@
 """Testes para funcionalidade de execução condicional de campos."""
 
+from unittest.mock import patch
+
 import pytest
 from pydantic import BaseModel, Field
 
@@ -592,3 +594,208 @@ class TestIntegrationScenarios:
         # Outro país: estado e cep devem ser pulados
         field_data = {'pais': 'EUA'}
         assert should_skip_field('estado', field_configs['estado'], field_data) is True
+
+
+# =============================================================================
+# Condições no modo por grupo e validação de modo
+# =============================================================================
+
+
+_CONDICAO_PF = {'condition': {'field': 'tipo', 'equals': 'pf'}}
+_CONDICAO_PJ = {'condition': {'field': 'tipo', 'equals': 'pj'}}
+
+
+class ModeloPessoaCondicional(BaseModel):
+    tipo: str = Field(description="'pf' ou 'pj'")
+    cpf: str | None = Field(None, json_schema_extra=_CONDICAO_PF)
+    cnpj: str | None = Field(None, json_schema_extra=_CONDICAO_PJ)
+    razao_social: str | None = Field(None, json_schema_extra=_CONDICAO_PJ)
+
+
+def _config_por_grupo(grupos):
+    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+    return LLMConfig(
+        model="teste", provider="teste", api_key=None,
+        max_retries=1, base_delay=0.0, max_delay=0.0, rate_limit_delay=0,
+        search_config=SearchConfig(
+            enabled=True,
+            per_field=True,
+            groups={nome: SearchGroupConfig(fields=campos) for nome, campos in grupos.items()},
+        ),
+    )
+
+
+def _call_agent_falso(valores, chamadas):
+    """Simula call_agent: registra os campos pedidos e devolve `valores`."""
+    def call_agent(text, model, prompt, config, save_trace=None):
+        campos = list(model.model_fields.keys())
+        chamadas.append(campos)
+        return {
+            'data': {campo: valores[campo] for campo in campos},
+            'usage': {'input_tokens': 1, 'search_count': 1},
+        }
+    return call_agent
+
+
+class TestCondicaoNoModoPorGrupo:
+    """call_agent_per_group aplica `condition` como o caminho por campo."""
+
+    def test_grupo_com_condicao_falsa_nao_e_chamado(self):
+        from dataframeit.agent import call_agent_per_group
+
+        chamadas = []
+        valores = {'tipo': 'pf', 'cpf': '123', 'cnpj': '999', 'razao_social': 'XYZ'}
+        config = _config_por_grupo({'empresa': ['cnpj', 'razao_social']})
+
+        with patch('dataframeit.agent.call_agent', side_effect=_call_agent_falso(valores, chamadas)):
+            resultado = call_agent_per_group(
+                'texto', ModeloPessoaCondicional, 'Analise {texto}', config
+            )
+
+        assert resultado['data'] == {
+            'tipo': 'pf', 'cpf': '123', 'cnpj': None, 'razao_social': None,
+        }
+        assert sorted(map(tuple, chamadas)) == [('cpf',), ('tipo',)]
+        # `tipo` precisa vir antes de `cpf`, que depende dele
+        assert chamadas.index(['tipo']) < chamadas.index(['cpf'])
+        assert resultado['usage']['search_count'] == 2
+
+    def test_grupo_pede_so_os_campos_com_condicao_verdadeira(self):
+        from dataframeit.agent import call_agent_per_group
+
+        chamadas = []
+        valores = {'tipo': 'pj', 'cpf': '123', 'cnpj': '999', 'razao_social': 'XYZ'}
+        config = _config_por_grupo({'documentos': ['cpf', 'cnpj']})
+
+        with patch('dataframeit.agent.call_agent', side_effect=_call_agent_falso(valores, chamadas)):
+            resultado = call_agent_per_group(
+                'texto', ModeloPessoaCondicional, 'Analise {texto}', config
+            )
+
+        assert ['cnpj'] in chamadas
+        assert not any('cpf' in campos for campos in chamadas)
+        assert resultado['data']['cpf'] is None
+        assert resultado['data']['cnpj'] == '999'
+        assert resultado['data']['razao_social'] == 'XYZ'
+
+    def test_condicao_dentro_do_mesmo_grupo_e_avaliada_na_resposta(self):
+        """Dependência no mesmo grupo não tem valor antes da chamada: o campo é anulado depois."""
+        from dataframeit.agent import call_agent_per_group
+
+        chamadas = []
+        valores = {'tipo': 'pj', 'cpf': '123', 'cnpj': '999', 'razao_social': 'XYZ'}
+        config = _config_por_grupo({'identificacao': ['tipo', 'cpf']})
+
+        with patch('dataframeit.agent.call_agent', side_effect=_call_agent_falso(valores, chamadas)):
+            resultado = call_agent_per_group(
+                'texto', ModeloPessoaCondicional, 'Analise {texto}', config
+            )
+
+        assert resultado['data']['tipo'] == 'pj'
+        assert resultado['data']['cpf'] is None
+        assert resultado['data']['cnpj'] == '999'
+
+    def test_ciclo_entre_grupo_e_campo_isolado_levanta_erro(self):
+        from dataframeit.agent import call_agent_per_group
+
+        class ModeloCiclico(BaseModel):
+            a: str
+            b: str | None = Field(None, json_schema_extra={'condition': {'field': 'a', 'exists': True}})
+            c: str | None = Field(None, json_schema_extra={'condition': {'field': 'b', 'exists': True}})
+
+        config = _config_por_grupo({'g': ['a', 'c']})
+
+        with patch('dataframeit.agent.call_agent') as call_agent:
+            with pytest.raises(ValueError, match="grupo 'g'"):
+                call_agent_per_group('texto', ModeloCiclico, 'Analise {texto}', config)
+        call_agent.assert_not_called()
+
+    def test_grupo_segue_a_ordem_de_search_groups(self):
+        from dataframeit.agent import call_agent_per_group
+
+        chamadas = []
+        valores = {'tipo': 'pj', 'cpf': '123', 'cnpj': '999', 'razao_social': 'XYZ'}
+        config = _config_por_grupo({'empresa': ['razao_social', 'cnpj']})
+
+        with patch('dataframeit.agent.call_agent', side_effect=_call_agent_falso(valores, chamadas)):
+            call_agent_per_group('texto', ModeloPessoaCondicional, 'Analise {texto}', config)
+
+        assert ['razao_social', 'cnpj'] in chamadas
+
+
+def test_ordem_de_execucao_nao_depende_do_hash_seed():
+    """A ordem entre campos independentes segue o modelo em qualquer processo."""
+    import os
+    import subprocess
+    import sys
+
+    codigo = (
+        "from pydantic import BaseModel\n"
+        "from dataframeit.conditional import get_field_execution_order\n"
+        "class M(BaseModel):\n"
+        "    zeta: str\n    alfa: str\n    meio: str\n    beta: str\n"
+        "print(get_field_execution_order(M, {})[0])\n"
+    )
+    saidas = set()
+    for semente in ('0', '1', '2', '3'):
+        ambiente = {**os.environ, 'PYTHONHASHSEED': semente}
+        saida = subprocess.run(
+            [sys.executable, '-c', codigo], env=ambiente,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        saidas.add(saida)
+
+    assert saidas == {"['zeta', 'alfa', 'meio', 'beta']"}
+
+
+_RESPOSTA_PF = {
+    'data': {'tipo': 'pf', 'cpf': '123', 'cnpj': None, 'razao_social': None},
+    'usage': None,
+}
+
+
+class TestCondicaoForaDoModoPorCampo:
+    """`condition` e `depends_on` só são aplicados com search_per_field=True."""
+
+    @pytest.mark.parametrize('opcoes_busca', [
+        {},
+        {'use_search': True, 'search_per_field': False},
+    ])
+    def test_condition_sem_search_per_field_levanta_erro(self, opcoes_busca):
+        import pandas as pd
+
+        from dataframeit import dataframeit
+
+        with patch('dataframeit.core.validate_provider_dependencies'), \
+                patch('dataframeit.core.validate_search_dependencies'), \
+                patch('dataframeit.core.call_langchain', return_value=_RESPOSTA_PF) as call_langchain, \
+                patch('dataframeit.agent.call_agent', return_value=_RESPOSTA_PF) as call_agent:
+            with pytest.raises(ValueError, match="search_per_field=True"):
+                dataframeit(
+                    pd.DataFrame({'texto': ['x']}),
+                    questions=ModeloPessoaCondicional,
+                    prompt='Analise {texto}',
+                    **opcoes_busca,
+                )
+        call_langchain.assert_not_called()
+        call_agent.assert_not_called()
+
+    def test_depends_on_sem_search_per_field_levanta_erro(self):
+        import pandas as pd
+
+        from dataframeit import dataframeit
+
+        class ModeloDependsOn(BaseModel):
+            a: str
+            b: str = Field(json_schema_extra={'depends_on': ['a']})
+
+        with patch('dataframeit.core.validate_provider_dependencies'), \
+                patch('dataframeit.core.call_langchain', return_value={'data': {'a': '1', 'b': '2'}, 'usage': None}) as call_langchain:
+            with pytest.raises(ValueError, match="depends_on"):
+                dataframeit(
+                    pd.DataFrame({'texto': ['x']}),
+                    questions=ModeloDependsOn,
+                    prompt='Analise {texto}',
+                )
+        call_langchain.assert_not_called()

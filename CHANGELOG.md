@@ -11,6 +11,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - O provider padrão passa a ser `openai`, e `model` passa a ter default `None`: sem `model`, cada provider usa o próprio modelo padrão (`DEFAULT_MODELS`: `gpt-6-luna` na OpenAI, `gemini-3.8-flash` no Google, `claude-sonnet-5` na Anthropic, `openai/gpt-oss-120b` na Groq). Providers fora dessa tabela exigem `model`, e `codex` e `claude_code` deixam a escolha ao runtime (#121).
 - Documentação, READMEs e notebooks de exemplo atualizados para os modelos atuais; saem modelos desligados, restritos ou deprecados (`gemini-3-flash-preview`, Gemini 2.5, Llama, `qwen3-32b` e `groq/compound` na Groq, `claude-3-5-sonnet`). O identificador do Mistral na documentação passa a ser `mistralai`, o que o LangChain aceita (#121).
+- `condition` ou `depends_on` sem `use_search=True` e `search_per_field=True` levanta `ValueError`, em vez de ser ignorado em silêncio (#125).
+
+### Removido
+
+- `SearchProvider.get_tool_name_pattern()`, que só servia à contagem de buscas (#125).
 
 ### Corrigido
 
@@ -20,6 +25,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Códigos numéricos na mensagem de erro (`401`, `429`, `503` etc.) só contam como número isolado, e uma mensagem como "4015 tokens" deixa de ser lida como erro de autenticação ou rate limit (#123).
 - O provider `claude_code` funciona com event loop já ativo, como no Jupyter, em vez de falhar com `RuntimeError` a cada tentativa (#124).
 - O provider `claude_code` registra os tokens informados pelo SDK, com leitura de cache, em vez de zeros fixos, e grava nulo quando o SDK não informa uso (#124).
+- `search_count` e `search_credits` contam só as chamadas da ferramenta de busca passada ao agente; antes, qualquer tool call com "search" no nome contava, inclusive a de structured output dos modelos `NestedSearch_*`, `ItemSearch_*` ou de modelos do usuário como `ResearchResult` (#125).
+- `search_groups` aplica `condition`: campo com condição falsa fica `None` e não é pedido ao agente, e grupos e campos isolados rodam na ordem das dependências (#125).
+- A ordem de execução entre campos independentes segue a do modelo, e os campos de um grupo seguem a ordem de `search_groups`; antes, ambas variavam de um processo para outro (#125).
 
 ### Segurança
 
