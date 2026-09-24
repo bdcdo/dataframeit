@@ -125,7 +125,7 @@ resultado = dataframeit(
 # ============================================================
 # ESTATÍSTICAS DE USO DE TOKENS
 # ============================================================
-# Modelo: gemini-3-flash-preview
+# Modelo: gpt-6-luna
 # Total de tokens: 15,432
 #   • Input:  12,345 tokens
 #   • Output: 3,087 tokens
@@ -141,9 +141,9 @@ O resultado registra o uso por linha; a [Referência LLM](../reference/llm-refer
 ```python
 resultado = dataframeit(df, Model, PROMPT, track_tokens=True)
 
-# Exemplo: preços Gemini 2.0 Flash
-preco_input = 0.075 / 1_000_000   # $0.075 por 1M tokens
-preco_output = 0.30 / 1_000_000   # $0.30 por 1M tokens
+# Exemplo: preços do gpt-6-luna
+preco_input = 0.10 / 1_000_000    # $0.10 por 1M tokens
+preco_output = 0.50 / 1_000_000   # $0.50 por 1M tokens
 
 custo_input = resultado['_input_tokens'].sum() * preco_input
 custo_output = resultado['_output_tokens'].sum() * preco_output
@@ -210,7 +210,7 @@ resultado = dataframeit(
     PROMPT,
     parallel_requests=1,      # Sequencial
     rate_limit_delay=1.5,     # Delay alto
-    model='gemini-3-flash-preview', # Modelo barato
+    model='gpt-6-luna',       # Modelo barato
     track_tokens=True
 )
 ```

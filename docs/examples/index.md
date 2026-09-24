@@ -123,14 +123,14 @@ cd dataframeit
 ### 2. Instale as Dependências
 
 ```bash
-pip install dataframeit[google]
+pip install dataframeit[openai]
 pip install jupyter
 ```
 
 ### 3. Configure sua API Key
 
 ```bash
-export GOOGLE_API_KEY="sua-chave"
+export OPENAI_API_KEY="sua-chave"
 ```
 
 ### 4. Execute o Jupyter

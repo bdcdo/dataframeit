@@ -4,21 +4,21 @@
 
 O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs oficiais de ferramentas locais. Escolha o provider que deseja usar:
 
-=== "Google Gemini (Recomendado)"
-
-    ```bash
-    pip install dataframeit[google]
-    ```
-
-    Modelos: `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-2.5-pro`
-
-=== "OpenAI"
+=== "OpenAI (Padrão)"
 
     ```bash
     pip install dataframeit[openai]
     ```
 
-    Modelos: `gpt-5.2`, `gpt-5.2-mini`, `gpt-4.1`
+    Modelos: `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`
+
+=== "Google Gemini"
+
+    ```bash
+    pip install dataframeit[google]
+    ```
+
+    Modelos: `gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`
 
 === "Anthropic"
 
@@ -26,7 +26,7 @@ O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs o
     pip install dataframeit[anthropic]
     ```
 
-    Modelos: `claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`
+    Modelos: `claude-sonnet-5`, `claude-opus-5-5`, `claude-haiku-4-5`
 
 === "Codex (Experimental)"
 
@@ -51,7 +51,7 @@ O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs o
 Se você usa Polars ao invés de Pandas:
 
 ```bash
-pip install dataframeit[google,polars]
+pip install dataframeit[openai,polars]
 ```
 
 ## Com Excel (Opcional)
@@ -66,14 +66,6 @@ pip install dataframeit[excel]
 
 Configure as credenciais correspondentes ao seu provider:
 
-=== "Google Gemini"
-
-    ```bash
-    export GOOGLE_API_KEY="sua-chave-google"
-    ```
-
-    Obtenha sua chave em: [Google AI Studio](https://aistudio.google.com/apikey)
-
 === "OpenAI"
 
     ```bash
@@ -81,6 +73,14 @@ Configure as credenciais correspondentes ao seu provider:
     ```
 
     Obtenha sua chave em: [OpenAI Platform](https://platform.openai.com/api-keys)
+
+=== "Google Gemini"
+
+    ```bash
+    export GOOGLE_API_KEY="sua-chave-google"
+    ```
+
+    Obtenha sua chave em: [Google AI Studio](https://aistudio.google.com/apikey)
 
 === "Anthropic"
 

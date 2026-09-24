@@ -50,6 +50,18 @@ _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth
 # e convenções comuns de ETL ('content', 'content_text').
 TEXT_COLUMN_CANDIDATES = ('texto', 'text', 'decisao', 'content', 'content_text')
 
+# Modelo usado quando o usuário escolhe o provider sem escolher o modelo. Mandar
+# o modelo de um provider para outro falha em toda linha, por isso o default
+# acompanha o provider. 'codex' e 'claude_code' ficam de fora: com model=None,
+# o runtime de cada um escolhe o modelo.
+DEFAULT_MODELS = {
+    'openai': 'gpt-6-luna',
+    'google_genai': 'gemini-3.8-flash',
+    'anthropic': 'claude-sonnet-5',
+    'groq': 'openai/gpt-oss-120b',
+}
+_RUNTIME_DEFAULT_PROVIDERS = frozenset({'codex', 'claude_code'})
+
 
 # Limites aproximados de requisições por minuto por provedor de busca.
 _SEARCH_PROVIDER_RATE_LIMITS = {
@@ -440,8 +452,8 @@ def dataframeit(
     perguntas=None,  # Deprecated: use 'questions'
     resume=True,
     reprocess_columns=None,
-    model='gemini-3-flash-preview',
-    provider='google_genai',
+    model=None,
+    provider='openai',
     status_column=None,
     text_column: str | None = None,
     api_key=None,
@@ -481,8 +493,9 @@ def dataframeit(
         resume: Se True, continua de onde parou.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
-        model: Nome do modelo LLM.
-        provider: Provider do LangChain ('google_genai', 'openai', 'anthropic', etc),
+        model: Nome do modelo LLM. Se None, usa o default do provider em
+            DEFAULT_MODELS; com 'codex' e 'claude_code', o runtime escolhe.
+        provider: Provider do LangChain ('openai', 'google_genai', 'anthropic', etc),
             'claude_code' ou 'codex'. Codex usa o SDK Python oficial.
         status_column: Coluna para rastrear progresso.
         text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
@@ -547,6 +560,14 @@ def dataframeit(
 
     if prompt is None:
         raise ValueError("Parâmetro 'prompt' é obrigatório")
+
+    if model is None and provider not in _RUNTIME_DEFAULT_PROVIDERS:
+        if provider not in DEFAULT_MODELS:
+            raise ValueError(
+                f"provider='{provider}' não tem modelo padrão; informe 'model'. "
+                f"Providers com modelo padrão: {', '.join(DEFAULT_MODELS)}."
+            )
+        model = DEFAULT_MODELS[provider]
 
     # Se {texto} não estiver no template, adiciona automaticamente ao final
     if '{texto}' not in prompt:

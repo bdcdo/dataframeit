@@ -13,8 +13,8 @@ def dataframeit(
     prompt,
     resume=True,
     reprocess_columns=None,
-    model='gemini-3-flash-preview',
-    provider='google_genai',
+    model=None,
+    provider='openai',
     status_column=None,
     text_column=None,
     api_key=None,
@@ -58,8 +58,8 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | str | `'gemini-3-flash-preview'` | LLM model name |
-| `provider` | str | `'google_genai'` | Provider identifier; `codex` uses the official SDK instead of LangChain |
+| `model` | str | `None` | LLM model name; `None` uses the provider's default model, listed in [Providers](../guides/providers.md) |
+| `provider` | str | `'openai'` | Provider identifier; `codex` uses the official SDK instead of LangChain |
 | `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` |
 | `model_kwargs` | dict | `None` | Extra parameters; with `codex`, only `effort` is accepted |
 
@@ -135,7 +135,7 @@ result = dataframeit(
     "Analyze the sentiment.",
     text_column='text',
     provider='openai',
-    model='gpt-5.2-mini',
+    model='gpt-6-luna',
     parallel_requests=5,
     rate_limit_delay=0.5,
     max_retries=5
