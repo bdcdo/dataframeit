@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from langchain_core.exceptions import OutputParserException
 from pydantic import ValidationError
 
 from .errors import ProviderRejectedOutputError, retry_with_backoff
@@ -155,14 +156,22 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
             result = structured_llm.invoke(_messages(prompt, correction))
         except ValidationError as error:
             # O SDK da OpenAI valida a resposta dentro da chamada (json_schema e
-            # Responses API) e levanta antes de devolver a mensagem bruta; o erro
-            # traz o trecho recusado, e o uso dessa tentativa não chega até aqui.
-            _request_correction(pydantic_model, None, error, correction)
+            # Responses API) e levanta antes de devolver a mensagem. Só a validação
+            # do próprio modelo é resposta recusada: um ValidationError de outro
+            # modelo, como a configuração do provider, segue como erro comum.
+            if error.title != pydantic_model.__name__:
+                raise
+            raw_text, usage = _sdk_rejected_response(error)
+            _add_usage(usage_total, usage)
+            _request_correction(pydantic_model, None, error, correction, raw_text=raw_text)
+        except OutputParserException as error:
+            # Resposta sem tool call quando o modelo não aceita tool_choice forçado,
+            # ou com thinking na Anthropic: o parser levanta dentro da chamada.
+            _request_correction(pydantic_model, None, error, correction, raw_text=str(error.llm_output or ''))
 
         raw_message = result.get('raw')
         if raw_message is not None and getattr(raw_message, 'usage_metadata', None):
-            for key, value in _parse_usage_metadata(raw_message.usage_metadata).items():
-                usage_total[key] = usage_total.get(key, 0) + (value or 0)
+            _add_usage(usage_total, _parse_usage_metadata(raw_message.usage_metadata))
 
         if result.get('parsing_error'):
             _request_correction(pydantic_model, raw_message, result['parsing_error'], correction)
@@ -173,6 +182,51 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
         return {'data': parsed.model_dump(), 'usage': dict(usage_total) or None}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
+
+
+def _add_usage(total: dict, usage: dict | None) -> None:
+    for key, value in (usage or {}).items():
+        total[key] = total.get(key, 0) + (value or 0)
+
+
+def _sdk_rejected_response(error) -> tuple[str, dict | None]:
+    """Texto e uso da resposta que o SDK da OpenAI recusou, lidos da resposta HTTP.
+
+    O langchain-openai anexa a resposta HTTP à exceção (`error.response`). Sem
+    ela, ou com corpo em formato desconhecido, devolve texto vazio e uso None.
+    """
+    response = getattr(error, 'response', None)
+    try:
+        body = response.json()
+    except Exception:
+        return '', None
+    if not isinstance(body, dict):
+        return '', None
+    usage = body.get('usage') or {}
+    if 'choices' in body:
+        choices = body.get('choices') or [{}]
+        text = (choices[0].get('message') or {}).get('content') or ''
+        input_details = usage.get('prompt_tokens_details') or {}
+        output_details = usage.get('completion_tokens_details') or {}
+        tokens = (usage.get('prompt_tokens'), usage.get('completion_tokens'))
+    else:
+        text = ''.join(
+            part.get('text', '')
+            for item in body.get('output') or [] if item.get('type') == 'message'
+            for part in item.get('content') or [] if isinstance(part, dict)
+        )
+        input_details = usage.get('input_tokens_details') or {}
+        output_details = usage.get('output_tokens_details') or {}
+        tokens = (usage.get('input_tokens'), usage.get('output_tokens'))
+    if tokens == (None, None):
+        return text, None
+    return text, {
+        'input_tokens': tokens[0] or 0,
+        'cached_input_tokens': input_details.get('cached_tokens') or 0,
+        'output_tokens': tokens[1] or 0,
+        'total_tokens': usage.get('total_tokens') or 0,
+        'reasoning_tokens': output_details.get('reasoning_tokens') or 0,
+    }
 
 
 def _messages(prompt: str, correction: dict):
@@ -251,25 +305,26 @@ def _format_validation_error(error: ValidationError) -> str:
     return '\n'.join(lines)
 
 
-def _request_correction(pydantic_model, raw_message, error, correction: dict):
+def _request_correction(pydantic_model, raw_message, error, correction: dict, raw_text: str = ''):
     """Prepara o pedido de correção da tentativa seguinte e levanta ProviderRejectedOutputError.
 
-    A mensagem da exceção leva só os caminhos dos campos, sem trecho da resposta:
-    o texto analisado pode ter números como '401' ou '429', que a classificação
-    de erro por texto leria como erro HTTP.
+    A mensagem da exceção leva o caminho e a regra de cada erro, sem o valor
+    recusado: é ela que fica em `_error_details`, e o texto analisado pode ter
+    dados que não devem ir para o log. A classificação da exceção é pela classe.
     """
-    payload, raw_text = _raw_payload(raw_message)
+    payload, raw_from_message = _raw_payload(raw_message)
+    raw_text = raw_text or raw_from_message
     validation_error = _validation_error_of(error, pydantic_model, payload)
     if validation_error is not None:
         detail = _format_validation_error(validation_error)
-        locations = sorted({
-            '.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'
-            for item in validation_error.errors()
-        })
-        summary = f"{validation_error.error_count()} erro(s) em {', '.join(locations[:_MAX_ERRORS])}"
+        rules = [
+            f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: {item.get('msg', '')}"
+            for item in validation_error.errors()[:_MAX_ERRORS]
+        ]
+        summary = f"{validation_error.error_count()} erro(s): {'; '.join(rules)}"
     elif error is not None:
         detail = str(error)[:_MAX_ERROR_TEXT]
-        summary = 'resposta não é JSON válido'
+        summary = f"resposta fora do esquema ({type(error).__name__})"
     else:
         detail = 'A resposta não veio no formato estruturado pedido.'
         summary = 'Structured output retornou None'

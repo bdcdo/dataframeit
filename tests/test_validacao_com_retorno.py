@@ -264,9 +264,75 @@ class TestOpenAIReal:
             resultado = rodar([invalido, json.dumps({"aplicou": True, "trecho": "x"})], responses_api)
         assert resultado["data"] == {"aplicou": True, "trecho": "x"}
         assert len(requisicoes) == 2
+        # A resposta recusada sai da resposta HTTP anexada à exceção do SDK.
         segunda = self._mensagens(requisicoes[1])
+        assert [m["role"] for m in segunda] == ["user", "assistant", "user"]
+        assert invalido in json.dumps(segunda[1]["content"], ensure_ascii=False).replace('\\"', '"')
+        correcao = json.dumps(segunda[2]["content"], ensure_ascii=False)
+        assert "(resposta inteira): Value error, Aplicar exige trecho. Valor recusado:" in correcao
+        # As duas tentativas foram cobradas e entram no uso.
+        assert resultado["usage"]["input_tokens"] == 20
+        assert resultado["usage"]["output_tokens"] == 10
+
+
+class TestCapturaNoInvoke:
+    def _chamar_levantando(self, excecoes_e_respostas, max_retries=3):
+        return _chamar(excecoes_e_respostas, max_retries=max_retries)
+
+    def test_validation_error_de_outro_modelo_nao_e_resposta_recusada(self):
+        class ImageConfig(BaseModel):
+            aspect_ratio: str
+
+        try:
+            ImageConfig.model_validate({"aspect_ratio": 16})
+        except ValidationError as erro:
+            de_configuracao = erro
+        with pytest.warns(UserWarning), pytest.raises(ValidationError):
+            _, structured = self._chamar_levantando([de_configuracao] * 3)
+
+    def test_recusa_do_sdk_sem_resposta_anexada_vai_junto_do_prompt(self):
+        try:
+            ComEvidencia.model_validate_json(INVALIDO)
+        except ValidationError as erro:
+            do_sdk = erro
+        with pytest.warns(UserWarning):
+            resultado, structured = _chamar([do_sdk, _sucesso()])
+        segunda = _chamada(structured, 1)
         assert len(segunda) == 1
-        texto = json.dumps(segunda[0]["content"], ensure_ascii=False)
-        assert "Leia: TEXTO" in texto
-        assert "Aplicar exige trecho." in texto
-        assert "Rcl 404" in texto
+        assert "- (resposta inteira): Value error, Aplicar exige trecho. Valor recusado:" in segunda[0][1]
+        assert resultado["usage"]["input_tokens"] == 20
+
+    def test_output_parser_exception_no_invoke_pede_correcao(self):
+        erro = OutputParserException("sem tool call", llm_output="texto solto")
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([erro, _sucesso()])
+        segunda = _chamada(structured, 1)
+        assert segunda[1] == ("ai", "texto solto")
+        assert "sem tool call" in segunda[2][1]
+
+    def test_recusa_sem_bruto_nao_herda_a_resposta_anterior(self):
+        try:
+            ComEvidencia.model_validate_json(INVALIDO)
+        except ValidationError as erro:
+            do_sdk = erro
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([_falha(INVALIDO), do_sdk, _sucesso()])
+        assert len(_chamada(structured, 2)) == 1
+
+
+class TestDiagnostico:
+    def test_error_details_diz_a_regra_sem_o_valor(self):
+        bruto = json.dumps({"aplicou": True, "processo": "Rcl 401"})
+        with pytest.raises(ProviderRejectedOutputError) as info:
+            _chamar([_falha(bruto)], max_retries=1)
+        assert "(resposta inteira): Value error, Aplicar exige trecho." in str(info.value)
+        assert "401" not in str(info.value)
+
+    def test_erro_que_nao_e_de_validacao_diz_o_tipo(self):
+        with pytest.raises(ProviderRejectedOutputError, match=r"fora do esquema \(OutputParserException\)"):
+            _chamar([_falha("{quebrado", erro=OutputParserException("recusa"))], max_retries=1)
+
+    def test_texto_bruto_do_erro_tem_teto(self):
+        with pytest.warns(UserWarning):
+            _, structured = _chamar([_falha("{x", erro="e" * 5000), _sucesso()])
+        assert len(_chamada(structured, 1)[2][1]) < 2300

@@ -74,7 +74,7 @@ Tentativa 6: falha → marca como erro
 
 Nos providers do LangChain, a tentativa seguinte leva ao modelo a resposta recusada e a lista de erros, cada um com o caminho do campo e o valor recusado, e pede que ele responda de novo corrigindo esses pontos. Repetir o mesmo prompt tende a repetir o mesmo erro. Quando a resposta não é JSON, o pedido leva o texto do erro do parser.
 
-Na OpenAI, o SDK valida a resposta dentro da chamada e não devolve a mensagem bruta: o pedido de correção vai junto do prompt, com os valores recusados, e os tokens dessa tentativa não entram na contagem da linha. Nos demais providers, quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens`, porque também são cobrados; se todas falham, a linha fica com status `error` e sem contagem de tokens.
+Na OpenAI, o SDK valida a resposta dentro da chamada e levanta o erro antes de devolver a mensagem; a resposta recusada e os tokens são lidos da resposta HTTP anexada ao erro. Quando nenhuma resposta bruta está disponível, o pedido de correção vai junto do prompt, com os valores recusados. Quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens`, porque também são cobrados; se todas falham, a linha fica com status `error`, sem contagem de tokens, e `_error_details` diz o campo e a regra de cada erro.
 
 ### Erros Permanentes (sem retry)
 
