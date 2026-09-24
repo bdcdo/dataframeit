@@ -72,7 +72,7 @@ resultado = dataframeit(
     provider='openai',
     model='gpt-5.2',
     model_kwargs={
-        'temperature': 0.2
+        'reasoning_effort': 'medium'
     }
 )
 ```
@@ -342,6 +342,6 @@ resultado = dataframeit(
 
 | Parâmetro | Descrição | Providers |
 |-----------|-----------|-----------|
-| `temperature` | Criatividade (0-1) | Todos |
-| `top_p` | Nucleus sampling | Todos |
+| `temperature` | Criatividade. O dataframeit não envia valor padrão | Depende do modelo: vários atuais rejeitam (ex.: Claude Sonnet 5, OpenAI GPT-6 com raciocínio e série o) |
+| `top_p` | Nucleus sampling | Depende do modelo, como `temperature` |
 | `max_tokens` | Limite de saída | Todos |

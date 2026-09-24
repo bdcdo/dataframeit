@@ -178,7 +178,7 @@ resultado = dataframeit(
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='gpt-5.2-mini',
+    model='gpt-4.1-mini',
     model_kwargs={'temperature': 0.2}
 )
 ```
