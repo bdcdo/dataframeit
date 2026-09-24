@@ -105,14 +105,14 @@ DataFrameIt keeps one `codex app-server` per DataFrame run and opens one ephemer
 
 ## Claude Code
 
-The `claude_code` provider uses the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), which runs the Claude Code CLI. Authentication is Claude Code's own (a login done in the CLI or `ANTHROPIC_API_KEY`); the `api_key` parameter is not used.
+The `claude_code` provider uses the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), which runs the Claude Code CLI. Authentication is Claude Code's own: the credentials of a login done with a Claude Code installation on the machine (the CLI shipped with the extra is not on `PATH`), or `ANTHROPIC_API_KEY`. The `api_key` parameter is ignored.
 
 ```bash
 pip install dataframeit[claude-code]
 ```
 
 ```python
-resultado = dataframeit(
+result = dataframeit(
     df,
     Model,
     PROMPT,
@@ -122,7 +122,7 @@ resultado = dataframeit(
 )
 ```
 
-`model_kwargs` accepts `max_turns` (default 1), `max_budget_usd` (default 0.50, a spending cap per row) and `effort`. `use_search=True` is not supported.
+In `model_kwargs`, the provider reads `max_turns` (default 1), `max_budget_usd` (default 0.50) and `effort`; other keys are ignored. `max_budget_usd` caps the spending of each attempt: since an empty or off-schema answer is retried, a row can spend up to `max_retries` times that value. `use_search=True` is not supported.
 
 Row text is treated as untrusted content. The run has no tools, no user or project settings and uses `--strict-mcp-config`, so MCP servers and `permissions.allow` rules configured in Claude Code do not reach it. A row that exceeds `max_budget_usd` or `max_turns` ends in a final error, with no retry.
 

@@ -44,7 +44,7 @@ O DataFrameIt integra múltiplos provedores de LLM por LangChain ou pelos SDKs o
     pip install dataframeit[claude-code]
     ```
 
-    O extra instala o Claude Agent SDK, que traz o Claude Code CLI. A autenticação é a do próprio Claude Code (login no CLI ou `ANTHROPIC_API_KEY`). Ver [Provedores](../guides/providers.md#claude-code).
+    O extra instala o Claude Agent SDK, que traz o Claude Code CLI. A autenticação é a do próprio Claude Code: as credenciais de um login feito numa instalação do Claude Code na máquina, ou `ANTHROPIC_API_KEY`. Ver [Provedores](../guides/providers.md#claude-code).
 
 === "Todos os Providers"
 

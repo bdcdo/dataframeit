@@ -198,7 +198,7 @@ resultado = dataframeit(
 
 O provider `codex` aceita somente `effort` em `model_kwargs` e não suporta `use_search=True`. A integração desativa busca web, shell e servidores MCP, nega aprovações e usa sandbox somente leitura para bloquear escrita; o runtime ainda pode apresentar utilitários internos, como `apply_patch`, sem conceder permissão para alterar arquivos. Consulte [Instalação](../getting-started/installation.md) para os requisitos de runtime e autenticação.
 
-O provider `claude_code` usa a autenticação do Claude Code (login no CLI ou `ANTHROPIC_API_KEY`), aceita `max_turns`, `max_budget_usd` e `effort` em `model_kwargs` e não suporta `use_search=True`. Roda sem ferramentas e sem os settings e servidores MCP do usuário. Ver [Provedores](../guides/providers.md#claude-code).
+O provider `claude_code` usa a autenticação do Claude Code (credenciais de um login do Claude Code na máquina, ou `ANTHROPIC_API_KEY`) e ignora `api_key`. Em `model_kwargs`, lê só `max_turns`, `max_budget_usd` (teto por tentativa) e `effort`. Não suporta `use_search=True`. Roda sem ferramentas e sem os settings e servidores MCP do usuário. Ver [Provedores](../guides/providers.md#claude-code).
 
 ---
 

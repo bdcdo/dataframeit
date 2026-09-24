@@ -159,7 +159,7 @@ class ModeloInvalido(BaseModel):
 
 ## Logging e Debug
 
-A ordem de execução, as dependências, a avaliação de cada condição e os campos pulados saem em nível DEBUG nos loggers `dataframeit.conditional` e `dataframeit.agent`:
+A ordem de execução, as dependências e a avaliação de cada condição saem em nível DEBUG, e os campos pulados, em INFO, nos loggers `dataframeit.conditional` e `dataframeit.agent`:
 
 ```python
 import logging

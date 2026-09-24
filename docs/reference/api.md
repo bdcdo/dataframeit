@@ -64,8 +64,8 @@ def dataframeit(
 |-----------|------|--------|-----------|
 | `model` | str \| None | `None` | Nome do modelo LLM; `None` usa o modelo padrão do provider, listado em [Provedores](../guides/providers.md) |
 | `provider` | str | `'openai'` | Identificador do provider; `claude_code` e `codex` usam os SDKs oficiais em vez de LangChain (ver [Provedores](../guides/providers.md)) |
-| `api_key` | str | `None` | API key (usa env var se None); não aceito com `provider='codex'` |
-| `model_kwargs` | dict | `None` | Parâmetros extras; com `claude_code`, `max_turns`, `max_budget_usd` e `effort`; com `codex`, apenas `effort` |
+| `api_key` | str | `None` | API key (usa env var se None); não aceito com `provider='codex'` e ignorado com `provider='claude_code'` |
+| `model_kwargs` | dict | `None` | Parâmetros extras; com `claude_code`, só `max_turns`, `max_budget_usd` e `effort` são lidos, e o resto é ignorado; com `codex`, apenas `effort` é aceito |
 
 #### Resiliência
 
@@ -96,9 +96,9 @@ def dataframeit(
 | `search_depth` | str | `'basic'` | `'basic'` (1 crédito) ou `'advanced'` (2 créditos); só Tavily |
 | `max_search_calls` | int | `10` | Máximo de buscas por execução do agente; as seguintes são bloqueadas e o agente responde com o que encontrou |
 | `search_groups` | dict | `None` | Grupos de campos que compartilham uma busca: `{"grupo": {"fields": [...], "prompt": ..., "max_results": ..., "search_depth": ..., "max_search_calls": ...}}` |
-| `save_trace` | bool \| str | `None` | Salva o trace do agente: `True`/`"full"` ou `"minimal"`; gera `_trace` ou `_trace_{campo}` |
+| `save_trace` | bool \| str | `None` | Salva o trace do agente: `True`/`"full"` ou `"minimal"`; requer `use_search=True`; gera `_trace`, `_trace_{campo}` ou `_trace_{grupo}` |
 
-Os campos do modelo aceitam configuração de busca própria em `json_schema_extra` (`prompt`, `prompt_replace`, `prompt_append`, `search_depth`, `max_results`, `max_search_calls`, `condition`, `depends_on`). Ver [Busca Web](../guides/web-search.md) e [Campos Condicionais](../examples/conditional-fields.md).
+Com `use_search=True` e `search_per_field=True`, os campos do modelo aceitam configuração de busca própria em `json_schema_extra` (`prompt`, `prompt_replace`, `prompt_append`, `search_depth`, `max_results`, `max_search_calls`, `condition`, `depends_on`). Ver [Busca Web](../guides/web-search.md) e [Campos Condicionais](../examples/conditional-fields.md).
 
 ### Retorno
 

@@ -101,7 +101,7 @@ O DataFrameIt mantém um `codex app-server` por execução do DataFrame e abre u
 
 ## Claude Code
 
-O provider `claude_code` usa o [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), que executa o Claude Code CLI. A autenticação é a do próprio Claude Code (login feito no CLI ou `ANTHROPIC_API_KEY`); o parâmetro `api_key` não é usado.
+O provider `claude_code` usa o [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), que executa o Claude Code CLI. A autenticação é a do próprio Claude Code: as credenciais de um login feito numa instalação do Claude Code na máquina (o CLI que o extra traz não fica no `PATH`), ou `ANTHROPIC_API_KEY`. O parâmetro `api_key` é ignorado.
 
 ```bash
 pip install dataframeit[claude-code]
@@ -118,7 +118,7 @@ resultado = dataframeit(
 )
 ```
 
-`model_kwargs` aceita `max_turns` (padrão 1), `max_budget_usd` (padrão 0.50, teto de gasto por linha) e `effort`. `use_search=True` não é suportado.
+Em `model_kwargs`, o provider lê `max_turns` (padrão 1), `max_budget_usd` (padrão 0.50) e `effort`; outras chaves são ignoradas. `max_budget_usd` é o teto de gasto de cada tentativa: como uma resposta vazia ou fora do schema é tentada de novo, uma linha pode gastar até `max_retries` vezes esse valor. `use_search=True` não é suportado.
 
 O texto das linhas é tratado como conteúdo não confiável. A execução roda sem ferramentas, sem os settings de usuário e de projeto e com `--strict-mcp-config`, de modo que servidores MCP e regras `permissions.allow` configurados no Claude Code não chegam a ela. Uma linha que estoura `max_budget_usd` ou `max_turns` termina em erro definitivo, sem nova tentativa.
 

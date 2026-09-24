@@ -46,7 +46,7 @@ textos = [
     "Empresa XYZ LTDA, CNPJ 12.345.678/0001-90",
 ]
 
-resultado = dataframeit(
+result = dataframeit(
     textos,
     PessoaInfo,
     "Extract the person's or company's information: {texto}",
@@ -159,7 +159,7 @@ class ModeloInvalido(BaseModel):
 
 ## Logging and Debugging
 
-The execution order, the dependencies, each condition's evaluation and the skipped fields are logged at DEBUG level on the `dataframeit.conditional` and `dataframeit.agent` loggers:
+The execution order, the dependencies and each condition's evaluation are logged at DEBUG level, and the skipped fields at INFO, on the `dataframeit.conditional` and `dataframeit.agent` loggers:
 
 ```python
 import logging
