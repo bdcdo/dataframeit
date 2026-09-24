@@ -8,16 +8,16 @@ Suporta múltiplos provedores de busca:
 import logging
 import time
 from copy import copy
-from typing import Any, Dict, Optional
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 from pydantic import create_model
 
-from .llm import LLMConfig, build_prompt, _create_langchain_llm, _parse_usage_metadata
 from .errors import retry_with_backoff
+from .llm import LLMConfig, _create_langchain_llm, _parse_usage_metadata, build_prompt
 from .search import get_provider
 from .utils import get_nested_pydantic_models, is_list_of_pydantic_model
+
+logger = logging.getLogger(__name__)
 
 # Chaves de configuração per-field reconhecidas em json_schema_extra
 _FIELD_CONFIG_KEYS = ('prompt', 'prompt_replace', 'prompt_append', 'search_depth', 'max_results')
@@ -205,7 +205,7 @@ def _enrich_list_items_with_search(
     search_fields: list,
     text: str,
     config: LLMConfig,
-    save_trace: Optional[str] = None
+    save_trace: str | None = None
 ) -> tuple:
     """Enriquece cada item de uma lista com buscas específicas.
 
@@ -336,7 +336,7 @@ def call_agent(
     pydantic_model,
     user_prompt: str,
     config: LLMConfig,
-    save_trace: Optional[str] = None
+    save_trace: str | None = None
 ) -> dict:
     """Processa texto usando agente LangChain com busca web.
 
@@ -406,7 +406,7 @@ def _run_nested_searches(
     text: str,
     nested_fields: list,
     config: LLMConfig,
-    save_trace: Optional[str] = None
+    save_trace: str | None = None
 ) -> tuple:
     """Executa buscas para campos configurados em modelos aninhados.
 
@@ -472,7 +472,7 @@ def call_agent_per_field(
     pydantic_model,
     user_prompt: str,
     config: LLMConfig,
-    save_trace: Optional[str] = None
+    save_trace: str | None = None
 ) -> dict:
     """Processa cada campo do modelo Pydantic com agente separado.
 
@@ -652,7 +652,7 @@ def call_agent_per_group(
     pydantic_model,
     user_prompt: str,
     config: LLMConfig,
-    save_trace: Optional[str] = None
+    save_trace: str | None = None
 ) -> dict:
     """Processa campos agrupados com agente compartilhado e campos isolados individualmente.
 
@@ -889,7 +889,7 @@ def _apply_group_overrides(config: LLMConfig, group_config) -> LLMConfig:
     return new_config
 
 
-def _extract_usage(agent_result: dict, provider, search_config, search_tool_name: str) -> Dict[str, Any]:
+def _extract_usage(agent_result: dict, provider, search_config, search_tool_name: str) -> dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 
     Args:
@@ -901,7 +901,6 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
     Returns:
         Dicionário com tokens e créditos de busca.
     """
-    from .search import SearchProvider
 
     usage = _empty_usage(search_provider=provider.name)
 

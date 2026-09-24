@@ -7,9 +7,9 @@ import asyncio
 import concurrent.futures
 import json
 
+from .errors import retry_with_backoff
 from .llm import LLMConfig, _parse_usage_metadata, build_prompt
 from .utils import check_dependency, parse_json
-from .errors import retry_with_backoff
 
 
 def _build_json_system_prompt(json_schema: dict) -> str:
@@ -43,7 +43,7 @@ async def _async_query(prompt: str, options):
         Tupla (response_text, usage), em que ``usage`` é o dict bruto de
         ``ResultMessage.usage`` ou None quando o SDK não o informa.
     """
-    from claude_agent_sdk import query, AssistantMessage, ResultMessage, TextBlock
+    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
 
     response_text = ""
     usage = None

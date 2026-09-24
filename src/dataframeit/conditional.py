@@ -1,12 +1,12 @@
 """Sistema de condicionais para execução condicional de campos."""
 
 import logging
-from typing import Any, Dict, List, Set, Tuple, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def get_nested_value(data: Dict[str, Any], field_path: str) -> Any:
+def get_nested_value(data: dict[str, Any], field_path: str) -> Any:
     """Obtém valor de um campo potencialmente aninhado.
 
     Args:
@@ -43,7 +43,7 @@ def get_nested_value(data: Dict[str, Any], field_path: str) -> Any:
 
 def evaluate_condition(
     condition: Any,
-    field_data: Dict[str, Any],
+    field_data: dict[str, Any],
     field_name: str
 ) -> bool:
     """Avalia se uma condição é satisfeita.
@@ -147,9 +147,9 @@ def evaluate_condition(
 
 def check_dependencies_exist(
     field_name: str,
-    depends_on: List[str],
-    all_fields: Set[str]
-) -> List[str]:
+    depends_on: list[str],
+    all_fields: set[str]
+) -> list[str]:
     """Verifica se todas as dependências existem no modelo.
 
     Args:
@@ -172,8 +172,8 @@ def check_dependencies_exist(
 
 
 def detect_circular_dependencies(
-    dependencies: Dict[str, List[str]]
-) -> Optional[List[str]]:
+    dependencies: dict[str, list[str]]
+) -> list[str] | None:
     """Detecta dependências circulares usando DFS.
 
     Args:
@@ -194,7 +194,7 @@ def detect_circular_dependencies(
     state = {field: 0 for field in dependencies}
     path = []
 
-    def dfs(field: str) -> Optional[List[str]]:
+    def dfs(field: str) -> list[str] | None:
         if state[field] == 2:  # Já processado
             return None
         if state[field] == 1:  # Ciclo detectado
@@ -226,7 +226,7 @@ def detect_circular_dependencies(
     return None
 
 
-def topological_sort(dependencies: Dict[str, List[str]]) -> List[str]:
+def topological_sort(dependencies: dict[str, list[str]]) -> list[str]:
     """Ordena campos baseado em dependências usando ordenação topológica.
 
     Args:
@@ -288,7 +288,7 @@ def topological_sort(dependencies: Dict[str, List[str]]) -> List[str]:
     return result
 
 
-def _resolve_depends_on(field_name: str, config: dict) -> List[str]:
+def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
     """Resolve as dependências de um campo a partir de sua configuração.
 
     Regras:
@@ -312,7 +312,7 @@ def _resolve_depends_on(field_name: str, config: dict) -> List[str]:
             )
         return []
 
-    derived: List[str] = []
+    derived: list[str] = []
     if isinstance(condition, dict):
         field_path = condition.get('field')
         if field_path:
@@ -333,8 +333,8 @@ def _resolve_depends_on(field_name: str, config: dict) -> List[str]:
 
 def get_field_execution_order(
     pydantic_model,
-    field_configs: Dict[str, dict]
-) -> Tuple[List[str], Dict[str, List[str]]]:
+    field_configs: dict[str, dict]
+) -> tuple[list[str], dict[str, list[str]]]:
     """Determina ordem de execução dos campos baseado em dependências.
 
     Dependências são derivadas automaticamente de `condition` (quando dict)
@@ -376,7 +376,7 @@ def get_field_execution_order(
 def should_skip_field(
     field_name: str,
     field_config: dict,
-    field_data: Dict[str, Any]
+    field_data: dict[str, Any]
 ) -> bool:
     """Verifica se um campo deve ser pulado baseado em suas condições.
 

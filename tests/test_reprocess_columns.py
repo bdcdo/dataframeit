@@ -1,12 +1,13 @@
 """Testes para a funcionalidade reprocess_columns."""
 
 import warnings
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 from pydantic import BaseModel
-from unittest.mock import patch, MagicMock
 
-from dataframeit.core import dataframeit, _get_processing_indices
+from dataframeit.core import dataframeit
 
 
 class SimpleModel(BaseModel):
@@ -82,7 +83,7 @@ def test_reprocess_columns_processes_all_rows():
 
     with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
         with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
+            dataframeit(
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",
@@ -184,7 +185,7 @@ def test_reprocess_columns_does_not_skip_processed_rows():
 
     with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
         with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
+            dataframeit(
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",
@@ -250,7 +251,7 @@ def test_reprocess_columns_with_existing_columns_no_warning():
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
 
-                result = dataframeit(
+                dataframeit(
                     df,
                     questions=SimpleModel,
                     prompt="Teste {texto}",
@@ -320,7 +321,7 @@ def test_reprocess_columns_resume_after_interrupt():
 
     with patch("dataframeit.core.call_langchain", side_effect=mock_llm_normal):
         with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
+            dataframeit(
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",

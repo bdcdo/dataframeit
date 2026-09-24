@@ -6,13 +6,13 @@ import pytest
 from pydantic import BaseModel, Field
 
 from dataframeit.conditional import (
-    get_nested_value,
-    evaluate_condition,
     check_dependencies_exist,
     detect_circular_dependencies,
-    topological_sort,
+    evaluate_condition,
     get_field_execution_order,
+    get_nested_value,
     should_skip_field,
+    topological_sort,
 )
 
 
@@ -141,7 +141,9 @@ class TestEvaluateCondition:
     def test_callable_condition(self):
         """Testa condição callable."""
         data = {'idade': 25}
-        condition = lambda d: d.get('idade', 0) >= 18
+        def condition(d):
+            return d.get('idade', 0) >= 18
+
         assert evaluate_condition(condition, data, 'pode_votar') is True
 
         data = {'idade': 15}

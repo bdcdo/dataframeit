@@ -1,11 +1,11 @@
 """Testes para suporte a múltiplos provedores de busca (Tavily e Exa)."""
 
-import pytest
-from unittest.mock import patch, MagicMock
 import os
 import sys
 import types
+from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import BaseModel, Field
 
 
@@ -20,7 +20,7 @@ class SampleModel(BaseModel):
 
 def test_get_provider_tavily():
     """Verifica que get_provider retorna TavilyProvider."""
-    from dataframeit.search import get_provider, TavilyProvider
+    from dataframeit.search import TavilyProvider, get_provider
 
     provider = get_provider("tavily")
     assert isinstance(provider, TavilyProvider)
@@ -29,7 +29,7 @@ def test_get_provider_tavily():
 
 def test_get_provider_exa():
     """Verifica que get_provider retorna ExaProvider."""
-    from dataframeit.search import get_provider, ExaProvider
+    from dataframeit.search import ExaProvider, get_provider
 
     provider = get_provider("exa")
     assert isinstance(provider, ExaProvider)
@@ -240,8 +240,9 @@ def test_validate_search_dependencies_invalid_provider():
 
 def test_search_provider_default():
     """Verifica que search_provider='tavily' é o padrão."""
-    from dataframeit.core import dataframeit
     import inspect
+
+    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters['search_provider'].default == "tavily"
@@ -249,8 +250,9 @@ def test_search_provider_default():
 
 def test_search_provider_invalid_raises():
     """Verifica que search_provider inválido gera erro."""
-    from dataframeit.core import dataframeit
     import pandas as pd
+
+    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["teste"]})
 
@@ -317,8 +319,8 @@ def test_create_tool_exa(monkeypatch):
 def test_extract_usage_includes_provider_name():
     """Verifica que _extract_usage inclui nome do provider."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -340,8 +342,8 @@ def test_extract_usage_includes_provider_name():
 def test_extract_usage_with_exa_provider():
     """Verifica _extract_usage com ExaProvider."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import ExaProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import ExaProvider
 
     provider = ExaProvider()
     search_config = SearchConfig(enabled=True, provider="exa", max_results=10)
@@ -366,8 +368,8 @@ def test_extract_usage_with_exa_provider():
 def test_extract_usage_accumulates_reasoning_tokens():
     """#65: reasoning tokens (GPT-5, o-series) devem ser extraídos de output_token_details."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -406,8 +408,8 @@ def test_extract_usage_accumulates_reasoning_tokens():
 def test_extract_usage_reasoning_tokens_default_zero():
     """Se `output_token_details` está ausente, reasoning_tokens deve ser 0 (sem quebrar)."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -509,7 +511,7 @@ def test_call_agent_uses_provider_factory(monkeypatch):
             search_config=SearchConfig(enabled=True, provider="tavily"),
         )
 
-        result = call_agent("teste", SampleModel, "Responda {texto}", config)
+        call_agent("teste", SampleModel, "Responda {texto}", config)
 
         # Verifica que a factory foi chamada
         mock_get_provider.assert_called_once_with("tavily")

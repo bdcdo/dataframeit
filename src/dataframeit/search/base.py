@@ -93,7 +93,7 @@ def get_provider(name: str) -> SearchProvider:
         ValueError: Se o provedor não for suportado.
     """
     # Importar providers para garantir que estão registrados
-    from . import tavily_provider, exa_provider  # noqa: F401
+    from . import exa_provider, tavily_provider  # noqa: F401
 
     if name not in _PROVIDERS:
         available = list(_PROVIDERS.keys())
@@ -107,6 +107,6 @@ def get_provider(name: str) -> SearchProvider:
 def get_available_providers() -> list[str]:
     """Retorna lista de provedores de busca disponíveis."""
     # Importar providers para garantir que estão registrados
-    from . import tavily_provider, exa_provider  # noqa: F401
+    from . import exa_provider, tavily_provider  # noqa: F401
 
     return list(_PROVIDERS.keys())

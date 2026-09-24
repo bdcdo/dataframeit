@@ -1,13 +1,14 @@
 """Testes para funcionalidade de busca web via Tavily."""
 
-import pandas as pd
-from pydantic import BaseModel, Field
-from typing import Literal, List, Optional
-import pytest
-from unittest.mock import patch, MagicMock
 import os
 import sys
 import types
+from typing import List, Literal, Optional  # noqa: UP035 (List usado de propósito, ver NodoArvore)
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
+from pydantic import BaseModel, Field
 
 
 class MedicamentoInfo(BaseModel):
@@ -31,8 +32,9 @@ class PaisInfo(BaseModel):
 
 def test_use_search_false_by_default():
     """Verifica que use_search=False é o padrão."""
-    from dataframeit.core import dataframeit
     import inspect
+
+    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters['use_search'].default is False
@@ -40,8 +42,9 @@ def test_use_search_false_by_default():
 
 def test_search_per_field_false_by_default():
     """Verifica que search_per_field=False é o padrão."""
-    from dataframeit.core import dataframeit
     import inspect
+
+    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters['search_per_field'].default is False
@@ -49,8 +52,9 @@ def test_search_per_field_false_by_default():
 
 def test_max_results_default():
     """Verifica que max_results=5 é o padrão."""
-    from dataframeit.core import dataframeit
     import inspect
+
+    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters['max_results'].default == 5
@@ -58,8 +62,9 @@ def test_max_results_default():
 
 def test_search_depth_default():
     """Verifica que search_depth='basic' é o padrão."""
-    from dataframeit.core import dataframeit
     import inspect
+
+    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters['search_depth'].default == "basic"
@@ -311,7 +316,7 @@ def test_setup_columns_without_search():
 
 def test_tavily_errors_classified_correctly():
     """Verifica classificação de erros do Tavily."""
-    from dataframeit.errors import is_recoverable_error, NON_RECOVERABLE_ERRORS, RECOVERABLE_ERRORS
+    from dataframeit.errors import NON_RECOVERABLE_ERRORS, RECOVERABLE_ERRORS
 
     # Erros não-recuperáveis do Tavily
     assert "MissingAPIKeyError" in NON_RECOVERABLE_ERRORS
@@ -350,8 +355,8 @@ def test_tavily_friendly_error_messages():
 def test_call_agent_returns_expected_structure():
     """Verifica que call_agent retorna estrutura esperada."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -387,8 +392,8 @@ def test_call_agent_returns_expected_structure():
 def test_extract_usage_advanced_depth():
     """Verifica cálculo de créditos com search_depth='advanced'."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily", search_depth="advanced")
@@ -411,8 +416,8 @@ def test_extract_usage_advanced_depth():
 def test_extract_usage_with_object_metadata():
     """Verifica extração de tokens quando usage_metadata é um objeto (não dict)."""
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -445,9 +450,10 @@ def test_extract_usage_with_object_metadata():
 def test_extract_usage_with_debug_logging(caplog):
     """Verifica que logging de diagnóstico funciona sem erros."""
     import logging
+
     from dataframeit.agent import _extract_usage
-    from dataframeit.search import TavilyProvider
     from dataframeit.llm import SearchConfig
+    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -1347,7 +1353,7 @@ class PedidoItem(BaseModel):
 
 class AnaliseSentencaSaude(BaseModel):
     """Modelo principal com List[Model]."""
-    pedidos: List[PedidoItem]
+    pedidos: list[PedidoItem]
     observacao: Optional[str] = None
 
 
@@ -1355,7 +1361,7 @@ def test_get_nested_pydantic_models_list():
     """Testa extração de modelos de List[Model]."""
     from dataframeit.utils import get_nested_pydantic_models
 
-    models = get_nested_pydantic_models(List[PedidoItem])
+    models = get_nested_pydantic_models(list[PedidoItem])
 
     assert len(models) == 1
     assert models[0] is PedidoItem
@@ -1365,7 +1371,7 @@ def test_get_nested_pydantic_models_optional_list():
     """Testa extração de modelos de Optional[List[Model]]."""
     from dataframeit.utils import get_nested_pydantic_models
 
-    models = get_nested_pydantic_models(Optional[List[PedidoItem]])
+    models = get_nested_pydantic_models(Optional[list[PedidoItem]])
 
     assert len(models) == 1
     assert models[0] is PedidoItem
@@ -1388,7 +1394,7 @@ def test_get_nested_pydantic_models_primitive():
     assert get_nested_pydantic_models(str) == []
     assert get_nested_pydantic_models(int) == []
     assert get_nested_pydantic_models(Optional[str]) == []
-    assert get_nested_pydantic_models(List[str]) == []
+    assert get_nested_pydantic_models(list[str]) == []
 
 
 def test_has_field_config_detects_nested_in_list():
@@ -1406,7 +1412,7 @@ def test_has_field_config_detects_optional_list():
     from dataframeit.core import _has_field_config
 
     class ModeloComOptionalList(BaseModel):
-        itens: Optional[List[InformacoesMedicamento]] = None
+        itens: Optional[list[InformacoesMedicamento]] = None
 
     assert _has_field_config(ModeloComOptionalList) is True
 
@@ -1422,7 +1428,7 @@ def test_has_field_config_deeply_nested():
         nivel3: Nivel3
 
     class Nivel1(BaseModel):
-        nivel2: List[Nivel2]
+        nivel2: list[Nivel2]
 
     class Raiz(BaseModel):
         nivel1: Nivel1
@@ -1436,7 +1442,9 @@ def test_has_field_config_no_infinite_recursion():
 
     class NodoArvore(BaseModel):
         valor: str
-        filhos: Optional[List['NodoArvore']] = None
+        # typing.List resolve a string como ForwardRef; list['X'] deixaria a
+        # string crua na anotação, e a recursão que o teste exercita não aconteceria.
+        filhos: Optional[List['NodoArvore']] = None  # noqa: UP006
 
     # Atualizar referências forward para Python resolver o tipo
     NodoArvore.model_rebuild()
@@ -1453,7 +1461,7 @@ def test_has_field_config_no_config_in_nested():
         campo: str
 
     class RaizSimples(BaseModel):
-        nested: List[NestedSimples]
+        nested: list[NestedSimples]
 
     assert _has_field_config(RaizSimples) is False
 
@@ -1483,7 +1491,7 @@ def test_collect_configured_fields_deeply_nested():
         nivel3: Nivel3
 
     class Nivel1(BaseModel):
-        nivel2: List[Nivel2]
+        nivel2: list[Nivel2]
 
     class Raiz(BaseModel):
         nivel1: Nivel1
@@ -1501,7 +1509,9 @@ def test_collect_configured_fields_no_infinite_recursion():
 
     class NodoArvoreConfig(BaseModel):
         valor: str = Field(json_schema_extra={"prompt": "search value"})
-        filhos: Optional[List['NodoArvoreConfig']] = None
+        # typing.List resolve a string como ForwardRef; list['X'] deixaria a
+        # string crua na anotação, e a recursão que o teste exercita não aconteceria.
+        filhos: Optional[List['NodoArvoreConfig']] = None  # noqa: UP006
 
     NodoArvoreConfig.model_rebuild()
 
@@ -1771,7 +1781,7 @@ def test_reorder_columns_multiple_traces():
 
 def test_column_ordering_in_from_pandas():
     """Verifica que from_pandas retorna colunas ordenadas corretamente."""
-    from dataframeit.utils import from_pandas, ConversionInfo, ORIGINAL_TYPE_PANDAS_DF
+    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, ConversionInfo, from_pandas
 
     # Criar DataFrame com colunas em ordem incorreta (simulando problema real)
     df = pd.DataFrame({
@@ -1815,7 +1825,7 @@ def test_is_list_of_pydantic_model_basic():
     """Testa is_list_of_pydantic_model com List[Model]."""
     from dataframeit.utils import is_list_of_pydantic_model
 
-    is_list, inner = is_list_of_pydantic_model(List[PedidoItem])
+    is_list, inner = is_list_of_pydantic_model(list[PedidoItem])
 
     assert is_list is True
     assert inner is PedidoItem
@@ -1825,7 +1835,7 @@ def test_is_list_of_pydantic_model_optional_list():
     """Testa is_list_of_pydantic_model com Optional[List[Model]]."""
     from dataframeit.utils import is_list_of_pydantic_model
 
-    is_list, inner = is_list_of_pydantic_model(Optional[List[PedidoItem]])
+    is_list, inner = is_list_of_pydantic_model(Optional[list[PedidoItem]])
 
     assert is_list is True
     assert inner is PedidoItem
@@ -1845,7 +1855,7 @@ def test_is_list_of_pydantic_model_list_of_primitives():
     """Testa is_list_of_pydantic_model com List[str]."""
     from dataframeit.utils import is_list_of_pydantic_model
 
-    is_list, inner = is_list_of_pydantic_model(List[str])
+    is_list, inner = is_list_of_pydantic_model(list[str])
 
     assert is_list is False
     assert inner is None
@@ -1869,7 +1879,7 @@ def test_get_list_fields_with_nested_search():
 
 def test_enrich_list_items_with_search():
     """Testa enriquecimento de itens de lista com buscas."""
-    from dataframeit.agent import _enrich_list_items_with_search, _collect_configured_fields
+    from dataframeit.agent import _collect_configured_fields, _enrich_list_items_with_search
     from dataframeit.llm import LLMConfig, SearchConfig
 
     call_count = [0]
@@ -2051,6 +2061,7 @@ def test_warn_search_rate_limit_triggers_on_high_rpm():
 def test_warn_search_rate_limit_silent_on_safe_config():
     """Não emite warning com configuração conservadora."""
     import warnings as _warnings
+
     from dataframeit.core import _warn_search_rate_limit
 
     with _warnings.catch_warnings(record=True) as w:
@@ -2069,6 +2080,7 @@ def test_warn_search_rate_limit_silent_on_safe_config():
 def test_warn_search_rate_limit_exa_higher_threshold():
     """Exa tem limite 3x maior — configuração que alerta Tavily pode não alertar Exa."""
     import warnings as _warnings
+
     from dataframeit.core import _warn_search_rate_limit
 
     # Configuração: 10 queries concorrentes está no limite (10), não dispara.

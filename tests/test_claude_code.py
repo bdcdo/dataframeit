@@ -1,7 +1,7 @@
 """Testes para o provider claude_code (Claude Code SDK)."""
-import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from pydantic import BaseModel
 
 

@@ -1,10 +1,11 @@
 """Testes para inferência de text_column a partir de nomes comuns (#93)."""
 
 import warnings
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
-from unittest.mock import patch
 
 
 class _Model(BaseModel):

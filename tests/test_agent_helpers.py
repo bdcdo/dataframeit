@@ -1,7 +1,7 @@
 """Testes para helpers internos de dataframeit.agent (sem chamadas a LLM/rede)."""
 
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Optional
 from unittest.mock import MagicMock
 
 from pydantic import BaseModel, Field
@@ -271,7 +271,7 @@ class TestCollectConfiguredFields:
             descricao: str = Field(json_schema_extra={"search_depth": "advanced"})
 
         class Container(BaseModel):
-            items: List[Item]
+            items: list[Item]
 
         result = _collect_configured_fields(Container)
         paths = [r[0] for r in result]

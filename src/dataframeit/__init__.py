@@ -1,10 +1,11 @@
-from importlib.metadata import PackageNotFoundError, version as _version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
 
 from .core import dataframeit
 from .utils import (
-    normalize_value,
-    normalize_complex_columns,
     get_complex_fields,
+    normalize_complex_columns,
+    normalize_value,
     read_df,
 )
 

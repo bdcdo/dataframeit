@@ -104,7 +104,7 @@ all = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
-    "ruff>=0.1.0",
+    "ruff>=0.16,<0.17",
 ]
 docs = [
     "mkdocs>=1.5.0",
@@ -134,6 +134,12 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Os testes usam Optional[X] e Union[X, Y] de propósito: typing.Union e o
+# types.UnionType de `X | None` passam por ramos diferentes em utils.py, e
+# reescrever as anotações deixaria o ramo de typing.Union sem cobertura.
+"tests/**" = ["UP007", "UP045"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

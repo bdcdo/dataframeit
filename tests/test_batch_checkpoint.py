@@ -1,11 +1,12 @@
 """Testes para batch_size + checkpoint_path (issue #92)."""
 
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 from pydantic import BaseModel
-from unittest.mock import patch
 
-from dataframeit.core import dataframeit, _save_checkpoint
+from dataframeit.core import _save_checkpoint, dataframeit
 
 
 class SimpleModel(BaseModel):

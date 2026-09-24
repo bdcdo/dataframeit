@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
-from .utils import check_dependency
+from typing import Any
+
 from .errors import retry_with_backoff
+from .utils import check_dependency
 
 
 @dataclass
@@ -20,10 +21,10 @@ class SearchGroupConfig:
         search_depth: Profundidade da busca ("basic" ou "advanced").
             Se None, usa o valor global.
     """
-    fields: List[str]
-    prompt: Optional[str] = None
-    max_results: Optional[int] = None
-    search_depth: Optional[str] = None
+    fields: list[str]
+    prompt: str | None = None
+    max_results: int | None = None
+    search_depth: str | None = None
 
 
 @dataclass
@@ -39,7 +40,7 @@ class SearchConfig:
     per_field: bool = False  # Um agente por campo
     max_results: int = 5
     search_depth: str = "basic"  # "basic" ou "advanced" (apenas Tavily)
-    groups: Optional[Dict[str, SearchGroupConfig]] = None
+    groups: dict[str, SearchGroupConfig] | None = None
 
 
 @dataclass
@@ -48,15 +49,15 @@ class LLMConfig:
 
     `model` é None só com providers cujo runtime escolhe o modelo (codex, claude_code).
     """
-    model: Optional[str]
+    model: str | None
     provider: str
-    api_key: Optional[str]
+    api_key: str | None
     max_retries: int
     base_delay: float
     max_delay: float
     rate_limit_delay: float
-    model_kwargs: Dict[str, Any] = field(default_factory=dict)
-    search_config: Optional[SearchConfig] = None
+    model_kwargs: dict[str, Any] = field(default_factory=dict)
+    search_config: SearchConfig | None = None
 
 
 def build_prompt(user_prompt: str, text: str) -> str:
@@ -72,7 +73,7 @@ def build_prompt(user_prompt: str, text: str) -> str:
     return user_prompt.replace('{texto}', text)
 
 
-def _parse_usage_metadata(meta) -> Dict[str, int]:
+def _parse_usage_metadata(meta) -> dict[str, int]:
     """Extrai tokens de um usage_metadata dict ou objeto.
 
     ``cache_read`` representa tokens lidos do cache. ``cache_creation`` não
@@ -158,7 +159,7 @@ def call_langchain(text: str, pydantic_model, user_prompt: str, config: LLMConfi
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
-def _create_langchain_llm(model: str, provider: str, api_key: Optional[str], extra_kwargs: Optional[Dict[str, Any]] = None):
+def _create_langchain_llm(model: str, provider: str, api_key: str | None, extra_kwargs: dict[str, Any] | None = None):
     """Cria instância de LLM do LangChain baseado no provider.
 
     Args:
