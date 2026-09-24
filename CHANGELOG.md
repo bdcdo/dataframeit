@@ -10,6 +10,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Alterado
 
 - `condition` ou `depends_on` em campo de modelo aninhado ou de item de lista levanta `ValueError` antes de processar, em qualquer modo. Antes era ignorado em silêncio, e a versão callable quebrava o schema em todo provider (#129).
+- Linhas com texto ausente (`None`, `NaN` ou só espaços) não vão mais ao LLM: ficam com status `'error'` e detalhe `'Texto ausente'`, e um aviso diz quantas são. Antes, a string `'nan'` era enviada e a resposta gravada como resultado.
+- Índice com rótulos repetidos levanta `ValueError` antes do processamento; com ele, o resultado de uma linha era gravado em outra.
+- Campo do modelo com o mesmo nome da coluna de texto levanta `ValueError`; a resposta sobrescrevia o texto de entrada.
+- `perguntas` emite `DeprecationWarning` (#129).
+- `batch_size` aceita inteiros numpy e rejeita `bool`, como `max_retries`.
+- Rodar `dataframeit` sobre uma saída sem erros, que não tem coluna de status, emite aviso: todas as linhas seriam processadas de novo.
 - O nome exibido, o plano de entrada e o limite aproximado por minuto de cada provedor de busca passam a ser propriedades abstratas de `SearchProvider` (`friendly_name`, `free_tier`, `requests_per_minute`), que uma subclasse registrada com `register_provider` precisa implementar. A validação de `search_provider`, a mensagem de API key ausente e o aviso de rate limit leem do registro de provedores em vez de listas próprias (#130).
 - Nos overrides de busca por campo e por grupo, só a ausência (`None`) cai no valor global; `max_results=0` ou `search_depth=''` deixam de ser ignorados em silêncio (#130).
 
@@ -28,6 +34,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Uma falha ao gravar o checkpoint (disco cheio, arquivo aberto no Excel, coluna que o parquet não serializa) marcava como `'error'` a linha que tinha acabado de ser processada, com a mensagem de tentativas esgotadas, e podia interromper a execução. Agora vira aviso, o status da linha fica intacto, e a gravação seguinte, ou a final, grava o estado completo (#129).
 - Retomar de checkpoint `.csv` ou `.xlsx` acusava como incompatíveis campos de lista, dict ou modelo aninhado, porque essas células eram gravadas como repr Python. Agora vão como JSON, e `read_df` também lê o repr dos arquivos antigos. Com o modelo, `read_df(caminho, Modelo)` lê como texto cru os campos de texto: `"2023"` deixa de voltar como número, e `"N/A"` ou `"NA"` deixam de virar ausência.
 - Na retomada, um campo com `condition` que ficou `None` porque a condição, avaliada com os valores da linha, era falsa deixa de ser acusado como incompatível quando o tipo declarado é obrigatório. Com a condição verdadeira, o valor ausente continua acusado, e um valor presente continua validado com as restrições do campo.
+- Com `status_column` personalizado, a coluna de status e `_error_details` ficavam na saída de uma execução sem erros e fora do fim da tabela (#129).
+- Um DataFrame com coluna de nome não textual (`pd.DataFrame(textos)`, cuja coluna é `0`) falhava depois de todas as chamadas, ao reordenar as colunas.
+- `_error_details` de uma execução anterior ficava na linha depois que ela passava a `'processed'`. Quando uma linha já processada falha em `reprocess_columns`, o detalhe diz que os valores anteriores foram mantidos.
+- Uma coluna do modelo que já existia como `float` (toda vazia, lida de CSV) ou `int` fazia falhar a gravação de lista ou texto depois da chamada paga.
+- As estatísticas de busca saíam rotuladas "TAVILY" também com `search_provider='exa'` (#129).
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).
 

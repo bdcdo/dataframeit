@@ -172,7 +172,11 @@ def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
     )
 
 
-def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any:
+def from_pandas(
+    df: pd.DataFrame,
+    conversion_info: ConversionInfo | bool,
+    status_col: str = '_dataframeit_status',
+) -> Any:
     """Converte DataFrame pandas de volta para o formato original.
 
     Remove automaticamente as colunas internas de controle (_dataframeit_status
@@ -182,6 +186,7 @@ def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any
         df: DataFrame pandas processado.
         conversion_info: ConversionInfo com metadados da conversão original,
                         ou bool para retrocompatibilidade (True = era polars).
+        status_col: Nome da coluna de status (o `status_column` do usuário).
 
     Returns:
         Dados no formato original (DataFrame, Series, list ou dict).
@@ -193,8 +198,6 @@ def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any
             original_type=ORIGINAL_TYPE_POLARS_DF if was_polars else ORIGINAL_TYPE_PANDAS_DF
         )
 
-    # Colunas internas de controle (não usar esses nomes em seus dados!)
-    status_col = '_dataframeit_status'
     error_col = '_error_details'
 
     # Remover colunas de status/erro se não houver erros
@@ -208,11 +211,11 @@ def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any
 
     # pandas DataFrame
     if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF:
-        return _reorder_columns(df)
+        return _reorder_columns(df, status_col)
 
     # polars DataFrame
     if conversion_info.original_type == ORIGINAL_TYPE_POLARS_DF:
-        df = _reorder_columns(df)
+        df = _reorder_columns(df, status_col)
         if pl is not None:
             return pl.from_pandas(df)
         return df
@@ -226,13 +229,13 @@ def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any
         # Restaurar índice original
         if conversion_info.original_index is not None:
             df.index = conversion_info.original_index
-        return _reorder_columns(df)
+        return _reorder_columns(df, status_col)
 
     # polars Series - similar ao pandas Series
     if conversion_info.original_type == ORIGINAL_TYPE_POLARS_SERIES:
         if DEFAULT_TEXT_COLUMN in df.columns:
             df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        df = _reorder_columns(df)
+        df = _reorder_columns(df, status_col)
         if pl is not None:
             return pl.from_pandas(df)
         return df
@@ -241,19 +244,19 @@ def from_pandas(df: pd.DataFrame, conversion_info: ConversionInfo | bool) -> Any
     if conversion_info.original_type == ORIGINAL_TYPE_LIST:
         if DEFAULT_TEXT_COLUMN in df.columns:
             df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        return _reorder_columns(df)
+        return _reorder_columns(df, status_col)
 
     # dict - tratar como DataFrame, retorna DataFrame com chaves como índice
     if conversion_info.original_type == ORIGINAL_TYPE_DICT:
         if DEFAULT_TEXT_COLUMN in df.columns:
             df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        return _reorder_columns(df)
+        return _reorder_columns(df, status_col)
 
     # Fallback
-    return _reorder_columns(df)
+    return _reorder_columns(df, status_col)
 
 
-def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
+def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') -> pd.DataFrame:
     """Reordena colunas para que internas fiquem no final.
 
     Ordem final das colunas:
@@ -266,6 +269,7 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         df: DataFrame a reordenar.
+        status_col: Nome da coluna de status.
 
     Returns:
         DataFrame com colunas reordenadas.
@@ -278,13 +282,13 @@ def _reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
     status_cols = []
 
     for col in df.columns:
-        if col.startswith('_trace_'):
+        if str(col).startswith('_trace_'):
             trace_cols.append(col)
         elif col in ['_search_credits']:
             search_cols.append(col)
         elif col in TOKEN_COLUMNS:
             continue
-        elif col in ['_dataframeit_status', '_error_details']:
+        elif col in (status_col, '_error_details'):
             status_cols.append(col)
         else:
             user_cols.append(col)
