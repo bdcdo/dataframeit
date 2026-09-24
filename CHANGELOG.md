@@ -16,6 +16,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - A escolha das linhas a processar passa a depender só do status de cada linha. Com índice fora de ordem (depois de `sort_values`, `sample` ou filtro), índice textual ou entrada dict, linhas pendentes eram puladas em silêncio e voltavam com resultado vazio. Com `resume=True`, linhas com status `'error'` ficam como estão em todos os casos, como a documentação descreve (#122).
 - `dataframeit()` rejeita `max_retries` que não seja inteiro >= 1 com `ValueError`; com `max_retries=0` nenhuma chamada era feita e cada linha terminava com um `TypeError` registrado como erro (#122).
+- A classificação de erros para retry usa primeiro o status HTTP estruturado da exceção ou da sua causa (`status_code`, `code`, `http_status`, `response.status_code`): 408, 409, 429 e 5xx são recuperáveis, os demais 4xx não, inclusive o 499 (requisição cancelada). Um 400 ou 422 fora de `BadRequestError` deixa de ser re-tentado até `max_retries`, e um 429 declarado só no status passa a reduzir os workers no modo paralelo (#123).
+- Códigos numéricos na mensagem de erro (`401`, `429`, `503` etc.) só contam como número isolado, e uma mensagem como "4015 tokens" deixa de ser lida como erro de autenticação ou rate limit (#123).
 
 ## [0.8.1] - 2026-09-23
 
