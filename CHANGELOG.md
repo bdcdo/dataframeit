@@ -9,7 +9,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
-- `max_search_calls` (padrão 10) limita as buscas por execução do agente, também por grupo (`search_groups`) e por campo (`json_schema_extra`). Ao atingi-lo, as buscas seguintes são bloqueadas e o agente responde com o que encontrou; antes, um modelo insistente buscava até o limite de recursão do grafo. As buscas bloqueadas não entram em `search_count` nem em `search_credits`.
+- `max_search_calls` (padrão 10) limita as buscas por execução do agente, também por grupo (`search_groups`) e por campo (`json_schema_extra`). Ao atingi-lo, as buscas seguintes são bloqueadas e o agente responde com o que encontrou; antes, um modelo insistente buscava até o limite de recursão do grafo. As buscas bloqueadas não entram em `search_count` nem em `search_credits`. O limite de passos do agente acompanha o teto, para que um modelo que ignore o bloqueio pare em poucas chamadas. Exige `langchain>=1.0.4`.
 - O provider `claude_code` repassa o custo informado pelo SDK (`total_cost_usd`), somado no resumo de estatísticas ao fim da execução. A soma inclui as tentativas re-tentadas e as linhas que falharam, e aparece mesmo sem contagem de tokens (#129).
 
 ### Alterado
@@ -51,7 +51,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Com `langchain-core` >= 1.6, o `is_retryable` do `ModelError` decide o retry, e `ModelRateLimitError` reduz os workers. Um 400 sem status estruturado deixa de ser re-tentado quando o provider levanta `ModelInvalidRequestError`, e `ContextOverflowError` deixa de ser re-tentado em qualquer versão (#129).
 - No provider `claude_code`, um `ResultMessage` com `is_error` virava "resposta vazia" e entrava em retry. Estouro de `max_budget_usd` ou de `max_turns` agora é erro definitivo; o status da API decide entre sobrecarga, falha transitória e falha definitiva (#129).
 - Com `search_provider='exa'`, `max_results` e o corte de 1000 caracteres por resultado eram ignorados: o `ExaSearchResults` aceita esses argumentos no construtor sem usá-los, e o modelo escolhia quantos resultados pedir. A ferramenta passa a expor só a consulta e fixa os dois limites na chamada.
-- Erros do Tavily e do Exa (quota, chave inválida, falha de rede) voltavam como texto para o modelo, que respondia sem evidência; a linha saía `'processed'` e a busca era contada como crédito. Agora o erro sobe até o retry e a classificação de erros. "Sem resultados" no Tavily continua sendo mensagem ao modelo.
+- Erros do Tavily e do Exa (quota, chave inválida, falha de rede) voltavam como texto para o modelo, que respondia sem evidência; a linha saía `'processed'` e a busca era contada como crédito. Agora o erro sobe até o retry e a classificação de erros. "Sem resultados" e erro de argumento do Tavily (400, 422, como consulta longa demais) continuam sendo mensagem ao modelo, que pode tentar outra consulta.
 - O trace contava `search_queries` por substring "search" no nome da ferramenta, o que incluía o structured output de modelos como `ResearchResult`; agora compara com o nome da ferramenta de busca, e `total_tool_calls` conta todas as chamadas (#129).
 - `get_nested_pydantic_models` devolvia o mesmo modelo duas vezes para anotações `Model | None` (#130).
 - `search_groups` com `search_depth=''` passava pela validação e chegava ao provedor de busca (#130).

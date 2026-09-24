@@ -350,6 +350,18 @@ def _set_nested_value(obj: dict, path: str, value):
     current[parts[-1]] = value
 
 
+def _recursion_limit(max_search_calls: int) -> int:
+    """Passos do grafo que uma execução do agente pode dar.
+
+    Cada busca custa 3 passos (modelo, middleware do teto, ferramenta), e a
+    resposta final, outros 3. Um modelo que insiste em buscar depois do teto
+    gasta 2 passos por insistência, e sem este limite chegaria ao do LangGraph,
+    com milhares de chamadas ao modelo. A folga de 20 cobre umas oito
+    insistências ou novas tentativas do structured output.
+    """
+    return 3 * max_search_calls + 20
+
+
 def call_agent(
     text: str,
     pydantic_model,
@@ -406,7 +418,10 @@ def call_agent(
 
         # Medir tempo de execução
         start_time = time.perf_counter()
-        result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": prompt}]},
+            config={"recursion_limit": _recursion_limit(search_config.max_search_calls)},
+        )
         duration = time.perf_counter() - start_time
 
         # Extrair resposta estruturada

@@ -485,7 +485,7 @@ def test_call_agent_uses_provider_factory(monkeypatch):
     from dataframeit.llm import LLMConfig, SearchConfig
 
     class DummyAgent:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
             return {"structured_response": SampleModel(campo="ok"), "messages": []}
 
     class DummySearchTool:
@@ -551,7 +551,7 @@ def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
     ]
 
     class AgenteFalso:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
             return {"structured_response": ResearchResult(campo="ok"), "messages": mensagens}
 
     class FerramentaFalsa:

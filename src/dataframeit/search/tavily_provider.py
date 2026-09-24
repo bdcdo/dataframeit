@@ -9,9 +9,29 @@ Recomendado para:
 - Volume baixo-médio (<2667 buscas/mês)
 """
 
+import re
 from typing import Any
 
 from .base import SearchProvider, register_provider
+
+# Status que indicam argumento inválido escolhido pelo modelo, e não falha da
+# conta ou do serviço. O wrapper do langchain_tavily só põe o status no texto:
+# "Error 400: ...".
+_ERROS_DO_MODELO = (400, 422)
+_STATUS_NO_TEXTO = re.compile(r"^Error (\d{3}):")
+
+
+def _levantar_erro(resultado, tool_exception):
+    """Levanta o erro que o TavilySearch devolveu como {"error": e}."""
+    if not (isinstance(resultado, dict) and isinstance(resultado.get("error"), Exception)):
+        return resultado
+    erro = resultado["error"]
+    status = _STATUS_NO_TEXTO.match(str(erro))
+    if (status and int(status.group(1)) in _ERROS_DO_MODELO) or (
+        "can only be set during instantiation" in str(erro)
+    ):
+        raise tool_exception(str(erro)) from erro
+    raise erro
 
 
 @register_provider
@@ -75,20 +95,24 @@ class TavilyProvider(SearchProvider):
             )
             from langchain_tavily import TavilySearch
 
-        class _TavilySearchQueLevantaErro(TavilySearch):
-            """TavilySearch que levanta o erro do provedor.
+        from langchain_core.tools import ToolException
 
-            O _run original devolve {"error": e} para quota, chave inválida ou
-            falha de rede, e o agente segue sem evidência, com a linha marcada
-            como processada. "Sem resultados" continua sendo ToolException,
-            que vira mensagem ao modelo para ele tentar outra consulta.
+        class _TavilySearchQueLevantaErro(TavilySearch):
+            """TavilySearch que separa o erro do modelo do erro do provedor.
+
+            O _run original devolve {"error": e} para qualquer falha, e o agente
+            segue sem evidência, com a linha marcada como processada. Erro de
+            conta, quota, rede ou servidor sobe ao retry da biblioteca. Erro
+            causado pelos argumentos que o modelo escolheu (400, 422 ou
+            parâmetro proibido na chamada) vira ToolException, como "sem
+            resultados", e volta ao modelo para ele tentar outra consulta.
             """
 
             def _run(self, *args, **kwargs):
-                result = super()._run(*args, **kwargs)
-                if isinstance(result, dict) and isinstance(result.get("error"), Exception):
-                    raise result["error"]
-                return result
+                return _levantar_erro(super()._run(*args, **kwargs), ToolException)
+
+            async def _arun(self, *args, **kwargs):
+                return _levantar_erro(await super()._arun(*args, **kwargs), ToolException)
 
         return _TavilySearchQueLevantaErro(
             max_results=max_results,

@@ -89,20 +89,55 @@ def tavily_disponivel(monkeypatch):
     return _utilities.TavilySearchAPIWrapper
 
 
-def test_tavily_levanta_o_erro_do_provider(tavily_disponivel, monkeypatch):
-    class UsageLimitExceededError(Exception):
-        pass
-
+@pytest.mark.parametrize('mensagem', [
+    'Error 432: This request exceeds your plan\'s set usage limit.',
+    'Error 401: Unauthorized: missing or invalid API key.',
+    'Error 429: Too many requests.',
+    'Error 500: Internal server error.',
+])
+def test_tavily_levanta_o_erro_do_provider(tavily_disponivel, monkeypatch, mensagem):
+    # O wrapper real levanta ValueError com o status só no texto.
     def falha(self, **kwargs):
-        raise UsageLimitExceededError('quota exceeded')
+        raise ValueError(mensagem)
 
     monkeypatch.setattr(tavily_disponivel, 'raw_results', falha)
 
     from dataframeit.search import get_provider
 
     ferramenta = get_provider('tavily').create_tool(max_results=3)
-    with pytest.raises(UsageLimitExceededError):
+    with pytest.raises(ValueError, match=mensagem[:9]):
         ferramenta.invoke({'query': 'x'})
+
+
+@pytest.mark.parametrize('mensagem', [
+    'Error 400: Query is too long. Max query length is 400 characters.',
+    'Error 422: Invalid time_range.',
+])
+def test_tavily_devolve_ao_modelo_o_erro_de_argumento(tavily_disponivel, monkeypatch, mensagem):
+    def falha(self, **kwargs):
+        raise ValueError(mensagem)
+
+    monkeypatch.setattr(tavily_disponivel, 'raw_results', falha)
+
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('tavily').create_tool(max_results=3)
+    assert mensagem in str(ferramenta.invoke({'query': 'x'}))
+
+
+def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
+    import asyncio
+
+    async def falha(self, **kwargs):
+        raise ValueError('Error 432: usage limit.')
+
+    monkeypatch.setattr(tavily_disponivel, 'raw_results_async', falha)
+
+    from dataframeit.search import get_provider
+
+    ferramenta = get_provider('tavily').create_tool(max_results=3)
+    with pytest.raises(ValueError, match='Error 432'):
+        asyncio.run(ferramenta.ainvoke({'query': 'x'}))
 
 
 def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponivel, monkeypatch):
@@ -124,7 +159,8 @@ def _chamar_agente(monkeypatch, config, mensagens=()):
     capturado = {}
 
     class AgenteFalso:
-        def invoke(self, _payload):
+        def invoke(self, _payload, config=None):
+            capturado['config'] = config
             return {'structured_response': Resposta(campo='ok'), 'messages': list(mensagens)}
 
     def create_agent(**kwargs):
@@ -150,6 +186,7 @@ def test_agente_recebe_o_teto_de_buscas(monkeypatch):
     from langchain.agents.middleware import ToolCallLimitMiddleware
 
     capturado, _ = _chamar_agente(monkeypatch, _config(max_search_calls=4))
+    assert capturado['config'] == {'recursion_limit': 3 * 4 + 20}
 
     limites = [m for m in capturado['middleware'] if isinstance(m, ToolCallLimitMiddleware)]
     assert len(limites) == 1
@@ -257,3 +294,86 @@ def test_trace_nao_confunde_structured_output_com_busca():
     trace = _extract_trace({'messages': mensagens}, 'm', 0.1, 'full', None, 'busca_web')
     assert trace['search_queries'] == []
     assert trace['total_tool_calls'] == 1
+
+
+def test_max_search_calls_invalido_por_grupo():
+    class Modelo(BaseModel):
+        b: str = ''
+        c: str = ''
+
+    with pytest.raises(ValueError, match='max_search_calls'):
+        _executar(
+            Modelo, search_per_field=True,
+            search_groups={'g': {'fields': ['b', 'c'], 'max_search_calls': 0}},
+        )
+
+
+def test_max_search_calls_padrao_e_10():
+    assert SearchConfig().max_search_calls == 10
+    config = _executar(Resposta).call_args.args[3]
+    assert config.search_config.max_search_calls == 10
+
+
+def test_max_search_calls_aceita_inteiro_numpy():
+    import numpy as np
+
+    config = _executar(Resposta, max_search_calls=np.int64(3)).call_args.args[3]
+    assert config.search_config.max_search_calls == 3
+
+
+def test_sem_resultados_nao_conta_como_busca_bloqueada():
+    """"Sem resultados" é ToolMessage com status 'error', mas a busca aconteceu."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from dataframeit.agent import _blocked_tool_call_ids
+
+    mensagens = [
+        AIMessage(content='', tool_calls=[{'name': 'busca_web', 'args': {'query': 'a'}, 'id': '1'}]),
+        ToolMessage(content="No search results found for 'a'.", tool_call_id='1',
+                    name='busca_web', status='error'),
+        ToolMessage(content="Tool call limit exceeded. Do not call 'busca_web' again.",
+                    tool_call_id='2', name='busca_web', status='success'),
+    ]
+    assert _blocked_tool_call_ids(mensagens) == set()
+
+
+def test_recursion_limit_interrompe_modelo_que_insiste_em_buscar():
+    """Com o teto e o limite de passos, um modelo que ignora o bloqueio para cedo."""
+    import itertools
+
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import ToolCallLimitMiddleware
+    from langchain.agents.structured_output import ToolStrategy
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import StructuredTool
+    from langgraph.errors import GraphRecursionError
+
+    from dataframeit.agent import _recursion_limit
+
+    chamadas = []
+
+    class ModeloTeimoso(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    def mensagens():
+        for i in itertools.count():
+            chamadas.append(i)
+            yield AIMessage(content='', tool_calls=[
+                {'name': 'busca', 'args': {'query': str(i)}, 'id': f'c{i}', 'type': 'tool_call'}
+            ])
+
+    def busca(query: str) -> str:
+        """Busca."""
+        return 'x'
+
+    agente = create_agent(
+        model=ModeloTeimoso(messages=mensagens()),
+        tools=[StructuredTool.from_function(busca, name='busca')],
+        response_format=ToolStrategy(Resposta),
+        middleware=[ToolCallLimitMiddleware(tool_name='busca', run_limit=2, exit_behavior='continue')],
+    )
+    with pytest.raises(GraphRecursionError):
+        agente.invoke({'messages': [('user', 'q')]}, config={'recursion_limit': _recursion_limit(2)})
+    assert len(chamadas) < 20
