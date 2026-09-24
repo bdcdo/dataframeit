@@ -18,6 +18,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - `dataframeit()` rejeita `max_retries` que não seja inteiro >= 1 com `ValueError`; com `max_retries=0` nenhuma chamada era feita e cada linha terminava com um `TypeError` registrado como erro (#122).
 - A classificação de erros para retry usa primeiro o status HTTP estruturado da exceção ou da sua causa (`status_code`, `code`, `http_status`, `response.status_code`): 408, 409, 429 e 5xx são recuperáveis, os demais 4xx não, inclusive o 499 (requisição cancelada). Um 400 ou 422 fora de `BadRequestError` deixa de ser re-tentado até `max_retries`, e um 429 declarado só no status passa a reduzir os workers no modo paralelo (#123).
 - Códigos numéricos na mensagem de erro (`401`, `429`, `503` etc.) só contam como número isolado, e uma mensagem como "4015 tokens" deixa de ser lida como erro de autenticação ou rate limit (#123).
+- O provider `claude_code` funciona com event loop já ativo, como no Jupyter, em vez de falhar com `RuntimeError` a cada tentativa (#124).
+- O provider `claude_code` registra os tokens informados pelo SDK, com leitura de cache, em vez de zeros fixos, e grava nulo quando o SDK não informa uso (#124).
+
+### Segurança
+
+- O provider `claude_code` deixa de expor ferramentas ao modelo: as opções usam `tools=[]` e `permission_mode="default"` em vez de `bypassPermissions`, porque o texto das linhas é conteúdo não confiável (#124).
 
 ## [0.8.1] - 2026-09-23
 
