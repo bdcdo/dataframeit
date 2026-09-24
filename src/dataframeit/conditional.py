@@ -1,9 +1,9 @@
 """Sistema de condicionais para execução condicional de campos."""
 
 import logging
-from typing import Any
+from typing import Any, get_args, get_origin
 
-from .utils import get_nested_pydantic_models, is_list_of_pydantic_model, resolve_forward_refs
+from .utils import get_nested_pydantic_models, resolve_forward_refs
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +30,13 @@ def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set =
     if _visited is None:
         _visited = set()
 
-    # Evitar loops em modelos auto-referenciais
+    # Evitar loops em modelos auto-referenciais. O conjunto guarda só os
+    # ancestrais do caminho: o mesmo modelo em dois campos irmãos
+    # (residencial e comercial) é percorrido nos dois.
     model_id = id(pydantic_model)
     if model_id in _visited:
         return []
-    _visited.add(model_id)
+    _visited = _visited | {model_id}
 
     results = []
 
@@ -50,6 +52,13 @@ def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set =
             results.extend(_collect_configured_fields(nested_model, path, _visited))
 
     return results
+
+
+def _list_layers(annotation) -> int:
+    """Quantas listas envolvem os modelos da anotação: list[list[X]] dá 2."""
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    inner = max((_list_layers(arg) for arg in args), default=0)
+    return inner + 1 if get_origin(annotation) is list else inner
 
 
 def _walk_fields(pydantic_model, prefix: str = "", list_depth: int = 0, _visited: set = None):
@@ -70,10 +79,9 @@ def _walk_fields(pydantic_model, prefix: str = "", list_depth: int = 0, _visited
         yield path, field_info, list_depth
 
         annotation = resolve_forward_refs(field_info.annotation, pydantic_model)
-        is_list, _ = is_list_of_pydantic_model(annotation)
         for nested_model in get_nested_pydantic_models(annotation):
             yield from _walk_fields(
-                nested_model, path, list_depth + (1 if is_list else 0), _visited
+                nested_model, path, list_depth + _list_layers(annotation), _visited
             )
 
 

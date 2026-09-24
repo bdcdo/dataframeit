@@ -92,7 +92,7 @@ class DrugInfo(BaseModel):
     rare_disease: str = Field(
         description="Rare disease classification",
         json_schema_extra={
-            "prompt": "Search Orphanet (orpha.net). Analyze: {text}"
+            "prompt": "Search Orphanet (orpha.net). Analyze: {texto}"
         }
     )
 
@@ -118,7 +118,7 @@ class DrugInfo(BaseModel):
 result = dataframeit(
     df,
     DrugInfo,
-    "Analyze the drug: {text}",
+    "Analyze the drug: {texto}",
     use_search=True,
     search_per_field=True,
 )

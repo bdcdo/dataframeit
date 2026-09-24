@@ -110,7 +110,7 @@ A partir da versão 0.5.2, você pode configurar prompts e parâmetros de busca 
 
 | Opção | Descrição |
 |-------|-----------|
-| `prompt` ou `prompt_replace` | Substitui completamente o prompt base para este campo |
+| `prompt` ou `prompt_replace` | Substitui o prompt base para este campo; sem `{texto}`, o texto da linha é anexado ao final |
 | `prompt_append` | Adiciona texto ao prompt base |
 | `search_depth` | Override de profundidade: `"basic"` ou `"advanced"` |
 | `max_results` | Override de número de resultados (1-20) |

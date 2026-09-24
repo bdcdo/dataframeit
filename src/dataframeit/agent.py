@@ -47,6 +47,10 @@ def _llm_field(field_info):
     serializa. O FieldInfo original fica intacto, porque é do modelo do
     usuário e é relido a cada linha. Um json_schema_extra callable é do
     usuário e não carrega essas chaves, então passa como está.
+
+    Só o campo extraído é limpo. Num modelo aninhado, as chaves de busca dos
+    campos internos seguem no $defs do schema como metadado; `condition` e
+    `depends_on` ali são recusados antes do processamento.
     """
     extra = field_info.json_schema_extra
     if not isinstance(extra, dict) or not (_LIBRARY_EXTRA_KEYS & extra.keys()):
@@ -56,7 +60,24 @@ def _llm_field(field_info):
     cleaned.json_schema_extra = {
         key: value for key, value in extra.items() if key not in _LIBRARY_EXTRA_KEYS
     } or None
+    # copy() compartilha _attributes_set, de onde o Pydantic remonta o campo
+    # ao mesclar FieldInfo; sem ajustar, a condition voltaria por ali.
+    attributes = dict(getattr(field_info, '_attributes_set', {}))
+    if cleaned.json_schema_extra is None:
+        attributes.pop('json_schema_extra', None)
+    else:
+        attributes['json_schema_extra'] = cleaned.json_schema_extra
+    cleaned._attributes_set = attributes
     return cleaned
+
+
+def _llm_field_spec(field_info, owner) -> tuple:
+    """Par (anotação, FieldInfo) para create_model de um campo do modelo `owner`.
+
+    A anotação vai com as referências adiantadas resolvidas: fora do modelo
+    dono, `list['Item']` não se resolve, e o Pydantic recusa o modelo novo.
+    """
+    return resolve_forward_refs(field_info.annotation, owner), _llm_field(field_info)
 
 
 def _get_field_config(extra: dict) -> dict:
@@ -243,7 +264,7 @@ def _enrich_list_items_with_search(
             # Criar modelo temporário para a busca
             SingleFieldModel = create_model(
                 f'ItemSearch_{item_idx}_{path.replace(".", "_")}',
-                **{field_name: (field_info.annotation, _llm_field(field_info))}
+                **{field_name: _llm_field_spec(field_info, parent_model)}
             )
 
             # Construir prompt para busca do campo com contexto do item
@@ -424,7 +445,7 @@ def _run_nested_searches(
         # Criar modelo temporário para a busca
         SingleFieldModel = create_model(
             f'NestedSearch_{path.replace(".", "_")}',
-            **{field_name: (field_info.annotation, _llm_field(field_info))}
+            **{field_name: _llm_field_spec(field_info, parent_model)}
         )
 
         # Construir prompt para busca do campo aninhado
@@ -569,7 +590,7 @@ def call_agent_per_field(
         # Criar modelo temporário com apenas este campo
         SingleFieldModel = create_model(
             f'{pydantic_model.__name__}_{field_name}',
-            **{field_name: (field_info.annotation, _llm_field(field_info))}
+            **{field_name: _llm_field_spec(field_info, pydantic_model)}
         )
 
         # Construir prompt para este campo
@@ -747,8 +768,7 @@ def call_agent_per_group(
 
             # Criar modelo com os campos ativos do grupo
             group_field_infos = {
-                field_name: (pydantic_model.model_fields[field_name].annotation,
-                             _llm_field(pydantic_model.model_fields[field_name]))
+                field_name: _llm_field_spec(pydantic_model.model_fields[field_name], pydantic_model)
                 for field_name in active_fields
             }
             GroupModel = create_model(
@@ -802,7 +822,7 @@ def call_agent_per_group(
             # Criar modelo temporário com apenas este campo
             SingleFieldModel = create_model(
                 f'{pydantic_model.__name__}_{field_name}',
-                **{field_name: (field_info.annotation, _llm_field(field_info))}
+                **{field_name: _llm_field_spec(field_info, pydantic_model)}
             )
 
             # Construir prompt para este campo

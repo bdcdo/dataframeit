@@ -397,7 +397,9 @@ def test_reprocess_columns_por_campo_chama_so_os_campos_pedidos(parallel_request
 
     # A condição usa o `tipo` já gravado na linha; só `cpf` da linha pf é pedido
     assert sorted(chamadas) == [('a', ['cpf'])]
-    assert resultado['cpf'].tolist() == ['novo', None]
+    # pandas 3 guarda a coluna como string, e o vazio volta como NaN
+    assert resultado['cpf'].iloc[0] == 'novo'
+    assert pd.isna(resultado['cpf'].iloc[1])
     assert resultado['nome'].tolist() == ['Ana', 'Beta']
 
 
@@ -423,3 +425,189 @@ def test_resolve_forward_refs_preserva_literal_e_a_forma_da_uniao():
     assert typing.get_args(uniao_pipe)[0] == list[Dono]
     inexistente = types.GenericAlias(list, ('Inexistente',))
     assert resolve_forward_refs(inexistente, Dono) == inexistente
+
+
+# =============================================================================
+# Caminhos que a primeira versão dos testes não cobria
+# =============================================================================
+
+def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
+    from dataframeit.agent import call_agent_per_group
+
+    class Modelo(BaseModel):
+        tem_multa: bool
+        orgao: Optional[str] = None
+        valor_multa: Optional[float] = Field(
+            default=None,
+            json_schema_extra={
+                "condition": lambda dados: dados.get("tem_multa") is True,
+                "depends_on": ["tem_multa"],
+            },
+        )
+
+    schemas = []
+    valores = {**_VALORES_MULTA, 'orgao': 'Procon'}
+    config = _config(groups={'g': SearchGroupConfig(fields=['tem_multa', 'orgao'])})
+    falso = _call_agent_que_gera_schema(valores, schemas)
+    with patch('dataframeit.agent.call_agent', side_effect=falso):
+        resultado = call_agent_per_group('texto', Modelo, 'Analise {texto}', config)
+
+    assert resultado['data'] == valores
+    assert all(not _chaves_da_biblioteca_no_schema(s) for s in schemas)
+
+
+def _propriedades_do_campo(schema) -> dict:
+    """Propriedades de primeiro nível do schema, sem o $defs dos aninhados."""
+    return {nome: prop for nome, prop in schema.get('properties', {}).items()}
+
+
+def test_item_de_lista_e_busca_aninhada_mandam_o_campo_limpo():
+    from dataframeit.agent import call_agent_per_field
+
+    class Item(BaseModel):
+        nome: str
+        status: Optional[str] = Field(None, json_schema_extra={'prompt_append': 'Busque o status.'})
+
+    class Interno(BaseModel):
+        valor: Optional[str] = Field(None, json_schema_extra={'search_depth': 'advanced'})
+
+    class Modelo(BaseModel):
+        itens: list[Item] = []
+        interno: Optional[Interno] = None
+
+    schemas_por_modelo = {}
+
+    def falso(text, model, prompt, config, save_trace=None):
+        schemas_por_modelo[model.__name__] = model.model_json_schema()
+        respostas = {'itens': [{'nome': 'a'}], 'status': 'ok', 'valor': 'v', 'interno': None}
+        return {'data': {c: respostas.get(c) for c in model.model_fields}, 'usage': {}}
+
+    with patch('dataframeit.agent.call_agent', side_effect=falso):
+        call_agent_per_field('t', Modelo, 'Analise {texto}', _config())
+
+    item = next(s for n, s in schemas_por_modelo.items() if n.startswith('ItemSearch'))
+    aninhado = next(s for n, s in schemas_por_modelo.items() if n.startswith('NestedSearch'))
+    assert not _chaves_da_biblioteca_no_schema(_propriedades_do_campo(item))
+    assert not _chaves_da_biblioteca_no_schema(_propriedades_do_campo(aninhado))
+
+
+def test_reprocess_columns_nao_repete_busca_aninhada_de_campo_nao_pedido():
+    from dataframeit.agent import call_agent_per_field
+
+    class Interno(BaseModel):
+        valor: Optional[str] = Field(None, json_schema_extra={'prompt_append': 'x'})
+
+    class Modelo(BaseModel):
+        interno: Optional[Interno] = None
+        nome: Optional[str] = None
+
+    modelos = []
+
+    def falso(text, model, prompt, config, save_trace=None):
+        modelos.append(model.__name__)
+        return {'data': {c: 'v' for c in model.model_fields}, 'usage': {}}
+
+    with patch('dataframeit.agent.call_agent', side_effect=falso):
+        call_agent_per_field(
+            't', Modelo, 'Analise {texto}', _config(),
+            only_fields={'nome'}, known={'interno': {'valor': 'antigo'}},
+        )
+
+    assert not any(nome.startswith('NestedSearch') for nome in modelos)
+
+
+def test_reprocess_columns_passa_vazio_como_none_para_a_condicao():
+    class Modelo(BaseModel):
+        cpf: Optional[str] = None
+        confirmado: Optional[str] = Field(
+            None, json_schema_extra={'condition': {'field': 'cpf', 'exists': True}}
+        )
+
+    df = pd.DataFrame({
+        'texto': ['a'],
+        'cpf': [float('nan')],
+        'confirmado': ['antigo'],
+        '_dataframeit_status': ['processed'],
+    })
+    provider, busca = _patches_de_execucao()
+    with provider, busca, patch('dataframeit.agent.call_agent') as call_agent:
+        resultado = dataframeit(
+            df, questions=Modelo, prompt='Analise {texto}',
+            use_search=True, search_per_field=True, reprocess_columns=['confirmado'],
+        )
+
+    # cpf vazio: a condição `exists` é falsa e nada é pedido
+    call_agent.assert_not_called()
+    assert pd.isna(resultado['confirmado'].iloc[0])
+
+
+def test_lista_com_referencia_adiantada_no_modo_por_campo():
+    from dataframeit.agent import call_agent_per_field
+
+    class Item(BaseModel):
+        nome: str
+        status: Optional[str] = Field(None, json_schema_extra={'prompt_append': 'Busque.'})
+
+    class Modelo(BaseModel):
+        itens: list['Item'] = []
+
+    modelos = []
+
+    def falso(text, model, prompt, config, save_trace=None):
+        model.model_json_schema()
+        modelos.append(model.__name__)
+        respostas = {'itens': [{'nome': 'a'}], 'status': 'ok'}
+        return {'data': {c: respostas.get(c) for c in model.model_fields}, 'usage': {}}
+
+    with patch('dataframeit.agent.call_agent', side_effect=falso):
+        resultado = call_agent_per_field('t', Modelo, 'Analise {texto}', _config())
+
+    assert any(nome.startswith('ItemSearch') for nome in modelos)
+    assert resultado['data']['itens'][0]['status'] == 'ok'
+
+
+def test_condition_em_lista_com_referencia_adiantada_levanta_erro():
+    class Item(BaseModel):
+        tipo: str
+        valor: Optional[str] = Field(
+            None, json_schema_extra={'condition': {'field': 'tipo', 'equals': 'a'}}
+        )
+
+    class Modelo(BaseModel):
+        itens: list['Item'] = []
+
+    with pytest.raises(ValueError, match="itens.valor"):
+        _executar(Modelo, use_search=True, search_per_field=True)
+
+
+def test_configuracao_em_lista_de_listas_levanta_erro():
+    class Item(BaseModel):
+        x: Optional[str] = Field(None, json_schema_extra={'prompt_append': 'Busque x.'})
+
+    class Modelo(BaseModel):
+        matriz: list[list[Item]] = []
+
+    with pytest.raises(ValueError, match="matriz.x"):
+        _executar(Modelo, use_search=True, search_per_field=True)
+
+
+def test_max_results_booleano_levanta_erro():
+    class Modelo(BaseModel):
+        campo: Optional[str] = Field(None, json_schema_extra={'max_results': True})
+
+    with pytest.raises(ValueError, match="max_results"):
+        _executar(Modelo, use_search=True, search_per_field=True)
+
+
+def test_mesmo_modelo_em_dois_campos_e_coletado_nos_dois():
+    from dataframeit.conditional import _collect_configured_fields
+
+    class Endereco2(BaseModel):
+        cidade: Optional[str] = Field(None, json_schema_extra={'prompt_append': 'x'})
+
+    class Pessoa(BaseModel):
+        residencial: Optional[Endereco2] = None
+        comercial: Optional[Endereco2] = None
+
+    caminhos = [path for path, *_ in _collect_configured_fields(Pessoa)]
+    assert caminhos == ['residencial.cidade', 'comercial.cidade']
