@@ -418,13 +418,13 @@ def normalize_value(value: Any) -> Any:
     if stripped.startswith(('[', '{')):
         try:
             return json.loads(stripped)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             pass
         # Checkpoints textuais antigos gravavam o repr Python ("['a', 'b']").
         # literal_eval só aceita literais, nunca executa código.
         try:
             parsed = ast.literal_eval(stripped)
-        except (ValueError, SyntaxError, MemoryError, RecursionError):
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
             return value
         if isinstance(parsed, (list, dict, tuple)):
             return parsed
@@ -492,13 +492,6 @@ def read_df(
     # Detectar formato pelo sufixo
     _, ext = os.path.splitext(path.lower())
 
-    # Com o modelo, campos de texto são lidos como texto: sem isso, "2023"
-    # volta como número e a retomada acusa o campo como incompatível.
-    if model is not None and ext in ('.xlsx', '.xls', '.csv') and 'dtype' not in kwargs:
-        text_fields = get_text_fields(model)
-        if text_fields:
-            kwargs['dtype'] = dict.fromkeys(text_fields, str)
-
     # Carregar DataFrame baseado na extensão
     if ext in ('.xlsx', '.xls'):
         df = pd.read_excel(path, **kwargs)
@@ -513,6 +506,21 @@ def read_df(
             f"Formato '{ext}' não suportado. "
             "Use: .xlsx, .xls, .csv, .parquet ou .json"
         )
+
+    # Com o modelo, os campos de texto são relidos como texto cru: sem isso,
+    # "2023" volta como número e "N/A" ou "NA" viram ausência, e a retomada
+    # acusa ou troca o valor. Só a célula vazia vira ausência. A releitura
+    # fica de fora quando o usuário já controla tipos ou NA.
+    text_readers = {'.csv': pd.read_csv, '.xlsx': pd.read_excel, '.xls': pd.read_excel}
+    controls = ('dtype', 'converters', 'na_values', 'keep_default_na', 'na_filter', 'usecols')
+    if model is not None and ext in text_readers and not any(k in kwargs for k in controls):
+        text_columns = [f for f in get_text_fields(model) if f in df.columns]
+        if text_columns:
+            raw = text_readers[ext](
+                path, usecols=text_columns, dtype=str, na_filter=False, **kwargs
+            )
+            for col in text_columns:
+                df[col] = raw[col].mask(raw[col] == '')
 
     # Normalizar colunas
     if not normalize:

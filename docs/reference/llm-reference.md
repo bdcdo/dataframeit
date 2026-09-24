@@ -250,6 +250,8 @@ resultado = dataframeit(df, Model, PROMPT, resume=True)
 resultado.to_excel('parcial.xlsx', index=False)
 
 # Carrega e continua
+from dataframeit import read_df
+
 df = read_df('parcial.xlsx', Model)
 resultado = dataframeit(df, Model, PROMPT, resume=True)
 ```

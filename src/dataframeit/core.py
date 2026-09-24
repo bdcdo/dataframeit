@@ -22,6 +22,7 @@ from .conditional import (
     _FIELD_CONFIG_KEYS,
     _collect_configured_fields,
     _walk_fields,
+    evaluate_condition,
     get_field_execution_order,
     get_group_execution_units,
 )
@@ -41,7 +42,6 @@ from .utils import (
     TOKEN_COLUMNS,
     from_pandas,
     get_complex_fields,
-    get_text_fields,
     normalize_complex_columns,
     normalize_value,
     to_pandas,
@@ -103,6 +103,18 @@ def _invoke_row(backend, text, row, row_already_processed, reprocess_columns, ex
     return backend.invoke(text)
 
 
+def _condition_holds(condition, row_values: dict, field_name: str) -> bool:
+    """Avalia a condição com os valores da linha; erro conta como verdadeira.
+
+    Verdadeira é o lado conservador: o campo ausente continua acusado, e a
+    retomada pede para reprocessá-lo.
+    """
+    try:
+        return bool(evaluate_condition(condition, row_values, field_name))
+    except Exception:
+        return True
+
+
 def _validate_processed_rows(
     df: pd.DataFrame,
     status_col: str,
@@ -143,57 +155,67 @@ def _validate_processed_rows(
             },
         )
 
-    # Campo com `condition` fica None quando a condição é falsa, mesmo que o
-    # tipo declarado seja obrigatório; a validação aceita esse None.
-    conditional_fields = {
-        field_name: (field.annotation | None, None)
+    # Campo com `condition` fica None quando a condição é falsa na linha, mesmo
+    # que o tipo declarado seja obrigatório. Só nesse caso o None é aceito, e só
+    # o campo pulado sai da validação: um valor presente passa pelas restrições
+    # do modelo, e a condição verdadeira com valor ausente continua acusada.
+    conditions = {
+        field_name: field.json_schema_extra['condition']
         for field_name, field in pydantic_model.model_fields.items()
         if isinstance(field.json_schema_extra, dict) and 'condition' in field.json_schema_extra
     }
-    if conditional_fields:
-        validation_model = create_model(
-            f"{pydantic_model.__name__}CheckpointConditional",
-            __base__=validation_model,
-            **conditional_fields,
-        )
+    skipping_models: dict[frozenset, Any] = {}
+
+    def model_skipping(skipped: frozenset):
+        if not skipped:
+            return validation_model
+        if skipped not in skipping_models:
+            skipping_models[skipped] = create_model(
+                f"{pydantic_model.__name__}CheckpointSkipped",
+                __base__=validation_model,
+                **dict.fromkeys(skipped, (Any, None)),
+            )
+        return skipping_models[skipped]
+
     processed_positions = [
         position
         for position, status in enumerate(df[status_col])
         if status == 'processed'
     ]
-
-    # CSV e XLSX gravam "" e None do mesmo jeito. Num campo obrigatório de
-    # texto, o vazio numa linha processada é lido como "" quando a coluna tem
-    # valor em outras linhas processadas. Coluna vazia em todas elas é campo
-    # novo no modelo e continua incompatível, para ser reprocessada.
-    processed_rows = df.iloc[processed_positions]
-    empty_text_fields = {
-        field_name
-        for field_name in get_text_fields(pydantic_model)
-        if field_name in df.columns and processed_rows[field_name].notna().any()
-    }
     for position in processed_positions:
         row = df.iloc[position]
+        row_values = {}
+        for field_name in pydantic_model.model_fields:
+            if field_name not in df.columns:
+                row_values[field_name] = None
+                continue
+            value = row[field_name]
+            if is_scalar(value) and bool(pd.isna(value)):
+                row_values[field_name] = None
+            elif field_name in complex_fields:
+                row_values[field_name] = normalize_value(value)
+            else:
+                row_values[field_name] = value
+
+        skipped = frozenset(
+            field_name
+            for field_name, condition in conditions.items()
+            if row_values[field_name] is None
+            and not _condition_holds(condition, row_values, field_name)
+        )
+
         projected = {}
         missing_values = set()
         for field_name, field in pydantic_model.model_fields.items():
-            if field_name not in df.columns:
+            value = row_values[field_name]
+            if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
                 missing_values.add(field_name)
-                continue
-
-            value = row[field_name]
-            is_missing = is_scalar(value) and bool(pd.isna(value))
-            if is_missing:
-                missing_values.add(field_name)
-                if not field.is_required() or field_name in conditional_fields:
+                if not field.is_required() or field_name in skipped:
                     continue
-                value = '' if field_name in empty_text_fields else None
-            elif field_name in complex_fields:
-                value = normalize_value(value)
             projected[field_name] = value
 
         try:
-            validated = validation_model.model_validate(projected)
+            validated = model_skipping(skipped).model_validate(projected)
         except ValidationError as error:
             for detail in error.errors():
                 location = detail.get('loc', ())
@@ -1192,7 +1214,9 @@ def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
         warnings.warn(
             f"Falha ao gravar o checkpoint em {path}: {type(error).__name__}: {error}. "
             "O processamento continua, e a próxima gravação tenta de novo.",
-            stacklevel=3,
+            # usuário -> dataframeit -> _process_rows -> aqui; no modo paralelo
+            # o aviso sai de uma thread do executor e não tem quadro do usuário.
+            stacklevel=4,
         )
         return False
     return True

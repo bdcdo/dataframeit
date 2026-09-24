@@ -83,6 +83,8 @@ resultado = dataframeit(df, Model, PROMPT, resume=True)
 resultado.to_excel('parcial.xlsx', index=False)
 
 # Se houver interrupção, carregue e continue
+from dataframeit import read_df
+
 df = read_df('parcial.xlsx', Model)
 resultado = dataframeit(df, Model, PROMPT, resume=True)
 resultado.to_excel('completo.xlsx', index=False)
@@ -94,6 +96,8 @@ resultado.to_excel('completo.xlsx', index=False)
 ## Reprocessando Erros
 
 ```python
+from dataframeit import read_df
+
 # Carregar resultado com erros
 df = read_df('resultado.xlsx', Model)
 
