@@ -8,6 +8,7 @@ Este módulo contém funções para:
 """
 import importlib
 import random
+import re
 import time
 import warnings
 
@@ -616,8 +617,64 @@ def get_friendly_error_message(error: Exception, provider: str = None) -> str:
 """.strip()
 
 
+# Status HTTP 4xx que indicam falha transitória; os demais 4xx são definitivos.
+_RECOVERABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
+
+# Atributos em que SDKs e clientes HTTP expõem o status da resposta:
+# status_code (openai, anthropic, groq, mistral, cohere), code (google.genai,
+# google.api_core, urllib) e http_status. O `code` do openai é textual e é
+# descartado pela checagem de tipo em _own_http_status.
+_HTTP_STATUS_ATTRIBUTES = ('status_code', 'code', 'http_status')
+
+
+def _own_http_status(error: BaseException) -> int | None:
+    """Status HTTP de erro (400-599) declarado pela própria exceção, se houver."""
+    candidates = [getattr(error, name, None) for name in _HTTP_STATUS_ATTRIBUTES]
+    candidates.append(getattr(getattr(error, 'response', None), 'status_code', None))
+    for value in candidates:
+        # A faixa descarta códigos que não são status HTTP de erro, inclusive bool.
+        if isinstance(value, int) and 400 <= value <= 599:
+            return value
+    return None
+
+
+def _http_error_status(error: BaseException) -> int | None:
+    """Status HTTP da exceção ou da primeira causa explícita que o declare.
+
+    Wrappers como o ChatGoogleGenerativeAIError não carregam status próprio e
+    encadeiam o erro do SDK com `raise ... from`, por isso a busca segue
+    `__cause__`. `__context__` fica de fora: é a exceção que estava sendo tratada
+    quando esta surgiu, e não necessariamente a sua causa.
+    """
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = _own_http_status(current)
+        if status is not None:
+            return status
+        current = current.__cause__
+    return None
+
+
+def _matches_error_pattern(pattern: str, error_str: str) -> bool:
+    """Casa um padrão com a mensagem, já em minúsculas.
+
+    Padrões numéricos casam só como número isolado, para que '401' não case com
+    '4015 tokens'.
+    """
+    if pattern.isdigit():
+        return re.search(rf'\b{pattern}\b', error_str) is not None
+    return pattern.lower() in error_str
+
+
 def is_recoverable_error(error: Exception) -> bool:
     """Verifica se um erro é recuperável (vale a pena fazer retry).
+
+    A decisão segue esta precedência: as classes Provider*Error; o status HTTP
+    estruturado da exceção ou da sua causa (408, 409, 429 e 5xx são recuperáveis,
+    os demais 4xx não); os padrões de NON_RECOVERABLE_ERRORS e RECOVERABLE_ERRORS
+    na mensagem; e, se nada casar, o erro é tratado como recuperável.
 
     Args:
         error: Exceção a ser analisada.
@@ -633,19 +690,22 @@ def is_recoverable_error(error: Exception) -> bool:
     ):
         return False
 
-    error_str = f"{type(error).__name__}: {error}"
+    status = _http_error_status(error)
+    if status is not None:
+        return status >= 500 or status in _RECOVERABLE_CLIENT_STATUSES
+
+    error_str = f"{type(error).__name__}: {error}".lower()
 
     # Verificar se é explicitamente não-recuperável
     for pattern in NON_RECOVERABLE_ERRORS:
-        if pattern.lower() in error_str.lower():
+        if _matches_error_pattern(pattern, error_str):
             return False
 
     # Verificar se é explicitamente recuperável
     for pattern in RECOVERABLE_ERRORS:
-        if pattern.lower() in error_str.lower():
+        if _matches_error_pattern(pattern, error_str):
             return True
 
-    # Por padrão, tentar recuperar (comportamento original)
     return True
 
 
@@ -663,9 +723,13 @@ def is_rate_limit_error(error: Exception) -> bool:
     if isinstance(error, ProviderTransientError):
         return False
 
+    status = _http_error_status(error)
+    if status is not None:
+        return status == 429
+
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ('ratelimit', 'resourceexhausted', 'toomanyrequests', '429')
-    return any(pattern in error_str for pattern in rate_limit_patterns)
+    return any(_matches_error_pattern(pattern, error_str) for pattern in rate_limit_patterns)
 
 
 def retry_with_backoff(
