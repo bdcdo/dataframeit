@@ -11,6 +11,40 @@ permissions:
   contents: read
 
 jobs:
+  # ty e deptry resolvem os imports dos extras opcionais, e por isso o job
+  # instala todos eles, inclusive o codex, cujo módulo o ty confere contra o SDK.
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      EXTRAS: --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Ruff format
+        run: uv run --python 3.13 $EXTRAS ruff format --check src tests
+
+      - name: Ruff check
+        run: uv run --python 3.13 $EXTRAS ruff check src tests
+
+      - name: ty
+        run: uv run --python 3.13 $EXTRAS ty check
+
+      - name: vulture
+        run: uv run --python 3.13 $EXTRAS vulture
+
+      - name: deptry
+        run: uv run --python 3.13 $EXTRAS deptry src
+
   unit:
     runs-on: ubuntu-latest
     strategy:
@@ -38,9 +72,6 @@ jobs:
           packages = {"filelock", "openai-codex",
           "openai-codex-cli-bin"};
           assert not packages & installed'
-
-      - name: Lint
-        run: uv run --python "${{ matrix.python-version }}" --extra dev ruff check src tests
 
       - name: Run tests
         run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all --extra openai pytest
