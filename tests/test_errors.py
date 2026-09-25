@@ -1,6 +1,13 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
-from dataframeit.errors import _infer_provider_info, get_friendly_error_message
+import pytest
+
+from dataframeit.errors import (
+    ProviderTransientError,
+    _infer_provider_info,
+    get_friendly_error_message,
+    retry_with_backoff,
+)
 
 
 class TestInferProviderInfoOverrides:
@@ -102,3 +109,30 @@ class TestFriendlyAuthErrorWithoutEnvVar:
         )
         assert "OPENAI_API_KEY" in msg
         assert "export OPENAI_API_KEY" in msg
+
+
+class _ResultadoQueFalhaAoAnotar(dict):
+    """Dict cuja primeira gravação de chave levanta um erro transitório."""
+
+    falhas = 0
+
+    def __setitem__(self, chave, valor):
+        if type(self).falhas == 0:
+            type(self).falhas += 1
+            msg = "falha ao anotar o resultado"
+            raise ProviderTransientError(msg)
+        super().__setitem__(chave, valor)
+
+
+def test_falha_ao_anotar_o_resultado_ganha_nova_tentativa():
+    chamadas = []
+
+    def funcao():
+        chamadas.append(1)
+        return _ResultadoQueFalhaAoAnotar()
+
+    with pytest.warns(UserWarning, match="Tentativa 1/2 falhou"):
+        resultado = retry_with_backoff(funcao, max_retries=2, base_delay=0, max_delay=0)
+
+    assert len(chamadas) == 2
+    assert resultado["_retry_info"]["retries"] == 1

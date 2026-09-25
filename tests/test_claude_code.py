@@ -240,7 +240,9 @@ class TestOpcoesSemFerramentas:
     def test_sdk_real_aceita_tools_vazio(self):
         """A versão instalada do SDK aceita `tools=[]` e o traduz em `--tools ''`."""
         sdk = pytest.importorskip("claude_agent_sdk")
-        subprocess_cli = pytest.importorskip("claude_agent_sdk._internal.transport.subprocess_cli")
+        # Import direto, e não importorskip: se o módulo interno mudar de lugar numa
+        # versão nova do SDK, o teste deve quebrar, e não pular.
+        from claude_agent_sdk._internal.transport import subprocess_cli  # noqa: PLC0415
 
         opcoes = sdk.ClaudeAgentOptions(tools=[], permission_mode="default")
         transporte = subprocess_cli.SubprocessCLITransport(prompt="x", options=opcoes)
@@ -333,7 +335,8 @@ def test_claude_code_nao_carrega_settings_nem_mcp_do_usuario(sdk_falso):
 
 def test_sdk_real_monta_as_flags_de_isolamento():
     sdk = pytest.importorskip("claude_agent_sdk")
-    subprocess_cli = pytest.importorskip("claude_agent_sdk._internal.transport.subprocess_cli")
+    # Import direto pelo mesmo motivo do teste acima.
+    from claude_agent_sdk._internal.transport import subprocess_cli  # noqa: PLC0415
 
     opcoes = sdk.ClaudeAgentOptions(
         tools=[],

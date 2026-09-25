@@ -48,7 +48,7 @@ def _config(**busca):
 @pytest.fixture
 def exa_falso(monkeypatch):
     pytest.importorskip("langchain_exa")
-    exa_py = pytest.importorskip("exa_py")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
 
     monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
     chamadas = []
@@ -77,7 +77,7 @@ def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
 
 def test_exa_levanta_o_erro_do_provider(monkeypatch):
     pytest.importorskip("langchain_exa")
-    exa_py = pytest.importorskip("exa_py")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
 
     monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
 
@@ -101,7 +101,9 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch):
 def tavily_disponivel(monkeypatch):
     pytest.importorskip("langchain_tavily")
     monkeypatch.setenv("TAVILY_API_KEY", "chave-de-teste")
-    _utilities = pytest.importorskip("langchain_tavily._utilities")
+    # Import direto, e não importorskip: se o módulo interno mudar de lugar numa versão
+    # nova, o teste deve quebrar, e não pular.
+    from langchain_tavily import _utilities  # noqa: PLC0415
 
     return _utilities.TavilySearchAPIWrapper
 

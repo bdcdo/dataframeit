@@ -198,7 +198,9 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
     if isinstance(data, dict):
         keys = list(data.keys())
         values = list(data.values())
-        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=pd.Index(keys))
+        # tupleize_cols=False: com chaves-tupla, o pd.Index padrão criaria um
+        # MultiIndex, e a saída mudaria de forma para o usuário.
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=pd.Index(keys, tupleize_cols=False))
         return df, ConversionInfo(
             original_type=ORIGINAL_TYPE_DICT,
             original_index=keys,

@@ -267,3 +267,15 @@ class TestRoundTrip:
         assert isinstance(result, pd.DataFrame)
         assert list(result.index) == ["documento_1", "documento_2"]
         assert "resumo" in result.columns
+
+
+def test_dict_com_chaves_tupla_mantem_indice_simples():
+    """Chaves-tupla viram rótulos de um Index simples, sem MultiIndex."""
+    original = {("sp", 2020): "texto a", ("rj", 2021): "texto b"}
+
+    df, info = to_pandas(original)
+    df["resumo"] = ["resumo a", "resumo b"]
+    resultado = from_pandas(df, info)
+
+    assert not isinstance(resultado.index, pd.MultiIndex)
+    assert list(resultado.index) == [("sp", 2020), ("rj", 2021)]

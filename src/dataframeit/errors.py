@@ -823,6 +823,10 @@ def retry_with_backoff(
         retry_info["attempts"] = attempt + 1
         try:
             result = func()
+            # Dentro do try: uma falha ao anotar o resultado também ganha nova tentativa.
+            if isinstance(result, dict):
+                result["_retry_info"] = retry_info
+            return result  # noqa: TRY300 (o else mudaria quais falhas são re-tentadas)
         except Exception as e:
             error_name = type(e).__name__
             error_msg = str(e)
@@ -855,11 +859,6 @@ def retry_with_backoff(
             )
 
             time.sleep(total_delay)
-        else:
-            # Adicionar retry_info ao resultado se for dict
-            if isinstance(result, dict):
-                result["_retry_info"] = retry_info
-            return result
 
     # range(max_retries) vazio: nenhuma tentativa foi feita.
     msg = f"max_retries deve ser >= 1; recebido {max_retries!r}"
