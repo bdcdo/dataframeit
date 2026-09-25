@@ -1,14 +1,23 @@
+"""Chamadas de LLM via LangChain: configuração, structured output e correção."""
+
+from __future__ import annotations
+
 import json
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast
 
 from langchain_core.exceptions import OutputParserException
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from .errors import ProviderRejectedOutputError, retry_with_backoff
 from .utils import check_dependency
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import Runnable
 
 T = TypeVar("T")
 
@@ -22,7 +31,7 @@ class _BuildOnce(Generic[T]):
     novo. O lock impede que threads do modo paralelo construam duas vezes.
     """
 
-    def __init__(self, build: Callable[[], T]):
+    def __init__(self, build: Callable[[], T]) -> None:
         self._build = build
         self._lock = threading.Lock()
         self._built = False
@@ -34,7 +43,8 @@ class _BuildOnce(Generic[T]):
                 if not self._built:
                     self._value = self._build()
                     self._built = True
-        return self._value
+        # Depois de _built, _value guarda o valor construído, do tipo T.
+        return cast("T", self._value)
 
 
 @dataclass
@@ -118,7 +128,7 @@ def build_prompt(user_prompt: str, text: str) -> str:
     return user_prompt.replace("{texto}", text)
 
 
-def _parse_usage_metadata(meta) -> dict[str, int]:
+def _parse_usage_metadata(meta: object) -> dict[str, int]:
     """Extrai tokens de um usage_metadata dict ou objeto.
 
     ``cache_read`` representa tokens lidos do cache. ``cache_creation`` não
@@ -168,14 +178,14 @@ def with_shared_chat_model(config: LLMConfig) -> LLMConfig:
     )
 
 
-def chat_model(config: LLMConfig):
+def chat_model(config: LLMConfig) -> BaseChatModel:
     """Devolve o modelo LangChain da execução, ou cria um se não há compartilhado."""
     if config.shared_chat_model is not None:
         return config.shared_chat_model()
     return _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
 
 
-def build_structured_llm(pydantic_model, config: LLMConfig):
+def build_structured_llm(pydantic_model: type[BaseModel], config: LLMConfig) -> Runnable:
     """Modelo com structured output para ``pydantic_model``.
 
     O método (json_schema, tool calling) é o padrão de cada integração
@@ -189,7 +199,7 @@ def build_structured_llm(pydantic_model, config: LLMConfig):
 
 def call_langchain(
     text: str,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
     structured_llm: _BuildOnce | None = None,
@@ -220,7 +230,7 @@ def call_langchain(
     correction: dict[str, str | None] = {"ai": None, "human": None}
     usage_total: dict[str, int] = {}
 
-    def _call():
+    def _call() -> dict:
         try:
             result = model.invoke(_messages(prompt, correction))
         except ValidationError as error:
@@ -262,7 +272,7 @@ def call_langchain(
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
-def _model_title(pydantic_model) -> str:
+def _model_title(pydantic_model: type[BaseModel]) -> str:
     """O título que o Pydantic põe no ValidationError do modelo."""
     return pydantic_model.model_config.get("title") or pydantic_model.__name__
 
@@ -272,15 +282,16 @@ def _add_usage(total: dict, usage: dict | None) -> None:
         total[key] = total.get(key, 0) + (value or 0)
 
 
-def _sdk_rejected_response(error) -> tuple[str, dict | None]:
+def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict | None]:
     """Texto e uso da resposta que o SDK da OpenAI recusou, lidos da resposta HTTP.
 
     O langchain-openai anexa a resposta HTTP à exceção (`error.response`). Sem
     ela, ou com corpo em formato desconhecido, devolve texto vazio e uso None.
     """
     try:
-        return _read_sdk_body(error.response.json())
-    except Exception:
+        # response é anexada pelo langchain-openai e não faz parte do tipo.
+        return _read_sdk_body(error.response.json())  # ty: ignore[unresolved-attribute]
+    except Exception:  # noqa: BLE001 (resposta ausente ou em formato desconhecido)
         return "", None
 
 
@@ -315,7 +326,7 @@ def _read_sdk_body(body: dict) -> tuple[str, dict | None]:
     }
 
 
-def _messages(prompt: str, correction: dict):
+def _messages(prompt: str, correction: dict) -> str | list[tuple[str, str]]:
     """O prompt sozinho, ou a conversa com a resposta recusada e o pedido de correção.
 
     Sem a resposta bruta, o pedido vai na mesma mensagem do prompt: duas
@@ -328,7 +339,7 @@ def _messages(prompt: str, correction: dict):
     return [("human", f"{prompt}\n\n{correction['human']}")]
 
 
-def _raw_payload(raw_message) -> tuple[dict | None, str]:
+def _raw_payload(raw_message: object) -> tuple[dict | None, str]:
     """Resposta bruta do modelo como dict, quando dá, e como texto.
 
     O structured output chega por tool call (function calling) ou no conteúdo
@@ -364,7 +375,9 @@ _MAX_INPUT_CHARS = 300
 _MAX_ERROR_TEXT = 2000
 
 
-def _validation_error_of(error, pydantic_model, payload):
+def _validation_error_of(
+    error: Exception | None, pydantic_model: type[BaseModel], payload: dict | None
+) -> ValidationError | None:
     """O ValidationError por campo, direto, embrulhado pelo parser ou revalidando."""
     if isinstance(error, ValidationError):
         return error
@@ -391,7 +404,13 @@ def _format_validation_error(error: ValidationError) -> str:
     return "\n".join(lines)
 
 
-def _request_correction(pydantic_model, raw_message, error, correction: dict, raw_text: str = ""):
+def _request_correction(
+    pydantic_model: type[BaseModel],
+    raw_message: object,
+    error: Exception | None,
+    correction: dict,
+    raw_text: str = "",
+) -> NoReturn:
     """Prepara o pedido de correção da tentativa seguinte e levanta ProviderRejectedOutputError.
 
     A mensagem da exceção, que fica em `_error_details`, leva o caminho e a regra
@@ -428,8 +447,11 @@ _CORRECTION_REQUEST = (
 
 
 def _create_langchain_llm(
-    model: str, provider: str, api_key: str | None, extra_kwargs: dict[str, Any] | None = None
-):
+    model: str | None,
+    provider: str,
+    api_key: str | None,
+    extra_kwargs: dict[str, Any] | None = None,
+) -> BaseChatModel:
     """Cria instância de LLM do LangChain baseado no provider.
 
     Args:
@@ -441,12 +463,13 @@ def _create_langchain_llm(
     Returns:
         Instância do LLM configurado.
     """
-    from langchain.chat_models import init_chat_model
+    # langchain.chat_models é pesado, e só carrega quando um modelo é criado.
+    from langchain.chat_models import init_chat_model  # noqa: PLC0415
 
     # Nenhum parâmetro de amostragem é injetado: vários modelos rejeitam
     # `temperature` com erro 400, e a lista muda a cada lançamento. Quem quer
     # determinismo passa `temperature` em `model_kwargs`, nos modelos que aceitam.
-    kwargs = {"model_provider": provider}
+    kwargs: dict[str, Any] = {"model_provider": provider}
     if api_key:
         kwargs["api_key"] = api_key
 
@@ -454,4 +477,6 @@ def _create_langchain_llm(
     if extra_kwargs:
         kwargs.update(extra_kwargs)
 
-    return init_chat_model(model, **kwargs)
+    # Com model=None o LangChain devolve um modelo configurável; aqui model só é
+    # None com codex e claude_code, que não criam modelo LangChain.
+    return init_chat_model(model, **kwargs)  # ty: ignore[invalid-return-type]
