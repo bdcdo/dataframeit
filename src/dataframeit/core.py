@@ -61,7 +61,8 @@ from .utils import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterator, Sequence
 
-    import polars as pl
+    from polars import DataFrame as PolarsDataFrame
+    from polars import Series as PolarsSeries
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
@@ -737,7 +738,7 @@ def _has_field_config(pydantic_model: type[BaseModel]) -> bool:
 
 
 def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)
-    data: pd.DataFrame | pd.Series | pl.DataFrame | pl.Series | list | dict,
+    data: pd.DataFrame | pd.Series | PolarsDataFrame | PolarsSeries | list | dict,
     questions: type[BaseModel] | None = None,
     prompt: str | None = None,
     perguntas: type[BaseModel] | None = None,  # Deprecated: use 'questions'
@@ -766,7 +767,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | Path | None = None,
-) -> pd.DataFrame | pl.DataFrame:
+) -> pd.DataFrame | PolarsDataFrame:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
     Suporta múltiplos tipos de entrada:

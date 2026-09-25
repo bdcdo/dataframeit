@@ -217,6 +217,30 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 [tool.ty.src]
 include = ["src"]
 
+[tool.vulture]
+paths = ["src"]
+min_confidence = 80
+
+[tool.deptry]
+known_first_party = ["dataframeit"]
+# Ferramentas de desenvolvimento e da documentação, que o código não importa.
+optional_dependencies_dev_groups = ["dev", "docs"]
+
+[tool.deptry.per_rule_ignores]
+# Dependências que o código não importa pelo nome: as integrações LangChain de
+# cada provider são carregadas por importlib (errors.validate_provider_dependencies
+# e init_chat_model), pyarrow e openpyxl são usados pelo pandas ao ler e gravar
+# parquet e xlsx, e openai-codex-cli-bin traz o executável do runtime do Codex.
+DEP002 = [
+    "langchain-google-genai",
+    "langchain-openai",
+    "langchain-anthropic",
+    "langchain-groq",
+    "pyarrow",
+    "openpyxl",
+    "openai-codex-cli-bin",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

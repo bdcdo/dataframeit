@@ -1,0 +1,46 @@
+# Os hooks rodam as mesmas versões do extra dev do pyproject.toml, pelo uv, e
+# o job quality do CI (tests.yml) roda os mesmos comandos.
+# Instalação: uv run --extra dev pre-commit install
+# Os hooks disparam com mudanças em src/ e tests/, as pastas que o CI confere.
+files: ^(src|tests)/
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --extra dev ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --extra dev ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # ty resolve os imports dos extras opcionais, por isso eles vão junto.
+      - id: ty
+        name: ty check
+        entry: >-
+          uv run --extra dev --extra all --extra search-all --extra polars
+          --extra excel --extra codex ty check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+
+      - id: vulture
+        name: vulture
+        entry: uv run --extra dev vulture
+        language: system
+        types_or: [python]
+        pass_filenames: false
+
+      - id: deptry
+        name: deptry
+        entry: >-
+          uv run --extra dev --extra all --extra search-all --extra polars
+          --extra excel --extra codex deptry src
+        language: system
+        pass_filenames: false

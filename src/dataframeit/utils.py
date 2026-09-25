@@ -30,13 +30,13 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from collections.abc import Hashable
 
+    from polars import DataFrame as PolarsDataFrame
+
+# Import opcional de Polars
+try:
     import polars as pl
-else:
-    # Import opcional de Polars
-    try:
-        import polars as pl
-    except ImportError:
-        pl = None
+except ImportError:
+    pl = None
 
 
 # Tipos de dados originais suportados
@@ -209,7 +209,7 @@ def from_pandas(
     df: pd.DataFrame,
     conversion_info: ConversionInfo | bool,  # noqa: FBT001 (bool aceito por retrocompatibilidade)
     status_col: str = "_dataframeit_status",
-) -> pd.DataFrame | pl.DataFrame:
+) -> pd.DataFrame | PolarsDataFrame:
     """Converte DataFrame pandas de volta para o formato original.
 
     Remove automaticamente as colunas internas de controle (_dataframeit_status
