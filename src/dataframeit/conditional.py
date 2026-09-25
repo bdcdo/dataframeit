@@ -1,9 +1,20 @@
 """Sistema de condicionais para execução condicional de campos."""
 
+from __future__ import annotations
+
 import logging
-from typing import Any, get_args, get_origin
+import operator
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from .utils import get_nested_pydantic_models, resolve_forward_refs
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+    from pydantic import BaseModel
+    from pydantic.fields import FieldInfo
+
+    from .llm import SearchGroupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +32,18 @@ _FIELD_CONFIG_KEYS = (
 # e call_agent_per_group as aplicam, e só nos campos de primeiro nível.
 _CONDITIONAL_KEYS = ("condition", "depends_on")
 
+# Operadores de comparação de uma condição em dict, na ordem em que são
+# procurados: símbolo usado no log e função que compara valor e operando.
+_CONDITION_OPERATORS: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {
+    "equals": ("==", operator.eq),
+    "not_equals": ("!=", operator.ne),
+    "in": ("in", lambda value, options: value in options),
+    "not_in": ("not in", lambda value, options: value not in options),
+}
+
 
 def _collect_configured_fields(
-    pydantic_model, prefix: str = "", _visited: set | None = None
+    pydantic_model: type[BaseModel], prefix: str = "", _visited: set | None = None
 ) -> list:
     """Coleta todos os campos com json_schema_extra de busca, incluindo aninhados.
 
@@ -63,7 +83,7 @@ def _collect_configured_fields(
     return results
 
 
-def _list_layers(annotation, target) -> int | None:
+def _list_layers(annotation: object, target: type) -> int | None:
     """Quantas listas envolvem `target` na anotação: list[list[X]] dá 2.
 
     Só conta os ramos que chegam ao modelo; em Union[list[str], X], a lista
@@ -82,8 +102,11 @@ def _list_layers(annotation, target) -> int | None:
 
 
 def _walk_fields(
-    pydantic_model, prefix: str = "", list_depth: int = 0, _visited: set | None = None
-):
+    pydantic_model: type[BaseModel],
+    prefix: str = "",
+    list_depth: int = 0,
+    _visited: set | None = None,
+) -> Iterator[tuple[str, FieldInfo, int]]:
     """Percorre todos os campos, inclusive aninhados, com a profundidade de lista.
 
     Yields:
@@ -110,7 +133,7 @@ def _walk_fields(
             )
 
 
-def get_nested_value(data: dict[str, Any], field_path: str) -> Any:
+def get_nested_value(data: dict[str, Any], field_path: str) -> Any:  # noqa: ANN401 (valor do campo, de qualquer tipo)
     """Obtém valor de um campo potencialmente aninhado.
 
     Args:
@@ -145,7 +168,9 @@ def get_nested_value(data: dict[str, Any], field_path: str) -> Any:
     return current
 
 
-def evaluate_condition(condition: Any, field_data: dict[str, Any], field_name: str) -> bool:
+def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
+    condition: object, field_data: dict[str, Any], field_name: str
+) -> bool:
     """Avalia se uma condição é satisfeita.
 
     Args:
@@ -175,77 +200,62 @@ def evaluate_condition(condition: Any, field_data: dict[str, Any], field_name: s
     if callable(condition):
         try:
             return bool(condition(field_data))
-        except Exception as e:
-            logger.warning(f"Erro ao avaliar condição callable para campo '{field_name}': {e}")
+        except Exception as e:  # noqa: BLE001 (a função do usuário pode levantar qualquer erro)
+            logger.warning("Erro ao avaliar condição callable para campo '%s': %s", field_name, e)
             return False
 
     # Dict-based condition
     if isinstance(condition, dict):
         field_path = condition.get("field")
         if not field_path:
-            logger.warning(f"Condição para campo '{field_name}' não tem 'field' definido")
+            logger.warning("Condição para campo '%s' não tem 'field' definido", field_name)
             return False
 
         value = get_nested_value(field_data, field_path)
 
-        # equals
-        if "equals" in condition:
-            result = value == condition["equals"]
-            logger.debug(
-                f"Campo '{field_name}': {field_path}={value} == {condition['equals']} -> {result}"
-            )
-            return result
-
-        # not_equals
-        if "not_equals" in condition:
-            result = value != condition["not_equals"]
-            logger.debug(
-                f"Campo '{field_name}': {field_path}={value} != {condition['not_equals']} -> {result}"
-            )
-            return result
-
-        # in (value in list)
-        if "in" in condition:
-            result = value in condition["in"]
-            logger.debug(
-                f"Campo '{field_name}': {field_path}={value} in {condition['in']} -> {result}"
-            )
-            return result
-
-        # not_in
-        if "not_in" in condition:
-            result = value not in condition["not_in"]
-            logger.debug(
-                f"Campo '{field_name}': {field_path}={value} not in {condition['not_in']} -> {result}"
-            )
-            return result
+        for key, (symbol, compare) in _CONDITION_OPERATORS.items():
+            if key in condition:
+                result = compare(value, condition[key])
+                logger.debug(
+                    "Campo '%s': %s=%s %s %s -> %s",
+                    field_name,
+                    field_path,
+                    value,
+                    symbol,
+                    condition[key],
+                    result,
+                )
+                return result
 
         # exists (campo existe e não é None)
         if "exists" in condition:
             expected_exists = condition["exists"]
             result = (value is not None) == expected_exists
             logger.debug(
-                f"Campo '{field_name}': {field_path} exists={value is not None} == {expected_exists} -> {result}"
+                "Campo '%s': %s exists=%s == %s -> %s",
+                field_name,
+                field_path,
+                value is not None,
+                expected_exists,
+                result,
             )
             return result
 
         logger.warning(
-            f"Condição para campo '{field_name}' não tem operador válido "
-            f"(equals, not_equals, in, not_in, exists)"
+            "Condição para campo '%s' não tem operador válido "
+            "(equals, not_equals, in, not_in, exists)",
+            field_name,
         )
         return False
 
-    logger.warning(f"Condição para campo '{field_name}' tem tipo inválido: {type(condition)}")
+    logger.warning("Condição para campo '%s' tem tipo inválido: %s", field_name, type(condition))
     return False
 
 
-def check_dependencies_exist(
-    field_name: str, depends_on: list[str], all_fields: set[str]
-) -> list[str]:
+def check_dependencies_exist(depends_on: list[str], all_fields: set[str]) -> list[str]:
     """Verifica se todas as dependências existem no modelo.
 
     Args:
-        field_name: Nome do campo.
         depends_on: Lista de campos dos quais este campo depende.
         all_fields: Set com todos os nomes de campos do modelo.
 
@@ -261,6 +271,10 @@ def check_dependencies_exist(
             missing.append(dep)
 
     return missing
+
+
+# Estado de cada nó na busca em profundidade de detect_circular_dependencies.
+_NOT_VISITED, _IN_PROGRESS, _DONE = 0, 1, 2
 
 
 def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str] | None:
@@ -280,19 +294,18 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
         >>> detect_circular_dependencies(deps)
         None
     """
-    # Estado de cada nó: 0 = não visitado, 1 = em progresso, 2 = concluído
-    state = dict.fromkeys(dependencies, 0)
+    state = dict.fromkeys(dependencies, _NOT_VISITED)
     path = []
 
     def dfs(field: str) -> list[str] | None:
-        if state[field] == 2:  # Já processado
+        if state[field] == _DONE:
             return None
-        if state[field] == 1:  # Ciclo detectado
+        if state[field] == _IN_PROGRESS:  # Ciclo detectado
             # Retorna o ciclo completo
             cycle_start = path.index(field)
             return [*path[cycle_start:], field]
 
-        state[field] = 1
+        state[field] = _IN_PROGRESS
         path.append(field)
 
         for dep in dependencies.get(field, []):
@@ -304,11 +317,11 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
                     return cycle
 
         path.pop()
-        state[field] = 2
+        state[field] = _DONE
         return None
 
     for field in dependencies:
-        if state[field] == 0:
+        if state[field] == _NOT_VISITED:
             cycle = dfs(field)
             if cycle:
                 return cycle
@@ -384,8 +397,9 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
     if condition is None:
         if explicit:
             logger.warning(
-                f"Campo '{field_name}' tem 'depends_on' mas não tem 'condition' — "
-                f"depends_on será ignorado (sem condition, ordem não afeta o resultado)."
+                "Campo '%s' tem 'depends_on' mas não tem 'condition': "
+                "depends_on será ignorado (sem condition, ordem não afeta o resultado).",
+                field_name,
             )
         return []
 
@@ -396,9 +410,10 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
             derived = [field_path.split(".")[0]]
     elif callable(condition) and not explicit:
         logger.warning(
-            f"Campo '{field_name}' tem 'condition' callable sem 'depends_on' — "
-            f"a ordem de execução não é garantida. Declare 'depends_on' com os campos "
-            f"lidos pela função."
+            "Campo '%s' tem 'condition' callable sem 'depends_on': "
+            "a ordem de execução não é garantida. Declare 'depends_on' com os campos "
+            "lidos pela função.",
+            field_name,
         )
 
     result = list(explicit)
@@ -409,7 +424,7 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
 
 
 def get_field_execution_order(
-    pydantic_model, field_configs: dict[str, dict]
+    pydantic_model: type[BaseModel], field_configs: dict[str, dict]
 ) -> tuple[list[str], dict[str, list[str]]]:
     """Determina ordem de execução dos campos baseado em dependências.
 
@@ -436,7 +451,7 @@ def get_field_execution_order(
         config = field_configs.get(field_name, {})
         depends_on = _resolve_depends_on(field_name, config)
 
-        missing = check_dependencies_exist(field_name, depends_on, all_fields)
+        missing = check_dependencies_exist(depends_on, all_fields)
         if missing:
             msg = f"Campo '{field_name}' depende de campos inexistentes: {missing}"
             raise ValueError(msg)
@@ -448,7 +463,11 @@ def get_field_execution_order(
     return ordered, dependencies
 
 
-def get_group_execution_units(pydantic_model, groups: dict, dependencies: dict[str, list[str]]):
+def get_group_execution_units(
+    pydantic_model: type[BaseModel],
+    groups: dict[str, SearchGroupConfig],
+    dependencies: dict[str, list[str]],
+) -> tuple[list[tuple[str, str, SearchGroupConfig | None]], dict[str, str], dict[str, list[str]]]:
     """Monta as unidades de execução do modo por grupo e suas dependências.
 
     Cada grupo e cada campo fora de grupo é uma unidade. As chaves são índices
@@ -468,7 +487,9 @@ def get_group_execution_units(pydantic_model, groups: dict, dependencies: dict[s
     for group_config in groups.values():
         grouped_fields.update(group_config.fields)
 
-    units = [("group", group_name, group_config) for group_name, group_config in groups.items()]
+    units: list[tuple[str, str, SearchGroupConfig | None]] = [
+        ("group", group_name, group_config) for group_name, group_config in groups.items()
+    ]
     units += [
         ("field", field_name, None)
         for field_name in pydantic_model.model_fields
@@ -476,8 +497,8 @@ def get_group_execution_units(pydantic_model, groups: dict, dependencies: dict[s
     ]
 
     unit_of_field = {}
-    for index, (kind, name, group_config) in enumerate(units):
-        for field_name in group_config.fields if kind == "group" else [name]:
+    for index, (_, name, group_config) in enumerate(units):
+        for field_name in group_config.fields if group_config is not None else [name]:
             unit_of_field[field_name] = str(index)
 
     unit_dependencies = {str(index): [] for index in range(len(units))}
@@ -521,6 +542,6 @@ def should_skip_field(field_name: str, field_config: dict, field_data: dict[str,
     satisfied = evaluate_condition(condition, field_data, field_name)
 
     if not satisfied:
-        logger.info(f"Campo '{field_name}' pulado (condição não satisfeita)")
+        logger.info("Campo '%s' pulado (condição não satisfeita)", field_name)
 
     return not satisfied

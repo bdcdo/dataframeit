@@ -175,19 +175,19 @@ class TestDependencies:
     def test_check_dependencies_exist_all_valid(self):
         """Testa verificação de dependências válidas."""
         all_fields = {"a", "b", "c"}
-        missing = check_dependencies_exist("d", ["a", "b"], all_fields)
+        missing = check_dependencies_exist(["a", "b"], all_fields)
         assert missing == []
 
     def test_check_dependencies_exist_some_invalid(self):
         """Testa verificação com dependências inválidas."""
         all_fields = {"a", "b", "c"}
-        missing = check_dependencies_exist("d", ["a", "x", "y"], all_fields)
+        missing = check_dependencies_exist(["a", "x", "y"], all_fields)
         assert set(missing) == {"x", "y"}
 
     def test_check_dependencies_nested_field(self):
         """Testa verificação de dependência com campo aninhado."""
         all_fields = {"endereco", "nome"}
-        missing = check_dependencies_exist("x", ["endereco.cidade"], all_fields)
+        missing = check_dependencies_exist(["endereco.cidade"], all_fields)
         assert missing == []
 
     def test_detect_circular_dependencies_no_cycle(self):
