@@ -174,6 +174,17 @@ class TestNovaTentativaComErro:
             _, structured = _chamar([falha, _sucesso()])
         assert _chamada(structured, 1)[1] == ("ai", '{"aplicou": tru')
 
+    def test_tool_call_invalida_sem_argumentos_cede_ao_conteudo(self):
+        """Sem argumentos na chamada inválida, a resposta bruta é o conteúdo da mensagem."""
+        falha = {
+            "parsed": None,
+            "raw": _raw(INVALIDO, invalid_tool_calls=[{"name": "x", "args": None}]),
+            "parsing_error": "json inválido",
+        }
+        with pytest.warns(UserWarning, match="Tentativa"):
+            _, structured = _chamar([falha, _sucesso()])
+        assert _chamada(structured, 1)[1] == ("ai", INVALIDO)
+
     def test_blocos_sem_texto_ficam_de_fora(self):
         blocos = [
             {"type": "thinking", "thinking": "pensando"},
@@ -455,6 +466,11 @@ class TestCorpoDoSdk:
             }
         )
         assert uso["total_tokens"] == 10
+
+    def test_corpo_sem_contagem_de_tokens_nao_tem_uso(self):
+        """Sem usage, a tentativa recusada não soma zeros que pareceriam medidos."""
+
+        assert _read_sdk_body({"choices": [{"message": {"content": "x"}}]}) == ("x", None)
 
     def test_parser_sem_llm_output_pede_o_formato_generico(self):
         erro = OutputParserException("Consider `method='json_schema'`")
