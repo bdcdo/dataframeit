@@ -478,3 +478,83 @@ def test_custo_sem_tokens_aparece_no_resumo(capsys):
         model=None,
     )
     assert "US$ 0.2500" in capsys.readouterr().out
+
+
+# =============================================================================
+# Mensagens do SDK, opções repassadas e resposta vazia
+# =============================================================================
+
+
+class _ThinkingBlockFalso:
+    def __init__(self, thinking):
+        self.thinking = thinking
+
+
+class _SystemMessageFalso:
+    def __init__(self, subtype):
+        self.subtype = subtype
+
+
+def test_so_os_blocos_de_texto_do_assistente_compoem_a_resposta(sdk_falso):
+    """Mensagem de sistema e bloco de raciocínio não entram no JSON lido."""
+    sdk_falso["mensagens_do_sdk"] = [
+        _SystemMessageFalso("init"),
+        _AssistantMessageFalso(
+            [
+                _ThinkingBlockFalso("vou responder em JSON"),
+                _TextBlockFalso('{"sentimento": "neutro", "confianca": 0.5}'),
+            ]
+        ),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    resultado = _chamar()
+
+    assert resultado["data"] == {"sentimento": "neutro", "confianca": 0.5}
+
+
+def test_usage_sem_custo_nao_ganha_chave_de_custo(sdk_falso):
+    sdk_falso["mensagens_do_sdk"][-1] = _ResultMessageFalso(
+        usage={"input_tokens": 10, "output_tokens": 5}, total_cost_usd=None
+    )
+
+    usage = _chamar()["usage"]
+
+    assert usage["total_tokens"] == 15
+    assert "cost_usd" not in usage
+
+
+def test_effort_de_model_kwargs_chega_as_opcoes(sdk_falso):
+    _chamar(_config_claude_code(effort="high"))
+
+    assert sdk_falso["opcoes"][0].kwargs["effort"] == "high"
+
+
+def test_sem_effort_as_opcoes_nao_levam_a_chave(sdk_falso):
+    _chamar()
+
+    assert "effort" not in sdk_falso["opcoes"][0].kwargs
+
+
+def test_sem_modelo_o_runtime_escolhe(sdk_falso):
+    """Com model=None, dataframeit não passa modelo e o Claude Code usa o seu padrão."""
+    with patch("dataframeit.core.validate_provider_dependencies"):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["um"]}),
+            questions=SampleModel,
+            prompt="Analise: {texto}",
+            provider="claude_code",
+        )
+
+    assert resultado["sentimento"].tolist() == ["positivo"]
+    assert "model" not in sdk_falso["opcoes"][0].kwargs
+
+
+def test_resposta_so_com_espacos_e_erro(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = [
+        _AssistantMessageFalso([_TextBlockFalso("  \n ")]),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    with pytest.raises(ValueError, match="Claude Code SDK retornou resposta vazia"):
+        _chamar()
