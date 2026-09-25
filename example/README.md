@@ -10,12 +10,20 @@ Clique nos badges abaixo para abrir os notebooks diretamente no Google Colab:
 |----------|-----------|-------|
 | [01_basic.ipynb](01_basic.ipynb) | Uso básico e análise de sentimento | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/01_basic.ipynb) |
 | [02_error_handling.ipynb](02_error_handling.ipynb) | Tratamento de erros e retry | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/02_error_handling.ipynb) |
-| [03_resume.ipynb](03_resume.ipynb) | Processamento incremental | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/03_resume.ipynb) |
-| [04_custom_placeholder.ipynb](04_custom_placeholder.ipynb) | Placeholder customizado | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/04_custom_placeholder.ipynb) |
+| [03_resume.ipynb](03_resume.ipynb) | Checkpoint e retomada com `resume=True` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/03_resume.ipynb) |
+| [04_custom_placeholder.ipynb](04_custom_placeholder.ipynb) | Prompt com `{texto}` e escolha da coluna de texto | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/04_custom_placeholder.ipynb) |
 | [05_advanced_legal.ipynb](05_advanced_legal.ipynb) | Análise jurídica avançada | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/05_advanced_legal.ipynb) |
 | [06_polars.ipynb](06_polars.ipynb) | Usando Polars DataFrame | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/06_polars.ipynb) |
 | [07_multiple_data_types.ipynb](07_multiple_data_types.ipynb) | Listas, dicts e Series | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/07_multiple_data_types.ipynb) |
 | [08_rate_limiting.ipynb](08_rate_limiting.ipynb) | Rate limiting e proteção | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/bdcdo/dataframeit/blob/main/example/08_rate_limiting.ipynb) |
+
+## Script
+
+| Arquivo | Descrição |
+|---------|-----------|
+| [example_09_web_search.py](example_09_web_search.py) | Busca web com Tavily ou Exa (`use_search=True`) |
+
+O script roda localmente: `pip install dataframeit[search,openai]`, configure `TAVILY_API_KEY` e `OPENAI_API_KEY` e execute `python example_09_web_search.py`.
 
 ## Como Executar
 
@@ -57,18 +65,18 @@ pip install dataframeit[openai,polars]
 
 1. **01_basic** - Entenda os fundamentos
 2. **02_error_handling** - Domine o tratamento de erros
-3. **03_resume** - Aprenda a trabalhar com datasets grandes
-4. **04_custom_placeholder** - Personalize seus templates
+3. **03_resume** - Trabalhe com datasets grandes usando checkpoint
+4. **04_custom_placeholder** - Controle onde o texto entra no prompt e qual coluna é lida
 5. **05_advanced_legal** - Veja um caso real complexo
 6. **06_polars** - Use com Polars se preferir
 7. **07_multiple_data_types** - Conheça a flexibilidade de entrada
 8. **08_rate_limiting** - Configure proteção contra rate limits
+9. **example_09_web_search.py** - Enriqueça dados com busca web
 
 ## Dados de Exemplo
 
-- **sample_data.csv** - Dados sintéticos simples para exemplos básicos
-- **clusters_saude_*.xlsx** - Dados reais para exemplo avançado de análise jurídica
+Todos os exemplos criam os próprios dados no código, sem arquivos externos.
 
 ## Dúvidas?
 
-Consulte a [documentação principal](../README.md) para mais detalhes sobre parâmetros e funcionalidades.
+Consulte a [documentação](https://brunodcdo.com.br/dataframeit) para mais detalhes sobre parâmetros e funcionalidades.
