@@ -16,6 +16,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha quando a resposta os traz, o que inclui a OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
 - A docstring de `dataframeit()` e a mensagem de rate limit descrevem `rate_limit_delay` como a pausa de cada worker depois de cada linha processada com sucesso, com teto de `parallel_requests * 60 / rate_limit_delay` linhas por minuto.
 
+### Corrigido
+
+- No provider `codex`, um modelo recursivo com metadado ao lado da referência (como `filho: "No" = Field(description=...)`) levanta o erro de schema recursivo com metadados; antes, levantava o de tipo `Any` não suportado, que apontava para outro problema.
+
 ## [0.10.0] - 2026-09-24
 
 ### Adicionado

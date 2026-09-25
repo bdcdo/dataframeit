@@ -997,6 +997,16 @@ class TestSchemaMalformado:
         with pytest.raises(ProviderConfigurationError, match=r"\$defs inválido"):
             _to_strict_json_schema(schema)
 
+    def test_recursao_com_metadados_ao_lado_da_referencia_e_recusada(self):
+        """Expandir a referência com a descrição ao lado nunca terminaria."""
+
+        class No(BaseModel):
+            nome: str
+            filho: No = Field(description="Nó filho")
+
+        with pytest.raises(ProviderConfigurationError, match="recursivos com metadados"):
+            _build_schema(No)
+
     @pytest.mark.parametrize("erro", [AttributeError, TypeError])
     def test_falha_do_schema_personalizado_e_erro_de_configuracao(self, erro):
         def json_schema_extra(schema):
