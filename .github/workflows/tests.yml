@@ -77,8 +77,24 @@ jobs:
           installed = {d.metadata["Name"].lower() for d in distributions()}
           assert not {"openai-codex", "openai-codex-cli-bin"} & installed'
 
+      # Todos os extras menos o codex, que tem job próprio. Os dados de cobertura
+      # de cada job vão para o job coverage, que os combina e exige 100%; aqui
+      # cada job cobre só a sua parte, e o limite fica desligado.
       - name: Run tests
-        run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all --extra openai pytest
+        env:
+          COVERAGE_FILE: .coverage.unit-${{ matrix.python-version }}
+        run: >-
+          uv run --python "${{ matrix.python-version }}"
+          --extra dev --extra all --extra search-all
+          pytest --cov=dataframeit --cov-branch --cov-report= --cov-fail-under=0
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-unit-${{ matrix.python-version }}
+          path: .coverage.unit-${{ matrix.python-version }}
+          include-hidden-files: true
+          if-no-files-found: error
 
   # Instala cada dependência direta na menor versão que o pyproject.toml aceita,
   # resolvendo cada conjunto de extras à parte: num lock universal, um extra
@@ -138,9 +154,49 @@ jobs:
           enable-cache: true
 
       - name: Run tests with the Codex SDK and bundled runtime
+        env:
+          COVERAGE_FILE: .coverage.codex-${{ matrix.python-version }}
         run: >-
           uv run --python "${{ matrix.python-version }}"
-          --extra dev --extra codex pytest
+          --extra dev --extra codex
+          pytest --cov=dataframeit --cov-branch --cov-report= --cov-fail-under=0
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-codex-${{ matrix.python-version }}
+          path: .coverage.codex-${{ matrix.python-version }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+  # Cobertura de ramos de src/dataframeit somada dos jobs unit e codex-provider,
+  # nas duas versões de Python. O fail_under = 100 do pyproject.toml vale aqui.
+  coverage:
+    needs: [unit, codex-provider]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Download coverage data
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: Combine and check coverage
+        run: |
+          uv run --python 3.13 --extra dev coverage combine
+          uv run --python 3.13 --extra dev coverage report
 
   codex-windows:
     runs-on: windows-latest
