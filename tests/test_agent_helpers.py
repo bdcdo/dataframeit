@@ -2,14 +2,26 @@
 
 from types import SimpleNamespace
 from typing import Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pydantic import BaseModel, Field
+
+from dataframeit.agent import (
+    _build_field_prompt,
+    _build_item_context,
+    _collect_configured_fields,
+    _extract_trace,
+    _extract_usage,
+    _set_nested_value,
+    _with_search_overrides,
+    call_agent_per_field,
+    call_agent_per_group,
+)
+from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
 def _make_config(**overrides):
     """Helper: monta LLMConfig com SearchConfig basico."""
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     cfg = LLMConfig(
         model="m",
@@ -35,7 +47,6 @@ def _make_config(**overrides):
 
 class TestBuildFieldPrompt:
     def test_prompt_replace_substitui_completamente(self):
-        from dataframeit.agent import _build_field_prompt
 
         result = _build_field_prompt(
             "prompt original",
@@ -48,7 +59,6 @@ class TestBuildFieldPrompt:
         assert "{texto}" in result
 
     def test_prompt_replace_com_texto_fica_como_esta(self):
-        from dataframeit.agent import _build_field_prompt
 
         result = _build_field_prompt(
             "prompt original",
@@ -59,7 +69,6 @@ class TestBuildFieldPrompt:
         assert result == "Busque no texto: {texto}"
 
     def test_sem_overrides_inclui_nome_e_descricao(self):
-        from dataframeit.agent import _build_field_prompt
 
         result = _build_field_prompt(
             "Analise: {texto}",
@@ -72,7 +81,6 @@ class TestBuildFieldPrompt:
         assert "tipo do documento" in result
 
     def test_prompt_append_concatena(self):
-        from dataframeit.agent import _build_field_prompt
 
         result = _build_field_prompt(
             "base",
@@ -84,7 +92,6 @@ class TestBuildFieldPrompt:
         assert "instrucao extra" in result
 
     def test_sem_descricao_omite_parenteses(self):
-        from dataframeit.agent import _build_field_prompt
 
         result = _build_field_prompt("base", "f", None, {})
         assert "(" not in result.split("campo:")[1]
@@ -97,13 +104,11 @@ class TestBuildFieldPrompt:
 
 class TestWithSearchOverrides:
     def test_sem_overrides_retorna_config_original(self):
-        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
         assert _with_search_overrides(cfg) is cfg
 
     def test_search_depth_override(self):
-        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, search_depth="advanced")
@@ -113,7 +118,6 @@ class TestWithSearchOverrides:
         assert result.search_config.max_results == 5
 
     def test_max_results_override(self):
-        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, max_results=20)
@@ -121,7 +125,6 @@ class TestWithSearchOverrides:
         assert result.search_config.search_depth == "basic"
 
     def test_ambos_overrides(self):
-        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, search_depth="advanced", max_results=10)
@@ -130,14 +133,12 @@ class TestWithSearchOverrides:
 
     def test_valor_falsy_nao_e_ignorado(self):
         """0 é um valor dado, não ausência; a validação de entrada é que o recusa."""
-        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, max_results=0)
         assert result.search_config.max_results == 0
 
     def test_nao_muta_config_original(self):
-        from dataframeit.agent import _with_search_overrides
 
         cfg = _make_config()
         _with_search_overrides(cfg, search_depth="advanced", max_results=99)
@@ -174,9 +175,6 @@ class TestRepasseDosOverrides:
         return call_agent, chamadas
 
     def test_campo_de_item_de_lista(self):
-        from unittest.mock import patch
-
-        from dataframeit.agent import call_agent_per_field
 
         class Item(BaseModel):
             nome: str
@@ -196,9 +194,6 @@ class TestRepasseDosOverrides:
         ]
 
     def test_campo_de_modelo_aninhado(self):
-        from unittest.mock import patch
-
-        from dataframeit.agent import call_agent_per_field
 
         class Interno(BaseModel):
             valor: Optional[str] = Field(
@@ -217,10 +212,6 @@ class TestRepasseDosOverrides:
         ]
 
     def test_grupo_e_campo_isolado_no_modo_por_grupo(self):
-        from unittest.mock import patch
-
-        from dataframeit.agent import call_agent_per_group
-        from dataframeit.llm import SearchGroupConfig
 
         class Modelo(BaseModel):
             a: Optional[str] = None
@@ -250,28 +241,24 @@ class TestRepasseDosOverrides:
 
 class TestSetNestedValue:
     def test_path_simples(self):
-        from dataframeit.agent import _set_nested_value
 
         obj = {}
         _set_nested_value(obj, "a", 1)
         assert obj == {"a": 1}
 
     def test_path_aninhado(self):
-        from dataframeit.agent import _set_nested_value
 
         obj = {}
         _set_nested_value(obj, "a.b.c", "v")
         assert obj == {"a": {"b": {"c": "v"}}}
 
     def test_preserva_chaves_existentes(self):
-        from dataframeit.agent import _set_nested_value
 
         obj = {"a": {"existing": 1}}
         _set_nested_value(obj, "a.new", 2)
         assert obj == {"a": {"existing": 1, "new": 2}}
 
     def test_substitui_valor_nao_dict_no_caminho(self):
-        from dataframeit.agent import _set_nested_value
 
         obj = {"a": "string"}
         _set_nested_value(obj, "a.b", 5)
@@ -291,7 +278,6 @@ class _ItemModel(BaseModel):
 
 class TestBuildItemContext:
     def test_inclui_primeiros_campos_simples(self):
-        from dataframeit.agent import _build_item_context
 
         ctx = _build_item_context(
             {"nome": "X", "quantidade": 3, "obs": "ok"},
@@ -301,7 +287,6 @@ class TestBuildItemContext:
         assert "quantidade: 3" in ctx
 
     def test_pula_dict_e_list(self):
-        from dataframeit.agent import _build_item_context
 
         class M(BaseModel):
             simples: str
@@ -315,12 +300,10 @@ class TestBuildItemContext:
         assert "complexo" not in ctx
 
     def test_dict_vazio_retorna_item(self):
-        from dataframeit.agent import _build_item_context
 
         assert _build_item_context({}, _ItemModel) == "item"
 
     def test_limita_a_tres_campos(self):
-        from dataframeit.agent import _build_item_context
 
         class M(BaseModel):
             a: str
@@ -339,7 +322,6 @@ class TestBuildItemContext:
 
 class TestCollectConfiguredFields:
     def test_modelo_simples_sem_config(self):
-        from dataframeit.agent import _collect_configured_fields
 
         class M(BaseModel):
             a: str
@@ -348,7 +330,6 @@ class TestCollectConfiguredFields:
         assert _collect_configured_fields(M) == []
 
     def test_campo_com_prompt(self):
-        from dataframeit.agent import _collect_configured_fields
 
         class M(BaseModel):
             a: str = Field(json_schema_extra={"prompt": "busque a"})
@@ -363,7 +344,6 @@ class TestCollectConfiguredFields:
         assert has_config is True
 
     def test_modelo_aninhado(self):
-        from dataframeit.agent import _collect_configured_fields
 
         class Inner(BaseModel):
             campo: str = Field(json_schema_extra={"max_results": 10})
@@ -376,7 +356,6 @@ class TestCollectConfiguredFields:
         assert "interno.campo" in paths
 
     def test_lista_de_modelos_aninhados(self):
-        from dataframeit.agent import _collect_configured_fields
 
         class Item(BaseModel):
             descricao: str = Field(json_schema_extra={"search_depth": "advanced"})
@@ -390,7 +369,6 @@ class TestCollectConfiguredFields:
 
     def test_nao_loop_em_modelos_mutuamente_referenciais(self):
         """Modelos mutuamente referentes nao causam recursao infinita."""
-        from dataframeit.agent import _collect_configured_fields
 
         class A(BaseModel):
             x: str = Field(json_schema_extra={"prompt": "p"})
@@ -445,8 +423,6 @@ def _make_provider(name="tavily", credits_fn=None):
 
 class TestExtractUsage:
     def test_soma_tokens_de_multiplas_mensagens(self):
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         result = {
             "messages": [
@@ -462,8 +438,6 @@ class TestExtractUsage:
         assert usage["total_tokens"] == 45
 
     def test_acumula_reasoning_tokens(self):
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         result = {"messages": [_msg_with_usage(0, 0, 0, reasoning=8)]}
         usage = _extract_usage(
@@ -472,8 +446,6 @@ class TestExtractUsage:
         assert usage["reasoning_tokens"] == 8
 
     def test_usage_metadata_como_objeto(self):
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         meta = SimpleNamespace(
             input_tokens=1,
@@ -491,8 +463,6 @@ class TestExtractUsage:
         assert usage["reasoning_tokens"] == 4
 
     def test_search_count_pelo_nome_da_ferramenta(self):
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         result = {
             "messages": [
@@ -505,8 +475,6 @@ class TestExtractUsage:
 
     def test_search_count_com_tool_calls_como_objeto(self):
         """tool_calls pode vir como list[obj] (nao apenas list[dict])."""
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         msg = SimpleNamespace(
             tool_calls=[SimpleNamespace(name="tavily_search", args={}, id="1")],
@@ -522,8 +490,6 @@ class TestExtractUsage:
 
     def test_search_count_so_conta_a_ferramenta_de_busca(self):
         """Structured output do ToolStrategy usa o nome do modelo, que pode conter "search"."""
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         result = {
             "messages": [
@@ -542,8 +508,6 @@ class TestExtractUsage:
         assert usage["search_credits"] == 1
 
     def test_search_credits_calculado_pelo_provider(self):
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         result = {"messages": [_msg_with_tool_calls(["tavily_search"])]}
         provider = _make_provider(
@@ -559,8 +523,6 @@ class TestExtractUsage:
         assert usage["search_provider"] == "tavily"
 
     def test_resultado_sem_messages(self):
-        from dataframeit.agent import _extract_usage
-        from dataframeit.llm import SearchConfig
 
         usage = _extract_usage(
             {}, _make_provider(), SearchConfig(provider="tavily"), "tavily_search"
@@ -586,7 +548,6 @@ def _trace_msg(msg_type, content, tool_calls=None, tool_call_id=None):
 
 class TestExtractTrace:
     def test_trace_basico(self):
-        from dataframeit.agent import _extract_trace
 
         result = {"messages": [_trace_msg("human", "ola")]}
         trace = _extract_trace(result, "modelo-x", 1.234, "full")
@@ -597,7 +558,6 @@ class TestExtractTrace:
         assert trace["messages"][0]["content"] == "ola"
 
     def test_minimal_omite_content_de_tool(self):
-        from dataframeit.agent import _extract_trace
 
         result = {
             "messages": [
@@ -609,14 +569,12 @@ class TestExtractTrace:
         assert trace["messages"][0]["tool_call_id"] == "abc"
 
     def test_full_preserva_content_de_tool(self):
-        from dataframeit.agent import _extract_trace
 
         result = {"messages": [_trace_msg("tool", "verboso", tool_call_id="abc")]}
         trace = _extract_trace(result, "m", 0.1, "full")
         assert trace["messages"][0]["content"] == "verboso"
 
     def test_extrai_search_queries_de_tool_calls(self):
-        from dataframeit.agent import _extract_trace
 
         result = {
             "messages": [
@@ -637,14 +595,12 @@ class TestExtractTrace:
         assert trace["total_tool_calls"] == 3
 
     def test_provider_preenche_search_provider(self):
-        from dataframeit.agent import _extract_trace
 
         provider = SimpleNamespace(name="exa")
         trace = _extract_trace({"messages": []}, "m", 0.0, "full", provider=provider)
         assert trace["search_provider"] == "exa"
 
     def test_arredonda_duration(self):
-        from dataframeit.agent import _extract_trace
 
         trace = _extract_trace({"messages": []}, "m", 1.23456789, "full")
         assert trace["duration_seconds"] == 1.235

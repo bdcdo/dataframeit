@@ -1,13 +1,26 @@
 """Ferramentas de busca (Exa, Tavily), teto de buscas por execução e contagem."""
 
+import asyncio
+import itertools
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
+from langchain.agents import create_agent
+from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.structured_output import ToolStrategy
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
+from dataframeit import dataframeit
+from dataframeit.agent import _blocked_tool_call_ids, _extract_trace, _recursion_limit, call_agent
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+from dataframeit.search import get_provider
 
 
 class Resposta(BaseModel):
@@ -35,7 +48,7 @@ def _config(**busca):
 @pytest.fixture
 def exa_falso(monkeypatch):
     pytest.importorskip("langchain_exa")
-    import exa_py
+    exa_py = pytest.importorskip("exa_py")
 
     monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
     chamadas = []
@@ -49,7 +62,6 @@ def exa_falso(monkeypatch):
 
 
 def test_exa_respeita_max_results_e_limite_de_texto(exa_falso):
-    from dataframeit.search import get_provider
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
     ferramenta.invoke({"query": "dipirona anvisa"})
@@ -58,7 +70,6 @@ def test_exa_respeita_max_results_e_limite_de_texto(exa_falso):
 
 
 def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
-    from dataframeit.search import get_provider
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
     assert set(ferramenta.args) == {"query"}
@@ -66,7 +77,7 @@ def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
 
 def test_exa_levanta_o_erro_do_provider(monkeypatch):
     pytest.importorskip("langchain_exa")
-    import exa_py
+    exa_py = pytest.importorskip("exa_py")
 
     monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
 
@@ -75,8 +86,6 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch):
         raise RuntimeError(msg)
 
     monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
-
-    from dataframeit.search import get_provider
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
     with pytest.raises(RuntimeError, match="401"):
@@ -92,7 +101,7 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch):
 def tavily_disponivel(monkeypatch):
     pytest.importorskip("langchain_tavily")
     monkeypatch.setenv("TAVILY_API_KEY", "chave-de-teste")
-    from langchain_tavily import _utilities
+    _utilities = pytest.importorskip("langchain_tavily._utilities")
 
     return _utilities.TavilySearchAPIWrapper
 
@@ -113,8 +122,6 @@ def test_tavily_levanta_o_erro_do_provider(tavily_disponivel, monkeypatch, mensa
 
     monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
 
-    from dataframeit.search import get_provider
-
     ferramenta = get_provider("tavily").create_tool(max_results=3)
     with pytest.raises(ValueError, match=mensagem[:9]):
         ferramenta.invoke({"query": "x"})
@@ -133,22 +140,17 @@ def test_tavily_devolve_ao_modelo_o_erro_de_argumento(tavily_disponivel, monkeyp
 
     monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
 
-    from dataframeit.search import get_provider
-
     ferramenta = get_provider("tavily").create_tool(max_results=3)
     assert mensagem in str(ferramenta.invoke({"query": "x"}))
 
 
 def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
-    import asyncio
 
     async def falha(self, **kwargs):
         msg = "Error 432: usage limit."
         raise ValueError(msg)
 
     monkeypatch.setattr(tavily_disponivel, "raw_results_async", falha)
-
-    from dataframeit.search import get_provider
 
     ferramenta = get_provider("tavily").create_tool(max_results=3)
     with pytest.raises(ValueError, match="Error 432"):
@@ -157,8 +159,6 @@ def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
 
 def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponivel, monkeypatch):
     monkeypatch.setattr(tavily_disponivel, "raw_results", lambda self, **kwargs: {"results": []})
-
-    from dataframeit.search import get_provider
 
     ferramenta = get_provider("tavily").create_tool(max_results=3)
     assert "No search results" in str(ferramenta.invoke({"query": "x"}))
@@ -170,7 +170,6 @@ def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponive
 
 
 def _chamar_agente(monkeypatch, config, mensagens=()):
-    from dataframeit.agent import call_agent
 
     capturado = {}
 
@@ -199,7 +198,6 @@ def _chamar_agente(monkeypatch, config, mensagens=()):
 
 
 def test_agente_recebe_o_teto_de_buscas(monkeypatch):
-    from langchain.agents.middleware import ToolCallLimitMiddleware
 
     capturado, _ = _chamar_agente(monkeypatch, _config(max_search_calls=4))
     assert capturado["config"] == {"recursion_limit": 3 * 4 + 20}
@@ -212,7 +210,6 @@ def test_agente_recebe_o_teto_de_buscas(monkeypatch):
 
 
 def test_busca_bloqueada_pelo_teto_nao_conta(monkeypatch):
-    from langchain_core.messages import AIMessage, ToolMessage
 
     mensagens = [
         AIMessage(
@@ -246,7 +243,6 @@ def test_busca_bloqueada_pelo_teto_nao_conta(monkeypatch):
 
 
 def _executar(questions, **opcoes):
-    from dataframeit import dataframeit
 
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
@@ -282,8 +278,6 @@ def test_max_search_calls_por_campo_e_por_grupo():
         a: str = Field(json_schema_extra={"max_search_calls": 2})
         b: str = ""
         c: str = ""
-
-    from dataframeit import dataframeit
 
     limites = {}
 
@@ -322,7 +316,6 @@ def test_group_config_aceita_max_search_calls():
 
 
 def test_trace_nao_confunde_structured_output_com_busca():
-    from dataframeit.agent import _extract_trace
 
     mensagens = [
         SimpleNamespace(
@@ -358,7 +351,6 @@ def test_max_search_calls_padrao_e_10():
 
 
 def test_max_search_calls_aceita_inteiro_numpy():
-    import numpy as np
 
     config = _executar(Resposta, max_search_calls=np.int64(3)).call_args.args[3]
     assert config.search_config.max_search_calls == 3
@@ -366,9 +358,6 @@ def test_max_search_calls_aceita_inteiro_numpy():
 
 def test_sem_resultados_nao_conta_como_busca_bloqueada():
     """ "Sem resultados" é ToolMessage com status 'error', mas a busca aconteceu."""
-    from langchain_core.messages import AIMessage, ToolMessage
-
-    from dataframeit.agent import _blocked_tool_call_ids
 
     mensagens = [
         AIMessage(
@@ -392,17 +381,6 @@ def test_sem_resultados_nao_conta_como_busca_bloqueada():
 
 def test_recursion_limit_interrompe_modelo_que_insiste_em_buscar():
     """Com o teto e o limite de passos, um modelo que ignora o bloqueio para cedo."""
-    import itertools
-
-    from langchain.agents import create_agent
-    from langchain.agents.middleware import ToolCallLimitMiddleware
-    from langchain.agents.structured_output import ToolStrategy
-    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-    from langchain_core.messages import AIMessage
-    from langchain_core.tools import StructuredTool
-    from langgraph.errors import GraphRecursionError
-
-    from dataframeit.agent import _recursion_limit
 
     chamadas = []
 

@@ -1,10 +1,17 @@
 """Testes para funcionalidade de execução condicional de campos."""
 
+import logging
+import os
+import subprocess
+import sys
 from unittest.mock import patch
 
+import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
 
+from dataframeit import dataframeit
+from dataframeit.agent import call_agent_per_group
 from dataframeit.conditional import (
     check_dependencies_exist,
     detect_circular_dependencies,
@@ -14,6 +21,7 @@ from dataframeit.conditional import (
     should_skip_field,
     topological_sort,
 )
+from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
 class TestGetNestedValue:
@@ -394,7 +402,6 @@ class TestGetFieldExecutionOrder:
 
     def test_depends_on_without_condition_emits_warning(self, caplog):
         """Testa que depends_on sem condition emite warning e é ignorado."""
-        import logging
 
         class M(BaseModel):
             a: str
@@ -428,7 +435,6 @@ class TestGetFieldExecutionOrder:
 
     def test_callable_condition_without_depends_on_emits_warning(self, caplog):
         """Testa que callable sem depends_on emite warning."""
-        import logging
 
         class M(BaseModel):
             a: str
@@ -446,7 +452,6 @@ class TestGetFieldExecutionOrder:
 
     def test_callable_condition_with_depends_on_no_warning(self, caplog):
         """Testa que callable com depends_on não emite warning."""
-        import logging
 
         class M(BaseModel):
             a: str
@@ -602,7 +607,6 @@ class ModeloPessoaCondicional(BaseModel):
 
 
 def _config_por_grupo(grupos):
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
     return LLMConfig(
         model="teste",
@@ -638,7 +642,6 @@ class TestCondicaoNoModoPorGrupo:
     """call_agent_per_group aplica `condition` como o caminho por campo."""
 
     def test_grupo_com_condicao_falsa_nao_e_chamado(self):
-        from dataframeit.agent import call_agent_per_group
 
         chamadas = []
         valores = {"tipo": "pf", "cpf": "123", "cnpj": "999", "razao_social": "XYZ"}
@@ -663,7 +666,6 @@ class TestCondicaoNoModoPorGrupo:
         assert resultado["usage"]["search_count"] == 2
 
     def test_grupo_pede_so_os_campos_com_condicao_verdadeira(self):
-        from dataframeit.agent import call_agent_per_group
 
         chamadas = []
         valores = {"tipo": "pj", "cpf": "123", "cnpj": "999", "razao_social": "XYZ"}
@@ -684,7 +686,6 @@ class TestCondicaoNoModoPorGrupo:
 
     def test_condicao_dentro_do_mesmo_grupo_e_avaliada_na_resposta(self):
         """Dependência no mesmo grupo não tem valor antes da chamada: o campo é anulado depois."""
-        from dataframeit.agent import call_agent_per_group
 
         chamadas = []
         valores = {"tipo": "pj", "cpf": "123", "cnpj": "999", "razao_social": "XYZ"}
@@ -702,7 +703,6 @@ class TestCondicaoNoModoPorGrupo:
         assert resultado["data"]["cnpj"] == "999"
 
     def test_ciclo_entre_grupo_e_campo_isolado_levanta_erro(self):
-        from dataframeit.agent import call_agent_per_group
 
         class ModeloCiclico(BaseModel):
             a: str
@@ -723,7 +723,6 @@ class TestCondicaoNoModoPorGrupo:
         call_agent.assert_not_called()
 
     def test_grupo_segue_a_ordem_de_search_groups(self):
-        from dataframeit.agent import call_agent_per_group
 
         chamadas = []
         valores = {"tipo": "pj", "cpf": "123", "cnpj": "999", "razao_social": "XYZ"}
@@ -739,9 +738,6 @@ class TestCondicaoNoModoPorGrupo:
 
 def test_ordem_de_execucao_nao_depende_do_hash_seed():
     """A ordem entre campos independentes segue o modelo em qualquer processo."""
-    import os
-    import subprocess
-    import sys
 
     codigo = (
         "from pydantic import BaseModel\n"
@@ -782,9 +778,6 @@ class TestCondicaoForaDoModoPorCampo:
         ],
     )
     def test_condition_sem_search_per_field_levanta_erro(self, opcoes_busca):
-        import pandas as pd
-
-        from dataframeit import dataframeit
 
         with (
             patch("dataframeit.core.validate_provider_dependencies"),
@@ -803,9 +796,6 @@ class TestCondicaoForaDoModoPorCampo:
         call_agent.assert_not_called()
 
     def test_depends_on_sem_search_per_field_levanta_erro(self):
-        import pandas as pd
-
-        from dataframeit import dataframeit
 
         class ModeloDependsOn(BaseModel):
             a: str

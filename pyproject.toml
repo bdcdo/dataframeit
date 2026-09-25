@@ -192,6 +192,9 @@ ignore = [
     "SLF001",
     # O pytest coleta tests/ como módulos soltos, sem pacote.
     "INP001",
+    # Os dublês de exceção têm nome em português, e o nome da classe entra no
+    # texto que errors.py classifica; um sufixo Error mudaria esse texto.
+    "N818",
 ]
 
 [tool.ruff.lint.flake8-type-checking]

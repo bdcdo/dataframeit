@@ -1,12 +1,13 @@
 """Provider e modelo usados quando o usuário não escolhe."""
 
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit.core import DEFAULT_MODELS
+from dataframeit.core import DEFAULT_MODELS, dataframeit
 
 
 class _Modelo(BaseModel):
@@ -18,7 +19,6 @@ def _resposta(*args, **kwargs):
 
 
 def _configs_enviadas(**kwargs):
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["a", "b"]})
     with (
@@ -60,7 +60,6 @@ def test_modelo_explicito_prevalece_sobre_o_default():
 
 
 def test_provider_sem_modelo_padrao_exige_model():
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["a"]})
     with pytest.raises(ValueError, match="provider='mistralai' não tem modelo padrão"):
@@ -68,7 +67,6 @@ def test_provider_sem_modelo_padrao_exige_model():
 
 
 def test_claude_code_sem_modelo_deixa_o_runtime_escolher():
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["a"]})
     with (
@@ -81,9 +79,6 @@ def test_claude_code_sem_modelo_deixa_o_runtime_escolher():
 
 
 def test_codex_sem_modelo_deixa_o_runtime_escolher():
-    from contextlib import contextmanager
-
-    from dataframeit.core import dataframeit
 
     configs = []
 
@@ -103,7 +98,6 @@ def test_codex_sem_modelo_deixa_o_runtime_escolher():
 
 
 def test_dataframe_vazio_nao_exige_modelo_padrao():
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": pd.Series([], dtype=str)})
     resultado = dataframeit(df, _Modelo, "resuma: {texto}", provider="mistralai")

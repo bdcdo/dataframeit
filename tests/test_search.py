@@ -1,15 +1,53 @@
 """Testes para funcionalidade de busca web via Tavily."""
 
 import contextlib
+import inspect
+import logging
 import os
 import sys
 import types
+import warnings as _warnings
 from typing import List, Literal, Optional  # noqa: UP035 (List usado de propósito, ver NodoArvore)
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
+
+from dataframeit.agent import (
+    _build_field_prompt,
+    _collect_configured_fields,
+    _enrich_list_items_with_search,
+    _extract_usage,
+    _get_field_config,
+    _get_list_fields_with_nested_search,
+    call_agent,
+    call_agent_per_field,
+    call_agent_per_group,
+)
+from dataframeit.core import (
+    _has_field_config,
+    _setup_columns,
+    _validate_search_groups,
+    _warn_search_rate_limit,
+    dataframeit,
+)
+from dataframeit.errors import (
+    NON_RECOVERABLE_ERRORS,
+    RECOVERABLE_ERRORS,
+    get_friendly_error_message,
+    validate_search_dependencies,
+)
+from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+from dataframeit.search import TavilyProvider
+from dataframeit.utils import (
+    ORIGINAL_TYPE_PANDAS_DF,
+    ConversionInfo,
+    _reorder_columns,
+    from_pandas,
+    get_nested_pydantic_models,
+    is_list_of_pydantic_model,
+)
 
 
 class MedicamentoInfo(BaseModel):
@@ -36,9 +74,6 @@ class PaisInfo(BaseModel):
 
 def test_use_search_false_by_default():
     """Verifica que use_search=False é o padrão."""
-    import inspect
-
-    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters["use_search"].default is False
@@ -46,9 +81,6 @@ def test_use_search_false_by_default():
 
 def test_search_per_field_false_by_default():
     """Verifica que search_per_field=False é o padrão."""
-    import inspect
-
-    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters["search_per_field"].default is False
@@ -56,9 +88,6 @@ def test_search_per_field_false_by_default():
 
 def test_max_results_default():
     """Verifica que max_results=5 é o padrão."""
-    import inspect
-
-    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters["max_results"].default == 5
@@ -66,9 +95,6 @@ def test_max_results_default():
 
 def test_search_depth_default():
     """Verifica que search_depth='basic' é o padrão."""
-    import inspect
-
-    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters["search_depth"].default == "basic"
@@ -76,7 +102,6 @@ def test_search_depth_default():
 
 def test_use_search_validates_depth():
     """Verifica que search_depth inválido gera erro."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["Paracetamol"]})
 
@@ -98,7 +123,6 @@ def test_use_search_validates_depth():
 
 def test_use_search_validates_max_results_min():
     """Verifica que max_results < 1 gera erro."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["Paracetamol"]})
 
@@ -119,7 +143,6 @@ def test_use_search_validates_max_results_min():
 
 def test_use_search_validates_max_results_max():
     """Verifica que max_results > 20 gera erro."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["Paracetamol"]})
 
@@ -145,7 +168,6 @@ def test_use_search_validates_max_results_max():
 
 def test_use_search_requires_tavily_package():
     """Verifica que use_search=True requer langchain-tavily instalado."""
-    from dataframeit.errors import validate_search_dependencies
 
     # Mock importlib para simular pacote não instalado
     with patch("importlib.import_module") as mock_import:
@@ -168,7 +190,6 @@ def test_use_search_requires_tavily_package():
 
 def test_use_search_requires_api_key():
     """Verifica que use_search=True requer TAVILY_API_KEY."""
-    from dataframeit.errors import validate_search_dependencies
 
     # Salvar valor original
     original = os.environ.get("TAVILY_API_KEY")
@@ -199,7 +220,6 @@ def test_use_search_requires_api_key():
 
 def test_search_config_creation():
     """Verifica criação de SearchConfig."""
-    from dataframeit.llm import SearchConfig
 
     config = SearchConfig(
         enabled=True,
@@ -216,7 +236,6 @@ def test_search_config_creation():
 
 def test_search_config_defaults():
     """Verifica valores padrão de SearchConfig."""
-    from dataframeit.llm import SearchConfig
 
     config = SearchConfig()
 
@@ -229,8 +248,6 @@ def test_search_config_defaults():
 
 def test_search_agent_uses_initialized_model(monkeypatch):
     """Garante que create_agent recebe um LLM, sem model_provider."""
-    from dataframeit.agent import call_agent
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     class TestOutput(BaseModel):
         result: str
@@ -279,7 +296,6 @@ def test_search_agent_uses_initialized_model(monkeypatch):
 
 def test_llm_config_with_search():
     """Verifica que LLMConfig aceita SearchConfig."""
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     search_config = SearchConfig(enabled=True)
 
@@ -305,8 +321,6 @@ def test_llm_config_with_search():
 
 def test_setup_columns_with_search():
     """Verifica que _setup_columns cria colunas de busca quando habilitado."""
-    from dataframeit.core import _setup_columns
-    from dataframeit.llm import SearchConfig
 
     df = pd.DataFrame({"texto": ["a", "b"]})
     search_config = SearchConfig(enabled=True)
@@ -319,7 +333,6 @@ def test_setup_columns_with_search():
 
 def test_setup_columns_without_search():
     """Verifica que _setup_columns não cria colunas de busca quando desabilitado."""
-    from dataframeit.core import _setup_columns
 
     df = pd.DataFrame({"texto": ["a", "b"]})
 
@@ -336,7 +349,6 @@ def test_setup_columns_without_search():
 
 def test_tavily_errors_classified_correctly():
     """Verifica classificação de erros do Tavily."""
-    from dataframeit.errors import NON_RECOVERABLE_ERRORS, RECOVERABLE_ERRORS
 
     # Erros não-recuperáveis do Tavily
     assert "MissingAPIKeyError" in NON_RECOVERABLE_ERRORS
@@ -349,7 +361,6 @@ def test_tavily_errors_classified_correctly():
 
 def test_tavily_friendly_error_messages():
     """Verifica mensagens amigáveis para erros do Tavily."""
-    from dataframeit.errors import get_friendly_error_message
 
     # Erro de API key
     class TavilyMissingAPIKeyError(Exception):
@@ -375,9 +386,6 @@ def test_tavily_friendly_error_messages():
 
 def test_call_agent_returns_expected_structure():
     """Verifica que call_agent retorna estrutura esperada."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -412,9 +420,6 @@ def test_call_agent_returns_expected_structure():
 
 def test_extract_usage_advanced_depth():
     """Verifica cálculo de créditos com search_depth='advanced'."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily", search_depth="advanced")
@@ -436,9 +441,6 @@ def test_extract_usage_advanced_depth():
 
 def test_extract_usage_with_object_metadata():
     """Verifica extração de tokens quando usage_metadata é um objeto (não dict)."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -466,11 +468,6 @@ def test_extract_usage_with_object_metadata():
 
 def test_extract_usage_with_debug_logging(caplog):
     """Verifica que logging de diagnóstico funciona sem erros."""
-    import logging
-
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -513,8 +510,6 @@ def test_extract_usage_with_debug_logging(caplog):
 
 def test_call_agent_per_field_iterates_fields():
     """Verifica que call_agent_per_field itera por cada campo."""
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     # Contar quantas vezes call_agent é chamado
     call_count = 0
@@ -567,8 +562,6 @@ def test_call_agent_per_field_iterates_fields():
 
 def test_call_agent_per_field_sums_usage():
     """Verifica que call_agent_per_field soma usage de todas as chamadas."""
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
         field_name = next(iter(model.model_fields.keys()))
@@ -622,7 +615,6 @@ def test_call_agent_per_field_sums_usage():
 
 def test_get_field_config_extracts_prompt():
     """Testa extração de prompt do json_schema_extra."""
-    from dataframeit.agent import _get_field_config
 
     extra = {"prompt": "Custom prompt: {texto}"}
     config = _get_field_config(extra)
@@ -633,7 +625,6 @@ def test_get_field_config_extracts_prompt():
 
 def test_get_field_config_extracts_prompt_replace():
     """Testa que prompt_replace é equivalente a prompt."""
-    from dataframeit.agent import _get_field_config
 
     extra = {"prompt_replace": "Replaced prompt: {texto}"}
     config = _get_field_config(extra)
@@ -643,7 +634,6 @@ def test_get_field_config_extracts_prompt_replace():
 
 def test_get_field_config_extracts_prompt_append():
     """Testa extração de prompt_append."""
-    from dataframeit.agent import _get_field_config
 
     extra = {"prompt_append": "Extra instructions"}
     config = _get_field_config(extra)
@@ -654,7 +644,6 @@ def test_get_field_config_extracts_prompt_append():
 
 def test_get_field_config_extracts_search_params():
     """Testa extração de search_depth e max_results."""
-    from dataframeit.agent import _get_field_config
 
     extra = {"search_depth": "advanced", "max_results": 10}
     config = _get_field_config(extra)
@@ -665,7 +654,6 @@ def test_get_field_config_extracts_search_params():
 
 def test_build_field_prompt_replace():
     """Testa que prompt substitui completamente o prompt base."""
-    from dataframeit.agent import _build_field_prompt
 
     field_config = {"prompt": "Custom prompt: {texto}"}
     prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
@@ -677,7 +665,6 @@ def test_build_field_prompt_replace():
 
 def test_build_field_prompt_append():
     """Testa que prompt_append adiciona ao prompt base."""
-    from dataframeit.agent import _build_field_prompt
 
     field_config = {"prompt_append": "Extra info"}
     prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
@@ -690,7 +677,6 @@ def test_build_field_prompt_append():
 
 def test_build_field_prompt_default():
     """Testa comportamento padrão sem configuração."""
-    from dataframeit.agent import _build_field_prompt
 
     field_config = {}
     prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
@@ -703,7 +689,6 @@ def test_build_field_prompt_default():
 
 def test_has_field_config_detects_prompt():
     """Testa detecção de prompt em json_schema_extra."""
-    from dataframeit.core import _has_field_config
 
     class ModelWithPrompt(BaseModel):
         campo: str = Field(json_schema_extra={"prompt": "custom"})
@@ -713,7 +698,6 @@ def test_has_field_config_detects_prompt():
 
 def test_has_field_config_detects_prompt_append():
     """Testa detecção de prompt_append em json_schema_extra."""
-    from dataframeit.core import _has_field_config
 
     class ModelWithAppend(BaseModel):
         campo: str = Field(json_schema_extra={"prompt_append": "extra"})
@@ -723,7 +707,6 @@ def test_has_field_config_detects_prompt_append():
 
 def test_has_field_config_detects_search_params():
     """Testa detecção de search_depth e max_results."""
-    from dataframeit.core import _has_field_config
 
     class ModelWithSearchParams(BaseModel):
         campo: str = Field(json_schema_extra={"search_depth": "advanced"})
@@ -733,7 +716,6 @@ def test_has_field_config_detects_search_params():
 
 def test_has_field_config_returns_false_for_empty():
     """Testa que retorna False se não há configuração."""
-    from dataframeit.core import _has_field_config
 
     class ModelWithoutConfig(BaseModel):
         campo: str = Field(description="Normal field")
@@ -743,7 +725,6 @@ def test_has_field_config_returns_false_for_empty():
 
 def test_has_field_config_ignores_other_keys():
     """Testa que ignora outras chaves em json_schema_extra."""
-    from dataframeit.core import _has_field_config
 
     class ModelWithOtherKeys(BaseModel):
         campo: str = Field(json_schema_extra={"other_key": "value"})
@@ -753,7 +734,6 @@ def test_has_field_config_ignores_other_keys():
 
 def test_field_config_without_per_field_raises():
     """Testa que usar config per-field sem search_per_field=True dá erro."""
-    from dataframeit.core import dataframeit
 
     class ModelWithConfig(BaseModel):
         campo: str = Field(json_schema_extra={"prompt": "custom"})
@@ -778,7 +758,6 @@ def test_field_config_without_per_field_raises():
 
 def test_field_config_with_per_field_no_error():
     """Testa que config per-field funciona com search_per_field=True."""
-    from dataframeit.core import _has_field_config
 
     class ModelWithConfig(BaseModel):
         campo: str = Field(json_schema_extra={"prompt": "custom"})
@@ -789,8 +768,6 @@ def test_field_config_with_per_field_no_error():
 
 def test_call_agent_per_field_uses_custom_prompt():
     """Testa que call_agent_per_field usa prompt customizado."""
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     class ModelWithCustomPrompt(BaseModel):
         campo_custom: str = Field(
@@ -835,8 +812,6 @@ def test_call_agent_per_field_uses_custom_prompt():
 
 def test_call_agent_per_field_uses_config_override():
     """Testa que call_agent_per_field usa search_depth override."""
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     class ModelWithSearchOverride(BaseModel):
         campo: str = Field(json_schema_extra={"search_depth": "advanced"})
@@ -892,7 +867,6 @@ class RegulatoryModel(BaseModel):
 
 def test_search_groups_requires_use_search():
     """Verifica que search_groups requer use_search=True."""
-    from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
@@ -907,7 +881,6 @@ def test_search_groups_requires_use_search():
 
 def test_search_groups_requires_per_field():
     """Verifica que search_groups requer search_per_field=True."""
-    from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
@@ -922,7 +895,6 @@ def test_search_groups_requires_per_field():
 
 def test_search_groups_validates_unknown_fields():
     """Verifica que campos inexistentes geram erro."""
-    from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
@@ -938,7 +910,6 @@ def test_search_groups_validates_unknown_fields():
 
 def test_search_groups_validates_duplicate_fields():
     """Verifica que campos em múltiplos grupos geram erro."""
-    from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
@@ -957,7 +928,6 @@ def test_search_groups_validates_duplicate_fields():
 
 def test_search_groups_validates_field_config_conflict():
     """Verifica que campos com json_schema_extra em grupos geram erro."""
-    from dataframeit.core import _validate_search_groups
 
     class ModelWithConfig(BaseModel):
         campo_a: str = Field(json_schema_extra={"prompt": "custom"})
@@ -978,7 +948,6 @@ def test_search_groups_validates_field_config_conflict():
 @pytest.mark.parametrize("search_depth", ["invalid", ""])
 def test_search_groups_validates_search_depth(search_depth):
     """Verifica que search_depth inválido no grupo gera erro, inclusive o vazio."""
-    from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
@@ -993,7 +962,6 @@ def test_search_groups_validates_search_depth(search_depth):
 
 def test_search_groups_validates_max_results():
     """Verifica que max_results inválido no grupo gera erro."""
-    from dataframeit.core import _validate_search_groups
 
     with pytest.raises(ValueError) as exc_info:
         _validate_search_groups(
@@ -1008,8 +976,6 @@ def test_search_groups_validates_max_results():
 
 def test_search_groups_valid_config():
     """Verifica que configuração válida é processada corretamente."""
-    from dataframeit.core import _validate_search_groups
-    from dataframeit.llm import SearchGroupConfig
 
     result = _validate_search_groups(
         {
@@ -1035,8 +1001,6 @@ def test_search_groups_valid_config():
 
 def test_call_agent_per_group_basic():
     """Verifica que call_agent_per_group funciona com grupos."""
-    from dataframeit.agent import call_agent_per_group
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
     # Rastrear chamadas
     call_count = 0
@@ -1094,8 +1058,6 @@ def test_call_agent_per_group_basic():
 
 def test_call_agent_per_group_sums_usage():
     """Verifica que call_agent_per_group soma usage de todas as chamadas."""
-    from dataframeit.agent import call_agent_per_group
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
         fields = list(model.model_fields.keys())
@@ -1148,8 +1110,6 @@ def test_call_agent_per_group_sums_usage():
 
 def test_call_agent_per_group_uses_custom_prompt():
     """Verifica que call_agent_per_group usa prompt customizado do grupo."""
-    from dataframeit.agent import call_agent_per_group
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
     captured_prompts = []
 
@@ -1197,8 +1157,6 @@ def test_call_agent_per_group_uses_custom_prompt():
 
 def test_call_agent_per_group_traces():
     """Verifica que traces são coletados por grupo e por campo isolado."""
-    from dataframeit.agent import call_agent_per_group
-    from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
     call_counter = [0]
 
@@ -1249,8 +1207,6 @@ def test_call_agent_per_group_traces():
 
 def test_search_groups_setup_columns():
     """Verifica que _setup_columns cria colunas corretas para grupos."""
-    from dataframeit.core import _setup_columns
-    from dataframeit.llm import SearchConfig, SearchGroupConfig
 
     df = pd.DataFrame({"texto": ["a", "b"]})
 
@@ -1313,7 +1269,6 @@ class AnaliseSentencaSaude(BaseModel):
 
 def test_get_nested_pydantic_models_list():
     """Testa extração de modelos de List[Model]."""
-    from dataframeit.utils import get_nested_pydantic_models
 
     models = get_nested_pydantic_models(list[PedidoItem])
 
@@ -1323,7 +1278,6 @@ def test_get_nested_pydantic_models_list():
 
 def test_get_nested_pydantic_models_optional_list():
     """Testa extração de modelos de Optional[List[Model]]."""
-    from dataframeit.utils import get_nested_pydantic_models
 
     models = get_nested_pydantic_models(Optional[list[PedidoItem]])
 
@@ -1333,7 +1287,6 @@ def test_get_nested_pydantic_models_optional_list():
 
 def test_get_nested_pydantic_models_optional_model():
     """Testa extração de modelos de Optional[Model]."""
-    from dataframeit.utils import get_nested_pydantic_models
 
     models = get_nested_pydantic_models(Optional[InformacoesMedicamento])
 
@@ -1343,7 +1296,6 @@ def test_get_nested_pydantic_models_optional_model():
 
 def test_get_nested_pydantic_models_pipe_union_sem_duplicata():
     """`Model | None` usa types.UnionType e devolve o modelo uma vez só."""
-    from dataframeit.utils import get_nested_pydantic_models
 
     assert get_nested_pydantic_models(InformacoesMedicamento | None) == [InformacoesMedicamento]
     assert get_nested_pydantic_models(list[InformacoesMedicamento] | None) == [
@@ -1353,7 +1305,6 @@ def test_get_nested_pydantic_models_pipe_union_sem_duplicata():
 
 def test_get_nested_pydantic_models_primitive():
     """Testa que tipos primitivos retornam lista vazia."""
-    from dataframeit.utils import get_nested_pydantic_models
 
     assert get_nested_pydantic_models(str) == []
     assert get_nested_pydantic_models(int) == []
@@ -1363,7 +1314,6 @@ def test_get_nested_pydantic_models_primitive():
 
 def test_has_field_config_detects_nested_in_list():
     """Verifica que _has_field_config detecta config em List[Model]."""
-    from dataframeit.core import _has_field_config
 
     # AnaliseSentencaSaude tem pedidos: List[PedidoItem]
     # PedidoItem tem info_medicamento: InformacoesMedicamento
@@ -1373,7 +1323,6 @@ def test_has_field_config_detects_nested_in_list():
 
 def test_has_field_config_detects_optional_list():
     """Verifica que _has_field_config detecta config em Optional[List[Model]]."""
-    from dataframeit.core import _has_field_config
 
     class ModeloComOptionalList(BaseModel):
         itens: Optional[list[InformacoesMedicamento]] = None
@@ -1383,7 +1332,6 @@ def test_has_field_config_detects_optional_list():
 
 def test_has_field_config_deeply_nested():
     """Verifica detecção em estruturas profundamente aninhadas."""
-    from dataframeit.core import _has_field_config
 
     class Nivel3(BaseModel):
         campo_profundo: str = Field(json_schema_extra={"prompt": "deep search"})
@@ -1402,7 +1350,6 @@ def test_has_field_config_deeply_nested():
 
 def test_has_field_config_no_infinite_recursion():
     """Verifica que modelos auto-referenciais não causam loop infinito."""
-    from dataframeit.core import _has_field_config
 
     class NodoArvore(BaseModel):
         valor: str
@@ -1419,7 +1366,6 @@ def test_has_field_config_no_infinite_recursion():
 
 def test_has_field_config_no_config_in_nested():
     """Verifica que retorna False se modelo aninhado não tem config."""
-    from dataframeit.core import _has_field_config
 
     class NestedSimples(BaseModel):
         campo: str
@@ -1432,7 +1378,6 @@ def test_has_field_config_no_config_in_nested():
 
 def test_collect_configured_fields_returns_paths():
     """Verifica que _collect_configured_fields retorna caminhos corretos."""
-    from dataframeit.agent import _collect_configured_fields
 
     results = _collect_configured_fields(AnaliseSentencaSaude)
 
@@ -1446,7 +1391,6 @@ def test_collect_configured_fields_returns_paths():
 
 def test_collect_configured_fields_deeply_nested():
     """Verifica coleta de caminhos em estruturas profundas."""
-    from dataframeit.agent import _collect_configured_fields
 
     class Nivel3(BaseModel):
         campo_profundo: str = Field(json_schema_extra={"max_results": 5})
@@ -1469,7 +1413,6 @@ def test_collect_configured_fields_deeply_nested():
 
 def test_collect_configured_fields_no_infinite_recursion():
     """Verifica que modelos auto-referenciais não causam loop infinito."""
-    from dataframeit.agent import _collect_configured_fields
 
     class NodoArvoreConfig(BaseModel):
         valor: str = Field(json_schema_extra={"prompt": "search value"})
@@ -1494,8 +1437,6 @@ def test_call_agent_per_field_nested_search():
     1. Primeiro extrai a lista de pedidos
     2. Depois enriquece cada item da lista com buscas específicas
     """
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     call_count = [0]
     captured_prompts = []
@@ -1575,8 +1516,6 @@ def test_call_agent_per_field_nested_search():
 
 def test_call_agent_per_field_nested_context_in_prompt():
     """Verifica que contexto de busca aninhada é incluído no prompt."""
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     captured_prompts = []
 
@@ -1620,8 +1559,6 @@ def test_call_agent_per_field_nested_context_in_prompt():
 
 def test_call_agent_per_field_sums_nested_usage():
     """Verifica que usage de buscas aninhadas é somado."""
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     call_count = [0]
 
@@ -1674,7 +1611,6 @@ def test_call_agent_per_field_sums_nested_usage():
 
 def test_reorder_columns_basic():
     """Verifica que _reorder_columns ordena colunas corretamente."""
-    from dataframeit.utils import _reorder_columns
 
     # Criar DataFrame com colunas em ordem incorreta
     df = pd.DataFrame(
@@ -1721,7 +1657,6 @@ def test_reorder_columns_basic():
 
 def test_reorder_columns_with_status():
     """Verifica que colunas de status ficam no final."""
-    from dataframeit.utils import _reorder_columns
 
     df = pd.DataFrame(
         {
@@ -1743,7 +1678,6 @@ def test_reorder_columns_with_status():
 
 def test_reorder_columns_multiple_traces():
     """Verifica ordenação com múltiplas colunas de trace."""
-    from dataframeit.utils import _reorder_columns
 
     df = pd.DataFrame(
         {
@@ -1772,7 +1706,6 @@ def test_reorder_columns_multiple_traces():
 
 def test_column_ordering_in_from_pandas():
     """Verifica que from_pandas retorna colunas ordenadas corretamente."""
-    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, ConversionInfo, from_pandas
 
     # Criar DataFrame com colunas em ordem incorreta (simulando problema real)
     df = pd.DataFrame(
@@ -1817,7 +1750,6 @@ def test_column_ordering_in_from_pandas():
 
 def test_is_list_of_pydantic_model_basic():
     """Testa is_list_of_pydantic_model com List[Model]."""
-    from dataframeit.utils import is_list_of_pydantic_model
 
     is_list, inner = is_list_of_pydantic_model(list[PedidoItem])
 
@@ -1827,7 +1759,6 @@ def test_is_list_of_pydantic_model_basic():
 
 def test_is_list_of_pydantic_model_optional_list():
     """Testa is_list_of_pydantic_model com Optional[List[Model]]."""
-    from dataframeit.utils import is_list_of_pydantic_model
 
     is_list, inner = is_list_of_pydantic_model(Optional[list[PedidoItem]])
 
@@ -1837,7 +1768,6 @@ def test_is_list_of_pydantic_model_optional_list():
 
 def test_is_list_of_pydantic_model_not_list():
     """Testa is_list_of_pydantic_model com modelo direto (não lista)."""
-    from dataframeit.utils import is_list_of_pydantic_model
 
     is_list, inner = is_list_of_pydantic_model(PedidoItem)
 
@@ -1847,7 +1777,6 @@ def test_is_list_of_pydantic_model_not_list():
 
 def test_is_list_of_pydantic_model_list_of_primitives():
     """Testa is_list_of_pydantic_model com List[str]."""
-    from dataframeit.utils import is_list_of_pydantic_model
 
     is_list, inner = is_list_of_pydantic_model(list[str])
 
@@ -1857,7 +1786,6 @@ def test_is_list_of_pydantic_model_list_of_primitives():
 
 def test_get_list_fields_with_nested_search():
     """Testa identificação de campos List[Model] com busca interna."""
-    from dataframeit.agent import _get_list_fields_with_nested_search
 
     result = _get_list_fields_with_nested_search(AnaliseSentencaSaude)
 
@@ -1873,8 +1801,6 @@ def test_get_list_fields_with_nested_search():
 
 def test_enrich_list_items_with_search():
     """Testa enriquecimento de itens de lista com buscas."""
-    from dataframeit.agent import _collect_configured_fields, _enrich_list_items_with_search
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     call_count = [0]
     captured_contexts = []
@@ -1942,8 +1868,6 @@ def test_issue_84_search_count_per_item():
     cada item da lista deve ter sua própria busca executada, e o search_count
     deve refletir o número total de buscas realizadas.
     """
-    from dataframeit.agent import call_agent_per_field
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     search_call_count = [0]
 
@@ -2030,7 +1954,6 @@ def test_issue_84_search_count_per_item():
 
 def test_warn_search_rate_limit_triggers_on_high_concurrent():
     """Emite warning quando queries concorrentes excedem limite recomendado."""
-    from dataframeit.core import _warn_search_rate_limit
 
     with pytest.warns(UserWarning) as record:
         _warn_search_rate_limit(
@@ -2051,7 +1974,6 @@ def test_warn_search_rate_limit_triggers_on_high_concurrent():
 
 def test_warn_search_rate_limit_triggers_on_high_rpm():
     """Emite warning quando taxa estimada excede o limite do Tavily."""
-    from dataframeit.core import _warn_search_rate_limit
 
     with pytest.warns(UserWarning) as record:
         _warn_search_rate_limit(
@@ -2068,9 +1990,6 @@ def test_warn_search_rate_limit_triggers_on_high_rpm():
 
 def test_warn_search_rate_limit_silent_on_safe_config():
     """Não emite warning com configuração conservadora."""
-    import warnings as _warnings
-
-    from dataframeit.core import _warn_search_rate_limit
 
     with _warnings.catch_warnings(record=True) as w:
         _warnings.simplefilter("always")
@@ -2087,9 +2006,6 @@ def test_warn_search_rate_limit_silent_on_safe_config():
 
 def test_warn_search_rate_limit_exa_higher_threshold():
     """Exa tem limite 3x maior — configuração que alerta Tavily pode não alertar Exa."""
-    import warnings as _warnings
-
-    from dataframeit.core import _warn_search_rate_limit
 
     # Configuração: 10 queries concorrentes está no limite (10), não dispara.
     # A diferença que exercitamos é a taxa estimada:
@@ -2122,7 +2038,6 @@ def test_warn_search_rate_limit_exa_higher_threshold():
 
 def test_warn_search_rate_limit_shows_provider_name():
     """A mensagem cita o provedor atual."""
-    from dataframeit.core import _warn_search_rate_limit
 
     with pytest.warns(UserWarning) as record:
         _warn_search_rate_limit(
@@ -2149,7 +2064,6 @@ def test_warn_search_rate_limit_shows_provider_name():
 
 def test_dataframeit_warns_when_search_and_parallel():
     """dataframeit chama _warn_search_rate_limit com use_search + parallel>1."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["item"] * 100})
 
@@ -2179,7 +2093,6 @@ def test_dataframeit_warns_when_search_and_parallel():
 
 def test_dataframeit_warns_per_field_large_dataset_without_parallel():
     """Mesmo sem paralelismo, search_per_field com muitas queries aciona o warning."""
-    from dataframeit.core import dataframeit
 
     # 100 linhas * 2 campos = 200 queries -> > 100, aciona gatilho estendido.
     df = pd.DataFrame({"texto": ["item"] * 100})
@@ -2205,7 +2118,6 @@ def test_dataframeit_warns_per_field_large_dataset_without_parallel():
 
 def test_dataframeit_no_warn_without_search():
     """Sem use_search, não chama _warn_search_rate_limit."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["item"]})
     with (
@@ -2227,7 +2139,6 @@ def test_dataframeit_no_warn_without_search():
 
 def test_dataframeit_no_warn_small_sequential_search():
     """Busca sequencial em dataset pequeno não dispara o warning."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["item"]})  # 1 linha * 2 campos = 2 queries
     with (
@@ -2251,7 +2162,6 @@ def test_dataframeit_no_warn_small_sequential_search():
 
 def test_dataframeit_passes_search_provider_to_warning():
     """O search_provider configurado chega no warning."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["item"] * 100})
     with (

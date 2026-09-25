@@ -8,7 +8,8 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit import dataframeit
+from dataframeit import core, dataframeit
+from dataframeit.core import _print_token_stats
 
 
 class Modelo(BaseModel):
@@ -212,7 +213,6 @@ def test_batch_size_rejeita_nao_inteiros(valor, tmp_path):
 
 
 def test_estatisticas_de_busca_usam_o_provider_escolhido(capsys):
-    from dataframeit.core import _print_token_stats
 
     _print_token_stats(
         {
@@ -366,7 +366,6 @@ def test_aviso_de_texto_ausente_aponta_para_o_chamador():
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
 def test_texto_ausente_conta_para_o_checkpoint(tmp_path, parallel_requests):
-    from dataframeit import core
 
     gravacoes = []
     original = core._try_save_checkpoint

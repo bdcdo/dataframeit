@@ -1,6 +1,6 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
-from dataframeit.errors import _infer_provider_info
+from dataframeit.errors import _infer_provider_info, get_friendly_error_message
 
 
 class TestInferProviderInfoOverrides:
@@ -75,7 +75,6 @@ class TestFriendlyAuthErrorWithoutEnvVar:
     """Mensagem de auth deve adaptar quando provider usa credenciais SDK."""
 
     def test_vertexai_auth_error_uses_sdk_message(self):
-        from dataframeit.errors import get_friendly_error_message
 
         msg = get_friendly_error_message(
             Exception("AuthenticationError: invalid credentials"),
@@ -87,7 +86,6 @@ class TestFriendlyAuthErrorWithoutEnvVar:
         assert "GOOGLE_VERTEXAI_API_KEY" not in msg
 
     def test_bedrock_auth_error_uses_sdk_message(self):
-        from dataframeit.errors import get_friendly_error_message
 
         msg = get_friendly_error_message(
             Exception("AuthenticationError: 401"),
@@ -97,7 +95,6 @@ class TestFriendlyAuthErrorWithoutEnvVar:
         assert "BEDROCK_CONVERSE_API_KEY" not in msg
 
     def test_openai_auth_error_keeps_api_key_message(self):
-        from dataframeit.errors import get_friendly_error_message
 
         msg = get_friendly_error_message(
             Exception("AuthenticationError: bad key"),

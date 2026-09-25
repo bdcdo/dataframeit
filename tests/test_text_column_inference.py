@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
 
+from dataframeit.core import dataframeit
+
 
 class _Model(BaseModel):
     resumo: str = Field(description="resumo curto")
@@ -21,7 +23,6 @@ def _mock_call_langchain(*args, **kwargs):
 
 def test_infers_texto_by_default():
     """DataFrame com coluna 'texto' continua funcionando sem text_column."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"id": [1], "texto": ["foo"]})
     with (
@@ -34,7 +35,6 @@ def test_infers_texto_by_default():
 
 def test_infers_decisao_from_juscraper_like_df():
     """DataFrame com coluna 'decisao' (cjpg/cjsg) é detectado automaticamente."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"cd_processo": ["001"], "decisao": ["texto longo"]})
     with (
@@ -47,7 +47,6 @@ def test_infers_decisao_from_juscraper_like_df():
 
 def test_infers_text_english():
     """DataFrame com coluna 'text' (inglês) é aceito."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"id": [1], "text": ["hello"]})
     with (
@@ -60,7 +59,6 @@ def test_infers_text_english():
 
 def test_warns_when_multiple_candidates_present():
     """Quando mais de um candidato está presente, emite UserWarning e usa o primeiro da lista."""
-    from dataframeit.core import dataframeit
 
     # 'texto' tem precedência sobre 'content' pela ordem de TEXT_COLUMN_CANDIDATES
     df = pd.DataFrame({"texto": ["foo"], "content": ["bar"]})
@@ -77,7 +75,6 @@ def test_warns_when_multiple_candidates_present():
 
 def test_raises_when_no_candidate_matches():
     """Multi-col sem nenhum candidato bater: ValueError informativo."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"id": [1], "payload": ["x"]})
     with (
@@ -93,7 +90,6 @@ def test_raises_when_no_candidate_matches():
 
 def test_single_column_df_uses_that_column():
     """DataFrame com apenas 1 coluna (sem nome canônico) usa-a como texto."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"mensagem": ["hello"]})
     with (
@@ -106,7 +102,6 @@ def test_single_column_df_uses_that_column():
 
 def test_explicit_text_column_overrides_inference():
     """text_column= explícito sempre vence a inferência."""
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["ignorado"], "meu_campo": ["usado"]})
     captured_text = []

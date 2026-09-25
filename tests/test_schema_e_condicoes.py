@@ -6,7 +6,9 @@ não serializa.
 """
 
 import json
-from typing import Optional, Union
+import types
+import typing
+from typing import Literal, Optional, Union
 from unittest.mock import patch
 
 import pandas as pd
@@ -14,7 +16,19 @@ import pytest
 from pydantic import BaseModel, Field
 
 from dataframeit import dataframeit
+from dataframeit.agent import (
+    _build_field_prompt,
+    _llm_field,
+    call_agent_per_field,
+    call_agent_per_group,
+)
+from dataframeit.conditional import (
+    _collect_configured_fields,
+    _walk_fields,
+    get_field_execution_order,
+)
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig, build_prompt
+from dataframeit.utils import resolve_forward_refs
 
 _CHAVES_DA_BIBLIOTECA = (
     "condition",
@@ -88,7 +102,6 @@ def _patches_de_execucao():
 
 class TestSchemaSemChavesDaBiblioteca:
     def test_condition_callable_no_modo_por_campo(self):
-        from dataframeit.agent import call_agent_per_field
 
         schemas = []
         falso = _call_agent_que_gera_schema(_VALORES_MULTA, schemas)
@@ -100,7 +113,6 @@ class TestSchemaSemChavesDaBiblioteca:
         assert all(not _chaves_da_biblioteca_no_schema(s) for s in schemas)
 
     def test_condition_callable_no_modo_por_grupo(self):
-        from dataframeit.agent import call_agent_per_group
 
         class ModeloGrupo(BaseModel):
             tem_multa: bool
@@ -140,7 +152,6 @@ class TestSchemaSemChavesDaBiblioteca:
         assert "_dataframeit_status" not in resultado.columns
 
     def test_llm_field_preserva_o_original_e_o_resto_do_extra(self):
-        from dataframeit.agent import _llm_field
 
         class Modelo(BaseModel):
             a: Optional[str] = Field(
@@ -322,7 +333,6 @@ class TestOrdemDeExecucao:
         ],
     )
     def test_dependencias_com_a_mesma_raiz_nao_somem_da_ordem(self, depends_on):
-        from dataframeit.conditional import get_field_execution_order
 
         class Modelo(BaseModel):
             tipo: Optional[str] = None
@@ -347,7 +357,6 @@ class TestOrdemDeExecucao:
 
 class TestTextoNoPrompt:
     def test_prompt_por_campo_sem_texto_recebe_o_texto(self):
-        from dataframeit.agent import _build_field_prompt
 
         prompt = _build_field_prompt(
             "Analise {texto}", "campo", None, {"prompt": "Busque o valor da causa."}
@@ -363,7 +372,6 @@ class TestTextoNoPrompt:
         ],
     )
     def test_prompt_de_grupo_recebe_o_texto_uma_vez(self, prompt_do_grupo):
-        from dataframeit.agent import call_agent_per_group
 
         class Modelo(BaseModel):
             a: Optional[str] = None
@@ -388,7 +396,6 @@ class TestTextoNoPrompt:
 
 
 def test_configuracao_em_modelo_auto_referencial_com_list_builtin_e_detectada():
-    from dataframeit.conditional import _collect_configured_fields
 
     class No(BaseModel):
         nome: Optional[str] = Field(None, json_schema_extra={"prompt_append": "x"})
@@ -461,11 +468,6 @@ def test_reprocess_columns_por_campo_chama_so_os_campos_pedidos(parallel_request
 
 
 def test_resolve_forward_refs_preserva_literal_e_a_forma_da_uniao():
-    import types
-    import typing
-    from typing import Literal, Union
-
-    from dataframeit.utils import resolve_forward_refs
 
     class Folha(BaseModel):
         x: int
@@ -490,7 +492,6 @@ def test_resolve_forward_refs_preserva_literal_e_a_forma_da_uniao():
 
 
 def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
-    from dataframeit.agent import call_agent_per_group
 
     class Modelo(BaseModel):
         tem_multa: bool
@@ -520,7 +521,6 @@ def _propriedades_do_campo(schema) -> dict:
 
 
 def test_item_de_lista_e_busca_aninhada_mandam_o_campo_limpo():
-    from dataframeit.agent import call_agent_per_field
 
     class Item(BaseModel):
         nome: str
@@ -550,7 +550,6 @@ def test_item_de_lista_e_busca_aninhada_mandam_o_campo_limpo():
 
 
 def test_reprocess_columns_nao_repete_busca_aninhada_de_campo_nao_pedido():
-    from dataframeit.agent import call_agent_per_field
 
     class Interno(BaseModel):
         valor: Optional[str] = Field(None, json_schema_extra={"prompt_append": "x"})
@@ -610,7 +609,6 @@ def test_reprocess_columns_passa_vazio_como_none_para_a_condicao():
 
 
 def test_lista_com_referencia_adiantada_no_modo_por_campo():
-    from dataframeit.agent import call_agent_per_field
 
     class Item(BaseModel):
         nome: str
@@ -668,7 +666,6 @@ def test_max_results_booleano_levanta_erro():
 
 
 def test_mesmo_modelo_em_dois_campos_e_coletado_nos_dois():
-    from dataframeit.conditional import _collect_configured_fields
 
     class Endereco2(BaseModel):
         cidade: Optional[str] = Field(None, json_schema_extra={"prompt_append": "x"})
@@ -691,14 +688,11 @@ def test_lista_de_outro_tipo_na_uniao_nao_conta_como_camada():
     class Processo(BaseModel):
         partes: list[Parte] = []
 
-    from dataframeit.conditional import _walk_fields
-
     profundidades = {path: depth for path, _, depth in _walk_fields(Processo)}
     assert profundidades["partes.endereco.cidade"] == 1
 
 
 def test_llm_field_limpa_attributes_set_sem_mexer_no_original():
-    from dataframeit.agent import _llm_field
 
     class Modelo(BaseModel):
         a: Optional[str] = Field(None, json_schema_extra={"condition": {"field": "b", "equals": 1}})

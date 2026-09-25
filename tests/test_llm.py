@@ -6,6 +6,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field
 
+from dataframeit.llm import (
+    LLMConfig,
+    SearchConfig,
+    SearchGroupConfig,
+    _create_langchain_llm,
+    build_prompt,
+    call_langchain,
+)
+
 
 class SampleModel(BaseModel):
     campo: str = Field(description="Campo de teste")
@@ -15,19 +24,16 @@ class TestBuildPrompt:
     """Substituicao do placeholder {texto} no template."""
 
     def test_substitui_placeholder(self):
-        from dataframeit.llm import build_prompt
 
         result = build_prompt("Analise: {texto}", "ola mundo")
         assert result == "Analise: ola mundo"
 
     def test_multiplas_ocorrencias(self):
-        from dataframeit.llm import build_prompt
 
         result = build_prompt("{texto} e {texto}", "X")
         assert result == "X e X"
 
     def test_template_sem_placeholder(self):
-        from dataframeit.llm import build_prompt
 
         result = build_prompt("template fixo", "ignorado")
         assert result == "template fixo"
@@ -35,7 +41,6 @@ class TestBuildPrompt:
 
 class TestSearchGroupConfigDefaults:
     def test_defaults_none(self):
-        from dataframeit.llm import SearchGroupConfig
 
         cfg = SearchGroupConfig(fields=["a", "b"])
         assert cfg.fields == ["a", "b"]
@@ -46,7 +51,6 @@ class TestSearchGroupConfigDefaults:
 
 class TestSearchConfigDefaults:
     def test_defaults(self):
-        from dataframeit.llm import SearchConfig
 
         cfg = SearchConfig()
         assert cfg.enabled is False
@@ -61,7 +65,6 @@ class TestCreateLangchainLLM:
     """Parametros que chegam ao init_chat_model do LangChain."""
 
     def _kwargs_repassados(self, extra_kwargs=None, api_key=None):
-        from dataframeit.llm import _create_langchain_llm
 
         with patch("langchain.chat_models.init_chat_model") as init_chat_model:
             _create_langchain_llm("modelo-x", "anthropic", api_key, extra_kwargs)
@@ -87,7 +90,6 @@ class TestCreateLangchainLLM:
 class TestLLMConfigDefaults:
     def test_model_kwargs_factory(self):
         """model_kwargs deve ser dict independente entre instancias."""
-        from dataframeit.llm import LLMConfig
 
         cfg1 = LLMConfig(
             model="m",
@@ -111,7 +113,6 @@ class TestLLMConfigDefaults:
         assert cfg2.model_kwargs == {}
 
     def test_search_config_default_none(self):
-        from dataframeit.llm import LLMConfig
 
         cfg = LLMConfig(
             model="m",
@@ -126,7 +127,6 @@ class TestLLMConfigDefaults:
 
 
 def _make_config():
-    from dataframeit.llm import LLMConfig
 
     return LLMConfig(
         model="gemini-test",
@@ -149,7 +149,6 @@ def _patch_call_langchain(structured_llm):
 
 class TestCallLangchain:
     def test_sucesso_retorna_data_e_usage(self):
-        from dataframeit.llm import call_langchain
 
         parsed = SampleModel(campo="valor")
         raw = SimpleNamespace(
@@ -182,7 +181,6 @@ class TestCallLangchain:
         assert sent_prompt == "Use: texto"
 
     def test_parsing_error_levanta_value_error(self):
-        from dataframeit.llm import call_langchain
 
         structured_llm = MagicMock()
         structured_llm.invoke.return_value = {
@@ -195,7 +193,6 @@ class TestCallLangchain:
             call_langchain("t", SampleModel, "{texto}", _make_config())
 
     def test_parsed_none_sem_parsing_error_levanta_value_error(self):
-        from dataframeit.llm import call_langchain
 
         structured_llm = MagicMock()
         structured_llm.invoke.return_value = {"parsed": None, "raw": None, "parsing_error": None}
@@ -205,7 +202,6 @@ class TestCallLangchain:
 
     def test_usage_metadata_como_objeto(self):
         """usage_metadata pode vir como objeto (nao dict) em algumas integracoes."""
-        from dataframeit.llm import call_langchain
 
         meta = SimpleNamespace(
             input_tokens=3,
@@ -233,7 +229,6 @@ class TestCallLangchain:
 
     def test_output_token_details_como_objeto_com_meta_dict(self):
         """meta dict + output_token_details como objeto: getattr fallback."""
-        from dataframeit.llm import call_langchain
 
         raw = SimpleNamespace(
             usage_metadata={
@@ -256,7 +251,6 @@ class TestCallLangchain:
         assert result["usage"]["reasoning_tokens"] == 7
 
     def test_sem_output_token_details_reasoning_zero(self):
-        from dataframeit.llm import call_langchain
 
         raw = SimpleNamespace(
             usage_metadata={
@@ -278,7 +272,6 @@ class TestCallLangchain:
         assert result["usage"]["reasoning_tokens"] == 0
 
     def test_raw_sem_usage_metadata_retorna_usage_none(self):
-        from dataframeit.llm import call_langchain
 
         raw = SimpleNamespace()  # sem atributo usage_metadata
         structured_llm = MagicMock()
@@ -295,7 +288,6 @@ class TestCallLangchain:
 
     def test_usage_metadata_vazio_retorna_usage_none(self):
         """usage_metadata=None (nao todo provider o expoe) -> usage None."""
-        from dataframeit.llm import call_langchain
 
         raw = SimpleNamespace(usage_metadata=None)
         structured_llm = MagicMock()

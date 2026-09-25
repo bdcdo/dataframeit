@@ -31,6 +31,7 @@ from dataframeit.errors import (
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
+    validate_provider_dependencies,
 )
 from dataframeit.llm import LLMConfig
 
@@ -253,7 +254,6 @@ class TestProviderDependency:
         assert CODEX_FILE_AUTH_LOGIN_COMMAND in message
 
     def test_missing_sdk_reports_only_codex_extra(self):
-        from dataframeit.errors import validate_provider_dependencies
 
         with (
             patch("importlib.import_module", side_effect=ImportError("missing")),
@@ -266,7 +266,6 @@ class TestProviderDependency:
         assert "dataframeit[all]" not in message
 
     def test_langchain_provider_keeps_all_extra_as_alternative(self):
-        from dataframeit.errors import validate_provider_dependencies
 
         def import_module(name):
             if name == "langchain_google_genai":
@@ -285,7 +284,6 @@ class TestProviderDependency:
         assert "dataframeit[all]" in message
 
     def test_sdk_provider_skips_langchain_validation(self):
-        from dataframeit.errors import validate_provider_dependencies
 
         imported = []
 

@@ -1,12 +1,21 @@
 """Testes para suporte a múltiplos provedores de busca (Tavily e Exa)."""
 
+import inspect
 import os
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
+
+from dataframeit.agent import _extract_usage, call_agent
+from dataframeit.core import dataframeit
+from dataframeit.errors import get_friendly_error_message, validate_search_dependencies
+from dataframeit.llm import LLMConfig, SearchConfig
+from dataframeit.search import ExaProvider, TavilyProvider, get_available_providers, get_provider
 
 
 class SampleModel(BaseModel):
@@ -22,7 +31,6 @@ class SampleModel(BaseModel):
 
 def test_get_provider_tavily():
     """Verifica que get_provider retorna TavilyProvider."""
-    from dataframeit.search import TavilyProvider, get_provider
 
     provider = get_provider("tavily")
     assert isinstance(provider, TavilyProvider)
@@ -31,7 +39,6 @@ def test_get_provider_tavily():
 
 def test_get_provider_exa():
     """Verifica que get_provider retorna ExaProvider."""
-    from dataframeit.search import ExaProvider, get_provider
 
     provider = get_provider("exa")
     assert isinstance(provider, ExaProvider)
@@ -40,7 +47,6 @@ def test_get_provider_exa():
 
 def test_get_provider_invalid():
     """Verifica que get_provider levanta erro para provedor inválido."""
-    from dataframeit.search import get_provider
 
     with pytest.raises(ValueError) as exc_info:
         get_provider("invalid_provider")
@@ -50,7 +56,6 @@ def test_get_provider_invalid():
 
 def test_get_available_providers():
     """Verifica lista de provedores disponíveis."""
-    from dataframeit.search import get_available_providers
 
     providers = get_available_providers()
     assert "tavily" in providers
@@ -64,7 +69,6 @@ def test_get_available_providers():
 
 def test_tavily_provider_properties():
     """Verifica propriedades do TavilyProvider."""
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     assert provider.name == "tavily"
@@ -76,7 +80,6 @@ def test_tavily_provider_properties():
 
 def test_tavily_calculate_credits_basic():
     """Verifica cálculo de créditos Tavily com depth basic."""
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     credits = provider.calculate_credits(search_count=3, search_depth="basic")
@@ -85,7 +88,6 @@ def test_tavily_calculate_credits_basic():
 
 def test_tavily_calculate_credits_advanced():
     """Verifica cálculo de créditos Tavily com depth advanced."""
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     credits = provider.calculate_credits(search_count=3, search_depth="advanced")
@@ -99,7 +101,6 @@ def test_tavily_calculate_credits_advanced():
 
 def test_exa_provider_properties():
     """Verifica propriedades do ExaProvider."""
-    from dataframeit.search import ExaProvider
 
     provider = ExaProvider()
     assert provider.name == "exa"
@@ -111,7 +112,6 @@ def test_exa_provider_properties():
 
 def test_exa_calculate_credits_small_results():
     """Verifica cálculo de créditos Exa com <=25 resultados."""
-    from dataframeit.search import ExaProvider
 
     provider = ExaProvider()
     credits = provider.calculate_credits(search_count=3, max_results=10)
@@ -120,7 +120,6 @@ def test_exa_calculate_credits_small_results():
 
 def test_exa_calculate_credits_large_results():
     """Verifica cálculo de créditos Exa com >25 resultados."""
-    from dataframeit.search import ExaProvider
 
     provider = ExaProvider()
     credits = provider.calculate_credits(search_count=3, max_results=50)
@@ -134,7 +133,6 @@ def test_exa_calculate_credits_large_results():
 
 def test_search_config_default_provider():
     """Verifica que provider padrão é 'tavily'."""
-    from dataframeit.llm import SearchConfig
 
     config = SearchConfig()
     assert config.provider == "tavily"
@@ -142,7 +140,6 @@ def test_search_config_default_provider():
 
 def test_search_config_exa_provider():
     """Verifica criação de SearchConfig com provider exa."""
-    from dataframeit.llm import SearchConfig
 
     config = SearchConfig(enabled=True, provider="exa")
     assert config.provider == "exa"
@@ -155,7 +152,6 @@ def test_search_config_exa_provider():
 
 def test_validate_search_dependencies_tavily():
     """Verifica validação de dependências Tavily."""
-    from dataframeit.errors import validate_search_dependencies
 
     original = os.environ.get("TAVILY_API_KEY")
     try:
@@ -174,7 +170,6 @@ def test_validate_search_dependencies_tavily():
 
 def test_validate_search_dependencies_exa():
     """Verifica validação de dependências Exa."""
-    from dataframeit.errors import validate_search_dependencies
 
     original = os.environ.get("EXA_API_KEY")
     try:
@@ -193,7 +188,6 @@ def test_validate_search_dependencies_exa():
 
 def test_validate_search_dependencies_exa_missing_package():
     """Verifica erro quando langchain-exa não está instalado."""
-    from dataframeit.errors import validate_search_dependencies
 
     with patch("importlib.import_module") as mock_import:
 
@@ -213,7 +207,6 @@ def test_validate_search_dependencies_exa_missing_package():
 
 def test_validate_search_dependencies_exa_missing_key():
     """Verifica erro quando EXA_API_KEY não está configurada."""
-    from dataframeit.errors import validate_search_dependencies
 
     original = os.environ.get("EXA_API_KEY")
     try:
@@ -234,7 +227,6 @@ def test_validate_search_dependencies_exa_missing_key():
 
 def test_validate_search_dependencies_invalid_provider():
     """Verifica erro para provedor inválido."""
-    from dataframeit.errors import validate_search_dependencies
 
     with pytest.raises(ValueError) as exc_info:
         validate_search_dependencies("invalid")
@@ -249,9 +241,6 @@ def test_validate_search_dependencies_invalid_provider():
 
 def test_search_provider_default():
     """Verifica que search_provider='tavily' é o padrão."""
-    import inspect
-
-    from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
     assert sig.parameters["search_provider"].default == "tavily"
@@ -259,9 +248,6 @@ def test_search_provider_default():
 
 def test_search_provider_invalid_raises():
     """Verifica que search_provider inválido gera erro."""
-    import pandas as pd
-
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["teste"]})
 
@@ -285,7 +271,6 @@ def test_search_provider_invalid_raises():
 
 def test_create_tool_tavily(monkeypatch):
     """Verifica que TavilyProvider.create_tool cria TavilySearch."""
-    from dataframeit.search import TavilyProvider
 
     class DummyTavilySearch:
         def __init__(self, **kwargs):
@@ -309,7 +294,6 @@ def test_create_tool_exa(monkeypatch):
     ExaSearchResults aceita num_results no construtor sem usá-lo; por isso a
     classe falsa tem cliente, e o teste confere os argumentos da busca.
     """
-    from dataframeit.search import ExaProvider
 
     chamadas = []
 
@@ -343,9 +327,6 @@ def test_create_tool_exa(monkeypatch):
 
 def test_extract_usage_includes_provider_name():
     """Verifica que _extract_usage inclui nome do provider."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -366,9 +347,6 @@ def test_extract_usage_includes_provider_name():
 
 def test_extract_usage_with_exa_provider():
     """Verifica _extract_usage com ExaProvider."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import ExaProvider
 
     provider = ExaProvider()
     search_config = SearchConfig(enabled=True, provider="exa", max_results=10)
@@ -395,9 +373,6 @@ def test_extract_usage_with_exa_provider():
 
 def test_extract_usage_accumulates_reasoning_tokens():
     """#65: reasoning tokens (GPT-5, o-series) devem ser extraídos de output_token_details."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -435,9 +410,6 @@ def test_extract_usage_accumulates_reasoning_tokens():
 
 def test_extract_usage_reasoning_tokens_default_zero():
     """Se `output_token_details` está ausente, reasoning_tokens deve ser 0 (sem quebrar)."""
-    from dataframeit.agent import _extract_usage
-    from dataframeit.llm import SearchConfig
-    from dataframeit.search import TavilyProvider
 
     provider = TavilyProvider()
     search_config = SearchConfig(enabled=True, provider="tavily")
@@ -462,7 +434,6 @@ def test_extract_usage_reasoning_tokens_default_zero():
 
 def test_exa_authentication_error_message():
     """Verifica mensagem amigável para erro de autenticação Exa."""
-    from dataframeit.errors import get_friendly_error_message
 
     # Criar erro específico do Exa
     # A função get_friendly_error_message verifica padrões no error_str
@@ -479,7 +450,6 @@ def test_exa_authentication_error_message():
 
 def test_exa_limit_error_message():
     """Verifica mensagem amigável para erro de limite Exa."""
-    from dataframeit.errors import get_friendly_error_message
 
     class ExaLimitError(Exception):
         pass
@@ -497,8 +467,6 @@ def test_exa_limit_error_message():
 
 def test_call_agent_uses_provider_factory(monkeypatch):
     """Verifica que call_agent usa factory para criar ferramenta."""
-    from dataframeit.agent import call_agent
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     class DummyAgent:
         def invoke(self, _payload, config=None):
@@ -552,10 +520,6 @@ def test_call_agent_uses_provider_factory(monkeypatch):
 
 def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
     """O nome do modelo de structured output não conta como busca, mesmo contendo "search"."""
-    from types import SimpleNamespace
-
-    from dataframeit.agent import call_agent
-    from dataframeit.llm import LLMConfig, SearchConfig
 
     class ResearchResult(BaseModel):
         campo: str

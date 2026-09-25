@@ -1,17 +1,29 @@
 """Testes para o provider claude_code (Claude Code SDK)."""
 
+import asyncio
+import sys
+import types
+import warnings
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from pydantic import BaseModel
 
+from dataframeit import dataframeit
+from dataframeit.claude_code import _build_json_system_prompt, call_claude_code
+from dataframeit.core import _print_token_stats
 from dataframeit.errors import (
     ProviderError,
     ProviderOverloadedError,
     ProviderTransientError,
     is_rate_limit_error,
     is_recoverable_error,
+    validate_provider_dependencies,
 )
+from dataframeit.llm import LLMConfig
+from dataframeit.utils import parse_json
 
 
 class SampleModel(BaseModel):
@@ -24,7 +36,6 @@ class TestValidateProviderDependencies:
 
     def test_claude_code_missing_raises_import_error(self):
         """Deve levantar ImportError com mensagem amigável quando claude_agent_sdk não está instalado."""
-        from dataframeit.errors import validate_provider_dependencies
 
         with (
             patch("importlib.import_module", side_effect=ImportError("No module")),
@@ -34,7 +45,6 @@ class TestValidateProviderDependencies:
 
     def test_claude_code_installed_passes(self):
         """Deve passar sem erro quando claude_agent_sdk está instalado."""
-        from dataframeit.errors import validate_provider_dependencies
 
         with patch("importlib.import_module", return_value=MagicMock()):
             # Não deve levantar exceção
@@ -42,7 +52,6 @@ class TestValidateProviderDependencies:
 
     def test_claude_code_skips_langchain_validation(self):
         """Deve NÃO validar langchain quando provider é claude_code."""
-        from dataframeit.errors import validate_provider_dependencies
 
         call_args = []
 
@@ -64,7 +73,6 @@ class TestUseSearchWithClaudeCode:
 
     def test_use_search_with_claude_code_raises(self):
         """Deve levantar ValueError quando use_search=True com provider='claude_code'."""
-        from dataframeit import dataframeit
 
         with (
             patch("dataframeit.core.validate_provider_dependencies"),
@@ -85,7 +93,6 @@ class TestBuildJsonSystemPrompt:
 
     def test_includes_json_schema(self):
         """System prompt deve incluir o JSON schema do modelo Pydantic."""
-        from dataframeit.claude_code import _build_json_system_prompt
 
         schema = SampleModel.model_json_schema()
         prompt = _build_json_system_prompt(schema)
@@ -96,7 +103,6 @@ class TestBuildJsonSystemPrompt:
 
     def test_instructs_json_only(self):
         """System prompt deve instruir resposta apenas em JSON."""
-        from dataframeit.claude_code import _build_json_system_prompt
 
         schema = SampleModel.model_json_schema()
         prompt = _build_json_system_prompt(schema)
@@ -109,7 +115,6 @@ class TestJsonParsingVariants:
 
     def test_plain_json(self):
         """Deve parsear JSON puro."""
-        from dataframeit.utils import parse_json
 
         result = parse_json('{"sentimento": "positivo", "confianca": 0.95}')
         assert result["sentimento"] == "positivo"
@@ -117,7 +122,6 @@ class TestJsonParsingVariants:
 
     def test_json_with_markdown_fences(self):
         """Deve parsear JSON dentro de blocos markdown."""
-        from dataframeit.utils import parse_json
 
         response = '```json\n{"sentimento": "negativo", "confianca": 0.8}\n```'
         result = parse_json(response)
@@ -125,7 +129,6 @@ class TestJsonParsingVariants:
 
     def test_json_with_surrounding_text(self):
         """Deve extrair JSON de resposta com texto ao redor."""
-        from dataframeit.utils import parse_json
 
         response = 'Aqui está o resultado: {"sentimento": "neutro", "confianca": 0.5} fim.'
         result = parse_json(response)
@@ -168,8 +171,6 @@ class _ResultMessageFalso:
 @pytest.fixture
 def sdk_falso(monkeypatch):
     """Instala um `claude_agent_sdk` falso e devolve o estado compartilhado."""
-    import sys
-    import types
 
     estado = {
         "opcoes": [],
@@ -200,7 +201,6 @@ def sdk_falso(monkeypatch):
 
 
 def _config_claude_code(**model_kwargs):
-    from dataframeit.llm import LLMConfig
 
     return LLMConfig(
         model="haiku",
@@ -215,7 +215,6 @@ def _config_claude_code(**model_kwargs):
 
 
 def _chamar(config=None):
-    from dataframeit.claude_code import call_claude_code
 
     return call_claude_code(
         "texto da linha", SampleModel, "Analise: {texto}", config or _config_claude_code()
@@ -241,10 +240,10 @@ class TestOpcoesSemFerramentas:
     def test_sdk_real_aceita_tools_vazio(self):
         """A versão instalada do SDK aceita `tools=[]` e o traduz em `--tools ''`."""
         sdk = pytest.importorskip("claude_agent_sdk")
-        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+        subprocess_cli = pytest.importorskip("claude_agent_sdk._internal.transport.subprocess_cli")
 
         opcoes = sdk.ClaudeAgentOptions(tools=[], permission_mode="default")
-        transporte = SubprocessCLITransport(prompt="x", options=opcoes)
+        transporte = subprocess_cli.SubprocessCLITransport(prompt="x", options=opcoes)
         transporte._cli_path = "claude"
         comando = transporte._build_command()
 
@@ -258,7 +257,6 @@ class TestEventLoopAtivo:
     """Em Jupyter já existe um event loop rodando no thread principal."""
 
     def test_funciona_dentro_de_loop_ativo(self, sdk_falso):
-        import asyncio
 
         async def main():
             return _chamar()
@@ -306,9 +304,6 @@ class TestUsageReal:
 
     def test_sem_usage_core_deixa_colunas_de_token_vazias(self, sdk_falso):
         """O core aceita usage None: colunas de token ficam nulas e a agregação não quebra."""
-        import pandas as pd
-
-        from dataframeit import dataframeit
 
         with patch("dataframeit.core.validate_provider_dependencies"):
             df = dataframeit(
@@ -338,14 +333,14 @@ def test_claude_code_nao_carrega_settings_nem_mcp_do_usuario(sdk_falso):
 
 def test_sdk_real_monta_as_flags_de_isolamento():
     sdk = pytest.importorskip("claude_agent_sdk")
-    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+    subprocess_cli = pytest.importorskip("claude_agent_sdk._internal.transport.subprocess_cli")
 
     opcoes = sdk.ClaudeAgentOptions(
         tools=[],
         setting_sources=[],
         extra_args={"strict-mcp-config": None},
     )
-    transporte = SubprocessCLITransport(prompt="x", options=opcoes)
+    transporte = subprocess_cli.SubprocessCLITransport(prompt="x", options=opcoes)
     transporte._cli_path = "claude"
     comando = transporte._build_command()
 
@@ -402,7 +397,6 @@ def test_custo_informado_pelo_sdk_entra_no_usage(sdk_falso):
 
 
 def test_custo_somado_nas_estatisticas(capsys):
-    from dataframeit.core import _print_token_stats
 
     _print_token_stats(
         {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cost_usd": 0.25},
@@ -431,7 +425,6 @@ def test_custo_soma_as_tentativas_re_tentadas(sdk_falso):
         ],
         _resposta_valida(0.2),
     ]
-    from dataclasses import replace
 
     resultado = _chamar(replace(_config_claude_code(), max_retries=2))
     assert resultado["usage"]["cost_usd"] == pytest.approx(0.3)
@@ -448,11 +441,6 @@ def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
 def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
-    import warnings
-
-    import pandas as pd
-
-    from dataframeit import dataframeit
 
     def call_claude_code(text, *args, **kwargs):
         if text.endswith("falha"):
@@ -481,7 +469,6 @@ def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
 
 
 def test_custo_sem_tokens_aparece_no_resumo(capsys):
-    from dataframeit.core import _print_token_stats
 
     _print_token_stats(
         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.25},

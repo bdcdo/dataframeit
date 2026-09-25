@@ -5,6 +5,10 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from dataframeit.core import _get_processing_indices, _setup_columns
+from dataframeit.llm import LLMConfig, build_prompt
+from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, from_pandas, parse_json, to_pandas
+
 
 class TestModel(BaseModel):
     campo1: str = Field(..., description="Primeiro campo")
@@ -18,7 +22,6 @@ def test_basic_functionality():
     df = pd.DataFrame({"texto": ["texto 1", "texto 2", "texto 3"], "coluna_existente": [1, 2, 3]})
 
     # Verificar que as colunas são configuradas corretamente
-    from dataframeit.core import _setup_columns
 
     df_test = df.copy()
     expected_cols = list(TestModel.model_fields.keys())
@@ -30,7 +33,6 @@ def test_basic_functionality():
     assert "_error_details" in df_test.columns
 
     # Verificar índices de processamento
-    from dataframeit.core import _get_processing_indices
 
     pending, count = _get_processing_indices(df_test, "_dataframeit_status", False)
     assert all(pending)
@@ -46,7 +48,6 @@ def test_basic_functionality():
 
 def test_llm_config():
     """Testa criação de config do LLM."""
-    from dataframeit.llm import LLMConfig
 
     config = LLMConfig(
         model="gemini-3-flash-preview",
@@ -64,7 +65,6 @@ def test_llm_config():
 
 def test_utils():
     """Testa funções de utilidade."""
-    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, parse_json, to_pandas
 
     # Testar conversão pandas
     df_pd = pd.DataFrame({"a": [1, 2, 3]})
@@ -88,7 +88,6 @@ def test_utils():
 
 def test_hide_error_columns_when_no_errors():
     """Testa que colunas de erro são ocultadas quando não há erros."""
-    from dataframeit.utils import from_pandas
 
     # Caso 1: Sem erros - colunas devem ser removidas
     df_no_errors = pd.DataFrame(
@@ -130,7 +129,6 @@ def test_hide_error_columns_when_no_errors():
 
 def test_prompt_building():
     """Testa construção de prompts."""
-    from dataframeit.llm import build_prompt
 
     template = "Analise: {texto}"
     text = "Este é um texto de teste"

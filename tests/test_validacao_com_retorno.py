@@ -14,7 +14,7 @@ from dataframeit.errors import (
     is_rate_limit_error,
     is_recoverable_error,
 )
-from dataframeit.llm import LLMConfig, call_langchain
+from dataframeit.llm import LLMConfig, _read_sdk_body, _sdk_rejected_response, call_langchain
 
 
 class ComEvidencia(BaseModel):
@@ -437,7 +437,6 @@ class TestCapturaNoInvoke:
 
 class TestCorpoDoSdk:
     def test_corpo_estranho_nao_troca_a_recusa(self):
-        from dataframeit.llm import _sdk_rejected_response
 
         for corpo in ({"choices": [None]}, {"choices": []}, [1, 2], {"output": [None]}):
             erro = SimpleNamespace(response=SimpleNamespace(json=lambda corpo=corpo: corpo))
@@ -445,7 +444,6 @@ class TestCorpoDoSdk:
         assert _sdk_rejected_response(SimpleNamespace()) == ("", None)
 
     def test_total_ausente_soma_entrada_e_saida(self):
-        from dataframeit.llm import _read_sdk_body
 
         _, uso = _read_sdk_body(
             {

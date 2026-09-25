@@ -1,5 +1,8 @@
 """Testes para batch_size + checkpoint_path (issue #92)."""
 
+import importlib.util
+import threading
+import time
 from unittest.mock import patch
 
 import pandas as pd
@@ -7,6 +10,9 @@ import pytest
 from pydantic import BaseModel
 
 from dataframeit.core import _save_checkpoint, dataframeit
+
+# Original guardado antes de os testes trocarem importlib.util.find_spec.
+_FIND_SPEC = importlib.util.find_spec
 
 
 class SimpleModel(BaseModel):
@@ -155,9 +161,7 @@ def test_missing_openpyxl_rejected_early(tmp_path):
     def fake_find_spec(name):
         if name == "openpyxl":
             return None
-        import importlib.util as _iu
-
-        return _iu.find_spec(name)
+        return _FIND_SPEC(name)
 
     with (
         patch("dataframeit.core.call_langchain") as mock_llm,
@@ -182,9 +186,7 @@ def test_missing_pyarrow_rejected_early(tmp_path):
     def fake_find_spec(name):
         if name == "pyarrow":
             return None
-        import importlib.util as _iu
-
-        return _iu.find_spec(name)
+        return _FIND_SPEC(name)
 
     with (
         patch("dataframeit.core.call_langchain") as mock_llm,
@@ -364,8 +366,6 @@ def test_save_checkpoint_rejects_unsupported_extension(tmp_path):
 def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     """Duas gravações simultâneas disputavam o mesmo .tmp, e o FileNotFoundError
     do os.replace regravava como 'error' uma linha já processada."""
-    import threading
-    import time
 
     df = pd.DataFrame({"texto": [f"t{i}" for i in range(24)]})
     ckpt = tmp_path / "ckpt.csv"

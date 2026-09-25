@@ -1,7 +1,8 @@
 """Checkpoint que falha ao gravar e retomada a partir de CSV/XLSX."""
 
+import datetime
 import warnings
-from typing import Optional
+from typing import Literal, Optional
 from unittest.mock import patch
 
 import pandas as pd
@@ -9,7 +10,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from dataframeit import read_df
-from dataframeit.core import _save_checkpoint, dataframeit
+from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
+from dataframeit.utils import accepts_only_text, normalize_value
 
 
 class ModeloSimples(BaseModel):
@@ -174,7 +176,6 @@ def test_checkpoint_textual_grava_estruturas_como_json(tmp_path):
 
 
 def test_normalize_value_aceita_repr_python_de_checkpoint_antigo():
-    from dataframeit.utils import normalize_value
 
     assert normalize_value("['a', 'b']") == ["a", "b"]
     assert normalize_value("{'nome': 'Ana', 'ok': True}") == {"nome": "Ana", "ok": True}
@@ -281,7 +282,6 @@ def test_campo_condicional_ausente_com_condicao_verdadeira_e_acusado():
 
 
 def test_campo_condicional_presente_mantem_as_restricoes():
-    from dataframeit.core import _validate_processed_rows
 
     class Pessoa(BaseModel):
         tipo: str
@@ -337,7 +337,6 @@ def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, p
 
 
 def test_checkpoint_textual_serializa_data_dentro_de_dict(tmp_path):
-    import datetime
 
     ckpt = tmp_path / "ckpt.csv"
     _save_checkpoint(pd.DataFrame({"meta": [{"quando": datetime.date(2026, 9, 24)}]}), ckpt)
@@ -346,14 +345,12 @@ def test_checkpoint_textual_serializa_data_dentro_de_dict(tmp_path):
 
 @pytest.mark.parametrize("texto", ["{[1]: 2} petição", "{[1], [2]}", "[1, 2"])
 def test_normalize_value_devolve_o_texto_quando_nao_e_estrutura(texto):
-    from dataframeit.utils import normalize_value
 
     assert normalize_value(texto) == texto
 
 
 @pytest.mark.parametrize("texto", ["{1, 2}", "42"])
 def test_normalize_value_so_aceita_lista_dict_ou_tupla(texto):
-    from dataframeit.utils import normalize_value
 
     assert normalize_value(texto) == texto
 
@@ -374,9 +371,6 @@ def test_read_df_respeita_dtype_do_usuario_e_nao_mexe_em_parquet(tmp_path):
 
 
 def test_accepts_only_text_cobre_optional_e_literal():
-    from typing import Literal
-
-    from dataframeit.utils import accepts_only_text
 
     assert accepts_only_text(Optional[str])
     assert accepts_only_text(Literal["a", "b"])

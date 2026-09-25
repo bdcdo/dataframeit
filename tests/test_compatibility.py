@@ -6,6 +6,16 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
 
+from dataframeit.core import _get_processing_indices, _setup_columns
+from dataframeit.core import dataframeit as dataframeit_new
+from dataframeit.utils import (
+    ORIGINAL_TYPE_PANDAS_DF,
+    ConversionInfo,
+    from_pandas,
+    parse_json,
+    to_pandas,
+)
+
 
 class TestModel(BaseModel):
     campo1: str = Field(..., description="Primeiro campo")
@@ -16,7 +26,6 @@ def test_api_compatibility():
     """Testa que a API pública é 100% compatível."""
 
     # Importar versão nova
-    from dataframeit.core import dataframeit as dataframeit_new
 
     # Criar DataFrame de teste
     df = pd.DataFrame({"texto": ["texto 1", "texto 2"], "id": [1, 2]})
@@ -34,7 +43,6 @@ def test_api_compatibility():
 
 def test_column_management():
     """Testa gerenciamento de colunas."""
-    from dataframeit.core import _setup_columns
 
     df = pd.DataFrame({"texto": ["a", "b"], "id": [1, 2]})
     expected_cols = ["campo1", "campo2"]
@@ -59,7 +67,6 @@ def test_column_management():
 
 def test_resume_functionality():
     """Testa funcionalidade de resume."""
-    from dataframeit.core import _get_processing_indices
 
     df = pd.DataFrame(
         {"texto": ["a", "b", "c", "d"], "_dataframeit_status": [None, None, None, None]}
@@ -91,7 +98,6 @@ def test_resume_functionality():
 
 def test_utils_functions():
     """Testa funções de utilidade."""
-    from dataframeit.utils import from_pandas, parse_json, to_pandas
 
     # Parse JSON básico
     result = parse_json('{"a": 1, "b": "test"}')
@@ -106,7 +112,6 @@ def test_utils_functions():
     assert result == {"a": 3}
 
     # Conversão pandas
-    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, ConversionInfo
 
     df = pd.DataFrame({"a": [1, 2, 3]})
     df_result, conversion_info = to_pandas(df)
