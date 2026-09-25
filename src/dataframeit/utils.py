@@ -28,7 +28,7 @@ from pandas.api.types import is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
+    from collections.abc import Callable, Hashable
 
     from polars import DataFrame as PolarsDataFrame
 
@@ -72,7 +72,13 @@ _READERS = {
     ".parquet": pd.read_parquet,
     ".json": pd.read_json,
 }
-_TEXT_READERS = {".csv": pd.read_csv, ".xlsx": pd.read_excel, ".xls": pd.read_excel}
+# Tipados como chamável genérico: com **kwargs, o ty não escolhe entre as
+# sobrecargas de read_csv e read_excel, que variam com a versão do pandas.
+_TEXT_READERS: dict[str, Callable[..., pd.DataFrame]] = {
+    ".csv": pd.read_csv,
+    ".xlsx": pd.read_excel,
+    ".xls": pd.read_excel,
+}
 # Argumentos de leitura com que o usuário já controla tipos ou NA.
 _READ_CONTROLS = ("dtype", "converters", "na_values", "keep_default_na", "na_filter", "usecols")
 
@@ -534,8 +540,7 @@ def _reread_text_columns(
     text_columns = [f for f in get_text_fields(model) if f in df.columns]
     if not text_columns:
         return
-    # O leitor é read_csv ou read_excel, e o ty não casa a união das sobrecargas.
-    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False, **kwargs)  # ty: ignore[no-matching-overload]
+    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False, **kwargs)
     for col in text_columns:
         df[col] = raw[col].mask(raw[col] == "")
 
