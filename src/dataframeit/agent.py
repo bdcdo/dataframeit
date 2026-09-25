@@ -5,19 +5,42 @@ Suporta múltiplos provedores de busca:
 - Exa: Motor de busca semântico
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from copy import copy
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import create_model
+from pydantic import BaseModel, create_model
 
-from .conditional import _CONDITIONAL_KEYS, _FIELD_CONFIG_KEYS, _collect_configured_fields
+from .conditional import (
+    _CONDITIONAL_KEYS,
+    _FIELD_CONFIG_KEYS,
+    _collect_configured_fields,
+    get_field_execution_order,
+    get_group_execution_units,
+    should_skip_field,
+    topological_sort,
+)
 from .errors import retry_with_backoff
-from .llm import LLMConfig, _BuildOnce, _parse_usage_metadata, build_prompt, chat_model
+from .llm import (
+    LLMConfig,
+    SearchConfig,
+    _BuildOnce,
+    _parse_usage_metadata,
+    build_prompt,
+    chat_model,
+)
 from .search import get_provider
 from .utils import is_list_of_pydantic_model, resolve_forward_refs
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import Runnable
+    from pydantic.fields import FieldInfo
+
+    from .search import SearchProvider
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +55,32 @@ _USAGE_COUNTERS = (
 )
 
 
-def _empty_usage(**metadata) -> dict:
+def _empty_usage(**metadata: object) -> dict:
     return {**dict.fromkeys(_USAGE_COUNTERS, 0), **metadata}
 
 
 _LIBRARY_EXTRA_KEYS = frozenset(_FIELD_CONFIG_KEYS + _CONDITIONAL_KEYS)
 
+# Campos simples do item que entram no contexto da busca por item.
+_MAX_CONTEXT_FIELDS = 3
 
-def _llm_field(field_info):
+
+def _search_config(config: LLMConfig) -> SearchConfig:
+    """SearchConfig da execução com busca; sem ela, os modos de busca não se aplicam."""
+    if config.search_config is None:
+        msg = "Os modos de busca exigem LLMConfig.search_config"
+        raise ValueError(msg)
+    return config.search_config
+
+
+def _query_model(name: str, fields: dict[str, tuple]) -> type[BaseModel]:
+    """Modelo Pydantic montado na hora com os campos pedidos numa chamada."""
+    # Os campos chegam por **kwargs, e o ty não casa esse dict com as
+    # sobrecargas de create_model.
+    return create_model(name, **fields)  # ty: ignore[no-matching-overload]
+
+
+def _llm_field(field_info: FieldInfo) -> FieldInfo:
     """Cópia do FieldInfo sem as chaves de configuração da biblioteca.
 
     `condition`, `depends_on` e as chaves de busca por campo servem ao
@@ -68,11 +109,11 @@ def _llm_field(field_info):
         attributes.pop("json_schema_extra", None)
     else:
         attributes["json_schema_extra"] = cleaned.json_schema_extra
-    cleaned._attributes_set = attributes
+    cleaned._attributes_set = attributes  # noqa: SLF001 (ver o comentário acima)
     return cleaned
 
 
-def _llm_field_spec(field_info, owner) -> tuple:
+def _llm_field_spec(field_info: FieldInfo, owner: type[BaseModel]) -> tuple:
     """Par (anotação, FieldInfo) para create_model de um campo do modelo `owner`.
 
     A anotação vai com as referências adiantadas resolvidas: fora do modelo
@@ -145,7 +186,10 @@ def _build_field_prompt(
 
 
 def _with_search_overrides(
-    config: LLMConfig, search_depth=None, max_results=None, max_search_calls=None
+    config: LLMConfig,
+    search_depth: str | None = None,
+    max_results: int | None = None,
+    max_search_calls: int | None = None,
 ) -> LLMConfig:
     """Cria novo LLMConfig com os overrides de busca de um campo ou grupo.
 
@@ -164,7 +208,7 @@ def _with_search_overrides(
         return config
 
     new_config = copy(config)
-    new_search_config = copy(config.search_config)
+    new_search_config = copy(_search_config(config))
 
     if search_depth is not None:
         new_search_config.search_depth = search_depth
@@ -187,7 +231,7 @@ def _with_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
     )
 
 
-def _get_list_fields_with_nested_search(pydantic_model) -> dict:
+def _get_list_fields_with_nested_search(pydantic_model: type[BaseModel]) -> dict:
     """Identifica campos List[Model] que têm configuração de busca em modelos internos.
 
     Args:
@@ -216,9 +260,9 @@ def _get_list_fields_with_nested_search(pydantic_model) -> dict:
     return list_fields_with_search
 
 
-def _enrich_list_items_with_search(
+def _enrich_list_items_with_search(  # noqa: C901, PLR0913, PLR0917 (laço por item e por campo)
     list_items: list,
-    inner_model,
+    inner_model: type[BaseModel],
     search_fields: list,
     text: str,
     config: LLMConfig,
@@ -269,9 +313,9 @@ def _enrich_list_items_with_search(
             field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
 
             # Criar modelo temporário para a busca
-            SingleFieldModel = create_model(
+            single_field_model = _query_model(
                 f"ItemSearch_{item_idx}_{path.replace('.', '_')}",
-                **{field_name: _llm_field_spec(field_info, parent_model)},
+                {field_name: _llm_field_spec(field_info, parent_model)},
             )
 
             # Construir prompt para busca do campo com contexto do item
@@ -286,7 +330,9 @@ def _enrich_list_items_with_search(
             effective_config = _with_field_overrides(config, field_config)
 
             # Chamar agente para buscar informações
-            result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+            result = call_agent(
+                text, single_field_model, field_prompt, effective_config, save_trace
+            )
 
             # Atualizar o item com o resultado da busca
             search_result = result["data"].get(field_name)
@@ -298,18 +344,18 @@ def _enrich_list_items_with_search(
                     total_usage[key] += result["usage"].get(key, 0)
 
             # Coletar trace
-            if save_trace and result.get("trace"):
+            if item_traces is not None and result.get("trace"):
                 item_traces[path] = result["trace"]
 
         enriched_items.append(item_dict)
 
-        if save_trace and item_traces:
+        if traces is not None and item_traces:
             traces.append(item_traces)
 
     return enriched_items, total_usage, traces
 
 
-def _build_item_context(item_dict: dict, inner_model) -> str:
+def _build_item_context(item_dict: dict, inner_model: type[BaseModel]) -> str:
     """Constrói uma string de contexto para um item de lista.
 
     Usa os primeiros campos não-nulos do item para criar contexto.
@@ -321,13 +367,13 @@ def _build_item_context(item_dict: dict, inner_model) -> str:
         if value is not None and not isinstance(value, (dict, list)):
             # Usar apenas valores simples (strings, números)
             context_parts.append(f"{field_name}: {value}")
-            if len(context_parts) >= 3:  # Limitar a 3 campos para não sobrecarregar
+            if len(context_parts) >= _MAX_CONTEXT_FIELDS:
                 break
 
     return ", ".join(context_parts) if context_parts else "item"
 
 
-def _set_nested_value(obj: dict, path: str, value):
+def _set_nested_value(obj: dict, path: str, value: object) -> None:
     """Define um valor em um caminho aninhado de um dicionário.
 
     Args:
@@ -338,7 +384,7 @@ def _set_nested_value(obj: dict, path: str, value):
     parts = path.split(".")
     current = obj
 
-    for i, part in enumerate(parts[:-1]):
+    for part in parts[:-1]:
         if part not in current or not isinstance(current[part], dict):
             current[part] = {}
         current = current[part]
@@ -362,23 +408,25 @@ def _recursion_limit(max_search_calls: int) -> int:
 class SearchAgent:
     """Agente de busca montado para um modelo Pydantic e uma SearchConfig."""
 
-    agent: Any
-    provider: Any
+    agent: Runnable
+    provider: SearchProvider
     tool_name: str
 
 
-def build_search_agent(pydantic_model, config: LLMConfig) -> SearchAgent:
+def build_search_agent(pydantic_model: type[BaseModel], config: LLMConfig) -> SearchAgent:
     """Monta o agente com a ferramenta de busca e o teto de buscas.
 
     O agente compilado pode ser compartilhado entre linhas e threads: o
     ToolCallLimitMiddleware conta as chamadas no estado de cada invocação, e
     não na instância.
     """
-    from langchain.agents import create_agent
-    from langchain.agents.middleware import ToolCallLimitMiddleware
-    from langchain.agents.structured_output import ToolStrategy
+    # Resolvidos na chamada: o import do pacote fica leve e create_agent pode
+    # ser trocado em langchain.agents.
+    from langchain.agents import create_agent  # noqa: PLC0415
+    from langchain.agents.middleware import ToolCallLimitMiddleware  # noqa: PLC0415
+    from langchain.agents.structured_output import ToolStrategy  # noqa: PLC0415
 
-    search_config = config.search_config
+    search_config = _search_config(config)
 
     # Criar ferramenta de busca via factory (suporta Tavily, Exa, etc.)
     provider = get_provider(search_config.provider)
@@ -405,9 +453,9 @@ def build_search_agent(pydantic_model, config: LLMConfig) -> SearchAgent:
     return SearchAgent(agent=agent, provider=provider, tool_name=search_tool.name)
 
 
-def call_agent(
+def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, chamada pelo core)
     text: str,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
     save_trace: str | None = None,
@@ -429,14 +477,14 @@ def call_agent(
         Dicionário com 'data' (dados extraídos), 'usage' (metadata incluindo
         search_credits e search_count) e 'trace' (se save_trace habilitado).
     """
-    search_config = config.search_config
+    search_config = _search_config(config)
     if search_agent is not None:
         built = search_agent()
     else:
         built = build_search_agent(pydantic_model, config)
     agent, provider, tool_name = built.agent, built.provider, built.tool_name
 
-    def _call():
+    def _call() -> dict:
         prompt = build_prompt(user_prompt, text)
 
         # Medir tempo de execução
@@ -499,9 +547,9 @@ def _run_nested_searches(
         field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
 
         # Criar modelo temporário para a busca
-        SingleFieldModel = create_model(
+        single_field_model = _query_model(
             f"NestedSearch_{path.replace('.', '_')}",
-            **{field_name: _llm_field_spec(field_info, parent_model)},
+            {field_name: _llm_field_spec(field_info, parent_model)},
         )
 
         # Construir prompt para busca do campo aninhado
@@ -516,7 +564,7 @@ def _run_nested_searches(
         effective_config = _with_field_overrides(config, field_config)
 
         # Chamar agente para buscar informações
-        result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+        result = call_agent(text, single_field_model, field_prompt, effective_config, save_trace)
 
         # Armazenar contexto de busca
         search_context[path] = result["data"].get(field_name)
@@ -527,15 +575,15 @@ def _run_nested_searches(
                 total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace
-        if save_trace and result.get("trace"):
+        if traces is not None and result.get("trace"):
             traces[path] = result["trace"]
 
     return search_context, total_usage, traces
 
 
-def call_agent_per_field(
+def call_agent_per_field(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (um passo por fase da extração)
     text: str,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
     save_trace: str | None = None,
@@ -575,8 +623,6 @@ def call_agent_per_field(
     Raises:
         ValueError: Se há dependências circulares ou inválidas.
     """
-    from .conditional import get_field_execution_order, should_skip_field
-
     combined_data = {}
     search_provider = config.search_config.provider if config.search_config else None
     total_usage = _empty_usage()
@@ -609,7 +655,7 @@ def call_agent_per_field(
             total_usage[key] += nested_usage.get(key, 0)
 
         # Coletar traces aninhados
-        if save_trace and nested_traces:
+        if traces is not None and nested_traces:
             for path, trace in nested_traces.items():
                 traces[path] = trace
 
@@ -623,12 +669,13 @@ def call_agent_per_field(
     try:
         execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
     except ValueError as e:
-        logger.error(f"Erro ao determinar ordem de execução: {e}")
+        # O erro é relançado e leva o traceback; o log só registra o motivo.
+        logger.error("Erro ao determinar ordem de execução: %s", e)  # noqa: TRY400
         raise
 
-    logger.debug(f"Ordem de execução de campos: {execution_order}")
+    logger.debug("Ordem de execução de campos: %s", execution_order)
     if any(dependencies.values()):
-        logger.debug(f"Mapa de dependências: {dependencies}")
+        logger.debug("Mapa de dependências: %s", dependencies)
 
     # Processar campos na ordem determinada
     for field_name in execution_order:
@@ -641,14 +688,14 @@ def call_agent_per_field(
 
         # Verificar se o campo deve ser pulado (condição não satisfeita)
         if should_skip_field(field_name, field_config, combined_data):
-            logger.info(f"Campo '{field_name}' pulado (condição não satisfeita)")
+            logger.info("Campo '%s' pulado (condição não satisfeita)", field_name)
             combined_data[field_name] = None
             continue
 
         # Criar modelo temporário com apenas este campo
-        SingleFieldModel = create_model(
+        single_field_model = _query_model(
             f"{pydantic_model.__name__}_{field_name}",
-            **{field_name: _llm_field_spec(field_info, pydantic_model)},
+            {field_name: _llm_field_spec(field_info, pydantic_model)},
         )
 
         # Construir prompt para este campo
@@ -674,7 +721,7 @@ def call_agent_per_field(
         effective_config = _with_field_overrides(config, field_config)
 
         # Chamar agente para este campo
-        result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+        result = call_agent(text, single_field_model, field_prompt, effective_config, save_trace)
 
         # Obter resultado do campo
         field_value = result["data"].get(field_name)
@@ -686,7 +733,9 @@ def call_agent_per_field(
             search_fields = list_config["search_fields"]
 
             logger.debug(
-                f"Enriquecendo {len(field_value) if isinstance(field_value, list) else 0} itens de '{field_name}' com buscas"
+                "Enriquecendo %s itens de '%s' com buscas",
+                len(field_value) if isinstance(field_value, list) else 0,
+                field_name,
             )
 
             enriched_items, enrich_usage, enrich_traces = _enrich_list_items_with_search(
@@ -701,7 +750,7 @@ def call_agent_per_field(
                 total_usage[key] += enrich_usage.get(key, 0)
 
             # Coletar traces de enriquecimento
-            if save_trace and enrich_traces:
+            if traces is not None and enrich_traces:
                 traces[f"{field_name}_items"] = enrich_traces
 
         # Combinar resultado
@@ -713,7 +762,7 @@ def call_agent_per_field(
                 total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace por campo
-        if save_trace and result.get("trace"):
+        if traces is not None and result.get("trace"):
             traces[field_name] = result["trace"]
 
     # Adicionar search_provider ao usage
@@ -726,9 +775,9 @@ def call_agent_per_field(
     return response
 
 
-def call_agent_per_group(
+def call_agent_per_group(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (grupos e campos isolados num só laço)
     text: str,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
     save_trace: str | None = None,
@@ -763,18 +812,11 @@ def call_agent_per_group(
         ValueError: Se há dependências inválidas ou circulares, inclusive entre
             um grupo e campos de fora dele.
     """
-    from .conditional import (
-        get_field_execution_order,
-        get_group_execution_units,
-        should_skip_field,
-        topological_sort,
-    )
-
     combined_data = {}
     total_usage = _empty_usage()
     traces = {} if save_trace else None
 
-    groups = config.search_config.groups
+    groups = _search_config(config).groups or {}
 
     field_configs = {}
     for field_name, field_info in pydantic_model.model_fields.items():
@@ -786,9 +828,9 @@ def call_agent_per_group(
     units, _, unit_dependencies = get_group_execution_units(pydantic_model, groups, dependencies)
 
     for unit_key in topological_sort(unit_dependencies):
-        kind, name, group_config = units[int(unit_key)]
+        _, name, group_config = units[int(unit_key)]
 
-        if kind == "group":
+        if group_config is not None:
             group_name = name
             # O modelo e o prompt do grupo seguem a ordem de search_groups; a
             # ordem de dependência só importa para as condições avaliadas
@@ -824,8 +866,8 @@ def call_agent_per_group(
                 field_name: _llm_field_spec(pydantic_model.model_fields[field_name], pydantic_model)
                 for field_name in active_fields
             }
-            GroupModel = create_model(
-                f"{pydantic_model.__name__}_group_{group_name}", **group_field_infos
+            group_model = _query_model(
+                f"{pydantic_model.__name__}_group_{group_name}", group_field_infos
             )
 
             # Construir prompt do grupo
@@ -848,7 +890,7 @@ def call_agent_per_group(
             )
 
             # Chamar agente para o grupo
-            result = call_agent(text, GroupModel, group_prompt, effective_config, save_trace)
+            result = call_agent(text, group_model, group_prompt, effective_config, save_trace)
 
             # Combinar resultados
             for field_name in active_fields:
@@ -875,9 +917,9 @@ def call_agent_per_group(
                 continue
 
             # Criar modelo temporário com apenas este campo
-            SingleFieldModel = create_model(
+            single_field_model = _query_model(
                 f"{pydantic_model.__name__}_{field_name}",
-                **{field_name: _llm_field_spec(field_info, pydantic_model)},
+                {field_name: _llm_field_spec(field_info, pydantic_model)},
             )
 
             # Construir prompt para este campo
@@ -889,7 +931,9 @@ def call_agent_per_group(
             effective_config = _with_field_overrides(config, field_config)
 
             # Chamar agente para este campo
-            result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
+            result = call_agent(
+                text, single_field_model, field_prompt, effective_config, save_trace
+            )
 
             # Combinar resultado
             combined_data[field_name] = result["data"].get(field_name)
@@ -902,7 +946,7 @@ def call_agent_per_group(
                 total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace por grupo ou campo isolado
-        if save_trace and result.get("trace"):
+        if traces is not None and result.get("trace"):
             traces[trace_key] = result["trace"]
 
     # Manter a ordem de campos do modelo
@@ -922,7 +966,7 @@ def call_agent_per_group(
 _TOOL_LIMIT_MESSAGE_PREFIX = "Tool call limit exceeded"
 
 
-def _blocked_tool_call_ids(messages) -> set:
+def _blocked_tool_call_ids(messages: list) -> set:
     """Ids das chamadas de ferramenta que o teto de buscas bloqueou."""
     return {
         msg.tool_call_id
@@ -933,8 +977,11 @@ def _blocked_tool_call_ids(messages) -> set:
     }
 
 
-def _extract_usage(
-    agent_result: dict, provider, search_config, search_tool_name: str
+def _extract_usage(  # noqa: C901, PLR0912 (o diagnóstico em DEBUG descreve cada mensagem)
+    agent_result: dict,
+    provider: SearchProvider,
+    search_config: SearchConfig,
+    search_tool_name: str,
 ) -> dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 
@@ -954,7 +1001,7 @@ def _extract_usage(
 
     # Diagnóstico: logar detalhes de cada mensagem (ativado com logging.DEBUG)
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"[token_tracking] Total messages in agent result: {len(messages)}")
+        logger.debug("[token_tracking] Total messages in agent result: %s", len(messages))
         for i, msg in enumerate(messages):
             msg_type = getattr(msg, "type", type(msg).__name__)
             has_metadata = hasattr(msg, "usage_metadata") and msg.usage_metadata is not None
@@ -980,10 +1027,12 @@ def _extract_usage(
                 tool_info = f", tools={tool_names}"
 
             logger.debug(
-                f"[token_tracking]   [{i}] {msg_type}: "
-                f"has_usage_metadata={has_metadata}"
-                f"{f', {metadata_info}' if metadata_info else ''}"
-                f"{tool_info}"
+                "[token_tracking]   [%s] %s: has_usage_metadata=%s%s%s",
+                i,
+                msg_type,
+                has_metadata,
+                f", {metadata_info}" if metadata_info else "",
+                tool_info,
             )
 
     # Reasoning tokens (GPT-5, o-series, Claude thinking) já estão
@@ -1020,17 +1069,17 @@ def _extract_usage(
     )
 
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"[token_tracking] Final usage: {usage}")
+        logger.debug("[token_tracking] Final usage: %s", usage)
 
     return usage
 
 
-def _extract_trace(
+def _extract_trace(  # noqa: PLR0913, PLR0917 (os dados do trace vêm de fontes distintas)
     agent_result: dict,
-    model: str,
+    model: str | None,
     duration: float,
     mode: str,
-    provider=None,
+    provider: SearchProvider | None = None,
     search_tool_name: str | None = None,
 ) -> dict:
     """Extrai trace do resultado do agente LangChain.
