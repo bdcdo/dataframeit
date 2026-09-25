@@ -11,7 +11,6 @@ from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError
 
 from .errors import ProviderRejectedOutputError, retry_with_backoff
-from .utils import check_dependency
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -192,8 +191,6 @@ def build_structured_llm(pydantic_model: type[BaseModel], config: LLMConfig) -> 
     LangChain. ``include_raw=True`` mantém a mensagem crua, de onde sai o
     ``usage_metadata``.
     """
-    check_dependency("langchain", "langchain")
-    check_dependency("langchain_core", "langchain-core")
     return chat_model(config).with_structured_output(pydantic_model, include_raw=True)
 
 
@@ -348,9 +345,12 @@ def _raw_payload(raw_message: object) -> tuple[dict | None, str]:
     """
     if raw_message is None:
         return None, ""
-    for call in getattr(raw_message, "tool_calls", None) or []:
-        if isinstance(call.get("args"), dict):
-            return call["args"], json.dumps(call["args"], ensure_ascii=False)
+    # O AIMessage valida tool_calls, e os argumentos de cada uma são sempre um
+    # dicionário: a primeira chamada é a resposta estruturada.
+    tool_calls = getattr(raw_message, "tool_calls", None)
+    if tool_calls:
+        args = tool_calls[0]["args"]
+        return args, json.dumps(args, ensure_ascii=False)
     for call in getattr(raw_message, "invalid_tool_calls", None) or []:
         if call.get("args"):
             return None, str(call["args"])
