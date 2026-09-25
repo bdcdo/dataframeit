@@ -1,19 +1,22 @@
+"""Função dataframeit: valida a configuração, processa as linhas e devolve o resultado."""
+
+from __future__ import annotations
+
+import importlib.util
 import json
 import numbers
-import os
 import threading
 import time
 import warnings
-from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 from pandas.api.types import is_scalar
-from pydantic import ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from tqdm import tqdm
 
 from .conditional import (
@@ -47,12 +50,18 @@ from .utils import (
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
+    ConversionInfo,
     from_pandas,
     get_complex_fields,
     normalize_complex_columns,
     normalize_value,
     to_pandas,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Hashable, Iterator, Sequence
+
+    import polars as pl
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
@@ -74,6 +83,31 @@ _RUNTIME_DEFAULT_PROVIDERS = frozenset({"codex", "claude_code"})
 
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
+
+# Faixa aceita de max_results, global ou por grupo e campo.
+_MAX_RESULTS_LIMIT = 20
+
+# Chamadas de busca por campo acima das quais vale avisar sobre rate limit.
+_PER_FIELD_SEARCH_WARNING_CALLS = 100
+
+# Contadores de uso somados de cada linha para o resumo.
+_TOKEN_STAT_KEYS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+)
+
+
+def _empty_token_stats() -> dict:
+    """Contadores zerados de tokens, busca e custo de uma execução."""
+    return {
+        **dict.fromkeys(_TOKEN_STAT_KEYS, 0),
+        "search_credits": 0,
+        "search_count": 0,
+        "cost_usd": 0.0,
+    }
 
 
 @dataclass(frozen=True)
@@ -103,14 +137,16 @@ def _success_details(retry_info: dict) -> str | None:
     return f"Sucesso após {retries} retry(s)" if retries > 0 else None
 
 
-def _missing_text_detail(row_already_processed: bool, reprocess_columns) -> str:
+def _missing_text_detail(
+    *, row_already_processed: bool, reprocess_columns: Sequence[str] | None
+) -> str:
     """Detalhe da linha sem texto; sob reprocess_columns, a linha mantém os valores."""
     if row_already_processed and reprocess_columns:
         return _MISSING_TEXT_DETAIL + _KEPT_VALUES_NOTE
     return _MISSING_TEXT_DETAIL
 
 
-def _as_object_columns(df: pd.DataFrame, columns) -> None:
+def _as_object_columns(df: pd.DataFrame, columns: list) -> None:
     """Converte para object as colunas que vão receber texto, lista ou None.
 
     Uma coluna lida de CSV ou XLSX toda vazia volta como float, e gravar texto
@@ -122,16 +158,16 @@ def _as_object_columns(df: pd.DataFrame, columns) -> None:
             df[col] = df[col].astype(object)
 
 
-def _is_missing_text(value) -> bool:
+def _is_missing_text(value: object) -> bool:
     """None, NaN ou texto só com espaços: não há o que mandar ao LLM."""
     if isinstance(value, str):
         return not value.strip()
     return is_scalar(value) and bool(pd.isna(value))
 
 
-def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows) -> None:
+def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list) -> None:
     """Avisa uma vez quantas linhas a processar não têm texto."""
-    missing = sum(1 for idx in rows if _is_missing_text(df.at[idx, text_column]))
+    missing = sum(1 for idx in rows if _is_missing_text(df.loc[idx, text_column]))
     if missing:
         warnings.warn(
             f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
@@ -141,24 +177,31 @@ def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows) -> None:
         )
 
 
-def _invoke_row(backend, text, row, row_already_processed, reprocess_columns, expected_columns):
+def _invoke_row(
+    backend: ProviderBackend,
+    text: str,
+    row: pd.Series,
+    reprocess_on_row: Sequence[str] | None,
+    expected_columns: list,
+) -> dict:
     """Chama o backend para uma linha, pedindo só as colunas a reprocessar quando dá.
 
-    Numa linha já processada, só as colunas de reprocess_columns são gravadas.
+    `reprocess_on_row` é reprocess_columns numa linha já processada, e None
+    nas demais. Numa linha já processada, só essas colunas são gravadas.
     Com um backend campo a campo, os demais campos nem são pedidos: voltam com
     o valor já gravado, que também alimenta as condições.
     """
-    if row_already_processed and reprocess_columns and backend.invoke_partial:
+    if reprocess_on_row and backend.invoke_partial:
         known = {
             col: None if is_scalar(row[col]) and pd.isna(row[col]) else row[col]
             for col in expected_columns
-            if col not in reprocess_columns and col in row.index
+            if col not in reprocess_on_row and col in row.index
         }
-        return backend.invoke_partial(text, set(reprocess_columns), known)
+        return backend.invoke_partial(text, set(reprocess_on_row), known)
     return backend.invoke(text)
 
 
-def _condition_holds(condition, row_values: dict, field_name: str) -> bool:
+def _condition_holds(condition: object, row_values: dict, field_name: str) -> bool:
     """Avalia a condição com os valores da linha; erro conta como verdadeira.
 
     Verdadeira é o lado conservador: o campo ausente continua acusado, e a
@@ -166,14 +209,14 @@ def _condition_holds(condition, row_values: dict, field_name: str) -> bool:
     """
     try:
         return bool(evaluate_condition(condition, row_values, field_name))
-    except Exception:
+    except Exception:  # noqa: BLE001 (ver a docstring)
         return True
 
 
-def _validate_processed_rows(
+def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por linha e por campo)
     df: pd.DataFrame,
     status_col: str,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     complex_fields: set[str],
 ) -> tuple[list[str], dict[tuple[int, str], Any]]:
     """Valida linhas concluídas sem alterar o checkpoint recebido."""
@@ -221,11 +264,12 @@ def _validate_processed_rows(
     }
     skipping_models: dict[frozenset, Any] = {}
 
-    def model_skipping(skipped: frozenset):
+    def model_skipping(skipped: frozenset) -> type[BaseModel]:
         if not skipped:
             return validation_model
         if skipped not in skipping_models:
-            skipping_models[skipped] = create_model(
+            # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
+            skipping_models[skipped] = create_model(  # ty: ignore[no-matching-overload]
                 f"{pydantic_model.__name__}CheckpointSkipped",
                 __base__=validation_model,
                 **dict.fromkeys(skipped, (Any, None)),
@@ -302,29 +346,37 @@ def _apply_processed_values(
     df: pd.DataFrame,
     values: dict[tuple[int, str], Any],
 ) -> None:
+    """Grava por posição os valores completados na validação do checkpoint."""
     for (position, field_name), value in values.items():
         column_position = df.columns.get_loc(field_name)
-        df.iat[position, column_position] = value
+        # .iat grava lista ou dict como valor único da célula, como _set_cell.
+        df.iat[position, column_position] = value  # noqa: PD009
 
 
 @contextmanager
 def _provider_backend(
     config: LLMConfig,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     user_prompt: str,
     trace_mode: str | None,
 ) -> Iterator[ProviderBackend]:
-    """Seleciona e vincula uma única implementação para toda a execução."""
-    if config.search_config and config.search_config.enabled:
+    """Seleciona e vincula uma única implementação para toda a execução.
+
+    Os módulos de backend (agent, codex, claude_code) são importados na
+    chamada: o import do pacote não carrega o que a execução não usa, e as
+    funções ficam substituíveis no próprio módulo.
+    """
+    search_config = config.search_config
+    if search_config and search_config.enabled:
         config = with_shared_chat_model(config)
-        from .agent import (
+        from .agent import (  # noqa: PLC0415 (ver _provider_backend)
             build_search_agent,
             call_agent,
             call_agent_per_field,
             call_agent_per_group,
         )
 
-        if not config.search_config.per_field:
+        if not search_config.per_field:
             # Schema fixo: o agente é montado uma vez. Nos modos por campo e por
             # grupo, o modelo de cada chamada é criado na hora, e o agente também.
             search_agent = _BuildOnce(lambda: build_search_agent(pydantic_model, config))
@@ -341,9 +393,9 @@ def _provider_backend(
             )
             return
 
-        search_call = call_agent_per_group if config.search_config.groups else call_agent_per_field
+        search_call = call_agent_per_group if search_config.groups else call_agent_per_field
 
-        def invoke_partial(text, only_fields, known):
+        def invoke_partial(text: str, only_fields: set, known: dict) -> dict:
             return search_call(
                 text,
                 pydantic_model,
@@ -362,14 +414,14 @@ def _provider_backend(
         return
 
     if config.provider == "codex":
-        from .codex import open_codex_backend
+        from .codex import open_codex_backend  # noqa: PLC0415 (ver _provider_backend)
 
         with open_codex_backend(config, pydantic_model, user_prompt) as backend:
             yield ProviderBackend(label="codex", invoke=backend.invoke)
         return
 
     if config.provider == "claude_code":
-        from .claude_code import call_claude_code
+        from .claude_code import call_claude_code  # noqa: PLC0415 (ver _provider_backend)
 
         yield ProviderBackend(
             label="claude_code",
@@ -387,7 +439,8 @@ def _provider_backend(
     )
 
 
-def _warn_search_rate_limit(
+def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execução)
+    *,
     num_rows: int,
     num_fields: int,
     parallel_requests: int,
@@ -463,7 +516,10 @@ def _warn_search_rate_limit(
 
 
 def _validate_search_overrides(
-    label: str, search_depth=None, max_results=None, max_search_calls=None
+    label: str,
+    search_depth: object = None,
+    max_results: object = None,
+    max_search_calls: object = None,
 ) -> None:
     """Valida os overrides de busca de um grupo ou campo; None é ausência."""
     if search_depth is not None and search_depth not in ("basic", "advanced"):
@@ -472,7 +528,7 @@ def _validate_search_overrides(
     if max_results is not None and (
         isinstance(max_results, bool)
         or not isinstance(max_results, numbers.Real)
-        or not 1 <= max_results <= 20
+        or not 1 <= float(max_results) <= _MAX_RESULTS_LIMIT
     ):
         msg = f"{label}: max_results deve estar entre 1 e 20"
         raise ValueError(msg)
@@ -481,13 +537,17 @@ def _validate_search_overrides(
         raise ValueError(msg)
 
 
-def _is_positive_int(value) -> bool:
+def _is_positive_int(value: object) -> bool:
     """Inteiro >= 1; bool é subclasse de int, mas True não é uma contagem."""
-    return isinstance(value, numbers.Integral) and not isinstance(value, bool) and value >= 1
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool) and int(value) >= 1
 
 
 def _validate_field_configs(
-    questions, search_config, use_search: bool, search_per_field: bool
+    questions: type[BaseModel],
+    search_config: SearchConfig | None,
+    *,
+    use_search: bool,
+    search_per_field: bool,
 ) -> None:
     """Valida json_schema_extra de todos os campos antes de processar linhas.
 
@@ -559,7 +619,7 @@ def _validate_field_configs(
             raise ValueError(msg)
         return
 
-    from .agent import _get_field_config
+    from .agent import _get_field_config  # noqa: PLC0415 (ver _provider_backend)
 
     field_configs = {
         field_name: _get_field_config(field_info.json_schema_extra)
@@ -572,8 +632,12 @@ def _validate_field_configs(
         get_group_execution_units(questions, search_config.groups, dependencies)
 
 
-def _validate_search_groups(
-    search_groups: dict[str, dict], pydantic_model, use_search: bool, search_per_field: bool
+def _validate_search_groups(  # noqa: C901 (uma checagem por regra de search_groups)
+    search_groups: dict[str, dict],
+    pydantic_model: type[BaseModel],
+    *,
+    use_search: bool,
+    search_per_field: bool,
 ) -> dict[str, SearchGroupConfig]:
     """Valida e converte search_groups para SearchGroupConfig.
 
@@ -605,7 +669,7 @@ def _validate_search_groups(
         # Validar estrutura
         if not isinstance(group_config, dict):
             msg = f"Grupo '{group_name}' deve ser um dicionário"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004 (ValueError, como todo erro de search_groups)
         if "fields" not in group_config:
             msg = f"Grupo '{group_name}' deve ter chave 'fields'"
             raise ValueError(msg)
@@ -667,42 +731,42 @@ def _validate_search_groups(
     return validated_groups
 
 
-def _has_field_config(pydantic_model) -> bool:
+def _has_field_config(pydantic_model: type[BaseModel]) -> bool:
     """Verifica se algum campo, inclusive aninhado, tem configuração per-field."""
     return bool(_collect_configured_fields(pydantic_model))
 
 
-def dataframeit(
-    data,
-    questions=None,
-    prompt=None,
-    perguntas=None,  # Deprecated: use 'questions'
-    resume=True,
-    reprocess_columns=None,
-    model=None,
-    provider="openai",
-    status_column=None,
+def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)
+    data: pd.DataFrame | pd.Series | pl.DataFrame | pl.Series | list | dict,
+    questions: type[BaseModel] | None = None,
+    prompt: str | None = None,
+    perguntas: type[BaseModel] | None = None,  # Deprecated: use 'questions'
+    resume: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    reprocess_columns: str | list[str] | tuple[str, ...] | None = None,
+    model: str | None = None,
+    provider: str = "openai",
+    status_column: str | None = None,
     text_column: str | None = None,
-    api_key=None,
-    max_retries=3,
-    base_delay=1.0,
-    max_delay=30.0,
-    rate_limit_delay=0.0,
-    track_tokens=True,
-    model_kwargs=None,
-    parallel_requests=1,
+    api_key: str | None = None,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    rate_limit_delay: float = 0.0,
+    track_tokens: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    model_kwargs: dict[str, Any] | None = None,
+    parallel_requests: int = 1,
     # Parâmetros de busca web
-    use_search=False,
-    search_provider="tavily",
-    search_per_field=False,
-    max_results=5,
-    search_depth="basic",
-    max_search_calls=10,
+    use_search: bool = False,  # noqa: FBT001, FBT002 (posicional na API pública)
+    search_provider: str = "tavily",
+    search_per_field: bool = False,  # noqa: FBT001, FBT002 (posicional na API pública)
+    max_results: int = 5,
+    search_depth: str = "basic",
+    max_search_calls: int = 10,
     search_groups: dict[str, dict] | None = None,
-    save_trace: bool | Literal["full", "minimal"] | None = None,
+    save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | Path | None = None,
-) -> Any:
+) -> pd.DataFrame | pl.DataFrame:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
     Suporta múltiplos tipos de entrada:
@@ -718,14 +782,19 @@ def dataframeit(
         questions: Modelo Pydantic definindo estrutura a extrair.
         prompt: Template do prompt (use {texto} para indicar onde inserir o texto).
         perguntas: (Deprecated) Use 'questions'.
-        resume: Se True, continua de onde parou.
+        resume: Se True (padrão), continua de onde parou: só as linhas sem status
+            são processadas, e as marcadas 'processed' ou 'error' ficam como estão.
+            Se False, processa toda linha que não esteja 'processed'. Com False, se
+            alguma coluna do modelo já existe no DataFrame e reprocess_columns não
+            foi passado, emite um aviso e devolve a entrada sem processar.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM. Se None, usa o default do provider em
             DEFAULT_MODELS; com 'codex' e 'claude_code', o runtime escolhe.
         provider: Provider do LangChain ('openai', 'google_genai', 'anthropic', etc),
             'claude_code' ou 'codex'. Codex usa o SDK Python oficial.
-        status_column: Coluna para rastrear progresso.
+        status_column: Coluna para rastrear progresso. Se None, usa
+            "_dataframeit_status".
         text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
                     infere dentre TEXT_COLUMN_CANDIDATES ('texto', 'text',
                     'decisao', 'content', 'content_text'); DataFrames com uma
@@ -765,13 +834,19 @@ def dataframeit(
             Padrão: 10.
         search_groups: Grupos de campos que compartilham contexto de busca. Formato:
             {"nome_grupo": {"fields": ["campo1", "campo2"], "prompt": "...", ...}}
+            Chaves de cada grupo: "fields" (obrigatória, lista não vazia de campos
+            do modelo, cada campo em um só grupo), "prompt" (substitui o prompt
+            do grupo; {query} vale como {texto}), "max_results", "search_depth" e
+            "max_search_calls" (substituem os valores globais para o grupo).
             Permite reduzir chamadas de API quando múltiplos campos precisam do mesmo contexto.
             Requer use_search=True e search_per_field=True.
         save_trace: Salva o trace completo do raciocínio do agente. Requer use_search=True.
             - None/False: Desabilitado (padrão)
             - True/"full": Trace completo com conteúdo das mensagens
             - "minimal": Apenas queries e contagens, sem conteúdo de tool results
-            Colunas geradas: "_trace" (agente único) ou "_trace_{campo}" (per_field).
+            Colunas geradas: "_trace" (agente único) ou "_trace_{campo}" (per_field);
+            com search_groups, "_trace_{grupo}" para cada grupo e "_trace_{campo}"
+            para os campos fora de grupos.
         batch_size: Se definido (int >= 1), salva o DataFrame em `checkpoint_path` a cada
             N linhas processadas nesta execução. Combinado com `resume=True`, permite
             retomar execuções longas após kill/crash sem perder progresso.
@@ -781,7 +856,12 @@ def dataframeit(
             Exemplo: ``dataframeit(df, Model, PROMPT, batch_size=100, checkpoint_path="ckpt.xlsx")``.
 
     Returns:
-        Dados com informações extraídas no mesmo formato da entrada.
+        DataFrame (polars para entrada polars, pandas nos demais casos) com uma
+        coluna por campo do modelo, além das colunas de controle. Uma linha sem
+        texto não vai ao LLM e fica com status 'error' e "Texto ausente" em
+        "_error_details". As colunas de status e "_error_details" são removidas
+        quando nenhuma linha tem status 'error' nem detalhe gravado em
+        "_error_details", o que inclui os avisos de retry de linhas bem-sucedidas.
 
     Raises:
         ValueError: Se parâmetros obrigatórios faltarem.
@@ -823,7 +903,7 @@ def dataframeit(
     if (batch_size is None) != (checkpoint_path is None):
         msg = "batch_size e checkpoint_path devem ser usados juntos"
         raise ValueError(msg)
-    if batch_size is not None:
+    if batch_size is not None and checkpoint_path is not None:
         if (
             not isinstance(batch_size, numbers.Integral)
             or isinstance(batch_size, bool)
@@ -850,7 +930,7 @@ def dataframeit(
         if search_provider == "tavily" and search_depth not in ("basic", "advanced"):
             msg = "search_depth deve ser 'basic' ou 'advanced'"
             raise ValueError(msg)
-        if not 1 <= max_results <= 20:
+        if not 1 <= max_results <= _MAX_RESULTS_LIMIT:
             msg = "max_results deve estar entre 1 e 20"
             raise ValueError(msg)
         if not _is_positive_int(max_search_calls):
@@ -941,10 +1021,14 @@ def dataframeit(
     # Validar e processar search_groups
     if search_groups:
         validated_groups = _validate_search_groups(
-            search_groups, questions, use_search, search_per_field
+            search_groups,
+            questions,
+            use_search=use_search,
+            search_per_field=search_per_field,
         )
-        # Adicionar grupos ao search_config
-        search_config.groups = validated_groups
+        # search_config existe: _validate_search_groups exige use_search=True.
+        if search_config is not None:
+            search_config.groups = validated_groups
 
     # Validar reprocess_columns
     if reprocess_columns is not None:
@@ -968,10 +1052,10 @@ def dataframeit(
             df_pandas,
             expected_columns,
             status_column,
-            track_tokens,
-            search_config,
-            trace_mode,
-            questions,
+            track_tokens=track_tokens,
+            search_config=search_config,
+            trace_mode=trace_mode,
+            pydantic_model=questions,
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
@@ -1035,10 +1119,10 @@ def dataframeit(
             df_pandas,
             expected_columns,
             status_column,
-            track_tokens,
-            search_config,
-            trace_mode,
-            questions,
+            track_tokens=track_tokens,
+            search_config=search_config,
+            trace_mode=trace_mode,
+            pydantic_model=questions,
         )
         _as_object_columns(df_pandas, expected_columns)
         _apply_processed_values(df_pandas, processed_values)
@@ -1080,13 +1164,19 @@ def dataframeit(
         search_config=search_config,
     )
 
-    _validate_field_configs(questions, config.search_config, use_search, search_per_field)
+    _validate_field_configs(
+        questions,
+        config.search_config,
+        use_search=use_search,
+        search_per_field=search_per_field,
+    )
 
     # Só execuções com trabalho pendente validam dependências e rate limits.
     if use_search:
         validate_search_dependencies(search_provider)
         is_risky = parallel_requests > 1 or (
-            search_per_field and len(expected_columns) * len(df_pandas) > 100
+            search_per_field
+            and len(expected_columns) * len(df_pandas) > _PER_FIELD_SEARCH_WARNING_CALLS
         )
         if is_risky:
             _warn_search_rate_limit(
@@ -1105,10 +1195,10 @@ def dataframeit(
             df_pandas,
             expected_columns,
             status_column,
-            track_tokens,
-            search_config,
-            trace_mode,
-            questions,
+            track_tokens=track_tokens,
+            search_config=search_config,
+            trace_mode=trace_mode,
+            pydantic_model=questions,
         )
         control_columns = [status_col, "_error_details"]
         _as_object_columns(df_pandas, expected_columns + control_columns)
@@ -1123,13 +1213,13 @@ def dataframeit(
         # isso, gravar lista ou texto falharia depois da chamada paga.
         _as_object_columns(df_pandas, expected_columns)
 
-        is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume)
+        is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume=resume)
         _warn_missing_texts(
             df_pandas,
             text_column,
             [
                 idx
-                for idx, pending in zip(df_pandas.index, is_pending)
+                for idx, pending in zip(df_pandas.index, is_pending, strict=True)
                 if pending or reprocess_columns
             ],
         )
@@ -1137,37 +1227,37 @@ def dataframeit(
         if parallel_requests > 1:
             token_stats = _process_rows_parallel(
                 df_pandas,
-                text_column,
-                status_col,
-                expected_columns,
-                config,
-                backend,
-                is_pending,
-                processed_count,
-                conversion_info,
-                track_tokens,
-                reprocess_columns,
-                parallel_requests,
-                trace_mode,
-                batch_size,
-                checkpoint_path,
+                text_column=text_column,
+                status_col=status_col,
+                expected_columns=expected_columns,
+                config=config,
+                backend=backend,
+                is_pending=is_pending,
+                processed_count=processed_count,
+                conversion_info=conversion_info,
+                track_tokens=track_tokens,
+                reprocess_columns=reprocess_columns,
+                parallel_requests=parallel_requests,
+                trace_mode=trace_mode,
+                batch_size=batch_size,
+                checkpoint_path=checkpoint_path,
             )
         else:
             token_stats = _process_rows(
                 df_pandas,
-                text_column,
-                status_col,
-                expected_columns,
-                config,
-                backend,
-                is_pending,
-                processed_count,
-                conversion_info,
-                track_tokens,
-                reprocess_columns,
-                trace_mode,
-                batch_size,
-                checkpoint_path,
+                text_column=text_column,
+                status_col=status_col,
+                expected_columns=expected_columns,
+                config=config,
+                backend=backend,
+                is_pending=is_pending,
+                processed_count=processed_count,
+                conversion_info=conversion_info,
+                track_tokens=track_tokens,
+                reprocess_columns=reprocess_columns,
+                trace_mode=trace_mode,
+                batch_size=batch_size,
+                checkpoint_path=checkpoint_path,
             )
 
     # Exibir estatísticas de tokens e throughput
@@ -1196,15 +1286,16 @@ def dataframeit(
     return from_pandas(df_pandas, conversion_info, status_col)
 
 
-def _setup_columns(
+def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)
     df: pd.DataFrame,
     expected_columns: list,
     status_column: str | None,
+    *,
     track_tokens: bool,
     search_config: SearchConfig | None = None,
     trace_mode: str | None = None,
-    pydantic_model=None,
-):
+    pydantic_model: type[BaseModel] | None = None,
+) -> None:
     """Configura colunas necessárias no DataFrame (in-place)."""
     status_col = status_column or "_dataframeit_status"
     error_col = "_error_details"
@@ -1222,13 +1313,14 @@ def _setup_columns(
                     grouped_fields.update(group_config.fields)
 
                 # Adicionar colunas de trace para grupos
-                for group_name in search_config.groups:
-                    trace_cols.append(f"_trace_{group_name}")
+                trace_cols.extend(f"_trace_{group_name}" for group_name in search_config.groups)
 
                 # Adicionar colunas de trace para campos isolados (não em grupos)
-                for field in pydantic_model.model_fields:
-                    if field not in grouped_fields:
-                        trace_cols.append(f"_trace_{field}")
+                trace_cols.extend(
+                    f"_trace_{field}"
+                    for field in pydantic_model.model_fields
+                    if field not in grouped_fields
+                )
             else:
                 # Sem grupos: uma coluna por campo
                 trace_cols = [f"_trace_{field}" for field in pydantic_model.model_fields]
@@ -1272,7 +1364,7 @@ def _setup_columns(
 
 
 def _get_processing_indices(
-    df: pd.DataFrame, status_col: str, resume: bool
+    df: pd.DataFrame, status_col: str, *, resume: bool
 ) -> tuple[list[bool], int]:
     """Retorna (linhas pendentes por posição, contagem de linhas com status).
 
@@ -1290,7 +1382,7 @@ def _get_processing_indices(
     if not resume:
         return status.ne("processed").tolist(), 0
 
-    is_pending = status.isnull()
+    is_pending = status.isna()
     processed_count = int((~is_pending).sum())
     return is_pending.tolist(), processed_count
 
@@ -1300,7 +1392,7 @@ def _print_token_stats(
     model: str | None,
     parallel_requests: int = 1,
     search_provider: str | None = None,
-):
+) -> None:
     """Exibe estatísticas de uso de tokens e throughput.
 
     Args:
@@ -1373,8 +1465,6 @@ _CHECKPOINT_EXT_REQUIRES = {
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
     """Valida extensão suportada e dependência opcional necessária."""
-    import importlib.util
-
     ext = Path(path).suffix.lower()
     if ext not in _SUPPORTED_CHECKPOINT_EXTS:
         msg = (
@@ -1400,7 +1490,7 @@ def _structures_as_json(df: pd.DataFrame) -> pd.DataFrame:
     de volta. JSON é o que read_df e a retomada normalizam.
     """
 
-    def to_json(value):
+    def to_json(value: object) -> object:
         if isinstance(value, (list, dict, tuple)):
             return json.dumps(value, ensure_ascii=False, default=str)
         return value
@@ -1429,20 +1519,23 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
             f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
         )
         raise ValueError(msg)
-    os.replace(tmp, path)
+    tmp.replace(path)
 
 
-def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
+def _try_save_checkpoint(df: pd.DataFrame, path: str | Path | None) -> bool:
     """Grava o checkpoint e devolve se deu certo; falha vira aviso.
 
     Uma falha de gravação (disco cheio, arquivo aberto no Excel, coluna que o
     parquet não serializa) não diz nada sobre a linha que acabou de ser
     processada, e por isso nunca muda o status dela nem interrompe a execução.
-    A próxima gravação tenta de novo, com o estado completo.
+    A próxima gravação tenta de novo, com o estado completo. Sem caminho,
+    não há checkpoint a gravar.
     """
+    if path is None:
+        return False
     try:
         _save_checkpoint(df, path)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 (ver a docstring)
         warnings.warn(
             f"Falha ao gravar o checkpoint em {path}: {type(error).__name__}: {error}. "
             "O processamento continua, e a próxima gravação tenta de novo.",
@@ -1454,8 +1547,159 @@ def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
     return True
 
 
-def _process_rows(
+def _set_cell(df: pd.DataFrame, idx: Hashable, column: str, value: object) -> None:
+    """Grava uma célula por rótulo.
+
+    `.at` grava lista ou dict como valor único da célula; `.loc` tentaria
+    alinhar a lista com a seleção e levantaria.
+    """
+    df.at[idx, column] = value  # noqa: PD008 (ver a docstring)
+
+
+def _record_missing_text(
     df: pd.DataFrame,
+    idx: Hashable,
+    *,
+    status_col: str,
+    row_already_processed: bool,
+    reprocess_columns: Sequence[str] | None,
+) -> None:
+    """Marca como erro a linha sem texto, que não vai ao LLM."""
+    _set_cell(df, idx, status_col, "error")
+    _set_cell(
+        df,
+        idx,
+        "_error_details",
+        _missing_text_detail(
+            row_already_processed=row_already_processed, reprocess_columns=reprocess_columns
+        ),
+    )
+
+
+def _record_success(  # noqa: C901, PLR0913 (grava cada família de colunas da linha)
+    df: pd.DataFrame,
+    idx: Hashable,
+    result: dict,
+    *,
+    status_col: str,
+    expected_columns: list,
+    config: LLMConfig,
+    track_tokens: bool,
+    row_already_processed: bool,
+    reprocess_columns: Sequence[str] | None,
+    trace_mode: str | None,
+    token_stats: dict,
+) -> None:
+    """Grava na linha o resultado de uma chamada bem-sucedida e soma o uso.
+
+    Numa linha já processada sob reprocess_columns, só essas colunas são
+    gravadas; nas demais linhas, todas as colunas do modelo.
+    """
+    extracted = result["data"]
+    usage = result.get("usage")
+    retry_info = result.get("_retry_info", {})
+    only_reprocessed = reprocess_columns if row_already_processed else None
+
+    for col in expected_columns:
+        if col in extracted and (not only_reprocessed or col in only_reprocessed):
+            _set_cell(df, idx, col, extracted[col])
+
+    # Armazenar tokens no DataFrame (se habilitado); o total vai só ao resumo.
+    if track_tokens and usage:
+        for column in TOKEN_COLUMNS:
+            _set_cell(df, idx, column, usage.get(column.removeprefix("_"), 0))
+        for key in _TOKEN_STAT_KEYS:
+            token_stats[key] += usage.get(key, 0)
+        token_stats["cost_usd"] += usage.get("cost_usd") or 0
+
+    # Armazenar métricas de busca (search_count mantido só para o resumo)
+    search_config = config.search_config
+    if search_config and search_config.enabled and usage:
+        _set_cell(df, idx, "_search_credits", usage.get("search_credits", 0))
+        token_stats["search_credits"] += usage.get("search_credits", 0)
+        token_stats["search_count"] += usage.get("search_count", 0)
+
+    # Armazenar traces: um por campo ou grupo nos modos por campo, ou um só
+    if trace_mode:
+        if search_config and search_config.per_field:
+            for field_name, trace in result.get("traces", {}).items():
+                _set_cell(df, idx, f"_trace_{field_name}", json.dumps(trace, ensure_ascii=False))
+        else:
+            trace = result.get("trace")
+            if trace:
+                _set_cell(df, idx, "_trace", json.dumps(trace, ensure_ascii=False))
+
+    _set_cell(df, idx, status_col, "processed")
+    # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
+    _set_cell(df, idx, "_error_details", _success_details(retry_info))
+
+
+def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução inteira)
+    df: pd.DataFrame,
+    idx: Hashable,
+    error: Exception,
+    *,
+    status_col: str,
+    config: LLMConfig,
+    row_already_processed: bool,
+    reprocess_columns: Sequence[str] | None,
+    token_stats: dict,
+) -> str:
+    """Grava a falha da linha, mostra a mensagem amigável e devolve o erro em texto.
+
+    O custo informado pelo provider entra no resumo mesmo com a linha falhando.
+    """
+    error_msg = f"{type(error).__name__}: {error}"
+    token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
+
+    # Erro recuperável chegou aqui depois de esgotar as tentativas; o não
+    # recuperável, sem retry.
+    if is_recoverable_error(error):
+        error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
+    else:
+        error_details = f"[Erro não-recuperável] {error_msg}"
+    if row_already_processed and reprocess_columns:
+        error_details += _KEPT_VALUES_NOTE
+
+    friendly_msg = get_friendly_error_message(error, config.provider)
+    print(f"\n{friendly_msg}\n")
+
+    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
+    _set_cell(df, idx, status_col, "error")
+    _set_cell(df, idx, "_error_details", error_details)
+    return error_msg
+
+
+def _progress_description(
+    config: LLMConfig,
+    backend: ProviderBackend,
+    conversion_info: ConversionInfo,
+    workers_label: str,
+) -> str:
+    """Rótulo da barra de progresso: entrada, backend, busca e workers."""
+    type_labels = {
+        ORIGINAL_TYPE_POLARS_DF: "polars→pandas",
+        ORIGINAL_TYPE_PANDAS_DF: "pandas",
+    }
+    engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
+    search_mode = "+search" if (config.search_config and config.search_config.enabled) else ""
+    return f"Processando [{engine}+{backend.label}{search_mode}]{workers_label}"
+
+
+def _progress_suffix(
+    df: pd.DataFrame, reprocess_columns: Sequence[str] | None, processed_count: int
+) -> str:
+    """Final do rótulo: colunas reprocessadas ou ponto de retomada."""
+    if reprocess_columns:
+        return f" (reprocessando: {', '.join(reprocess_columns)})"
+    if processed_count > 0:
+        return f" (resumindo de {processed_count}/{len(df)})"
+    return ""
+
+
+def _process_rows(  # noqa: PLR0913 (estado da execução repassado por dataframeit)
+    df: pd.DataFrame,
+    *,
     text_column: str,
     status_col: str,
     expected_columns: list,
@@ -1463,54 +1707,44 @@ def _process_rows(
     backend: ProviderBackend,
     is_pending: list[bool],
     processed_count: int,
-    conversion_info,
+    conversion_info: ConversionInfo,
     track_tokens: bool,
-    reprocess_columns=None,
+    reprocess_columns: Sequence[str] | None = None,
     trace_mode: str | None = None,
     batch_size: int | None = None,
     checkpoint_path: str | Path | None = None,
 ) -> dict:
-    """Processa cada linha do DataFrame.
+    """Processa cada linha do DataFrame, em sequência.
 
     Args:
+        df: DataFrame de trabalho, alterado in-place.
+        text_column: Coluna com o texto de cada linha.
+        status_col: Coluna de status ('processed' ou 'error').
+        expected_columns: Campos do modelo, gravados em colunas de mesmo nome.
+        config: Configuração do LLM.
+        backend: Implementação do provider vinculada à execução.
+        is_pending: Por posição, se a linha está pendente.
+        processed_count: Linhas com status antes desta execução.
+        conversion_info: Metadados da conversão da entrada, usados no rótulo.
+        track_tokens: Se True, grava tokens por linha e soma o uso.
         reprocess_columns: Lista de colunas para forçar reprocessamento.
             Se especificado, não pula linhas já processadas.
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
+        batch_size: A cada quantas linhas processadas o checkpoint é gravado.
+        checkpoint_path: Arquivo do checkpoint.
 
     Returns:
         Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
     """
-    # Criar descrição para progresso
-    type_labels = {
-        ORIGINAL_TYPE_POLARS_DF: "polars→pandas",
-        ORIGINAL_TYPE_PANDAS_DF: "pandas",
-    }
-    engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    search_mode = "+search" if (config.search_config and config.search_config.enabled) else ""
-    desc = f"Processando [{engine}+{backend.label}{search_mode}]"
+    desc = _progress_description(config, backend, conversion_info, "")
 
     # Adicionar info de rate limiting (se ativo)
     if config.rate_limit_delay > 0:
         req_per_min = int(60 / config.rate_limit_delay)
         desc += f" [~{req_per_min} req/min]"
+    desc += _progress_suffix(df, reprocess_columns, processed_count)
 
-    if reprocess_columns:
-        desc += f" (reprocessando: {', '.join(reprocess_columns)})"
-    elif processed_count > 0:
-        desc += f" (resumindo de {processed_count}/{len(df)})"
-
-    # Inicializar contadores de tokens e busca
-    token_stats = {
-        "input_tokens": 0,
-        "cached_input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "reasoning_tokens": 0,
-        "search_credits": 0,
-        "search_count": 0,
-        "cost_usd": 0.0,
-    }
-
+    token_stats = _empty_token_stats()
     rows_processed_this_run = 0
     rows_saved = 0
 
@@ -1523,116 +1757,60 @@ def _process_rows(
         if not reprocess_columns and not is_pending[i]:
             continue
 
+        success = False
         if _is_missing_text(row[text_column]):
-            df.at[idx, status_col] = "error"
-            df.at[idx, "_error_details"] = _missing_text_detail(
-                row_already_processed, reprocess_columns
+            _record_missing_text(
+                df,
+                idx,
+                status_col=status_col,
+                row_already_processed=row_already_processed,
+                reprocess_columns=reprocess_columns,
             )
-            rows_processed_this_run += 1
-            if batch_size and rows_processed_this_run % batch_size == 0:
-                if _try_save_checkpoint(df, checkpoint_path):
-                    rows_saved = rows_processed_this_run
-            continue
+        else:
+            try:
+                result = _invoke_row(
+                    backend,
+                    str(row[text_column]),
+                    row,
+                    reprocess_columns if row_already_processed else None,
+                    expected_columns,
+                )
+                _record_success(
+                    df,
+                    idx,
+                    result,
+                    status_col=status_col,
+                    expected_columns=expected_columns,
+                    config=config,
+                    track_tokens=track_tokens,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
+                    trace_mode=trace_mode,
+                    token_stats=token_stats,
+                )
+                success = True
+            except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
+                _record_error(
+                    df,
+                    idx,
+                    e,
+                    status_col=status_col,
+                    config=config,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
+                    token_stats=token_stats,
+                )
 
-        text = str(row[text_column])
+        rows_processed_this_run += 1
+        if (
+            batch_size
+            and rows_processed_this_run % batch_size == 0
+            and _try_save_checkpoint(df, checkpoint_path)
+        ):
+            rows_saved = rows_processed_this_run
 
-        try:
-            result = _invoke_row(
-                backend, text, row, row_already_processed, reprocess_columns, expected_columns
-            )
-
-            # Extrair dados e usage metadata
-            extracted = result["data"]
-            usage = result.get("usage")
-            retry_info = result.get("_retry_info", {})
-
-            # Atualizar DataFrame com dados extraídos
-            # Se linha já processada e reprocess_columns definido: só atualiza colunas especificadas
-            # Caso contrário: atualiza todas as colunas do modelo
-            for col in expected_columns:
-                if col in extracted:
-                    if row_already_processed and reprocess_columns:
-                        # Linha já processada: só atualiza se col está em reprocess_columns
-                        if col in reprocess_columns:
-                            df.at[idx, col] = extracted[col]
-                    else:
-                        # Linha nova: atualiza tudo
-                        df.at[idx, col] = extracted[col]
-
-            # Armazenar tokens no DataFrame (se habilitado)
-            if track_tokens and usage:
-                df.at[idx, "_input_tokens"] = usage.get("input_tokens", 0)
-                df.at[idx, "_cached_input_tokens"] = usage.get("cached_input_tokens", 0)
-                df.at[idx, "_output_tokens"] = usage.get("output_tokens", 0)
-                df.at[idx, "_reasoning_tokens"] = usage.get("reasoning_tokens", 0)
-
-                # Acumular estatísticas (total exibido apenas no summary do console)
-                token_stats["input_tokens"] += usage.get("input_tokens", 0)
-                token_stats["cached_input_tokens"] += usage.get("cached_input_tokens", 0)
-                token_stats["output_tokens"] += usage.get("output_tokens", 0)
-                token_stats["total_tokens"] += usage.get("total_tokens", 0)
-                token_stats["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
-                token_stats["cost_usd"] += usage.get("cost_usd") or 0
-
-            # Armazenar métricas de busca (se habilitado)
-            if config.search_config and config.search_config.enabled and usage:
-                df.at[idx, "_search_credits"] = usage.get("search_credits", 0)
-
-                # Acumular estatísticas de busca (search_count mantido só para o summary)
-                token_stats["search_credits"] += usage.get("search_credits", 0)
-                token_stats["search_count"] += usage.get("search_count", 0)
-
-            # Armazenar traces (se habilitado)
-            if trace_mode:
-                if config.search_config and config.search_config.per_field:
-                    # Traces por campo
-                    traces = result.get("traces", {})
-                    for field_name, trace in traces.items():
-                        df.at[idx, f"_trace_{field_name}"] = json.dumps(trace, ensure_ascii=False)
-                else:
-                    # Trace único
-                    trace = result.get("trace")
-                    if trace:
-                        df.at[idx, "_trace"] = json.dumps(trace, ensure_ascii=False)
-
-            df.at[idx, status_col] = "processed"
-            # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
-            df.at[idx, "_error_details"] = _success_details(retry_info)
-
-            rows_processed_this_run += 1
-            if batch_size and rows_processed_this_run % batch_size == 0:
-                if _try_save_checkpoint(df, checkpoint_path):
-                    rows_saved = rows_processed_this_run
-
-            if config.rate_limit_delay > 0:
-                time.sleep(config.rate_limit_delay)
-
-        except Exception as e:
-            error_msg = f"{type(e).__name__}: {e}"
-            token_stats["cost_usd"] += getattr(e, "cost_usd", 0) or 0
-
-            # Determinar se foi erro recuperável ou não para mensagem correta
-            if is_recoverable_error(e):
-                # Erro recuperável que esgotou tentativas
-                error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
-            else:
-                # Erro não-recuperável (não fez retry)
-                error_details = f"[Erro não-recuperável] {error_msg}"
-            if row_already_processed and reprocess_columns:
-                error_details += _KEPT_VALUES_NOTE
-
-            # Exibir mensagem amigável para o usuário
-            friendly_msg = get_friendly_error_message(e, config.provider)
-            print(f"\n{friendly_msg}\n")
-
-            warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
-            df.at[idx, status_col] = "error"
-            df.at[idx, "_error_details"] = error_details
-
-            rows_processed_this_run += 1
-            if batch_size and rows_processed_this_run % batch_size == 0:
-                if _try_save_checkpoint(df, checkpoint_path):
-                    rows_saved = rows_processed_this_run
+        if success and config.rate_limit_delay > 0:
+            time.sleep(config.rate_limit_delay)
 
     # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
     if batch_size and rows_processed_this_run > rows_saved:
@@ -1641,8 +1819,9 @@ def _process_rows(
     return token_stats
 
 
-def _process_rows_parallel(
+def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
     df: pd.DataFrame,
+    *,
     text_column: str,
     status_col: str,
     expected_columns: list,
@@ -1650,9 +1829,9 @@ def _process_rows_parallel(
     backend: ProviderBackend,
     is_pending: list[bool],
     processed_count: int,
-    conversion_info,
+    conversion_info: ConversionInfo,
     track_tokens: bool,
-    reprocess_columns,
+    reprocess_columns: Sequence[str] | None,
     parallel_requests: int,
     trace_mode: str | None = None,
     batch_size: int | None = None,
@@ -1661,9 +1840,23 @@ def _process_rows_parallel(
     """Processa linhas do DataFrame em paralelo com auto-redução de workers.
 
     Args:
+        df: DataFrame de trabalho, alterado in-place sob lock.
+        text_column: Coluna com o texto de cada linha.
+        status_col: Coluna de status ('processed' ou 'error').
+        expected_columns: Campos do modelo, gravados em colunas de mesmo nome.
+        config: Configuração do LLM.
+        backend: Implementação do provider vinculada à execução.
+        is_pending: Por posição, se a linha está pendente.
+        processed_count: Linhas com status antes desta execução.
+        conversion_info: Metadados da conversão da entrada, usados no rótulo.
+        track_tokens: Se True, grava tokens por linha e soma o uso.
+        reprocess_columns: Lista de colunas para forçar reprocessamento.
+            Se especificado, não pula linhas já processadas.
         parallel_requests: Número inicial de workers paralelos.
             Será reduzido automaticamente se detectar erros de rate limit (429).
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
+        batch_size: A cada quantas linhas processadas o checkpoint é gravado.
+        checkpoint_path: Arquivo do checkpoint.
 
     Returns:
         Dict com estatísticas de tokens e métricas de throughput.
@@ -1687,71 +1880,62 @@ def _process_rows_parallel(
     checkpoint_write_lock = threading.Lock()
     last_saved_checkpoint = 0
 
-    def _save_snapshot(snapshot: pd.DataFrame, label: int) -> None:
+    def _save_snapshot(snapshot: tuple[pd.DataFrame, int] | None) -> None:
         nonlocal last_saved_checkpoint
+        if snapshot is None:
+            return
+        frame, label = snapshot
         with checkpoint_write_lock:
             if label <= last_saved_checkpoint:
                 return
-            if _try_save_checkpoint(snapshot, checkpoint_path):
+            if _try_save_checkpoint(frame, checkpoint_path):
                 last_saved_checkpoint = label
 
-    # Contadores
-    token_stats = {
-        "input_tokens": 0,
-        "cached_input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "reasoning_tokens": 0,
-        "requests_completed": 0,
-        "search_credits": 0,
-        "search_count": 0,
-        "cost_usd": 0.0,
-    }
+    def _count_row() -> tuple[pd.DataFrame, int] | None:
+        """Conta a linha; na hora do checkpoint, copia o DataFrame. Chamar sob `lock`."""
+        nonlocal checkpoint_counter
+        checkpoint_counter += 1
+        if batch_size and checkpoint_counter % batch_size == 0:
+            # Copia sob lock, serializa fora, para não bloquear threads na I/O.
+            return (df.copy(), checkpoint_counter)
+        return None
 
-    # Criar descrição para progresso
-    type_labels = {
-        ORIGINAL_TYPE_POLARS_DF: "polars→pandas",
-        ORIGINAL_TYPE_PANDAS_DF: "pandas",
-    }
-    engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    search_mode = "+search" if (config.search_config and config.search_config.enabled) else ""
-    desc = f"Processando [{engine}+{backend.label}{search_mode}] [{parallel_requests} workers]"
+    token_stats = _empty_token_stats()
+    token_stats["requests_completed"] = 0
 
-    if reprocess_columns:
-        desc += f" (reprocessando: {', '.join(reprocess_columns)})"
-    elif processed_count > 0:
-        desc += f" (resumindo de {processed_count}/{len(df)})"
+    desc = _progress_description(
+        config, backend, conversion_info, f" [{parallel_requests} workers]"
+    )
+    desc += _progress_suffix(df, reprocess_columns, processed_count)
 
     # Identificar linhas a processar
-    rows_to_process = []
-    for i, (idx, row) in enumerate(df.iterrows()):
-        if reprocess_columns or is_pending[i]:
-            rows_to_process.append((i, idx, row))
+    rows_to_process = [
+        (i, idx, row)
+        for i, (idx, row) in enumerate(df.iterrows())
+        if reprocess_columns or is_pending[i]
+    ]
 
     if not rows_to_process:
         return token_stats
 
-    def process_single_row(row_data):
+    def process_single_row(row_data: tuple) -> dict:
         """Processa uma única linha (executada em thread separada)."""
-        nonlocal current_workers, workers_reduced, checkpoint_counter
+        nonlocal current_workers, workers_reduced
 
         _i, idx, row = row_data
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
         if _is_missing_text(row[text_column]):
-            snapshot = None
             with lock:
-                df.at[idx, status_col] = "error"
-                df.at[idx, "_error_details"] = _missing_text_detail(
-                    row_already_processed, reprocess_columns
+                _record_missing_text(
+                    df,
+                    idx,
+                    status_col=status_col,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
                 )
-                checkpoint_counter += 1
-                if batch_size and checkpoint_counter % batch_size == 0:
-                    snapshot = (df.copy(), checkpoint_counter)
-            if snapshot is not None:
-                _save_snapshot(*snapshot)
+                snapshot = _count_row()
+            _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
-
-        text = str(row[text_column])
 
         # Verificar se devemos pausar devido a rate limit
         if rate_limit_event.is_set():
@@ -1759,76 +1943,32 @@ def _process_rows_parallel(
 
         try:
             result = _invoke_row(
-                backend, text, row, row_already_processed, reprocess_columns, expected_columns
+                backend,
+                str(row[text_column]),
+                row,
+                reprocess_columns if row_already_processed else None,
+                expected_columns,
             )
 
-            # Extrair dados
-            extracted = result["data"]
-            usage = result.get("usage")
-            retry_info = result.get("_retry_info", {})
-
             # Atualizar DataFrame (com lock para thread-safety)
-            snapshot = None
             with lock:
-                for col in expected_columns:
-                    if col in extracted:
-                        if row_already_processed and reprocess_columns:
-                            if col in reprocess_columns:
-                                df.at[idx, col] = extracted[col]
-                        else:
-                            df.at[idx, col] = extracted[col]
-
-                if track_tokens and usage:
-                    df.at[idx, "_input_tokens"] = usage.get("input_tokens", 0)
-                    df.at[idx, "_cached_input_tokens"] = usage.get("cached_input_tokens", 0)
-                    df.at[idx, "_output_tokens"] = usage.get("output_tokens", 0)
-                    df.at[idx, "_reasoning_tokens"] = usage.get("reasoning_tokens", 0)
-
-                    token_stats["input_tokens"] += usage.get("input_tokens", 0)
-                    token_stats["cached_input_tokens"] += usage.get("cached_input_tokens", 0)
-                    token_stats["output_tokens"] += usage.get("output_tokens", 0)
-                    token_stats["total_tokens"] += usage.get("total_tokens", 0)
-                    token_stats["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
-                    token_stats["cost_usd"] += usage.get("cost_usd") or 0
-
-                if config.search_config and config.search_config.enabled and usage:
-                    df.at[idx, "_search_credits"] = usage.get("search_credits", 0)
-
-                    token_stats["search_credits"] += usage.get("search_credits", 0)
-                    token_stats["search_count"] += usage.get("search_count", 0)
-
-                if trace_mode:
-                    if config.search_config and config.search_config.per_field:
-                        traces = result.get("traces", {})
-                        for field_name, trace in traces.items():
-                            df.at[idx, f"_trace_{field_name}"] = json.dumps(
-                                trace, ensure_ascii=False
-                            )
-                    else:
-                        trace = result.get("trace")
-                        if trace:
-                            df.at[idx, "_trace"] = json.dumps(trace, ensure_ascii=False)
-
+                _record_success(
+                    df,
+                    idx,
+                    result,
+                    status_col=status_col,
+                    expected_columns=expected_columns,
+                    config=config,
+                    track_tokens=track_tokens,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
+                    trace_mode=trace_mode,
+                    token_stats=token_stats,
+                )
                 token_stats["requests_completed"] += 1
-                df.at[idx, status_col] = "processed"
-                df.at[idx, "_error_details"] = _success_details(retry_info)
+                snapshot = _count_row()
 
-                checkpoint_counter += 1
-                if batch_size and checkpoint_counter % batch_size == 0:
-                    # Copia sob lock, serializa fora — evita bloquear threads na I/O.
-                    snapshot = (df.copy(), checkpoint_counter)
-
-            if snapshot is not None:
-                _save_snapshot(*snapshot)
-
-            if config.rate_limit_delay > 0:
-                time.sleep(config.rate_limit_delay)
-
-            return {"success": True, "idx": idx}
-
-        except Exception as e:
-            error_msg = f"{type(e).__name__}: {e}"
-
+        except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
             # Verificar se é erro de rate limit
             if is_rate_limit_error(e):
                 with lock:
@@ -1844,37 +1984,30 @@ def _process_rows_parallel(
                         # Limpar evento após um tempo
                         threading.Timer(5.0, rate_limit_event.clear).start()
 
-            snapshot = None
             with lock:
-                token_stats["cost_usd"] += getattr(e, "cost_usd", 0) or 0
-                if is_recoverable_error(e):
-                    error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
-                else:
-                    error_details = f"[Erro não-recuperável] {error_msg}"
-                if row_already_processed and reprocess_columns:
-                    error_details += _KEPT_VALUES_NOTE
-
-                friendly_msg = get_friendly_error_message(e, config.provider)
-                print(f"\n{friendly_msg}\n")
-
-                warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
-                df.at[idx, status_col] = "error"
-                df.at[idx, "_error_details"] = error_details
-
-                checkpoint_counter += 1
-                if batch_size and checkpoint_counter % batch_size == 0:
-                    snapshot = (df.copy(), checkpoint_counter)
-
-            if snapshot is not None:
-                _save_snapshot(*snapshot)
-
+                error_msg = _record_error(
+                    df,
+                    idx,
+                    e,
+                    status_col=status_col,
+                    config=config,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
+                    token_stats=token_stats,
+                )
+                snapshot = _count_row()
+            _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": error_msg}
+
+        _save_snapshot(snapshot)
+        if config.rate_limit_delay > 0:
+            time.sleep(config.rate_limit_delay)
+        return {"success": True, "idx": idx}
 
     # Processar com ThreadPoolExecutor
     with tqdm(total=len(rows_to_process), desc=desc) as pbar:
         # Usar abordagem iterativa para permitir ajuste dinâmico de workers
         pending_rows = list(rows_to_process)
-        completed = 0
 
         while pending_rows:
             # Pegar batch com número atual de workers
@@ -1889,12 +2022,9 @@ def _process_rows_parallel(
                 for future in as_completed(futures):
                     try:
                         future.result()
-                        pbar.update(1)
-                        completed += 1
-                    except Exception as e:
-                        pbar.update(1)
-                        completed += 1
+                    except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
                         warnings.warn(f"Erro inesperado no executor: {e}", stacklevel=1)
+                    pbar.update(1)
 
     # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
     if batch_size and checkpoint_counter > last_saved_checkpoint:

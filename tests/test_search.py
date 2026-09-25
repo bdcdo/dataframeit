@@ -325,7 +325,7 @@ def test_setup_columns_with_search():
     df = pd.DataFrame({"texto": ["a", "b"]})
     search_config = SearchConfig(enabled=True)
 
-    _setup_columns(df, ["campo1"], None, True, search_config)
+    _setup_columns(df, ["campo1"], None, track_tokens=True, search_config=search_config)
 
     assert "_search_credits" in df.columns
     assert "_search_count" not in df.columns
@@ -336,7 +336,7 @@ def test_setup_columns_without_search():
 
     df = pd.DataFrame({"texto": ["a", "b"]})
 
-    _setup_columns(df, ["campo1"], None, True, None)
+    _setup_columns(df, ["campo1"], None, track_tokens=True, search_config=None)
 
     assert "_search_credits" not in df.columns
     assert "_search_count" not in df.columns
@@ -1220,10 +1220,10 @@ def test_search_groups_setup_columns():
         df,
         ["status_anvisa", "avaliacao_conitec", "nome", "fabricante"],
         None,
-        True,
-        search_config,
-        "full",
-        RegulatoryModel,
+        track_tokens=True,
+        search_config=search_config,
+        trace_mode="full",
+        pydantic_model=RegulatoryModel,
     )
 
     # Deve ter coluna de trace para o grupo

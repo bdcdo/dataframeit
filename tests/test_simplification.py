@@ -25,7 +25,7 @@ def test_basic_functionality():
 
     df_test = df.copy()
     expected_cols = list(TestModel.model_fields.keys())
-    _setup_columns(df_test, expected_cols, None, False)
+    _setup_columns(df_test, expected_cols, None, track_tokens=False)
 
     assert "campo1" in df_test.columns
     assert "campo2" in df_test.columns
@@ -34,13 +34,13 @@ def test_basic_functionality():
 
     # Verificar índices de processamento
 
-    pending, count = _get_processing_indices(df_test, "_dataframeit_status", False)
+    pending, count = _get_processing_indices(df_test, "_dataframeit_status", resume=False)
     assert all(pending)
     assert count == 0
 
     # Testar com resume
     df_test.loc[0, "_dataframeit_status"] = "processed"
-    pending, count = _get_processing_indices(df_test, "_dataframeit_status", True)
+    pending, count = _get_processing_indices(df_test, "_dataframeit_status", resume=True)
     assert pending[0] is False
     assert all(pending[1:])
     assert count == 1
