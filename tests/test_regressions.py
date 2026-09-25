@@ -5,10 +5,12 @@ from dataframeit.core import _setup_columns
 
 
 def test_setup_columns_mutates_independent_copy_only():
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "x": [1, 2, 3],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "x": [1, 2, 3],
+        }
+    )
     df_copy = df.iloc[:2].copy()
 
     _setup_columns(
@@ -27,9 +29,7 @@ def test_setup_columns_mutates_independent_copy_only():
         "_dataframeit_status",
         "_error_details",
     ]
-    generated = df_copy[
-        ["campo1", "campo2", "_dataframeit_status", "_error_details"]
-    ]
+    generated = df_copy[["campo1", "campo2", "_dataframeit_status", "_error_details"]]
     assert generated.isna().all().all()
 
 

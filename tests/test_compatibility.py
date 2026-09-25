@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 class TestModel(BaseModel):
     campo1: str = Field(..., description="Primeiro campo")
-    campo2: Literal['A', 'B'] = Field(..., description="Segundo campo")
+    campo2: Literal["A", "B"] = Field(..., description="Segundo campo")
 
 
 def test_api_compatibility():
@@ -18,10 +18,7 @@ def test_api_compatibility():
     from dataframeit.core import dataframeit as dataframeit_new
 
     # Criar DataFrame de teste
-    df = pd.DataFrame({
-        'texto': ['texto 1', 'texto 2'],
-        'id': [1, 2]
-    })
+    df = pd.DataFrame({"texto": ["texto 1", "texto 2"], "id": [1, 2]})
 
     template = "Analise: {documento}\n{format}"
 
@@ -36,15 +33,15 @@ def test_api_compatibility():
 
     # 3. Parâmetros de configuração
     params = {
-        'resume': True,
-        'model': 'gemini-3-flash-preview',
-        'provider': 'google_genai',
-        'status_column': 'custom_status',
-        'text_column': 'texto',
-        'api_key': None,
-        'max_retries': 3,
-        'base_delay': 1.0,
-        'max_delay': 30.0,
+        "resume": True,
+        "model": "gemini-3-flash-preview",
+        "provider": "google_genai",
+        "status_column": "custom_status",
+        "text_column": "texto",
+        "api_key": None,
+        "max_retries": 3,
+        "base_delay": 1.0,
+        "max_delay": 30.0,
     }
 
     for param_name in params:
@@ -73,15 +70,15 @@ def test_column_management():
     """Testa gerenciamento de colunas."""
     from dataframeit.core import _setup_columns
 
-    df = pd.DataFrame({'texto': ['a', 'b'], 'id': [1, 2]})
-    expected_cols = ['campo1', 'campo2']
+    df = pd.DataFrame({"texto": ["a", "b"], "id": [1, 2]})
+    expected_cols = ["campo1", "campo2"]
 
     # Testar setup básico
     _setup_columns(df, expected_cols, None, False)
-    assert 'campo1' in df.columns
-    assert 'campo2' in df.columns
-    assert '_dataframeit_status' in df.columns
-    assert '_error_details' in df.columns
+    assert "campo1" in df.columns
+    assert "campo2" in df.columns
+    assert "_dataframeit_status" in df.columns
+    assert "_error_details" in df.columns
     print("✅ Colunas criadas corretamente")
 
     # Testar que não cria duplicatas
@@ -91,9 +88,9 @@ def test_column_management():
     print("✅ Não cria colunas duplicadas")
 
     # Testar status_column customizada
-    df3 = pd.DataFrame({'texto': ['a', 'b'], 'id': [1, 2]})
-    _setup_columns(df3, expected_cols, 'meu_status', False)
-    assert 'meu_status' in df3.columns
+    df3 = pd.DataFrame({"texto": ["a", "b"], "id": [1, 2]})
+    _setup_columns(df3, expected_cols, "meu_status", False)
+    assert "meu_status" in df3.columns
     print("✅ status_column customizada funciona")
 
 
@@ -101,34 +98,33 @@ def test_resume_functionality():
     """Testa funcionalidade de resume."""
     from dataframeit.core import _get_processing_indices
 
-    df = pd.DataFrame({
-        'texto': ['a', 'b', 'c', 'd'],
-        '_dataframeit_status': [None, None, None, None]
-    })
+    df = pd.DataFrame(
+        {"texto": ["a", "b", "c", "d"], "_dataframeit_status": [None, None, None, None]}
+    )
 
     # Sem resume
-    pending, count = _get_processing_indices(df, '_dataframeit_status', False)
+    pending, count = _get_processing_indices(df, "_dataframeit_status", False)
     assert pending == [True, True, True, True]
     assert count == 0
     print("✅ Resume=False: começa do zero")
 
     # Com resume e nada processado
-    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    pending, count = _get_processing_indices(df, "_dataframeit_status", True)
     assert pending == [True, True, True, True]
     assert count == 0
     print("✅ Resume=True com nada processado: começa do zero")
 
     # Com resume e algumas linhas processadas
-    df.at[0, '_dataframeit_status'] = 'processed'
-    df.at[1, '_dataframeit_status'] = 'processed'
-    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    df.at[0, "_dataframeit_status"] = "processed"
+    df.at[1, "_dataframeit_status"] = "processed"
+    pending, count = _get_processing_indices(df, "_dataframeit_status", True)
     assert pending == [False, False, True, True]
     assert count == 2
     print("✅ Resume=True: retoma da posição correta")
 
     # Com todas linhas processadas
-    df['_dataframeit_status'] = 'processed'
-    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    df["_dataframeit_status"] = "processed"
+    pending, count = _get_processing_indices(df, "_dataframeit_status", True)
     assert pending == [False, False, False, False]
     assert count == 4
     print("✅ Resume=True com tudo processado: nada pendente")
@@ -155,7 +151,8 @@ def test_utils_functions():
 
     # Conversão pandas
     from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, ConversionInfo
-    df = pd.DataFrame({'a': [1, 2, 3]})
+
+    df = pd.DataFrame({"a": [1, 2, 3]})
     df_result, conversion_info = to_pandas(df)
     assert isinstance(df_result, pd.DataFrame)
     assert isinstance(conversion_info, ConversionInfo)
@@ -173,7 +170,7 @@ def test_utils_functions():
     print("✅ from_pandas retrocompatível com was_polars=False")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("=" * 60)
     print("TESTE DE COMPATIBILIDADE")
     print("=" * 60)

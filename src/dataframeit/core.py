@@ -57,23 +57,24 @@ from .utils import (
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
 # e convenções comuns de ETL ('content', 'content_text').
-TEXT_COLUMN_CANDIDATES = ('texto', 'text', 'decisao', 'content', 'content_text')
+TEXT_COLUMN_CANDIDATES = ("texto", "text", "decisao", "content", "content_text")
 
 # Modelo usado quando o usuário escolhe o provider sem escolher o modelo. Mandar
 # o modelo de um provider para outro falha em toda linha, por isso o default
 # acompanha o provider. 'codex' e 'claude_code' ficam de fora: com model=None,
 # o runtime de cada um escolhe o modelo.
 DEFAULT_MODELS = {
-    'openai': 'gpt-6-luna',
-    'google_genai': 'gemini-3.8-flash',
-    'anthropic': 'claude-sonnet-5',
-    'groq': 'openai/gpt-oss-120b',
+    "openai": "gpt-6-luna",
+    "google_genai": "gemini-3.8-flash",
+    "anthropic": "claude-sonnet-5",
+    "groq": "openai/gpt-oss-120b",
 }
-_RUNTIME_DEFAULT_PROVIDERS = frozenset({'codex', 'claude_code'})
+_RUNTIME_DEFAULT_PROVIDERS = frozenset({"codex", "claude_code"})
 
 
 # Limite de queries concorrentes acima do qual vale avisar o usuário.
 _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
+
 
 @dataclass(frozen=True)
 class ProviderBackend:
@@ -89,16 +90,16 @@ class ProviderBackend:
 
 
 # Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
-_MISSING_TEXT_DETAIL = 'Texto ausente'
+_MISSING_TEXT_DETAIL = "Texto ausente"
 
 
 # Sufixo do erro de uma linha já processada cujo reprocessamento falhou.
-_KEPT_VALUES_NOTE = ' (reprocess_columns falhou; a linha mantém os valores anteriores)'
+_KEPT_VALUES_NOTE = " (reprocess_columns falhou; a linha mantém os valores anteriores)"
 
 
 def _success_details(retry_info: dict) -> str | None:
     """Detalhe gravado numa linha bem-sucedida: os retries, se houve."""
-    retries = retry_info.get('retries', 0)
+    retries = retry_info.get("retries", 0)
     return f"Sucesso após {retries} retry(s)" if retries > 0 else None
 
 
@@ -214,9 +215,9 @@ def _validate_processed_rows(
     # o campo pulado sai da validação: um valor presente passa pelas restrições
     # do modelo, e a condição verdadeira com valor ausente continua acusada.
     conditions = {
-        field_name: field.json_schema_extra['condition']
+        field_name: field.json_schema_extra["condition"]
         for field_name, field in pydantic_model.model_fields.items()
-        if isinstance(field.json_schema_extra, dict) and 'condition' in field.json_schema_extra
+        if isinstance(field.json_schema_extra, dict) and "condition" in field.json_schema_extra
     }
     skipping_models: dict[frozenset, Any] = {}
 
@@ -232,9 +233,7 @@ def _validate_processed_rows(
         return skipping_models[skipped]
 
     processed_positions = [
-        position
-        for position, status in enumerate(df[status_col])
-        if status == 'processed'
+        position for position, status in enumerate(df[status_col]) if status == "processed"
     ]
     for position in processed_positions:
         row = df.iloc[position]
@@ -272,7 +271,7 @@ def _validate_processed_rows(
             validated = model_skipping(skipped).model_validate(projected)
         except ValidationError as error:
             for detail in error.errors():
-                location = detail.get('loc', ())
+                location = detail.get("loc", ())
                 field_name = field_by_alias.get(location[0]) if location else None
                 if field_name is not None:
                     incompatible_fields.add(field_name)
@@ -295,9 +294,7 @@ def _validate_processed_rows(
         for field_name in missing_values:
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
-    ordered_incompatible = [
-        field for field in expected_columns if field in incompatible_fields
-    ]
+    ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
 
 
@@ -334,7 +331,11 @@ def _provider_backend(
             yield ProviderBackend(
                 label="langchain",
                 invoke=lambda text: call_agent(
-                    text, pydantic_model, user_prompt, config, trace_mode,
+                    text,
+                    pydantic_model,
+                    user_prompt,
+                    config,
+                    trace_mode,
                     search_agent=search_agent,
                 ),
             )
@@ -344,15 +345,18 @@ def _provider_backend(
 
         def invoke_partial(text, only_fields, known):
             return search_call(
-                text, pydantic_model, user_prompt, config, trace_mode,
-                only_fields=only_fields, known=known,
+                text,
+                pydantic_model,
+                user_prompt,
+                config,
+                trace_mode,
+                only_fields=only_fields,
+                known=known,
             )
 
         yield ProviderBackend(
             label="langchain",
-            invoke=lambda text: search_call(
-                text, pydantic_model, user_prompt, config, trace_mode
-            ),
+            invoke=lambda text: search_call(text, pydantic_model, user_prompt, config, trace_mode),
             invoke_partial=invoke_partial,
         )
         return
@@ -369,9 +373,7 @@ def _provider_backend(
 
         yield ProviderBackend(
             label="claude_code",
-            invoke=lambda text: call_claude_code(
-                text, pydantic_model, user_prompt, config
-            ),
+            invoke=lambda text: call_claude_code(text, pydantic_model, user_prompt, config),
         )
         return
 
@@ -449,8 +451,12 @@ def _warn_search_rate_limit(
         f"Configuração pode exceder rate limits de busca ({provider_name}). "
         f"parallel_requests={parallel_requests}, search_per_field={search_per_field}, "
         f"rate_limit_delay={rate_limit_delay}s, total de queries estimadas={total_queries}. "
-        + "Problemas: " + "; ".join(issues) + ". "
-        + "Para evitar HTTP 429, use: " + ", ".join(recs) + "."
+        + "Problemas: "
+        + "; ".join(issues)
+        + ". "
+        + "Para evitar HTTP 429, use: "
+        + ", ".join(recs)
+        + "."
     )
 
     warnings.warn(msg, UserWarning, stacklevel=3)
@@ -460,7 +466,7 @@ def _validate_search_overrides(
     label: str, search_depth=None, max_results=None, max_search_calls=None
 ) -> None:
     """Valida os overrides de busca de um grupo ou campo; None é ausência."""
-    if search_depth is not None and search_depth not in ('basic', 'advanced'):
+    if search_depth is not None and search_depth not in ("basic", "advanced"):
         raise ValueError(f"{label}: search_depth deve ser 'basic' ou 'advanced'")
     if max_results is not None and (
         isinstance(max_results, bool)
@@ -477,7 +483,9 @@ def _is_positive_int(value) -> bool:
     return isinstance(value, numbers.Integral) and not isinstance(value, bool) and value >= 1
 
 
-def _validate_field_configs(questions, search_config, use_search: bool, search_per_field: bool) -> None:
+def _validate_field_configs(
+    questions, search_config, use_search: bool, search_per_field: bool
+) -> None:
     """Valida json_schema_extra de todos os campos antes de processar linhas.
 
     Erro de configuração aparece uma vez aqui, e não linha a linha com o
@@ -488,7 +496,11 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
     configured = _collect_configured_fields(questions)
     if configured and not per_field:
         missing = [
-            flag for flag, on in (('use_search=True', use_search), ('search_per_field=True', search_per_field))
+            flag
+            for flag, on in (
+                ("use_search=True", use_search),
+                ("search_per_field=True", search_per_field),
+            )
             if not on
         ]
         raise ValueError(
@@ -502,7 +514,7 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
             continue
 
         # Condições só são avaliadas entre campos de primeiro nível
-        if '.' in path and any(k in extra for k in _CONDITIONAL_KEYS):
+        if "." in path and any(k in extra for k in _CONDITIONAL_KEYS):
             raise ValueError(
                 f"Campo '{path}' usa 'condition' ou 'depends_on' em json_schema_extra, "
                 "que só são aplicados a campos de primeiro nível do modelo"
@@ -518,9 +530,9 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
                 )
             _validate_search_overrides(
                 f"Campo '{path}'",
-                extra.get('search_depth'),
-                extra.get('max_results'),
-                extra.get('max_search_calls'),
+                extra.get("search_depth"),
+                extra.get("max_results"),
+                extra.get("max_search_calls"),
             )
 
     # Sem busca por campo, todos os campos saem de uma única chamada, e não há
@@ -544,7 +556,8 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
 
     field_configs = {
         field_name: _get_field_config(field_info.json_schema_extra)
-        if isinstance(field_info.json_schema_extra, dict) else {}
+        if isinstance(field_info.json_schema_extra, dict)
+        else {}
         for field_name, field_info in questions.model_fields.items()
     }
     _, dependencies = get_field_execution_order(questions, field_configs)
@@ -553,10 +566,7 @@ def _validate_field_configs(questions, search_config, use_search: bool, search_p
 
 
 def _validate_search_groups(
-    search_groups: dict[str, dict],
-    pydantic_model,
-    use_search: bool,
-    search_per_field: bool
+    search_groups: dict[str, dict], pydantic_model, use_search: bool, search_per_field: bool
 ) -> dict[str, SearchGroupConfig]:
     """Valida e converte search_groups para SearchGroupConfig.
 
@@ -586,10 +596,10 @@ def _validate_search_groups(
         # Validar estrutura
         if not isinstance(group_config, dict):
             raise ValueError(f"Grupo '{group_name}' deve ser um dicionário")
-        if 'fields' not in group_config:
+        if "fields" not in group_config:
             raise ValueError(f"Grupo '{group_name}' deve ter chave 'fields'")
 
-        fields = group_config['fields']
+        fields = group_config["fields"]
         if not isinstance(fields, list) or not fields:
             raise ValueError(f"Grupo '{group_name}': 'fields' deve ser uma lista não-vazia")
 
@@ -625,18 +635,18 @@ def _validate_search_groups(
 
         _validate_search_overrides(
             f"Grupo '{group_name}'",
-            group_config.get('search_depth'),
-            group_config.get('max_results'),
-            group_config.get('max_search_calls'),
+            group_config.get("search_depth"),
+            group_config.get("max_results"),
+            group_config.get("max_search_calls"),
         )
 
         # Criar SearchGroupConfig
         validated_groups[group_name] = SearchGroupConfig(
             fields=fields,
-            prompt=group_config.get('prompt'),
-            max_results=group_config.get('max_results'),
-            search_depth=group_config.get('search_depth'),
-            max_search_calls=group_config.get('max_search_calls'),
+            prompt=group_config.get("prompt"),
+            max_results=group_config.get("max_results"),
+            search_depth=group_config.get("search_depth"),
+            max_search_calls=group_config.get("max_search_calls"),
         )
 
     return validated_groups
@@ -655,7 +665,7 @@ def dataframeit(
     resume=True,
     reprocess_columns=None,
     model=None,
-    provider='openai',
+    provider="openai",
     status_column=None,
     text_column: str | None = None,
     api_key=None,
@@ -774,11 +784,15 @@ def dataframeit(
         raise ValueError("Parâmetro 'prompt' é obrigatório")
 
     # Se {texto} não estiver no template, adiciona automaticamente ao final
-    if '{texto}' not in prompt:
+    if "{texto}" not in prompt:
         prompt = prompt.rstrip() + "\n\nTexto a analisar:\n{texto}"
 
     # bool é subclasse de int, mas True não é uma contagem de tentativas.
-    if not isinstance(max_retries, numbers.Integral) or isinstance(max_retries, bool) or max_retries < 1:
+    if (
+        not isinstance(max_retries, numbers.Integral)
+        or isinstance(max_retries, bool)
+        or max_retries < 1
+    ):
         raise ValueError(
             f"max_retries deve ser int >= 1 (número total de tentativas por linha); "
             f"recebido {max_retries!r}"
@@ -788,12 +802,16 @@ def dataframeit(
     if (batch_size is None) != (checkpoint_path is None):
         raise ValueError("batch_size e checkpoint_path devem ser usados juntos")
     if batch_size is not None:
-        if not isinstance(batch_size, numbers.Integral) or isinstance(batch_size, bool) or batch_size < 1:
+        if (
+            not isinstance(batch_size, numbers.Integral)
+            or isinstance(batch_size, bool)
+            or batch_size < 1
+        ):
             raise ValueError(f"batch_size deve ser int >= 1; recebido {batch_size!r}")
         _validate_checkpoint_extension(checkpoint_path)
 
     # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
-    if use_search and provider in {'claude_code', 'codex'}:
+    if use_search and provider in {"claude_code", "codex"}:
         raise ValueError(
             f"Busca web (use_search=True) não é suportada com provider='{provider}'. "
             "Use um provider LangChain como 'google_genai' ou 'openai' para busca web."
@@ -906,7 +924,7 @@ def dataframeit(
                 f"Colunas disponíveis: {expected_columns}"
             )
 
-    status_col = status_column or '_dataframeit_status'
+    status_col = status_column or "_dataframeit_status"
     complex_fields = get_complex_fields(questions)
 
     # Entradas vazias têm um resultado bem definido e não dependem de provider.
@@ -960,9 +978,7 @@ def dataframeit(
             complex_fields,
         )
     uncovered_columns = [
-        column
-        for column in incompatible_columns
-        if column not in reprocessed_columns
+        column for column in incompatible_columns if column not in reprocessed_columns
     ]
     if uncovered_columns:
         raise ValueError(
@@ -1055,7 +1071,7 @@ def dataframeit(
             trace_mode,
             questions,
         )
-        control_columns = [status_col, '_error_details']
+        control_columns = [status_col, "_error_details"]
         _as_object_columns(df_pandas, expected_columns + control_columns)
         _apply_processed_values(df_pandas, processed_values)
 
@@ -1068,13 +1084,15 @@ def dataframeit(
         # isso, gravar lista ou texto falharia depois da chamada paga.
         _as_object_columns(df_pandas, expected_columns)
 
-        is_pending, processed_count = _get_processing_indices(
-            df_pandas, status_col, resume
-        )
+        is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume)
         _warn_missing_texts(
             df_pandas,
             text_column,
-            [idx for idx, pending in zip(df_pandas.index, is_pending) if pending or reprocess_columns],
+            [
+                idx
+                for idx, pending in zip(df_pandas.index, is_pending)
+                if pending or reprocess_columns
+            ],
         )
 
         if parallel_requests > 1:
@@ -1116,19 +1134,23 @@ def dataframeit(
     # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
         _print_token_stats(
-            token_stats, model, parallel_requests,
+            token_stats,
+            model,
+            parallel_requests,
             search_provider=search_provider if use_search else None,
         )
 
     # Aviso de workers reduzidos (aparece SEMPRE, independente de track_tokens)
-    if token_stats.get('workers_reduced'):
+    if token_stats.get("workers_reduced"):
         print("\n" + "=" * 60)
         print("AVISO: WORKERS REDUZIDOS POR RATE LIMIT")
         print("=" * 60)
         print(f"Workers iniciais: {token_stats['initial_workers']}")
         print(f"Workers finais:   {token_stats['final_workers']}")
-        print(f"\nDica: Considere usar parallel_requests={token_stats['final_workers']} "
-              f"para evitar rate limits.")
+        print(
+            f"\nDica: Considere usar parallel_requests={token_stats['final_workers']} "
+            f"para evitar rate limits."
+        )
         print("=" * 60 + "\n")
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
@@ -1145,10 +1167,10 @@ def _setup_columns(
     pydantic_model=None,
 ):
     """Configura colunas necessárias no DataFrame (in-place)."""
-    status_col = status_column or '_dataframeit_status'
-    error_col = '_error_details'
+    status_col = status_column or "_dataframeit_status"
+    error_col = "_error_details"
     token_cols = TOKEN_COLUMNS if track_tokens else ()
-    search_cols = ['_search_credits'] if (search_config and search_config.enabled) else []
+    search_cols = ["_search_credits"] if (search_config and search_config.enabled) else []
 
     # Colunas de trace
     trace_cols = []
@@ -1162,18 +1184,18 @@ def _setup_columns(
 
                 # Adicionar colunas de trace para grupos
                 for group_name in search_config.groups.keys():
-                    trace_cols.append(f'_trace_{group_name}')
+                    trace_cols.append(f"_trace_{group_name}")
 
                 # Adicionar colunas de trace para campos isolados (não em grupos)
                 for field in pydantic_model.model_fields.keys():
                     if field not in grouped_fields:
-                        trace_cols.append(f'_trace_{field}')
+                        trace_cols.append(f"_trace_{field}")
             else:
                 # Sem grupos: uma coluna por campo
-                trace_cols = [f'_trace_{field}' for field in pydantic_model.model_fields.keys()]
+                trace_cols = [f"_trace_{field}" for field in pydantic_model.model_fields.keys()]
         else:
             # Coluna única
-            trace_cols = ['_trace']
+            trace_cols = ["_trace"]
 
     # Identificar colunas que precisam ser criadas
     new_cols = [col for col in expected_columns if col not in df.columns]
@@ -1183,11 +1205,18 @@ def _setup_columns(
     needs_search = [col for col in search_cols if col not in df.columns]
     needs_trace = [col for col in trace_cols if col not in df.columns]
 
-    if not new_cols and not needs_status and not needs_error and not needs_tokens and not needs_search and not needs_trace:
+    if (
+        not new_cols
+        and not needs_status
+        and not needs_error
+        and not needs_tokens
+        and not needs_search
+        and not needs_trace
+    ):
         return
 
     # Criar colunas
-    with pd.option_context('mode.chained_assignment', None):
+    with pd.option_context("mode.chained_assignment", None):
         for col in new_cols:
             df[col] = None
         if needs_status:
@@ -1203,7 +1232,9 @@ def _setup_columns(
             df[col] = None
 
 
-def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> tuple[list[bool], int]:
+def _get_processing_indices(
+    df: pd.DataFrame, status_col: str, resume: bool
+) -> tuple[list[bool], int]:
     """Retorna (linhas pendentes por posição, contagem de linhas com status).
 
     A seleção depende só do status de cada linha, e nunca da ordem dos rótulos do
@@ -1218,7 +1249,7 @@ def _get_processing_indices(df: pd.DataFrame, status_col: str, resume: bool) -> 
     """
     status = df[status_col]
     if not resume:
-        return status.ne('processed').tolist(), 0
+        return status.ne("processed").tolist(), 0
 
     is_pending = status.isnull()
     processed_count = int((~is_pending).sum())
@@ -1240,7 +1271,7 @@ def _print_token_stats(
         search_provider: Provedor de busca usado, que dá nome à seção de busca.
     """
     if not token_stats or (
-        token_stats.get('total_tokens', 0) == 0 and not token_stats.get('cost_usd')
+        token_stats.get("total_tokens", 0) == 0 and not token_stats.get("cost_usd")
     ):
         return
 
@@ -1250,20 +1281,20 @@ def _print_token_stats(
     print(f"Modelo: {model or 'escolhido pelo runtime do provider'}")
     print(f"Total de tokens: {token_stats['total_tokens']:,}")
     print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
-    if token_stats.get('cached_input_tokens', 0) > 0:
+    if token_stats.get("cached_input_tokens", 0) > 0:
         print(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
     print(f"  - Output: {token_stats['output_tokens']:,} tokens")
-    if token_stats.get('reasoning_tokens', 0) > 0:
+    if token_stats.get("reasoning_tokens", 0) > 0:
         print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
     # Só providers que informam o custo, como o claude_code, preenchem este total,
     # que inclui as tentativas re-tentadas e as linhas que falharam.
-    if token_stats.get('cost_usd', 0) > 0:
+    if token_stats.get("cost_usd", 0) > 0:
         print(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
 
     # Métricas de throughput (se disponíveis)
-    if 'elapsed_seconds' in token_stats and token_stats['elapsed_seconds'] > 0:
-        elapsed = token_stats['elapsed_seconds']
-        requests = token_stats.get('requests_completed', 0)
+    if "elapsed_seconds" in token_stats and token_stats["elapsed_seconds"] > 0:
+        elapsed = token_stats["elapsed_seconds"]
+        requests = token_stats.get("requests_completed", 0)
 
         print("-" * 60)
         print("METRICAS DE THROUGHPUT")
@@ -1276,11 +1307,11 @@ def _print_token_stats(
             print(f"Requisicoes: {requests}")
             print(f"  - RPM (req/min): {rpm:.1f}")
 
-        tpm = (token_stats['total_tokens'] / elapsed) * 60
+        tpm = (token_stats["total_tokens"] / elapsed) * 60
         print(f"  - TPM (tokens/min): {tpm:,.0f}")
 
     # Métricas de busca (se houver)
-    if token_stats.get('search_count', 0) > 0:
+    if token_stats.get("search_count", 0) > 0:
         print("-" * 60)
         print(f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})")
         print("-" * 60)
@@ -1290,14 +1321,14 @@ def _print_token_stats(
     print("=" * 60 + "\n")
 
 
-_SUPPORTED_CHECKPOINT_EXTS = ('.csv', '.xlsx', '.parquet')
+_SUPPORTED_CHECKPOINT_EXTS = (".csv", ".xlsx", ".parquet")
 
 # Extensões que exigem dependência opcional para pandas serializar.
 # Validamos antes do loop para falhar rápido — um ModuleNotFoundError no primeiro
 # save (após N linhas de LLM) desperdiça horas de trabalho.
 _CHECKPOINT_EXT_REQUIRES = {
-    '.xlsx': ('openpyxl', 'openpyxl'),
-    '.parquet': ('pyarrow', 'pyarrow'),
+    ".xlsx": ("openpyxl", "openpyxl"),
+    ".parquet": ("pyarrow", "pyarrow"),
 }
 
 
@@ -1327,6 +1358,7 @@ def _structures_as_json(df: pd.DataFrame) -> pd.DataFrame:
     CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
     de volta. JSON é o que read_df e a retomada normalizam.
     """
+
     def to_json(value):
         if isinstance(value, (list, dict, tuple)):
             return json.dumps(value, ensure_ascii=False, default=str)
@@ -1343,12 +1375,12 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão."""
     path = Path(path)
     ext = path.suffix.lower()
-    tmp = path.with_name(path.name + '.tmp')
-    if ext == '.csv':
+    tmp = path.with_name(path.name + ".tmp")
+    if ext == ".csv":
         _structures_as_json(df).to_csv(tmp, index=False)
-    elif ext == '.xlsx':
+    elif ext == ".xlsx":
         _structures_as_json(df).to_excel(tmp, index=False)
-    elif ext == '.parquet':
+    elif ext == ".parquet":
         df.to_parquet(tmp, index=False)
     else:
         raise ValueError(
@@ -1408,11 +1440,11 @@ def _process_rows(
     """
     # Criar descrição para progresso
     type_labels = {
-        ORIGINAL_TYPE_POLARS_DF: 'polars→pandas',
-        ORIGINAL_TYPE_PANDAS_DF: 'pandas',
+        ORIGINAL_TYPE_POLARS_DF: "polars→pandas",
+        ORIGINAL_TYPE_PANDAS_DF: "pandas",
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
+    search_mode = "+search" if (config.search_config and config.search_config.enabled) else ""
     desc = f"Processando [{engine}+{backend.label}{search_mode}]"
 
     # Adicionar info de rate limiting (se ativo)
@@ -1427,14 +1459,14 @@ def _process_rows(
 
     # Inicializar contadores de tokens e busca
     token_stats = {
-        'input_tokens': 0,
-        'cached_input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'reasoning_tokens': 0,
-        'search_credits': 0,
-        'search_count': 0,
-        'cost_usd': 0.0,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "search_credits": 0,
+        "search_count": 0,
+        "cost_usd": 0.0,
     }
 
     rows_processed_this_run = 0
@@ -1443,15 +1475,15 @@ def _process_rows(
     # Processar cada linha
     for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
         # Verificar se linha já foi processada
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
+        row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
 
         # Com reprocess_columns, todas as linhas são processadas.
         if not reprocess_columns and not is_pending[i]:
             continue
 
         if _is_missing_text(row[text_column]):
-            df.at[idx, status_col] = 'error'
-            df.at[idx, '_error_details'] = _missing_text_detail(
+            df.at[idx, status_col] = "error"
+            df.at[idx, "_error_details"] = _missing_text_detail(
                 row_already_processed, reprocess_columns
             )
             rows_processed_this_run += 1
@@ -1468,9 +1500,9 @@ def _process_rows(
             )
 
             # Extrair dados e usage metadata
-            extracted = result['data']
-            usage = result.get('usage')
-            retry_info = result.get('_retry_info', {})
+            extracted = result["data"]
+            usage = result.get("usage")
+            retry_info = result.get("_retry_info", {})
 
             # Atualizar DataFrame com dados extraídos
             # Se linha já processada e reprocess_columns definido: só atualiza colunas especificadas
@@ -1487,43 +1519,43 @@ def _process_rows(
 
             # Armazenar tokens no DataFrame (se habilitado)
             if track_tokens and usage:
-                df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
-                df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
-                df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
-                df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
+                df.at[idx, "_input_tokens"] = usage.get("input_tokens", 0)
+                df.at[idx, "_cached_input_tokens"] = usage.get("cached_input_tokens", 0)
+                df.at[idx, "_output_tokens"] = usage.get("output_tokens", 0)
+                df.at[idx, "_reasoning_tokens"] = usage.get("reasoning_tokens", 0)
 
                 # Acumular estatísticas (total exibido apenas no summary do console)
-                token_stats['input_tokens'] += usage.get('input_tokens', 0)
-                token_stats['cached_input_tokens'] += usage.get('cached_input_tokens', 0)
-                token_stats['output_tokens'] += usage.get('output_tokens', 0)
-                token_stats['total_tokens'] += usage.get('total_tokens', 0)
-                token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
-                token_stats['cost_usd'] += usage.get('cost_usd') or 0
+                token_stats["input_tokens"] += usage.get("input_tokens", 0)
+                token_stats["cached_input_tokens"] += usage.get("cached_input_tokens", 0)
+                token_stats["output_tokens"] += usage.get("output_tokens", 0)
+                token_stats["total_tokens"] += usage.get("total_tokens", 0)
+                token_stats["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
+                token_stats["cost_usd"] += usage.get("cost_usd") or 0
 
             # Armazenar métricas de busca (se habilitado)
             if config.search_config and config.search_config.enabled and usage:
-                df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
+                df.at[idx, "_search_credits"] = usage.get("search_credits", 0)
 
                 # Acumular estatísticas de busca (search_count mantido só para o summary)
-                token_stats['search_credits'] += usage.get('search_credits', 0)
-                token_stats['search_count'] += usage.get('search_count', 0)
+                token_stats["search_credits"] += usage.get("search_credits", 0)
+                token_stats["search_count"] += usage.get("search_count", 0)
 
             # Armazenar traces (se habilitado)
             if trace_mode:
                 if config.search_config and config.search_config.per_field:
                     # Traces por campo
-                    traces = result.get('traces', {})
+                    traces = result.get("traces", {})
                     for field_name, trace in traces.items():
-                        df.at[idx, f'_trace_{field_name}'] = json.dumps(trace, ensure_ascii=False)
+                        df.at[idx, f"_trace_{field_name}"] = json.dumps(trace, ensure_ascii=False)
                 else:
                     # Trace único
-                    trace = result.get('trace')
+                    trace = result.get("trace")
                     if trace:
-                        df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
+                        df.at[idx, "_trace"] = json.dumps(trace, ensure_ascii=False)
 
-            df.at[idx, status_col] = 'processed'
+            df.at[idx, status_col] = "processed"
             # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
-            df.at[idx, '_error_details'] = _success_details(retry_info)
+            df.at[idx, "_error_details"] = _success_details(retry_info)
 
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
@@ -1535,7 +1567,7 @@ def _process_rows(
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            token_stats['cost_usd'] += getattr(e, 'cost_usd', 0) or 0
+            token_stats["cost_usd"] += getattr(e, "cost_usd", 0) or 0
 
             # Determinar se foi erro recuperável ou não para mensagem correta
             if is_recoverable_error(e):
@@ -1552,8 +1584,8 @@ def _process_rows(
             print(f"\n{friendly_msg}\n")
 
             warnings.warn(f"Falha ao processar linha {idx}.")
-            df.at[idx, status_col] = 'error'
-            df.at[idx, '_error_details'] = error_details
+            df.at[idx, status_col] = "error"
+            df.at[idx, "_error_details"] = error_details
 
             rows_processed_this_run += 1
             if batch_size and rows_processed_this_run % batch_size == 0:
@@ -1623,28 +1655,25 @@ def _process_rows_parallel(
 
     # Contadores
     token_stats = {
-        'input_tokens': 0,
-        'cached_input_tokens': 0,
-        'output_tokens': 0,
-        'total_tokens': 0,
-        'reasoning_tokens': 0,
-        'requests_completed': 0,
-        'search_credits': 0,
-        'search_count': 0,
-        'cost_usd': 0.0,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "requests_completed": 0,
+        "search_credits": 0,
+        "search_count": 0,
+        "cost_usd": 0.0,
     }
 
     # Criar descrição para progresso
     type_labels = {
-        ORIGINAL_TYPE_POLARS_DF: 'polars→pandas',
-        ORIGINAL_TYPE_PANDAS_DF: 'pandas',
+        ORIGINAL_TYPE_POLARS_DF: "polars→pandas",
+        ORIGINAL_TYPE_PANDAS_DF: "pandas",
     }
     engine = type_labels.get(conversion_info.original_type, conversion_info.original_type)
-    search_mode = '+search' if (config.search_config and config.search_config.enabled) else ''
-    desc = (
-        f"Processando [{engine}+{backend.label}{search_mode}] "
-        f"[{parallel_requests} workers]"
-    )
+    search_mode = "+search" if (config.search_config and config.search_config.enabled) else ""
+    desc = f"Processando [{engine}+{backend.label}{search_mode}] [{parallel_requests} workers]"
 
     if reprocess_columns:
         desc += f" (reprocessando: {', '.join(reprocess_columns)})"
@@ -1665,12 +1694,12 @@ def _process_rows_parallel(
         nonlocal current_workers, workers_reduced, checkpoint_counter
 
         i, idx, row = row_data
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == 'processed'
+        row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
         if _is_missing_text(row[text_column]):
             snapshot = None
             with lock:
-                df.at[idx, status_col] = 'error'
-                df.at[idx, '_error_details'] = _missing_text_detail(
+                df.at[idx, status_col] = "error"
+                df.at[idx, "_error_details"] = _missing_text_detail(
                     row_already_processed, reprocess_columns
                 )
                 checkpoint_counter += 1
@@ -1678,7 +1707,7 @@ def _process_rows_parallel(
                     snapshot = (df.copy(), checkpoint_counter)
             if snapshot is not None:
                 _save_snapshot(*snapshot)
-            return {'success': False, 'idx': idx, 'error': _MISSING_TEXT_DETAIL}
+            return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
 
         text = str(row[text_column])
 
@@ -1692,9 +1721,9 @@ def _process_rows_parallel(
             )
 
             # Extrair dados
-            extracted = result['data']
-            usage = result.get('usage')
-            retry_info = result.get('_retry_info', {})
+            extracted = result["data"]
+            usage = result.get("usage")
+            retry_info = result.get("_retry_info", {})
 
             # Atualizar DataFrame (com lock para thread-safety)
             snapshot = None
@@ -1708,37 +1737,39 @@ def _process_rows_parallel(
                             df.at[idx, col] = extracted[col]
 
                 if track_tokens and usage:
-                    df.at[idx, '_input_tokens'] = usage.get('input_tokens', 0)
-                    df.at[idx, '_cached_input_tokens'] = usage.get('cached_input_tokens', 0)
-                    df.at[idx, '_output_tokens'] = usage.get('output_tokens', 0)
-                    df.at[idx, '_reasoning_tokens'] = usage.get('reasoning_tokens', 0)
+                    df.at[idx, "_input_tokens"] = usage.get("input_tokens", 0)
+                    df.at[idx, "_cached_input_tokens"] = usage.get("cached_input_tokens", 0)
+                    df.at[idx, "_output_tokens"] = usage.get("output_tokens", 0)
+                    df.at[idx, "_reasoning_tokens"] = usage.get("reasoning_tokens", 0)
 
-                    token_stats['input_tokens'] += usage.get('input_tokens', 0)
-                    token_stats['cached_input_tokens'] += usage.get('cached_input_tokens', 0)
-                    token_stats['output_tokens'] += usage.get('output_tokens', 0)
-                    token_stats['total_tokens'] += usage.get('total_tokens', 0)
-                    token_stats['reasoning_tokens'] += usage.get('reasoning_tokens', 0)
-                    token_stats['cost_usd'] += usage.get('cost_usd') or 0
+                    token_stats["input_tokens"] += usage.get("input_tokens", 0)
+                    token_stats["cached_input_tokens"] += usage.get("cached_input_tokens", 0)
+                    token_stats["output_tokens"] += usage.get("output_tokens", 0)
+                    token_stats["total_tokens"] += usage.get("total_tokens", 0)
+                    token_stats["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
+                    token_stats["cost_usd"] += usage.get("cost_usd") or 0
 
                 if config.search_config and config.search_config.enabled and usage:
-                    df.at[idx, '_search_credits'] = usage.get('search_credits', 0)
+                    df.at[idx, "_search_credits"] = usage.get("search_credits", 0)
 
-                    token_stats['search_credits'] += usage.get('search_credits', 0)
-                    token_stats['search_count'] += usage.get('search_count', 0)
+                    token_stats["search_credits"] += usage.get("search_credits", 0)
+                    token_stats["search_count"] += usage.get("search_count", 0)
 
                 if trace_mode:
                     if config.search_config and config.search_config.per_field:
-                        traces = result.get('traces', {})
+                        traces = result.get("traces", {})
                         for field_name, trace in traces.items():
-                            df.at[idx, f'_trace_{field_name}'] = json.dumps(trace, ensure_ascii=False)
+                            df.at[idx, f"_trace_{field_name}"] = json.dumps(
+                                trace, ensure_ascii=False
+                            )
                     else:
-                        trace = result.get('trace')
+                        trace = result.get("trace")
                         if trace:
-                            df.at[idx, '_trace'] = json.dumps(trace, ensure_ascii=False)
+                            df.at[idx, "_trace"] = json.dumps(trace, ensure_ascii=False)
 
-                token_stats['requests_completed'] += 1
-                df.at[idx, status_col] = 'processed'
-                df.at[idx, '_error_details'] = _success_details(retry_info)
+                token_stats["requests_completed"] += 1
+                df.at[idx, status_col] = "processed"
+                df.at[idx, "_error_details"] = _success_details(retry_info)
 
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
@@ -1751,7 +1782,7 @@ def _process_rows_parallel(
             if config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
 
-            return {'success': True, 'idx': idx}
+            return {"success": True, "idx": idx}
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
@@ -1765,7 +1796,7 @@ def _process_rows_parallel(
                         workers_reduced = True
                         warnings.warn(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            stacklevel=2
+                            stacklevel=2,
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo
@@ -1773,7 +1804,7 @@ def _process_rows_parallel(
 
             snapshot = None
             with lock:
-                token_stats['cost_usd'] += getattr(e, 'cost_usd', 0) or 0
+                token_stats["cost_usd"] += getattr(e, "cost_usd", 0) or 0
                 if is_recoverable_error(e):
                     error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
                 else:
@@ -1785,8 +1816,8 @@ def _process_rows_parallel(
                 print(f"\n{friendly_msg}\n")
 
                 warnings.warn(f"Falha ao processar linha {idx}.")
-                df.at[idx, status_col] = 'error'
-                df.at[idx, '_error_details'] = error_details
+                df.at[idx, status_col] = "error"
+                df.at[idx, "_error_details"] = error_details
 
                 checkpoint_counter += 1
                 if batch_size and checkpoint_counter % batch_size == 0:
@@ -1795,7 +1826,7 @@ def _process_rows_parallel(
             if snapshot is not None:
                 _save_snapshot(*snapshot)
 
-            return {'success': False, 'idx': idx, 'error': error_msg}
+            return {"success": False, "idx": idx, "error": error_msg}
 
     # Processar com ThreadPoolExecutor
     with tqdm(total=len(rows_to_process), desc=desc) as pbar:
@@ -1828,9 +1859,9 @@ def _process_rows_parallel(
         _try_save_checkpoint(df, checkpoint_path)
 
     elapsed = time.time() - start_time
-    token_stats['elapsed_seconds'] = elapsed
-    token_stats['initial_workers'] = initial_workers
-    token_stats['final_workers'] = current_workers
-    token_stats['workers_reduced'] = workers_reduced
+    token_stats["elapsed_seconds"] = elapsed
+    token_stats["initial_workers"] = initial_workers
+    token_stats["final_workers"] = current_workers
+    token_stats["workers_reduced"] = workers_reduced
 
     return token_stats

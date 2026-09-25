@@ -90,12 +90,22 @@ class TestLLMConfigDefaults:
         from dataframeit.llm import LLMConfig
 
         cfg1 = LLMConfig(
-            model="m", provider="p", api_key=None,
-            max_retries=1, base_delay=1.0, max_delay=2.0, rate_limit_delay=0.0,
+            model="m",
+            provider="p",
+            api_key=None,
+            max_retries=1,
+            base_delay=1.0,
+            max_delay=2.0,
+            rate_limit_delay=0.0,
         )
         cfg2 = LLMConfig(
-            model="m", provider="p", api_key=None,
-            max_retries=1, base_delay=1.0, max_delay=2.0, rate_limit_delay=0.0,
+            model="m",
+            provider="p",
+            api_key=None,
+            max_retries=1,
+            base_delay=1.0,
+            max_delay=2.0,
+            rate_limit_delay=0.0,
         )
         cfg1.model_kwargs["x"] = 1
         assert cfg2.model_kwargs == {}
@@ -104,8 +114,13 @@ class TestLLMConfigDefaults:
         from dataframeit.llm import LLMConfig
 
         cfg = LLMConfig(
-            model="m", provider="p", api_key=None,
-            max_retries=1, base_delay=1.0, max_delay=2.0, rate_limit_delay=0.0,
+            model="m",
+            provider="p",
+            api_key=None,
+            max_retries=1,
+            base_delay=1.0,
+            max_delay=2.0,
+            rate_limit_delay=0.0,
         )
         assert cfg.search_config is None
 
@@ -114,8 +129,13 @@ def _make_config():
     from dataframeit.llm import LLMConfig
 
     return LLMConfig(
-        model="gemini-test", provider="google_genai", api_key="key",
-        max_retries=1, base_delay=0.0, max_delay=0.0, rate_limit_delay=0.0,
+        model="gemini-test",
+        provider="google_genai",
+        api_key="key",
+        max_retries=1,
+        base_delay=0.0,
+        max_delay=0.0,
+        rate_limit_delay=0.0,
     )
 
 
@@ -132,13 +152,15 @@ class TestCallLangchain:
         from dataframeit.llm import call_langchain
 
         parsed = SampleModel(campo="valor")
-        raw = SimpleNamespace(usage_metadata={
-            "input_tokens": 10,
-            "output_tokens": 5,
-            "total_tokens": 15,
-            "input_token_details": {"cache_read": 6, "cache_creation": 4},
-            "output_token_details": {"reasoning": 2},
-        })
+        raw = SimpleNamespace(
+            usage_metadata={
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "input_token_details": {"cache_read": 6, "cache_creation": 4},
+                "output_token_details": {"reasoning": 2},
+            }
+        )
         structured_llm = MagicMock()
         structured_llm.invoke.return_value = {"parsed": parsed, "raw": raw, "parsing_error": None}
 
@@ -186,7 +208,9 @@ class TestCallLangchain:
         from dataframeit.llm import call_langchain
 
         meta = SimpleNamespace(
-            input_tokens=3, output_tokens=4, total_tokens=7,
+            input_tokens=3,
+            output_tokens=4,
+            total_tokens=7,
             input_token_details=SimpleNamespace(cache_read=2, cache_creation=1),
             output_token_details=SimpleNamespace(reasoning=2),
         )
@@ -211,10 +235,14 @@ class TestCallLangchain:
         """meta dict + output_token_details como objeto: getattr fallback."""
         from dataframeit.llm import call_langchain
 
-        raw = SimpleNamespace(usage_metadata={
-            "input_tokens": 3, "output_tokens": 4, "total_tokens": 7,
-            "output_token_details": SimpleNamespace(reasoning=7),
-        })
+        raw = SimpleNamespace(
+            usage_metadata={
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "total_tokens": 7,
+                "output_token_details": SimpleNamespace(reasoning=7),
+            }
+        )
         structured_llm = MagicMock()
         structured_llm.invoke.return_value = {
             "parsed": SampleModel(campo="x"),
@@ -230,9 +258,13 @@ class TestCallLangchain:
     def test_sem_output_token_details_reasoning_zero(self):
         from dataframeit.llm import call_langchain
 
-        raw = SimpleNamespace(usage_metadata={
-            "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
-        })
+        raw = SimpleNamespace(
+            usage_metadata={
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+            }
+        )
         structured_llm = MagicMock()
         structured_llm.invoke.return_value = {
             "parsed": SampleModel(campo="x"),

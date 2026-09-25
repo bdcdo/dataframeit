@@ -4,7 +4,6 @@ Teste para verificar que o DataFrame original é modificado in-place
 e que o progresso parcial é acessível após interrupção.
 """
 
-
 import pandas as pd
 from pydantic import BaseModel, Field
 
@@ -16,6 +15,7 @@ class TestModel(BaseModel):
     categoria: str = Field(..., description="Categoria do texto")
     sentimento: str = Field(..., description="Sentimento: positivo, negativo ou neutro")
 
+
 # Template simples
 TEMPLATE = """
 Analise o seguinte texto e extraia as informações no formato solicitado:
@@ -26,23 +26,26 @@ Texto:
 {documento}
 """
 
+
 def test_inplace_modification():
     """Testa que o DataFrame original é modificado durante o processamento."""
 
     # Criar DataFrame de teste
-    df_original = pd.DataFrame({
-        'texto': [
-            'Este é um texto positivo sobre tecnologia',
-            'Este é um texto negativo sobre política',
-            'Este é um texto neutro sobre esportes',
-            'Outro texto positivo sobre ciência',
-            'Mais um texto negativo sobre economia'
-        ]
-    })
+    df_original = pd.DataFrame(
+        {
+            "texto": [
+                "Este é um texto positivo sobre tecnologia",
+                "Este é um texto negativo sobre política",
+                "Este é um texto neutro sobre esportes",
+                "Outro texto positivo sobre ciência",
+                "Mais um texto negativo sobre economia",
+            ]
+        }
+    )
 
     print("DataFrame original:")
     print(df_original)
-    print("\n" + "="*50 + "\n")
+    print("\n" + "=" * 50 + "\n")
 
     # Guardar referência ao DataFrame
     df_teste = df_original  # Sem .copy()!
@@ -68,12 +71,12 @@ def test_inplace_modification():
             df_teste,
             TestModel,
             TEMPLATE,
-            model='gpt-4o-mini',  # Modelo rápido para teste
-            provider='openai'  # Usa OpenAI via LangChain
+            model="gpt-4o-mini",  # Modelo rápido para teste
+            provider="openai",  # Usa OpenAI via LangChain
         )
     except KeyboardInterrupt:
         print("\n⚠️  Processamento interrompido!")
-        print("\n" + "="*50 + "\n")
+        print("\n" + "=" * 50 + "\n")
 
         # Verificar que df_teste foi modificado (tem as novas colunas)
         print("DataFrame após interrupção (df_teste):")
@@ -81,15 +84,19 @@ def test_inplace_modification():
         print("\nColunas no DataFrame:", df_teste.columns.tolist())
 
         # Verificar se há dados processados
-        if '_dataframeit_status' in df_teste.columns:
-            processadas = df_teste['_dataframeit_status'].notna().sum()
+        if "_dataframeit_status" in df_teste.columns:
+            processadas = df_teste["_dataframeit_status"].notna().sum()
             print(f"\n✅ Linhas processadas antes da interrupção: {processadas}")
 
             if processadas > 0:
                 print("\nDados já processados:")
-                print(df_teste[df_teste['_dataframeit_status'].notna()][['texto', 'categoria', 'sentimento']])
+                print(
+                    df_teste[df_teste["_dataframeit_status"].notna()][
+                        ["texto", "categoria", "sentimento"]
+                    ]
+                )
 
-        print("\n" + "="*50 + "\n")
+        print("\n" + "=" * 50 + "\n")
         print("Continuando processamento de onde parou (resume=True é o padrão)...")
 
         # Continuar processamento
@@ -98,8 +105,8 @@ def test_inplace_modification():
             TestModel,
             TEMPLATE,
             # resume=True é o padrão, não precisa especificar
-            model='gpt-4o-mini',
-            provider='openai'
+            model="gpt-4o-mini",
+            provider="openai",
         )
 
         print("\n✅ Processamento concluído!")
@@ -108,14 +115,18 @@ def test_inplace_modification():
 
         # Verificar que df_teste e df_final são o mesmo objeto
         if df_teste is df_final:
-            print("\n✅ SUCESSO: df_teste e df_final são o MESMO objeto (modificação in-place funcionando!)")
+            print(
+                "\n✅ SUCESSO: df_teste e df_final são o MESMO objeto (modificação in-place funcionando!)"
+            )
         else:
             print("\n❌ PROBLEMA: df_teste e df_final são objetos diferentes")
 
     except Exception as e:
         print(f"\n❌ Erro durante o teste: {e}")
         import traceback
+
         traceback.print_exc()
+
 
 def test_no_warnings():
     """Testa que não há SettingWithCopyWarning."""
@@ -123,13 +134,10 @@ def test_no_warnings():
     import warnings
 
     # Criar DataFrame e fazer um slice (situação que poderia gerar warning)
-    df_grande = pd.DataFrame({
-        'id': range(10),
-        'texto': [f'Texto número {i}' for i in range(10)]
-    })
+    df_grande = pd.DataFrame({"id": range(10), "texto": [f"Texto número {i}" for i in range(10)]})
 
     # Fazer um slice (view) do DataFrame
-    df_slice = df_grande[df_grande['id'] >= 5]
+    df_slice = df_grande[df_grande["id"] >= 5]
 
     print("Testando com DataFrame slice (view)...")
     print(df_slice)
@@ -144,14 +152,15 @@ def test_no_warnings():
                 df_slice,
                 TestModel,
                 TEMPLATE,
-                model='gpt-4o-mini',
-                provider='openai',
-                max_retries=1  # Reduzir tentativas para teste rápido
+                model="gpt-4o-mini",
+                provider="openai",
+                max_retries=1,  # Reduzir tentativas para teste rápido
             )
 
             # Verificar se houve SettingWithCopyWarning
-            copy_warnings = [warning for warning in w
-                           if 'SettingWithCopyWarning' in str(warning.category)]
+            copy_warnings = [
+                warning for warning in w if "SettingWithCopyWarning" in str(warning.category)
+            ]
 
             if copy_warnings:
                 print(f"\n⚠️  Encontrados {len(copy_warnings)} SettingWithCopyWarning")
@@ -163,10 +172,11 @@ def test_no_warnings():
         except Exception as e:
             print(f"\nTeste pulado (erro esperado em ambiente de teste): {e}")
 
+
 if __name__ == "__main__":
-    print("="*60)
+    print("=" * 60)
     print("TESTE: Modificação In-Place do DataFrame")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     # Nota sobre o teste
     print("NOTA: Este teste requer uma chave API válida da OpenAI.")
@@ -174,18 +184,18 @@ if __name__ == "__main__":
 
     # Teste principal
     print("1. Testando modificação in-place e recuperação após interrupção...")
-    print("-"*60)
+    print("-" * 60)
     # test_inplace_modification()  # Comentado pois requer API key
     print("⚠️  Teste comentado - requer API key da OpenAI")
 
     print("\n2. Testando ausência de warnings...")
-    print("-"*60)
+    print("-" * 60)
     # test_no_warnings()  # Comentado pois requer API key
     print("⚠️  Teste comentado - requer API key da OpenAI")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("RESUMO DA MUDANÇA IMPLEMENTADA:")
-    print("="*60)
+    print("=" * 60)
     print("""
 ✅ A linha 'df_pandas = df_pandas.copy()' foi REMOVIDA
 

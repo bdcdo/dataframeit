@@ -7,6 +7,7 @@ Este módulo contém funções utilitárias para:
 - Conversão de Series, listas e dicionários
 - Normalização de estruturas Python (listas, dicionários, tuplas)
 """
+
 import ast
 import functools
 import importlib
@@ -29,26 +30,27 @@ except ImportError:
 
 
 # Tipos de dados originais suportados
-ORIGINAL_TYPE_PANDAS_DF = 'pandas_dataframe'
-ORIGINAL_TYPE_POLARS_DF = 'polars_dataframe'
-ORIGINAL_TYPE_PANDAS_SERIES = 'pandas_series'
-ORIGINAL_TYPE_POLARS_SERIES = 'polars_series'
-ORIGINAL_TYPE_LIST = 'list'
-ORIGINAL_TYPE_DICT = 'dict'
+ORIGINAL_TYPE_PANDAS_DF = "pandas_dataframe"
+ORIGINAL_TYPE_POLARS_DF = "polars_dataframe"
+ORIGINAL_TYPE_PANDAS_SERIES = "pandas_series"
+ORIGINAL_TYPE_POLARS_SERIES = "polars_series"
+ORIGINAL_TYPE_LIST = "list"
+ORIGINAL_TYPE_DICT = "dict"
 
 # Coluna padrão usada para dados convertidos
-DEFAULT_TEXT_COLUMN = '_texto'
+DEFAULT_TEXT_COLUMN = "_texto"
 TOKEN_COLUMNS = (
-    '_input_tokens',
-    '_cached_input_tokens',
-    '_output_tokens',
-    '_reasoning_tokens',
+    "_input_tokens",
+    "_cached_input_tokens",
+    "_output_tokens",
+    "_reasoning_tokens",
 )
 
 
 @dataclass
 class ConversionInfo:
     """Informações sobre a conversão de dados para pandas DataFrame."""
+
     original_type: str
     original_index: Any = None  # Guarda índice/chaves originais para reconversão
     series_name: str = None  # Nome original da Series (se aplicável)
@@ -74,17 +76,19 @@ def parse_json(resposta: str) -> dict:
         json_string = match.group(1).strip()
     else:
         # Tentar extrair entre chaves
-        start = content.find('{')
-        end = content.rfind('}')
+        start = content.find("{")
+        end = content.rfind("}")
         if start != -1 and end != -1 and end > start:
-            json_string = content[start:end + 1]
+            json_string = content[start : end + 1]
         else:
             json_string = content.strip()
 
     try:
         return json.loads(json_string)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'...")
+        raise ValueError(
+            f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'..."
+        )
 
 
 def check_dependency(package: str, install_name: str = None):
@@ -101,9 +105,7 @@ def check_dependency(package: str, install_name: str = None):
     try:
         importlib.import_module(package)
     except ImportError:
-        raise ImportError(
-            f"'{package}' não instalado. Instale com: pip install {install_name}"
-        )
+        raise ImportError(f"'{package}' não instalado. Instale com: pip install {install_name}")
 
 
 def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
@@ -175,7 +177,7 @@ def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
 def from_pandas(
     df: pd.DataFrame,
     conversion_info: ConversionInfo | bool,
-    status_col: str = '_dataframeit_status',
+    status_col: str = "_dataframeit_status",
 ) -> Any:
     """Converte DataFrame pandas de volta para o formato original.
 
@@ -198,11 +200,11 @@ def from_pandas(
             original_type=ORIGINAL_TYPE_POLARS_DF if was_polars else ORIGINAL_TYPE_PANDAS_DF
         )
 
-    error_col = '_error_details'
+    error_col = "_error_details"
 
     # Remover colunas de status/erro se não houver erros
     if status_col in df.columns:
-        has_errors = (df[status_col] == 'error').any()
+        has_errors = (df[status_col] == "error").any()
         has_error_details = error_col in df.columns and df[error_col].notna().any()
 
         if not has_errors and not has_error_details:
@@ -256,7 +258,7 @@ def from_pandas(
     return _reorder_columns(df, status_col)
 
 
-def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') -> pd.DataFrame:
+def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") -> pd.DataFrame:
     """Reordena colunas para que internas fiquem no final.
 
     Ordem final das colunas:
@@ -282,13 +284,13 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') 
     status_cols = []
 
     for col in df.columns:
-        if str(col).startswith('_trace_'):
+        if str(col).startswith("_trace_"):
             trace_cols.append(col)
-        elif col in ['_search_credits']:
+        elif col in ["_search_credits"]:
             search_cols.append(col)
         elif col in TOKEN_COLUMNS:
             continue
-        elif col in (status_col, '_error_details'):
+        elif col in (status_col, "_error_details"):
             status_cols.append(col)
         else:
             user_cols.append(col)
@@ -302,6 +304,7 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') 
 # =============================================================================
 # NORMALIZAÇÃO DE ESTRUTURAS PYTHON (listas, dicts, tuples)
 # =============================================================================
+
 
 def is_complex_type(field_type) -> bool:
     """Verifica se um tipo é complexo (list, dict, tuple ou modelo Pydantic).
@@ -335,6 +338,7 @@ def is_complex_type(field_type) -> bool:
 
     # Modelo aninhado: a linha guarda o model_dump, um dict
     from pydantic import BaseModel
+
     if isinstance(field_type, type) and issubclass(field_type, BaseModel):
         return True
 
@@ -419,7 +423,7 @@ def normalize_value(value: Any) -> Any:
         return value
 
     # Verifica se parece com JSON (começa com [ ou {)
-    if stripped.startswith(('[', '{')):
+    if stripped.startswith(("[", "{")):
         try:
             return json.loads(stripped)
         except (json.JSONDecodeError, ValueError, RecursionError):
@@ -450,12 +454,7 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None:
             df[col] = df[col].apply(normalize_value)
 
 
-def read_df(
-    path: str,
-    model=None,
-    normalize: bool = True,
-    **kwargs
-) -> pd.DataFrame:
+def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataFrame:
     """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
 
     Esta função é útil para carregar dados que foram previamente processados
@@ -497,26 +496,25 @@ def read_df(
     _, ext = os.path.splitext(path.lower())
 
     # Carregar DataFrame baseado na extensão
-    if ext in ('.xlsx', '.xls'):
+    if ext in (".xlsx", ".xls"):
         df = pd.read_excel(path, **kwargs)
-    elif ext == '.csv':
+    elif ext == ".csv":
         df = pd.read_csv(path, **kwargs)
-    elif ext == '.parquet':
+    elif ext == ".parquet":
         df = pd.read_parquet(path, **kwargs)
-    elif ext == '.json':
+    elif ext == ".json":
         df = pd.read_json(path, **kwargs)
     else:
         raise ValueError(
-            f"Formato '{ext}' não suportado. "
-            "Use: .xlsx, .xls, .csv, .parquet ou .json"
+            f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
         )
 
     # Com o modelo, os campos de texto são relidos como texto cru: sem isso,
     # "2023" volta como número e "N/A" ou "NA" viram ausência, e a retomada
     # acusa ou troca o valor. Só a célula vazia vira ausência. A releitura
     # fica de fora quando o usuário já controla tipos ou NA.
-    text_readers = {'.csv': pd.read_csv, '.xlsx': pd.read_excel, '.xls': pd.read_excel}
-    controls = ('dtype', 'converters', 'na_values', 'keep_default_na', 'na_filter', 'usecols')
+    text_readers = {".csv": pd.read_csv, ".xlsx": pd.read_excel, ".xls": pd.read_excel}
+    controls = ("dtype", "converters", "na_values", "keep_default_na", "na_filter", "usecols")
     if model is not None and ext in text_readers and not any(k in kwargs for k in controls):
         text_columns = [f for f in get_text_fields(model) if f in df.columns]
         if text_columns:
@@ -524,7 +522,7 @@ def read_df(
                 path, usecols=text_columns, dtype=str, na_filter=False, **kwargs
             )
             for col in text_columns:
-                df[col] = raw[col].mask(raw[col] == '')
+                df[col] = raw[col].mask(raw[col] == "")
 
     # Normalizar colunas
     if not normalize:
@@ -556,10 +554,7 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 
         # Verificar se algum valor parece JSON
         sample = df[col].dropna().head(10)
-        has_json = any(
-            isinstance(v, str) and v.strip().startswith(('[', '{'))
-            for v in sample
-        )
+        has_json = any(isinstance(v, str) and v.strip().startswith(("[", "{")) for v in sample)
 
         if has_json:
             df[col] = df[col].apply(normalize_value)
@@ -568,6 +563,7 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 # =============================================================================
 # EXTRAÇÃO DE MODELOS PYDANTIC ANINHADOS
 # =============================================================================
+
 
 def is_list_of_pydantic_model(field_type) -> tuple:
     """Verifica se um tipo é List[Model] ou Optional[List[Model]].
@@ -647,12 +643,12 @@ def _lookup_forward_ref(name: str, owner):
         return owner
 
     namespaces = (
-        getattr(owner, '__pydantic_parent_namespace__', None) or {},
+        getattr(owner, "__pydantic_parent_namespace__", None) or {},
         vars(sys.modules[owner.__module__]) if owner.__module__ in sys.modules else {},
     )
     for namespace in namespaces:
         value = namespace.get(name)
-        if value is not None and type(value).__name__.endswith('WeakRef'):
+        if value is not None and type(value).__name__.endswith("WeakRef"):
             value = value()
         if isinstance(value, type):
             return value

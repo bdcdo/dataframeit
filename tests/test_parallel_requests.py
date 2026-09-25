@@ -20,7 +20,7 @@ class SimpleModel(BaseModel):
 def test_parallel_requests_parameter_exists():
     """Testa que o parâmetro parallel_requests existe e tem default=1."""
     sig = inspect.signature(dataframeit)
-    param = sig.parameters.get('parallel_requests')
+    param = sig.parameters.get("parallel_requests")
     assert param is not None
     assert param.default == 1
 
@@ -139,6 +139,7 @@ def test_is_rate_limit_error_detects_429():
     # Rate limit explícito
     class RateLimitError(Exception):
         pass
+
     rate_error = RateLimitError("Rate limit exceeded")
     assert is_rate_limit_error(rate_error) is True
 
@@ -186,13 +187,15 @@ def test_parallel_handles_errors_gracefully():
 
 def test_parallel_respects_resume():
     """Testa que processamento paralelo respeita resume=True."""
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "campo1": ["old1", None, None],
-        "campo2": ["old_a", None, None],
-        "_dataframeit_status": ["processed", None, None],
-        "_error_details": [None, None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo1": ["old1", None, None],
+            "campo2": ["old_a", None, None],
+            "_dataframeit_status": ["processed", None, None],
+            "_error_details": [None, None, None],
+        }
+    )
 
     call_count = 0
 
@@ -222,13 +225,15 @@ def test_parallel_respects_resume():
 
 def test_parallel_with_reprocess_columns():
     """Testa que processamento paralelo funciona com reprocess_columns."""
-    df = pd.DataFrame({
-        "texto": ["a", "b"],
-        "campo1": ["original1", "original2"],
-        "campo2": ["original_a", "original_b"],
-        "_dataframeit_status": ["processed", "processed"],
-        "_error_details": [None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo1": ["original1", "original2"],
+            "campo2": ["original_a", "original_b"],
+            "_dataframeit_status": ["processed", "processed"],
+            "_error_details": [None, None],
+        }
+    )
 
     def mock_llm(*args, **kwargs):
         return {

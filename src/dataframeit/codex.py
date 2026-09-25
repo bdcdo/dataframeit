@@ -111,9 +111,7 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
         if "oneOf" in node:
             variants = node.pop("oneOf")
             if not isinstance(variants, list):
-                raise ProviderConfigurationError(
-                    "oneOf inválido no schema Pydantic v2"
-                )
+                raise ProviderConfigurationError("oneOf inválido no schema Pydantic v2")
             node["anyOf"] = variants
             node.pop("discriminator", None)
         elif "discriminator" in node:
@@ -198,9 +196,7 @@ def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
     except (AttributeError, TypeError) as err:
         raise ProviderConfigurationError("questions deve ser um modelo Pydantic v2") from err
     if not isinstance(schema, dict):
-        raise ProviderConfigurationError(
-            "model_json_schema() deve retornar um objeto JSON Schema"
-        )
+        raise ProviderConfigurationError("model_json_schema() deve retornar um objeto JSON Schema")
     return _to_strict_json_schema(schema)
 
 
@@ -216,8 +212,7 @@ def _validate_config(config: LLMConfig):
     unknown = sorted(set(model_kwargs) - _ALLOWED_MODEL_KWARGS)
     if unknown:
         raise ProviderConfigurationError(
-            "Parâmetros não suportados em model_kwargs para provider='codex': "
-            + ", ".join(unknown)
+            "Parâmetros não suportados em model_kwargs para provider='codex': " + ", ".join(unknown)
         )
 
     effort = model_kwargs.get("effort", "medium")
@@ -236,9 +231,7 @@ def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
     from filelock import FileLock, Timeout
 
     configured_home = os.environ.get("CODEX_HOME")
-    source_home = (
-        Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
-    )
+    source_home = Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
     source_auth = source_home / "auth.json"
     if not source_auth.is_file():
         raise ProviderConfigurationError(

@@ -170,9 +170,7 @@ def test_excecoes_reais_do_openai():
     openai = pytest.importorskip("openai")
 
     erro_400 = openai.BadRequestError("inválido", response=_resposta_http(400), body=None)
-    erro_503 = openai.InternalServerError(
-        "indisponível", response=_resposta_http(503), body=None
-    )
+    erro_503 = openai.InternalServerError("indisponível", response=_resposta_http(503), body=None)
 
     assert is_recoverable_error(erro_400) is False
     assert is_recoverable_error(erro_503) is True

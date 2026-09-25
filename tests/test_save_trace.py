@@ -102,7 +102,12 @@ def test_extract_trace_full_mode():
     ai_msg.type = "ai"
     ai_msg.content = ""
     ai_msg.tool_calls = [
-        {"name": "tavily_search", "args": {"query": "test query"}, "id": "call_123", "type": "tool_call"}
+        {
+            "name": "tavily_search",
+            "args": {"query": "test query"},
+            "id": "call_123",
+            "type": "tool_call",
+        }
     ]
 
     tool_msg = MagicMock()
@@ -159,8 +164,18 @@ def test_extract_trace_extracts_search_queries():
     ai_msg.type = "ai"
     ai_msg.content = ""
     ai_msg.tool_calls = [
-        {"name": "tavily_search", "args": {"query": "query 1"}, "id": "call_1", "type": "tool_call"},
-        {"name": "tavily_search", "args": {"query": "query 2"}, "id": "call_2", "type": "tool_call"},
+        {
+            "name": "tavily_search",
+            "args": {"query": "query 1"},
+            "id": "call_1",
+            "type": "tool_call",
+        },
+        {
+            "name": "tavily_search",
+            "args": {"query": "query 2"},
+            "id": "call_2",
+            "type": "tool_call",
+        },
     ]
 
     agent_result = {"messages": [ai_msg]}

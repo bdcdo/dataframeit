@@ -13,7 +13,10 @@ class _Model(BaseModel):
 
 
 def _mock_call_langchain(*args, **kwargs):
-    return {"data": {"resumo": "ok"}, "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}
+    return {
+        "data": {"resumo": "ok"},
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    }
 
 
 def test_infers_texto_by_default():

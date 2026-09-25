@@ -62,13 +62,15 @@ def test_reprocess_columns_accepts_single_string():
 
 def test_reprocess_columns_processes_all_rows():
     """Testa que reprocess_columns processa todas as linhas, mesmo as já processadas."""
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "campo1": ["old1", "old2", "old3"],
-        "campo2": ["old_a", "old_b", "old_c"],
-        "_dataframeit_status": ["processed", "processed", "processed"],
-        "_error_details": [None, None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo1": ["old1", "old2", "old3"],
+            "campo2": ["old_a", "old_b", "old_c"],
+            "_dataframeit_status": ["processed", "processed", "processed"],
+            "_error_details": [None, None, None],
+        }
+    )
 
     # Mock da chamada LLM
     call_count = 0
@@ -96,13 +98,15 @@ def test_reprocess_columns_processes_all_rows():
 
 def test_reprocess_columns_only_updates_specified_columns():
     """Testa que reprocess_columns só atualiza as colunas especificadas em linhas já processadas."""
-    df = pd.DataFrame({
-        "texto": ["a", "b"],
-        "campo1": ["original1", "original2"],
-        "campo2": ["original_a", "original_b"],
-        "_dataframeit_status": ["processed", "processed"],
-        "_error_details": [None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo1": ["original1", "original2"],
+            "campo2": ["original_a", "original_b"],
+            "_dataframeit_status": ["processed", "processed"],
+            "_error_details": [None, None],
+        }
+    )
 
     def mock_llm(*args, **kwargs):
         return {
@@ -127,13 +131,15 @@ def test_reprocess_columns_only_updates_specified_columns():
 
 def test_reprocess_columns_updates_all_columns_for_new_rows():
     """Testa que linhas não processadas recebem todas as colunas, não só as de reprocess."""
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "campo1": ["original1", "original2", None],  # Linha 3 não foi processada
-        "campo2": ["original_a", "original_b", None],
-        "_dataframeit_status": ["processed", "processed", None],  # Linha 3 pendente
-        "_error_details": [None, None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo1": ["original1", "original2", None],  # Linha 3 não foi processada
+            "campo2": ["original_a", "original_b", None],
+            "_dataframeit_status": ["processed", "processed", None],  # Linha 3 pendente
+            "_error_details": [None, None, None],
+        }
+    )
 
     call_count = 0
 
@@ -167,11 +173,13 @@ def test_reprocess_columns_updates_all_columns_for_new_rows():
 
 def test_reprocess_columns_does_not_skip_processed_rows():
     """Testa que linhas com status 'processed' são reprocessadas quando reprocess_columns é usado."""
-    df = pd.DataFrame({
-        "texto": ["texto1", "texto2"],
-        "_dataframeit_status": ["processed", "processed"],
-        "_error_details": [None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["texto1", "texto2"],
+            "_dataframeit_status": ["processed", "processed"],
+            "_error_details": [None, None],
+        }
+    )
 
     call_count = 0
 
@@ -198,13 +206,15 @@ def test_reprocess_columns_does_not_skip_processed_rows():
 
 def test_resume_true_skips_processed_without_reprocess():
     """Testa que resume=True ainda pula linhas processadas quando reprocess_columns não é usado."""
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "campo1": ["old1", "old2", None],
-        "campo2": ["old_a", "old_b", None],
-        "_dataframeit_status": ["processed", "processed", None],
-        "_error_details": [None, None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo1": ["old1", "old2", None],
+            "campo2": ["old_a", "old_b", None],
+            "_dataframeit_status": ["processed", "processed", None],
+            "_error_details": [None, None, None],
+        }
+    )
 
     call_count = 0
 
@@ -235,11 +245,13 @@ def test_resume_true_skips_processed_without_reprocess():
 
 def test_reprocess_columns_with_existing_columns_no_warning():
     """Testa que não há warning de conflito quando reprocess_columns é usado em colunas existentes."""
-    df = pd.DataFrame({
-        "texto": ["a"],
-        "campo1": ["valor_existente"],
-        "campo2": ["outro_existente"],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "campo1": ["valor_existente"],
+            "campo2": ["outro_existente"],
+        }
+    )
 
     mock_result = {
         "data": {"campo1": "novo", "campo2": "outro_novo"},
@@ -260,19 +272,23 @@ def test_reprocess_columns_with_existing_columns_no_warning():
                 )
 
                 # Não deve ter warning sobre conflito de colunas
-                conflict_warnings = [warning for warning in w if "já existem" in str(warning.message)]
+                conflict_warnings = [
+                    warning for warning in w if "já existem" in str(warning.message)
+                ]
                 assert len(conflict_warnings) == 0
 
 
 def test_reprocess_columns_resume_after_interrupt():
     """Testa que após interrupção durante reprocess, resume normal continua apenas linhas pendentes."""
-    df = pd.DataFrame({
-        "texto": ["a", "b", "c"],
-        "campo1": ["old1", "old2", "old3"],
-        "campo2": ["old_a", "old_b", "old_c"],
-        "_dataframeit_status": ["processed", "processed", "processed"],
-        "_error_details": [None, None, None],
-    })
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo1": ["old1", "old2", "old3"],
+            "campo2": ["old_a", "old_b", "old_c"],
+            "_dataframeit_status": ["processed", "processed", "processed"],
+            "_error_details": [None, None, None],
+        }
+    )
 
     call_count = 0
 

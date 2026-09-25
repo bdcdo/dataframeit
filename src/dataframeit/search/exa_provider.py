@@ -72,11 +72,13 @@ class ExaProvider(SearchProvider):
 
         def exa_search(query: str) -> str:
             """Busca na web e devolve título, URL e trecho de cada resultado."""
-            return str(exa.client.search_and_contents(
-                query,
-                num_results=max_results,
-                text={"max_characters": 1000},
-            ))
+            return str(
+                exa.client.search_and_contents(
+                    query,
+                    num_results=max_results,
+                    text={"max_characters": 1000},
+                )
+            )
 
         return StructuredTool.from_function(
             func=exa_search,

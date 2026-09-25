@@ -29,48 +29,56 @@ HAS_OPENPYXL = importlib.util.find_spec("openpyxl") is not None
 # MODELOS PYDANTIC PARA TESTES
 # =============================================================================
 
+
 class SimpleModel(BaseModel):
     """Modelo simples sem campos complexos."""
+
     nome: str
     idade: int
 
 
 class ModelWithList(BaseModel):
     """Modelo com campo de lista."""
+
     itens: list[str]
     quantidade: int
 
 
 class ModelWithDict(BaseModel):
     """Modelo com campo de dicionário."""
+
     dados: dict[str, int]
     nome: str
 
 
 class ModelWithTuple(BaseModel):
     """Modelo com campo de tupla."""
+
     coordenadas: tuple[float, float]
     label: str
 
 
 class ModelWithOptionalList(BaseModel):
     """Modelo com campo de lista opcional."""
+
     tags: list[str] | None = None
     nome: str
 
 
 class ComplexModel(BaseModel):
     """Modelo complexo com múltiplos tipos."""
+
     condicoes_de_saude: list[str] | None = None
     tratamentos: list[dict] | None = None
-    danos_morais: tuple[Literal['sim', 'nao'], float] | None = None
+    danos_morais: tuple[Literal["sim", "nao"], float] | None = None
     nome: str
-    status: Literal['ativo', 'inativo'] = 'ativo'
+    status: Literal["ativo", "inativo"] = "ativo"
 
 
 # =============================================================================
 # TESTES PARA is_complex_type
 # =============================================================================
+
 
 def test_is_complex_type_list():
     """Testa detecção de tipo list."""
@@ -115,6 +123,7 @@ def test_is_complex_type_optional():
 # TESTES PARA get_complex_fields
 # =============================================================================
 
+
 def test_get_complex_fields_simple_model():
     """Testa modelo sem campos complexos."""
     fields = get_complex_fields(SimpleModel)
@@ -125,43 +134,43 @@ def test_get_complex_fields_simple_model():
 def test_get_complex_fields_with_list():
     """Testa modelo com campo de lista."""
     fields = get_complex_fields(ModelWithList)
-    assert 'itens' in fields
-    assert 'quantidade' not in fields
+    assert "itens" in fields
+    assert "quantidade" not in fields
     print("✅ get_complex_fields detecta campo lista")
 
 
 def test_get_complex_fields_with_dict():
     """Testa modelo com campo de dicionário."""
     fields = get_complex_fields(ModelWithDict)
-    assert 'dados' in fields
-    assert 'nome' not in fields
+    assert "dados" in fields
+    assert "nome" not in fields
     print("✅ get_complex_fields detecta campo dict")
 
 
 def test_get_complex_fields_with_tuple():
     """Testa modelo com campo de tupla."""
     fields = get_complex_fields(ModelWithTuple)
-    assert 'coordenadas' in fields
-    assert 'label' not in fields
+    assert "coordenadas" in fields
+    assert "label" not in fields
     print("✅ get_complex_fields detecta campo tuple")
 
 
 def test_get_complex_fields_optional():
     """Testa modelo com campo de lista opcional."""
     fields = get_complex_fields(ModelWithOptionalList)
-    assert 'tags' in fields
-    assert 'nome' not in fields
+    assert "tags" in fields
+    assert "nome" not in fields
     print("✅ get_complex_fields detecta Optional[list]")
 
 
 def test_get_complex_fields_complex_model():
     """Testa modelo complexo com múltiplos tipos."""
     fields = get_complex_fields(ComplexModel)
-    assert 'condicoes_de_saude' in fields
-    assert 'tratamentos' in fields
-    assert 'danos_morais' in fields
-    assert 'nome' not in fields
-    assert 'status' not in fields
+    assert "condicoes_de_saude" in fields
+    assert "tratamentos" in fields
+    assert "danos_morais" in fields
+    assert "nome" not in fields
+    assert "status" not in fields
     print("✅ get_complex_fields detecta todos os campos complexos")
 
 
@@ -169,9 +178,10 @@ def test_get_complex_fields_complex_model():
 # TESTES PARA normalize_value
 # =============================================================================
 
+
 def test_normalize_value_list_string():
     """Testa normalização de string JSON para lista."""
-    result = normalize_value('[1, 2, 3]')
+    result = normalize_value("[1, 2, 3]")
     assert result == [1, 2, 3]
     assert isinstance(result, list)
     print("✅ normalize_value converte string JSON para lista")
@@ -258,58 +268,50 @@ def test_normalize_value_string_starting_with_bracket_not_json():
 # TESTES PARA normalize_complex_columns
 # =============================================================================
 
+
 def test_normalize_complex_columns_basic():
     """Testa normalização de colunas complexas em DataFrame."""
-    df = pd.DataFrame({
-        'itens': ['["a", "b", "c"]', '["d", "e"]'],
-        'quantidade': [3, 2]
-    })
+    df = pd.DataFrame({"itens": ['["a", "b", "c"]', '["d", "e"]'], "quantidade": [3, 2]})
 
-    normalize_complex_columns(df, {'itens'})
+    normalize_complex_columns(df, {"itens"})
 
-    assert df['itens'].iloc[0] == ["a", "b", "c"]
-    assert df['itens'].iloc[1] == ["d", "e"]
-    assert df['quantidade'].iloc[0] == 3
+    assert df["itens"].iloc[0] == ["a", "b", "c"]
+    assert df["itens"].iloc[1] == ["d", "e"]
+    assert df["quantidade"].iloc[0] == 3
     print("✅ normalize_complex_columns normaliza colunas de lista")
 
 
 def test_normalize_complex_columns_mixed():
     """Testa normalização com valores mistos (alguns já são listas)."""
-    df = pd.DataFrame({
-        'itens': [["a", "b"], '["c", "d"]', None],
-        'nome': ['x', 'y', 'z']
-    })
+    df = pd.DataFrame({"itens": [["a", "b"], '["c", "d"]', None], "nome": ["x", "y", "z"]})
 
-    normalize_complex_columns(df, {'itens'})
+    normalize_complex_columns(df, {"itens"})
 
-    assert df['itens'].iloc[0] == ["a", "b"]
-    assert df['itens'].iloc[1] == ["c", "d"]
-    assert df['itens'].iloc[2] is None
+    assert df["itens"].iloc[0] == ["a", "b"]
+    assert df["itens"].iloc[1] == ["c", "d"]
+    assert df["itens"].iloc[2] is None
     print("✅ normalize_complex_columns lida com valores mistos")
 
 
 def test_normalize_complex_columns_dict():
     """Testa normalização de colunas de dicionário."""
-    df = pd.DataFrame({
-        'dados': ['{"chave": "valor"}', '{"outro": 123}'],
-        'nome': ['a', 'b']
-    })
+    df = pd.DataFrame({"dados": ['{"chave": "valor"}', '{"outro": 123}'], "nome": ["a", "b"]})
 
-    normalize_complex_columns(df, {'dados'})
+    normalize_complex_columns(df, {"dados"})
 
-    assert df['dados'].iloc[0] == {"chave": "valor"}
-    assert df['dados'].iloc[1] == {"outro": 123}
+    assert df["dados"].iloc[0] == {"chave": "valor"}
+    assert df["dados"].iloc[1] == {"outro": 123}
     print("✅ normalize_complex_columns normaliza colunas de dict")
 
 
 def test_normalize_complex_columns_nonexistent():
     """Testa que colunas inexistentes são ignoradas."""
-    df = pd.DataFrame({'a': [1, 2, 3]})
+    df = pd.DataFrame({"a": [1, 2, 3]})
 
     # Não deve lançar erro
-    normalize_complex_columns(df, {'coluna_inexistente'})
+    normalize_complex_columns(df, {"coluna_inexistente"})
 
-    assert list(df.columns) == ['a']
+    assert list(df.columns) == ["a"]
     print("✅ normalize_complex_columns ignora colunas inexistentes")
 
 
@@ -317,39 +319,42 @@ def test_normalize_complex_columns_nonexistent():
 # TESTES DE INTEGRAÇÃO
 # =============================================================================
 
+
 def test_integration_save_load_simulation():
     """Simula o ciclo de salvar/carregar de arquivo."""
     # Dados como seriam retornados pelo LLM (estruturas Python)
-    df_original = pd.DataFrame({
-        'texto': ['doc1', 'doc2'],
-        'condicoes_de_saude': [['diabetes', 'hipertensão'], ['asma']],
-        'tratamentos': [[{'nome': 'insulina'}], [{'nome': 'broncodilatador'}]],
-    })
+    df_original = pd.DataFrame(
+        {
+            "texto": ["doc1", "doc2"],
+            "condicoes_de_saude": [["diabetes", "hipertensão"], ["asma"]],
+            "tratamentos": [[{"nome": "insulina"}], [{"nome": "broncodilatador"}]],
+        }
+    )
 
     # Simular salvamento em Excel (converte para string)
     df_serialized = df_original.copy()
-    for col in ['condicoes_de_saude', 'tratamentos']:
-        df_serialized[col] = df_serialized[col].apply(
-            lambda x: str(x) if x is not None else None
-        )
+    for col in ["condicoes_de_saude", "tratamentos"]:
+        df_serialized[col] = df_serialized[col].apply(lambda x: str(x) if x is not None else None)
 
     # Simular valores como retornam do Excel (repr de Python, não JSON válido)
     # Na prática, pandas converte listas para representação Python
     # Mas vamos testar com JSON válido que é o caso mais comum
-    df_loaded = pd.DataFrame({
-        'texto': ['doc1', 'doc2'],
-        'condicoes_de_saude': ['["diabetes", "hipertensão"]', '["asma"]'],
-        'tratamentos': ['[{"nome": "insulina"}]', '[{"nome": "broncodilatador"}]'],
-    })
+    df_loaded = pd.DataFrame(
+        {
+            "texto": ["doc1", "doc2"],
+            "condicoes_de_saude": ['["diabetes", "hipertensão"]', '["asma"]'],
+            "tratamentos": ['[{"nome": "insulina"}]', '[{"nome": "broncodilatador"}]'],
+        }
+    )
 
     # Aplicar normalização
     complex_fields = get_complex_fields(ComplexModel)
     normalize_complex_columns(df_loaded, complex_fields)
 
     # Verificar que os dados foram restaurados
-    assert df_loaded['condicoes_de_saude'].iloc[0] == ['diabetes', 'hipertensão']
-    assert df_loaded['condicoes_de_saude'].iloc[1] == ['asma']
-    assert df_loaded['tratamentos'].iloc[0] == [{'nome': 'insulina'}]
+    assert df_loaded["condicoes_de_saude"].iloc[0] == ["diabetes", "hipertensão"]
+    assert df_loaded["condicoes_de_saude"].iloc[1] == ["asma"]
+    assert df_loaded["tratamentos"].iloc[0] == [{"nome": "insulina"}]
     print("✅ Ciclo salvar/carregar funciona corretamente")
 
 
@@ -359,13 +364,13 @@ def test_integration_complex_model_fields():
 
     # Deve ter 3 campos complexos
     assert len(fields) == 3
-    assert 'condicoes_de_saude' in fields
-    assert 'tratamentos' in fields
-    assert 'danos_morais' in fields
+    assert "condicoes_de_saude" in fields
+    assert "tratamentos" in fields
+    assert "danos_morais" in fields
 
     # Campos simples não devem estar
-    assert 'nome' not in fields
-    assert 'status' not in fields
+    assert "nome" not in fields
+    assert "status" not in fields
 
     print("✅ ComplexModel tem campos complexos detectados corretamente")
 
@@ -374,20 +379,21 @@ def test_integration_complex_model_fields():
 # TESTES PARA read_df
 # =============================================================================
 
+
 def test_read_df_csv_with_model():
     """Testa leitura de CSV com modelo Pydantic."""
     # Criar arquivo temporário
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        f.write('nome,itens,quantidade\n')
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+        f.write("nome,itens,quantidade\n")
         f.write('teste1,"[""a"", ""b""]",2\n')
         f.write('teste2,"[""c"", ""d"", ""e""]",3\n')
         temp_path = f.name
 
     try:
         df = read_df(temp_path, ModelWithList)
-        assert df['itens'].iloc[0] == ['a', 'b']
-        assert df['itens'].iloc[1] == ['c', 'd', 'e']
-        assert df['quantidade'].iloc[0] == 2
+        assert df["itens"].iloc[0] == ["a", "b"]
+        assert df["itens"].iloc[1] == ["c", "d", "e"]
+        assert df["quantidade"].iloc[0] == 2
         print("✅ read_df CSV com modelo funciona")
     finally:
         os.unlink(temp_path)
@@ -395,17 +401,17 @@ def test_read_df_csv_with_model():
 
 def test_read_df_csv_auto_normalize():
     """Testa leitura de CSV com normalização automática (padrão)."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        f.write('col1,col2,col3\n')
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+        f.write("col1,col2,col3\n")
         f.write('"[1, 2]","texto normal",100\n')
         f.write('"[3, 4]","outro texto",200\n')
         temp_path = f.name
 
     try:
         df = read_df(temp_path)  # Sem argumentos - normaliza por padrão
-        assert df['col1'].iloc[0] == [1, 2]
-        assert df['col2'].iloc[0] == 'texto normal'  # Não alterado
-        assert df['col3'].iloc[0] == 100  # Não alterado
+        assert df["col1"].iloc[0] == [1, 2]
+        assert df["col2"].iloc[0] == "texto normal"  # Não alterado
+        assert df["col3"].iloc[0] == 100  # Não alterado
         print("✅ read_df CSV normaliza automaticamente")
     finally:
         os.unlink(temp_path)
@@ -415,19 +421,21 @@ def test_read_df_csv_auto_normalize():
 def test_read_df_excel_with_model():
     """Testa leitura de Excel com modelo Pydantic."""
     # Criar DataFrame e salvar como Excel
-    df_original = pd.DataFrame({
-        'nome': ['a', 'b'],
-        'dados': ['{"x": 1}', '{"y": 2}'],
-    })
+    df_original = pd.DataFrame(
+        {
+            "nome": ["a", "b"],
+            "dados": ['{"x": 1}', '{"y": 2}'],
+        }
+    )
 
-    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
         temp_path = f.name
 
     try:
         df_original.to_excel(temp_path, index=False)
         df = read_df(temp_path, ModelWithDict)
-        assert df['dados'].iloc[0] == {'x': 1}
-        assert df['dados'].iloc[1] == {'y': 2}
+        assert df["dados"].iloc[0] == {"x": 1}
+        assert df["dados"].iloc[1] == {"y": 2}
         print("✅ read_df Excel com modelo funciona")
     finally:
         os.unlink(temp_path)
@@ -436,7 +444,7 @@ def test_read_df_excel_with_model():
 def test_read_df_file_not_found():
     """Testa erro quando arquivo não existe."""
     try:
-        read_df('/caminho/inexistente/arquivo.csv')
+        read_df("/caminho/inexistente/arquivo.csv")
         assert False, "Deveria ter lançado FileNotFoundError"
     except FileNotFoundError:
         print("✅ read_df lança FileNotFoundError corretamente")
@@ -444,15 +452,15 @@ def test_read_df_file_not_found():
 
 def test_read_df_unsupported_format():
     """Testa erro com formato não suportado."""
-    with tempfile.NamedTemporaryFile(suffix='.xyz', delete=False) as f:
-        f.write(b'conteudo qualquer')
+    with tempfile.NamedTemporaryFile(suffix=".xyz", delete=False) as f:
+        f.write(b"conteudo qualquer")
         temp_path = f.name
 
     try:
         read_df(temp_path)
         assert False, "Deveria ter lançado ValueError"
     except ValueError as e:
-        assert '.xyz' in str(e)
+        assert ".xyz" in str(e)
         print("✅ read_df lança ValueError para formato não suportado")
     finally:
         os.unlink(temp_path)
@@ -460,15 +468,15 @@ def test_read_df_unsupported_format():
 
 def test_read_df_without_normalization():
     """Testa leitura sem normalização (normalize=False)."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        f.write('col1,col2\n')
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+        f.write("col1,col2\n")
         f.write('"[1, 2]","texto"\n')
         temp_path = f.name
 
     try:
         df = read_df(temp_path, normalize=False)
         # Deve manter como string
-        assert df['col1'].iloc[0] == '[1, 2]'
+        assert df["col1"].iloc[0] == "[1, 2]"
         print("✅ read_df com normalize=False mantém strings")
     finally:
         os.unlink(temp_path)
@@ -476,26 +484,28 @@ def test_read_df_without_normalization():
 
 def test_read_df_complex_model():
     """Testa leitura com modelo complexo (múltiplos campos)."""
-    df_original = pd.DataFrame({
-        'nome': ['paciente1'],
-        'status': ['ativo'],
-        'condicoes_de_saude': ['["diabetes", "hipertensão"]'],
-        'tratamentos': ['[{"nome": "insulina"}]'],
-        'danos_morais': ['["sim", 50000.0]'],
-    })
+    df_original = pd.DataFrame(
+        {
+            "nome": ["paciente1"],
+            "status": ["ativo"],
+            "condicoes_de_saude": ['["diabetes", "hipertensão"]'],
+            "tratamentos": ['[{"nome": "insulina"}]'],
+            "danos_morais": ['["sim", 50000.0]'],
+        }
+    )
 
-    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
         temp_path = f.name
 
     try:
         df_original.to_csv(temp_path, index=False)
         df = read_df(temp_path, ComplexModel)
 
-        assert df['condicoes_de_saude'].iloc[0] == ['diabetes', 'hipertensão']
-        assert df['tratamentos'].iloc[0] == [{'nome': 'insulina'}]
-        assert df['danos_morais'].iloc[0] == ['sim', 50000.0]
-        assert df['nome'].iloc[0] == 'paciente1'  # Não alterado
-        assert df['status'].iloc[0] == 'ativo'  # Não alterado
+        assert df["condicoes_de_saude"].iloc[0] == ["diabetes", "hipertensão"]
+        assert df["tratamentos"].iloc[0] == [{"nome": "insulina"}]
+        assert df["danos_morais"].iloc[0] == ["sim", 50000.0]
+        assert df["nome"].iloc[0] == "paciente1"  # Não alterado
+        assert df["status"].iloc[0] == "ativo"  # Não alterado
         print("✅ read_df com modelo complexo funciona")
     finally:
         os.unlink(temp_path)
@@ -505,7 +515,7 @@ def test_read_df_complex_model():
 # EXECUTAR TESTES
 # =============================================================================
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("=" * 60)
     print("TESTES DE NORMALIZAÇÃO DE ESTRUTURAS PYTHON")
     print("=" * 60)

@@ -364,9 +364,7 @@ class TestStrictPydanticSchema:
     def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
             "type": "object",
-            "properties": {
-                "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
-            },
+            "properties": {"value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
         }
 
         strict_schema = _to_strict_json_schema(schema)
@@ -602,7 +600,9 @@ class TestBackendLifecycle:
         monkeypatch.setenv("CODEX_HOME", str(source_home))
         client = as_context_manager(MagicMock(spec=sdk.Codex))
         client.account.side_effect = RuntimeError("account failed")
-        codex_result = RuntimeError("constructor failed") if failure_stage == "constructor" else client
+        codex_result = (
+            RuntimeError("constructor failed") if failure_stage == "constructor" else client
+        )
 
         with (
             patch.object(sdk, "Codex", side_effect=[codex_result]),
@@ -616,9 +616,7 @@ class TestBackendLifecycle:
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
         assert list(source_home.glob("dataframeit-codex-*")) == []
 
-    def test_client_close_failure_still_releases_auth_lock(
-        self, codex_sdk, monkeypatch, tmp_path
-    ):
+    def test_client_close_failure_still_releases_auth_lock(self, codex_sdk, monkeypatch, tmp_path):
         sdk, sdk_types, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
@@ -806,9 +804,7 @@ class TestCodexInvocation:
         turn.run.side_effect = [RuntimeError("overloaded"), make_result(codex_sdk)]
         thread.read.return_value = make_failed_turn_read_response(
             codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.CodexErrorInfoValue.server_overloaded
-            ),
+            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded),
             "overloaded",
         )
 
@@ -827,9 +823,7 @@ class TestCodexInvocation:
         turn.run.side_effect = [RuntimeError("internal failure"), make_result(codex_sdk)]
         thread.read.return_value = make_failed_turn_read_response(
             codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.CodexErrorInfoValue.internal_server_error
-            ),
+            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.internal_server_error),
             "internal failure",
         )
 
@@ -848,9 +842,7 @@ class TestCodexInvocation:
             codex_sdk,
             generated.CodexErrorInfo(
                 root=generated.HttpConnectionFailedCodexErrorInfo(
-                    httpConnectionFailed=generated.HttpConnectionFailed(
-                        httpStatusCode=429
-                    )
+                    httpConnectionFailed=generated.HttpConnectionFailed(httpStatusCode=429)
                 )
             ),
             "too many requests",

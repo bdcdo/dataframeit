@@ -22,13 +22,13 @@ from .utils import is_list_of_pydantic_model, resolve_forward_refs
 logger = logging.getLogger(__name__)
 
 _USAGE_COUNTERS = (
-    'input_tokens',
-    'cached_input_tokens',
-    'output_tokens',
-    'total_tokens',
-    'reasoning_tokens',
-    'search_credits',
-    'search_count',
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "search_credits",
+    "search_count",
 )
 
 
@@ -63,11 +63,11 @@ def _llm_field(field_info):
     } or None
     # copy() compartilha _attributes_set, de onde o Pydantic remonta o campo
     # ao mesclar FieldInfo; sem ajustar, a condition voltaria por ali.
-    attributes = dict(getattr(field_info, '_attributes_set', {}))
+    attributes = dict(getattr(field_info, "_attributes_set", {}))
     if cleaned.json_schema_extra is None:
-        attributes.pop('json_schema_extra', None)
+        attributes.pop("json_schema_extra", None)
     else:
-        attributes['json_schema_extra'] = cleaned.json_schema_extra
+        attributes["json_schema_extra"] = cleaned.json_schema_extra
     cleaned._attributes_set = attributes
     return cleaned
 
@@ -94,28 +94,25 @@ def _get_field_config(extra: dict) -> dict:
         dict) — só precisa ser declarado para `condition` callable.
     """
     return {
-        'prompt': extra.get('prompt') or extra.get('prompt_replace'),
-        'prompt_append': extra.get('prompt_append'),
-        'search_depth': extra.get('search_depth'),
-        'max_results': extra.get('max_results'),
-        'max_search_calls': extra.get('max_search_calls'),
-        'depends_on': extra.get('depends_on', []),
-        'condition': extra.get('condition'),
+        "prompt": extra.get("prompt") or extra.get("prompt_replace"),
+        "prompt_append": extra.get("prompt_append"),
+        "search_depth": extra.get("search_depth"),
+        "max_results": extra.get("max_results"),
+        "max_search_calls": extra.get("max_search_calls"),
+        "depends_on": extra.get("depends_on", []),
+        "condition": extra.get("condition"),
     }
 
 
 def _with_text_placeholder(prompt: str) -> str:
     """Garante que o prompt leve o texto da linha, como o prompt principal."""
-    if '{texto}' in prompt:
+    if "{texto}" in prompt:
         return prompt
     return f"{prompt.rstrip()}\n\nTexto a analisar:\n{{texto}}"
 
 
 def _build_field_prompt(
-    user_prompt: str,
-    field_name: str,
-    field_description: str | None,
-    field_config: dict
+    user_prompt: str, field_name: str, field_description: str | None, field_config: dict
 ) -> str:
     """Constrói o prompt para um campo específico.
 
@@ -128,8 +125,8 @@ def _build_field_prompt(
     Returns:
         Prompt construído para o campo.
     """
-    prompt_replace = field_config.get('prompt')
-    prompt_append = field_config.get('prompt_append')
+    prompt_replace = field_config.get("prompt")
+    prompt_append = field_config.get("prompt_append")
 
     if prompt_replace:
         # Substitui o prompt do usuário, que é quem levava o {texto}
@@ -184,9 +181,9 @@ def _with_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
     """Aplica os overrides de busca de um campo, lidos de _get_field_config."""
     return _with_search_overrides(
         config,
-        field_config.get('search_depth'),
-        field_config.get('max_results'),
-        field_config.get('max_search_calls'),
+        field_config.get("search_depth"),
+        field_config.get("max_results"),
+        field_config.get("max_search_calls"),
     )
 
 
@@ -212,8 +209,8 @@ def _get_list_fields_with_nested_search(pydantic_model) -> dict:
 
             if inner_search_fields:
                 list_fields_with_search[field_name] = {
-                    'inner_model': inner_model,
-                    'search_fields': inner_search_fields,
+                    "inner_model": inner_model,
+                    "search_fields": inner_search_fields,
                 }
 
     return list_fields_with_search
@@ -225,7 +222,7 @@ def _enrich_list_items_with_search(
     search_fields: list,
     text: str,
     config: LLMConfig,
-    save_trace: str | None = None
+    save_trace: str | None = None,
 ) -> tuple:
     """Enriquece cada item de uma lista com buscas específicas.
 
@@ -250,7 +247,7 @@ def _enrich_list_items_with_search(
             continue
 
         # Converter item para dicionário se necessário
-        if hasattr(item, 'model_dump'):
+        if hasattr(item, "model_dump"):
             item_dict = item.model_dump()
         elif isinstance(item, dict):
             item_dict = item.copy()
@@ -273,8 +270,8 @@ def _enrich_list_items_with_search(
 
             # Criar modelo temporário para a busca
             SingleFieldModel = create_model(
-                f'ItemSearch_{item_idx}_{path.replace(".", "_")}',
-                **{field_name: _llm_field_spec(field_info, parent_model)}
+                f"ItemSearch_{item_idx}_{path.replace('.', '_')}",
+                **{field_name: _llm_field_spec(field_info, parent_model)},
             )
 
             # Construir prompt para busca do campo com contexto do item
@@ -282,7 +279,7 @@ def _enrich_list_items_with_search(
                 f"Pesquise informações para: {item_context}",
                 field_name,
                 field_info.description,
-                field_config
+                field_config,
             )
 
             # Criar config com overrides do campo
@@ -292,17 +289,17 @@ def _enrich_list_items_with_search(
             result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
 
             # Atualizar o item com o resultado da busca
-            search_result = result['data'].get(field_name)
+            search_result = result["data"].get(field_name)
             _set_nested_value(item_dict, path, search_result)
 
             # Somar usage
-            if result.get('usage'):
+            if result.get("usage"):
                 for key in total_usage:
-                    total_usage[key] += result['usage'].get(key, 0)
+                    total_usage[key] += result["usage"].get(key, 0)
 
             # Coletar trace
-            if save_trace and result.get('trace'):
-                item_traces[path] = result['trace']
+            if save_trace and result.get("trace"):
+                item_traces[path] = result["trace"]
 
         enriched_items.append(item_dict)
 
@@ -366,6 +363,7 @@ def _recursion_limit(max_search_calls: int) -> int:
 @dataclass(frozen=True)
 class SearchAgent:
     """Agente de busca montado para um modelo Pydantic e uma SearchConfig."""
+
     agent: Any
     provider: Any
     tool_name: str
@@ -398,11 +396,13 @@ def build_search_agent(pydantic_model, config: LLMConfig) -> SearchAgent:
         model=chat_model(config),
         tools=[search_tool],
         response_format=ToolStrategy(pydantic_model),
-        middleware=[ToolCallLimitMiddleware(
-            tool_name=search_tool.name,
-            run_limit=search_config.max_search_calls,
-            exit_behavior="continue",
-        )],
+        middleware=[
+            ToolCallLimitMiddleware(
+                tool_name=search_tool.name,
+                run_limit=search_config.max_search_calls,
+                exit_behavior="continue",
+            )
+        ],
     )
     return SearchAgent(agent=agent, provider=provider, tool_name=search_tool.name)
 
@@ -454,16 +454,16 @@ def call_agent(
         if structured is None:
             raise ValueError("Agente não retornou resposta estruturada")
 
-        data = structured.model_dump() if hasattr(structured, 'model_dump') else structured
+        data = structured.model_dump() if hasattr(structured, "model_dump") else structured
 
         # Calcular usage (tokens + search credits via provider)
         usage = _extract_usage(result, provider, search_config, tool_name)
 
-        response = {'data': data, 'usage': usage}
+        response = {"data": data, "usage": usage}
 
         # Extrair trace se habilitado
         if save_trace:
-            response['trace'] = _extract_trace(
+            response["trace"] = _extract_trace(
                 result, config.model, duration, save_trace, provider, tool_name
             )
 
@@ -473,10 +473,7 @@ def call_agent(
 
 
 def _run_nested_searches(
-    text: str,
-    nested_fields: list,
-    config: LLMConfig,
-    save_trace: str | None = None
+    text: str, nested_fields: list, config: LLMConfig, save_trace: str | None = None
 ) -> tuple:
     """Executa buscas para campos configurados em modelos aninhados.
 
@@ -504,8 +501,8 @@ def _run_nested_searches(
 
         # Criar modelo temporário para a busca
         SingleFieldModel = create_model(
-            f'NestedSearch_{path.replace(".", "_")}',
-            **{field_name: _llm_field_spec(field_info, parent_model)}
+            f"NestedSearch_{path.replace('.', '_')}",
+            **{field_name: _llm_field_spec(field_info, parent_model)},
         )
 
         # Construir prompt para busca do campo aninhado
@@ -513,7 +510,7 @@ def _run_nested_searches(
             f"Pesquise informações para preencher o campo '{path}'",
             field_name,
             field_info.description,
-            field_config
+            field_config,
         )
 
         # Criar config com overrides do campo (se houver)
@@ -523,16 +520,16 @@ def _run_nested_searches(
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
 
         # Armazenar contexto de busca
-        search_context[path] = result['data'].get(field_name)
+        search_context[path] = result["data"].get(field_name)
 
         # Somar usage
-        if result.get('usage'):
+        if result.get("usage"):
             for key in total_usage:
-                total_usage[key] += result['usage'].get(key, 0)
+                total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace
-        if save_trace and result.get('trace'):
-            traces[path] = result['trace']
+        if save_trace and result.get("trace"):
+            traces[path] = result["trace"]
 
     return search_context, total_usage, traces
 
@@ -594,9 +591,11 @@ def call_agent_per_field(
     # (campos em List[Model] serão processados por item após a extração da lista)
     all_configured_fields = _collect_configured_fields(pydantic_model)
     nested_configured_fields = [
-        f for f in all_configured_fields
-        if '.' in f[0] and not any(f[0].startswith(lf + '.') for lf in list_field_names)
-        and (only_fields is None or f[0].split('.')[0] in only_fields)
+        f
+        for f in all_configured_fields
+        if "." in f[0]
+        and not any(f[0].startswith(lf + ".") for lf in list_field_names)
+        and (only_fields is None or f[0].split(".")[0] in only_fields)
     ]
 
     # Executar buscas para campos aninhados configurados (não em listas)
@@ -649,8 +648,8 @@ def call_agent_per_field(
 
         # Criar modelo temporário com apenas este campo
         SingleFieldModel = create_model(
-            f'{pydantic_model.__name__}_{field_name}',
-            **{field_name: _llm_field_spec(field_info, pydantic_model)}
+            f"{pydantic_model.__name__}_{field_name}",
+            **{field_name: _llm_field_spec(field_info, pydantic_model)},
         )
 
         # Construir prompt para este campo
@@ -660,14 +659,17 @@ def call_agent_per_field(
 
         # Adicionar contexto de buscas aninhadas ao prompt se houver
         relevant_context = {
-            path: value for path, value in nested_context.items()
+            path: value
+            for path, value in nested_context.items()
             if path.startswith(f"{field_name}.")
         }
         if relevant_context:
             context_str = "\n".join(
                 f"- {path}: {value}" for path, value in relevant_context.items()
             )
-            field_prompt += f"\n\nContexto de buscas realizadas para campos aninhados:\n{context_str}"
+            field_prompt += (
+                f"\n\nContexto de buscas realizadas para campos aninhados:\n{context_str}"
+            )
 
         # Criar config com overrides do campo (se houver)
         effective_config = _with_field_overrides(config, field_config)
@@ -676,23 +678,20 @@ def call_agent_per_field(
         result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
 
         # Obter resultado do campo
-        field_value = result['data'].get(field_name)
+        field_value = result["data"].get(field_name)
 
         # FASE 2: Se é um campo List[Model] com busca interna, enriquecer cada item
         if field_name in list_fields_with_search and field_value:
             list_config = list_fields_with_search[field_name]
-            inner_model = list_config['inner_model']
-            search_fields = list_config['search_fields']
+            inner_model = list_config["inner_model"]
+            search_fields = list_config["search_fields"]
 
-            logger.debug(f"Enriquecendo {len(field_value) if isinstance(field_value, list) else 0} itens de '{field_name}' com buscas")
+            logger.debug(
+                f"Enriquecendo {len(field_value) if isinstance(field_value, list) else 0} itens de '{field_name}' com buscas"
+            )
 
             enriched_items, enrich_usage, enrich_traces = _enrich_list_items_with_search(
-                field_value,
-                inner_model,
-                search_fields,
-                text,
-                config,
-                save_trace
+                field_value, inner_model, search_fields, text, config, save_trace
             )
 
             # Atualizar o valor do campo com itens enriquecidos
@@ -704,26 +703,26 @@ def call_agent_per_field(
 
             # Coletar traces de enriquecimento
             if save_trace and enrich_traces:
-                traces[f'{field_name}_items'] = enrich_traces
+                traces[f"{field_name}_items"] = enrich_traces
 
         # Combinar resultado
         combined_data[field_name] = field_value
 
         # Somar usage de todas as chamadas (exceto campos não numéricos)
-        if result.get('usage'):
+        if result.get("usage"):
             for key in total_usage:
-                total_usage[key] += result['usage'].get(key, 0)
+                total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace por campo
-        if save_trace and result.get('trace'):
-            traces[field_name] = result['trace']
+        if save_trace and result.get("trace"):
+            traces[field_name] = result["trace"]
 
     # Adicionar search_provider ao usage
-    total_usage['search_provider'] = search_provider
+    total_usage["search_provider"] = search_provider
 
-    response = {'data': combined_data, 'usage': total_usage}
+    response = {"data": combined_data, "usage": total_usage}
     if save_trace:
-        response['traces'] = traces
+        response["traces"] = traces
 
     return response
 
@@ -785,22 +784,18 @@ def call_agent_per_group(
 
     execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
 
-    units, _, unit_dependencies = get_group_execution_units(
-        pydantic_model, groups, dependencies
-    )
+    units, _, unit_dependencies = get_group_execution_units(pydantic_model, groups, dependencies)
 
     for unit_key in topological_sort(unit_dependencies):
         kind, name, group_config = units[int(unit_key)]
 
-        if kind == 'group':
+        if kind == "group":
             group_name = name
             # O modelo e o prompt do grupo seguem a ordem de search_groups; a
             # ordem de dependência só importa para as condições avaliadas
             # depois da resposta.
             # Condições que dependem só de campos de fora do grupo já podem ser avaliadas.
-            requested = [
-                f for f in group_config.fields if only_fields is None or f in only_fields
-            ]
+            requested = [f for f in group_config.fields if only_fields is None or f in only_fields]
             for field_name in group_config.fields:
                 if field_name not in requested:
                     combined_data[field_name] = (known or {}).get(field_name)
@@ -810,8 +805,7 @@ def call_agent_per_group(
             for field_name in requested:
                 # Só uma dependência pedida na mesma chamada fica sem valor antes dela
                 deps_in_group = [
-                    dep for dep in dependencies[field_name]
-                    if dep.split('.')[0] in requested
+                    dep for dep in dependencies[field_name] if dep.split(".")[0] in requested
                 ]
                 if deps_in_group:
                     active_fields.append(field_name)
@@ -832,19 +826,18 @@ def call_agent_per_group(
                 for field_name in active_fields
             }
             GroupModel = create_model(
-                f'{pydantic_model.__name__}_group_{group_name}',
-                **group_field_infos
+                f"{pydantic_model.__name__}_group_{group_name}", **group_field_infos
             )
 
             # Construir prompt do grupo
             if group_config.prompt:
                 # {query} é sinônimo de {texto} no prompt de grupo
                 group_prompt = _with_text_placeholder(
-                    group_config.prompt.replace('{query}', '{texto}')
+                    group_config.prompt.replace("{query}", "{texto}")
                 )
             else:
                 # Prompt padrão com instruções sobre os campos do grupo
-                field_list = ', '.join(active_fields)
+                field_list = ", ".join(active_fields)
                 group_prompt = f"{user_prompt}\n\nResponda os campos: {field_list}"
 
             # Criar config com overrides do grupo (se houver)
@@ -860,7 +853,7 @@ def call_agent_per_group(
 
             # Combinar resultados
             for field_name in active_fields:
-                combined_data[field_name] = result['data'].get(field_name)
+                combined_data[field_name] = result["data"].get(field_name)
 
             # Em ordem de dependência, para que um campo anulado aqui também
             # anule quem depende dele no mesmo grupo.
@@ -884,8 +877,8 @@ def call_agent_per_group(
 
             # Criar modelo temporário com apenas este campo
             SingleFieldModel = create_model(
-                f'{pydantic_model.__name__}_{field_name}',
-                **{field_name: _llm_field_spec(field_info, pydantic_model)}
+                f"{pydantic_model.__name__}_{field_name}",
+                **{field_name: _llm_field_spec(field_info, pydantic_model)},
             )
 
             # Construir prompt para este campo
@@ -900,35 +893,34 @@ def call_agent_per_group(
             result = call_agent(text, SingleFieldModel, field_prompt, effective_config, save_trace)
 
             # Combinar resultado
-            combined_data[field_name] = result['data'].get(field_name)
+            combined_data[field_name] = result["data"].get(field_name)
 
             trace_key = field_name
 
         # Somar usage
-        if result.get('usage'):
+        if result.get("usage"):
             for key in total_usage:
-                total_usage[key] += result['usage'].get(key, 0)
+                total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace por grupo ou campo isolado
-        if save_trace and result.get('trace'):
-            traces[trace_key] = result['trace']
+        if save_trace and result.get("trace"):
+            traces[trace_key] = result["trace"]
 
     # Manter a ordem de campos do modelo
     ordered_data = {
-        field_name: combined_data.get(field_name)
-        for field_name in pydantic_model.model_fields
+        field_name: combined_data.get(field_name) for field_name in pydantic_model.model_fields
     }
 
-    response = {'data': ordered_data, 'usage': total_usage}
+    response = {"data": ordered_data, "usage": total_usage}
     if save_trace:
-        response['traces'] = traces
+        response["traces"] = traces
 
     return response
 
 
 # Início do texto que o ToolCallLimitMiddleware grava na ToolMessage de uma
 # chamada bloqueada ("Tool call limit exceeded. Do not call 'x' again.").
-_TOOL_LIMIT_MESSAGE_PREFIX = 'Tool call limit exceeded'
+_TOOL_LIMIT_MESSAGE_PREFIX = "Tool call limit exceeded"
 
 
 def _blocked_tool_call_ids(messages) -> set:
@@ -936,13 +928,15 @@ def _blocked_tool_call_ids(messages) -> set:
     return {
         msg.tool_call_id
         for msg in messages
-        if getattr(msg, 'type', None) == 'tool'
-        and getattr(msg, 'status', None) == 'error'
-        and str(getattr(msg, 'content', '')).startswith(_TOOL_LIMIT_MESSAGE_PREFIX)
+        if getattr(msg, "type", None) == "tool"
+        and getattr(msg, "status", None) == "error"
+        and str(getattr(msg, "content", "")).startswith(_TOOL_LIMIT_MESSAGE_PREFIX)
     }
 
 
-def _extract_usage(agent_result: dict, provider, search_config, search_tool_name: str) -> dict[str, Any]:
+def _extract_usage(
+    agent_result: dict, provider, search_config, search_tool_name: str
+) -> dict[str, Any]:
     """Extrai métricas de uso do resultado do agente.
 
     Args:
@@ -964,16 +958,18 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"[token_tracking] Total messages in agent result: {len(messages)}")
         for i, msg in enumerate(messages):
-            msg_type = getattr(msg, 'type', type(msg).__name__)
-            has_metadata = hasattr(msg, 'usage_metadata') and msg.usage_metadata is not None
-            has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
+            msg_type = getattr(msg, "type", type(msg).__name__)
+            has_metadata = hasattr(msg, "usage_metadata") and msg.usage_metadata is not None
+            has_tool_calls = hasattr(msg, "tool_calls") and msg.tool_calls
 
             metadata_info = ""
             if has_metadata:
                 meta = msg.usage_metadata
                 # Suportar tanto dict quanto objeto com atributos
                 if isinstance(meta, dict):
-                    metadata_info = f"in={meta.get('input_tokens', 0)}, out={meta.get('output_tokens', 0)}"
+                    metadata_info = (
+                        f"in={meta.get('input_tokens', 0)}, out={meta.get('output_tokens', 0)}"
+                    )
                 else:
                     metadata_info = f"in={getattr(meta, 'input_tokens', 0)}, out={getattr(meta, 'output_tokens', 0)}"
 
@@ -981,7 +977,7 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
             if has_tool_calls:
                 tool_names = []
                 for tc in msg.tool_calls:
-                    name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
+                    name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
                     tool_names.append(name)
                 tool_info = f", tools={tool_names}"
 
@@ -996,13 +992,13 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
     # contabilizados em output_tokens — output_token_details.reasoning é
     # apenas um breakdown.
     for msg in messages:
-        if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
+        if hasattr(msg, "usage_metadata") and msg.usage_metadata:
             parsed = _parse_usage_metadata(msg.usage_metadata)
-            usage['input_tokens'] += parsed['input_tokens']
-            usage['cached_input_tokens'] += parsed['cached_input_tokens']
-            usage['output_tokens'] += parsed['output_tokens']
-            usage['total_tokens'] += parsed['total_tokens']
-            usage['reasoning_tokens'] += parsed['reasoning_tokens']
+            usage["input_tokens"] += parsed["input_tokens"]
+            usage["cached_input_tokens"] += parsed["cached_input_tokens"]
+            usage["output_tokens"] += parsed["output_tokens"]
+            usage["total_tokens"] += parsed["total_tokens"]
+            usage["reasoning_tokens"] += parsed["reasoning_tokens"]
 
     # Só a ferramenta de busca conta. O agente também recebe a ferramenta de
     # structured output do ToolStrategy, cujo nome é o do modelo Pydantic
@@ -1011,16 +1007,16 @@ def _extract_usage(agent_result: dict, provider, search_config, search_tool_name
     # Chamada bloqueada pelo teto de buscas não executa nem é cobrada.
     blocked = _blocked_tool_call_ids(messages)
     for msg in messages:
-        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
-                tool_name = tc.get('name', '') if isinstance(tc, dict) else getattr(tc, 'name', '')
-                tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                tool_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+                tool_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                 if tool_name == search_tool_name and tool_id not in blocked:
-                    usage['search_count'] += 1
+                    usage["search_count"] += 1
 
     # Calcular créditos usando método do provider
-    usage['search_credits'] = provider.calculate_credits(
-        search_count=usage['search_count'],
+    usage["search_credits"] = provider.calculate_credits(
+        search_count=usage["search_count"],
         search_depth=search_config.search_depth,
         max_results=search_config.max_results,
     )
@@ -1075,15 +1071,17 @@ def _extract_trace(
             msg_data["content"] = msg.content
 
         # Tool calls (AIMessage)
-        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
             msg_data["tool_calls"] = []
             for tc in msg.tool_calls:
-                msg_data["tool_calls"].append({
-                    "name": tc.get("name", ""),
-                    "args": tc.get("args", {}),
-                    "id": tc.get("id", ""),
-                    "type": tc.get("type", "tool_call"),
-                })
+                msg_data["tool_calls"].append(
+                    {
+                        "name": tc.get("name", ""),
+                        "args": tc.get("args", {}),
+                        "id": tc.get("id", ""),
+                        "type": tc.get("type", "tool_call"),
+                    }
+                )
                 trace["total_tool_calls"] += 1
                 if tc.get("name") == search_tool_name and tc.get("id") not in blocked:
                     query = tc.get("args", {}).get("query", "")
@@ -1091,7 +1089,7 @@ def _extract_trace(
                         trace["search_queries"].append(query)
 
         # Tool call reference (ToolMessage)
-        if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+        if hasattr(msg, "tool_call_id") and msg.tool_call_id:
             msg_data["tool_call_id"] = msg.tool_call_id
 
         trace["messages"].append(msg_data)

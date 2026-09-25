@@ -139,9 +139,7 @@ def test_reprocess_columns_com_indice_fora_de_ordem_processa_todas_as_linhas(
         index=[5, 3, 1],
     )
 
-    resultado, textos_enviados = _executar(
-        df, parallel_requests, reprocess_columns=["campo1"]
-    )
+    resultado, textos_enviados = _executar(df, parallel_requests, reprocess_columns=["campo1"])
 
     assert sorted(textos_enviados) == ["cinco", "tres", "um"]
     assert resultado["campo1"].tolist() == [

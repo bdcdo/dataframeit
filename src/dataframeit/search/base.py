@@ -116,8 +116,7 @@ def get_provider(name: str) -> SearchProvider:
     if name not in _PROVIDERS:
         available = list(_PROVIDERS.keys())
         raise ValueError(
-            f"Provedor de busca '{name}' não suportado. "
-            f"Provedores disponíveis: {available}"
+            f"Provedor de busca '{name}' não suportado. Provedores disponíveis: {available}"
         )
     return _PROVIDERS[name]()
 

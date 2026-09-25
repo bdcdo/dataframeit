@@ -11,12 +11,14 @@ from pydantic import BaseModel, Field
 
 class SampleModel(BaseModel):
     """Modelo de teste."""
+
     campo: str = Field(description="Campo de teste")
 
 
 # =============================================================================
 # Testes de registro de provedores
 # =============================================================================
+
 
 def test_get_provider_tavily():
     """Verifica que get_provider retorna TavilyProvider."""
@@ -59,6 +61,7 @@ def test_get_available_providers():
 # Testes de TavilyProvider
 # =============================================================================
 
+
 def test_tavily_provider_properties():
     """Verifica propriedades do TavilyProvider."""
     from dataframeit.search import TavilyProvider
@@ -92,6 +95,7 @@ def test_tavily_calculate_credits_advanced():
 # =============================================================================
 # Testes de ExaProvider
 # =============================================================================
+
 
 def test_exa_provider_properties():
     """Verifica propriedades do ExaProvider."""
@@ -127,6 +131,7 @@ def test_exa_calculate_credits_large_results():
 # Testes de SearchConfig com provider
 # =============================================================================
 
+
 def test_search_config_default_provider():
     """Verifica que provider padrão é 'tavily'."""
     from dataframeit.llm import SearchConfig
@@ -147,51 +152,53 @@ def test_search_config_exa_provider():
 # Testes de validação de dependências
 # =============================================================================
 
+
 def test_validate_search_dependencies_tavily():
     """Verifica validação de dependências Tavily."""
     from dataframeit.errors import validate_search_dependencies
 
-    original = os.environ.get('TAVILY_API_KEY')
+    original = os.environ.get("TAVILY_API_KEY")
     try:
-        os.environ['TAVILY_API_KEY'] = 'test-key'
+        os.environ["TAVILY_API_KEY"] = "test-key"
 
-        with patch('importlib.import_module') as mock_import:
+        with patch("importlib.import_module") as mock_import:
             mock_import.return_value = MagicMock()
             # Não deve levantar exceção
             validate_search_dependencies("tavily")
     finally:
         if original:
-            os.environ['TAVILY_API_KEY'] = original
-        elif 'TAVILY_API_KEY' in os.environ:
-            del os.environ['TAVILY_API_KEY']
+            os.environ["TAVILY_API_KEY"] = original
+        elif "TAVILY_API_KEY" in os.environ:
+            del os.environ["TAVILY_API_KEY"]
 
 
 def test_validate_search_dependencies_exa():
     """Verifica validação de dependências Exa."""
     from dataframeit.errors import validate_search_dependencies
 
-    original = os.environ.get('EXA_API_KEY')
+    original = os.environ.get("EXA_API_KEY")
     try:
-        os.environ['EXA_API_KEY'] = 'test-key'
+        os.environ["EXA_API_KEY"] = "test-key"
 
-        with patch('importlib.import_module') as mock_import:
+        with patch("importlib.import_module") as mock_import:
             mock_import.return_value = MagicMock()
             # Não deve levantar exceção
             validate_search_dependencies("exa")
     finally:
         if original:
-            os.environ['EXA_API_KEY'] = original
-        elif 'EXA_API_KEY' in os.environ:
-            del os.environ['EXA_API_KEY']
+            os.environ["EXA_API_KEY"] = original
+        elif "EXA_API_KEY" in os.environ:
+            del os.environ["EXA_API_KEY"]
 
 
 def test_validate_search_dependencies_exa_missing_package():
     """Verifica erro quando langchain-exa não está instalado."""
     from dataframeit.errors import validate_search_dependencies
 
-    with patch('importlib.import_module') as mock_import:
+    with patch("importlib.import_module") as mock_import:
+
         def side_effect(name):
-            if name == 'langchain_exa':
+            if name == "langchain_exa":
                 raise ImportError("No module named 'langchain_exa'")
             return MagicMock()
 
@@ -207,12 +214,12 @@ def test_validate_search_dependencies_exa_missing_key():
     """Verifica erro quando EXA_API_KEY não está configurada."""
     from dataframeit.errors import validate_search_dependencies
 
-    original = os.environ.get('EXA_API_KEY')
+    original = os.environ.get("EXA_API_KEY")
     try:
-        if 'EXA_API_KEY' in os.environ:
-            del os.environ['EXA_API_KEY']
+        if "EXA_API_KEY" in os.environ:
+            del os.environ["EXA_API_KEY"]
 
-        with patch('importlib.import_module') as mock_import:
+        with patch("importlib.import_module") as mock_import:
             mock_import.return_value = MagicMock()
 
             with pytest.raises(ValueError) as exc_info:
@@ -221,7 +228,7 @@ def test_validate_search_dependencies_exa_missing_key():
             assert "EXA_API_KEY" in str(exc_info.value)
     finally:
         if original:
-            os.environ['EXA_API_KEY'] = original
+            os.environ["EXA_API_KEY"] = original
 
 
 def test_validate_search_dependencies_invalid_provider():
@@ -238,6 +245,7 @@ def test_validate_search_dependencies_invalid_provider():
 # Testes de parâmetro search_provider em dataframeit
 # =============================================================================
 
+
 def test_search_provider_default():
     """Verifica que search_provider='tavily' é o padrão."""
     import inspect
@@ -245,7 +253,7 @@ def test_search_provider_default():
     from dataframeit.core import dataframeit
 
     sig = inspect.signature(dataframeit)
-    assert sig.parameters['search_provider'].default == "tavily"
+    assert sig.parameters["search_provider"].default == "tavily"
 
 
 def test_search_provider_invalid_raises():
@@ -256,7 +264,7 @@ def test_search_provider_invalid_raises():
 
     df = pd.DataFrame({"texto": ["teste"]})
 
-    with patch('dataframeit.core.validate_provider_dependencies'):
+    with patch("dataframeit.core.validate_provider_dependencies"):
         with pytest.raises(ValueError) as exc_info:
             dataframeit(
                 df,
@@ -272,6 +280,7 @@ def test_search_provider_invalid_raises():
 # =============================================================================
 # Testes de criação de ferramenta via factory
 # =============================================================================
+
 
 def test_create_tool_tavily(monkeypatch):
     """Verifica que TavilyProvider.create_tool cria TavilySearch."""
@@ -330,6 +339,7 @@ def test_create_tool_exa(monkeypatch):
 # Testes de _extract_usage com provider
 # =============================================================================
 
+
 def test_extract_usage_includes_provider_name():
     """Verifica que _extract_usage inclui nome do provider."""
     from dataframeit.agent import _extract_usage
@@ -343,7 +353,7 @@ def test_extract_usage_includes_provider_name():
         "messages": [
             MagicMock(
                 usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
-                tool_calls=[{"name": "tavily_search"}]
+                tool_calls=[{"name": "tavily_search"}],
             ),
         ],
     }
@@ -366,7 +376,10 @@ def test_extract_usage_with_exa_provider():
         "messages": [
             MagicMock(
                 usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
-                tool_calls=[{"name": "exa_search_results_json"}, {"name": "exa_search_results_json"}]
+                tool_calls=[
+                    {"name": "exa_search_results_json"},
+                    {"name": "exa_search_results_json"},
+                ],
             ),
         ],
     }
@@ -445,6 +458,7 @@ def test_extract_usage_reasoning_tokens_default_zero():
 # Testes de mensagens de erro amigáveis
 # =============================================================================
 
+
 def test_exa_authentication_error_message():
     """Verifica mensagem amigável para erro de autenticação Exa."""
     from dataframeit.errors import get_friendly_error_message
@@ -479,6 +493,7 @@ def test_exa_limit_error_message():
 # Testes de integração com call_agent
 # =============================================================================
 
+
 def test_call_agent_uses_provider_factory(monkeypatch):
     """Verifica que call_agent usa factory para criar ferramenta."""
     from dataframeit.agent import call_agent
@@ -506,7 +521,7 @@ def test_call_agent_uses_provider_factory(monkeypatch):
     def mock_create_tool(**kwargs):
         return DummySearchTool(**kwargs)
 
-    with patch('dataframeit.agent.get_provider') as mock_get_provider:
+    with patch("dataframeit.agent.get_provider") as mock_get_provider:
         mock_provider = MagicMock()
         mock_provider.name = "tavily"
         mock_provider.create_tool = mock_create_tool
@@ -568,8 +583,13 @@ def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):
         get_provider.return_value = provider
 
         config = LLMConfig(
-            model="m", provider="openai", api_key=None,
-            max_retries=1, base_delay=0.0, max_delay=0.0, rate_limit_delay=0.0,
+            model="m",
+            provider="openai",
+            api_key=None,
+            max_retries=1,
+            base_delay=0.0,
+            max_delay=0.0,
+            rate_limit_delay=0.0,
             search_config=SearchConfig(enabled=True, provider="tavily"),
         )
         resultado = call_agent("teste", ResearchResult, "Responda {texto}", config)

@@ -3,6 +3,7 @@
 Este módulo permite usar o claude-agent-sdk como provider alternativo ao LangChain,
 fazendo chamadas LLM via créditos do Claude Code em vez de créditos de API.
 """
+
 import asyncio
 import concurrent.futures
 import json
@@ -65,7 +66,7 @@ async def _async_query(prompt: str, options):
 
 
 # Subtipos de ResultMessage que repetir não resolve: o limite configurado é o mesmo.
-_FINAL_RESULT_SUBTYPES = frozenset({'error_max_budget_usd', 'error_max_turns'})
+_FINAL_RESULT_SUBTYPES = frozenset({"error_max_budget_usd", "error_max_turns"})
 
 
 def _raise_for_result_error(result) -> None:
@@ -76,12 +77,12 @@ def _raise_for_result_error(result) -> None:
     informa, decide entre sobrecarga (reduz o paralelismo), falha transitória
     e falha definitiva. Erro de execução sem status é tratado como transitório.
     """
-    if result is None or not getattr(result, 'is_error', False):
+    if result is None or not getattr(result, "is_error", False):
         return
 
-    subtype = getattr(result, 'subtype', None)
-    status = getattr(result, 'api_error_status', None)
-    detail = getattr(result, 'errors', None) or getattr(result, 'result', None) or ''
+    subtype = getattr(result, "subtype", None)
+    status = getattr(result, "api_error_status", None)
+    detail = getattr(result, "errors", None) or getattr(result, "result", None) or ""
     message = f"Claude Code SDK retornou erro ({subtype}, status {status}): {detail}".strip()
 
     if subtype in _FINAL_RESULT_SUBTYPES:
@@ -120,21 +121,23 @@ def _usage_from_sdk(usage, cost_usd=None) -> dict | None:
     cache, a mesma convenção do provider LangChain.
     """
     if not usage:
-        return {'cost_usd': cost_usd} if cost_usd else None
+        return {"cost_usd": cost_usd} if cost_usd else None
 
     cache_read = usage.get("cache_read_input_tokens") or 0
     cache_creation = usage.get("cache_creation_input_tokens") or 0
     input_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
     output_tokens = usage.get("output_tokens") or 0
 
-    parsed = _parse_usage_metadata({
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
-        "input_token_details": {"cache_read": cache_read},
-    })
+    parsed = _parse_usage_metadata(
+        {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "input_token_details": {"cache_read": cache_read},
+        }
+    )
     if cost_usd:
-        parsed['cost_usd'] = cost_usd
+        parsed["cost_usd"] = cost_usd
     return parsed
 
 
@@ -198,7 +201,7 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
     def _call():
         nonlocal spent
         response_text, result = _run_coroutine(_async_query(prompt, options))
-        spent += getattr(result, 'total_cost_usd', None) or 0
+        spent += getattr(result, "total_cost_usd", None) or 0
         _raise_for_result_error(result)
 
         if not response_text.strip():
@@ -208,8 +211,8 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
         parsed = parse_json(response_text)
         validated = pydantic_model.model_validate(parsed)
 
-        usage = _usage_from_sdk(getattr(result, 'usage', None), spent)
-        return {'data': validated.model_dump(), 'usage': usage}
+        usage = _usage_from_sdk(getattr(result, "usage", None), spent)
+        return {"data": validated.model_dump(), "usage": usage}
 
     try:
         return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)

@@ -10,12 +10,12 @@ def test_all_so_lista_nomes_que_existem():
 def test_excecoes_do_topo_sao_as_de_errors():
     # Quem captura pelo nome do topo precisa pegar a mesma classe que o código levanta.
     for nome in (
-        'ProviderError',
-        'ProviderTransientError',
-        'ProviderOverloadedError',
-        'ProviderRejectedOutputError',
-        'ProviderConfigurationError',
-        'ProviderOutputError',
+        "ProviderError",
+        "ProviderTransientError",
+        "ProviderOverloadedError",
+        "ProviderRejectedOutputError",
+        "ProviderConfigurationError",
+        "ProviderOutputError",
     ):
         assert nome in dataframeit.__all__
         assert getattr(dataframeit, nome) is getattr(errors, nome)
