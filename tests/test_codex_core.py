@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import threading
 from contextlib import contextmanager
+from typing import ClassVar
 from unittest.mock import Mock
 
 import pandas as pd
@@ -75,7 +76,7 @@ def make_config(
 
 
 class RecordingCodexBackend:
-    instances: list[RecordingCodexBackend] = []
+    instances: ClassVar[list[RecordingCodexBackend]] = []
 
     def __init__(self, config, pydantic_model, user_prompt):
         self.config = config
@@ -641,7 +642,7 @@ def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch):
     data = pd.DataFrame({"text": ["pending"]})
     original = data.copy(deep=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="invalid schema"):
         core.dataframeit(
             data,
             questions=ResultModel,

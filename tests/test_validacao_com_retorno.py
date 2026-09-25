@@ -103,7 +103,7 @@ INVALIDO = json.dumps({"aplicou": True, "trecho": None})
 
 class TestNovaTentativaComErro:
     def test_erro_e_resposta_voltam_ao_modelo(self):
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             resultado, structured = _chamar(
                 [_falha(INVALIDO), _sucesso(ComEvidencia(aplicou=True, trecho="x"))]
             )
@@ -119,7 +119,7 @@ class TestNovaTentativaComErro:
         # A causa é a validação do bruto; revalidar outro conteúdo daria outro erro.
         bruto = json.dumps({"aplicou": "talvez"})
         falha = {"parsed": None, "raw": _raw("{}"), "parsing_error": _erro_do_parser(bruto)}
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([falha, _sucesso()])
         correcao = _chamada(structured, 1)[2][1]
         assert "- aplicou: Input should be a valid boolean" in correcao
@@ -127,14 +127,14 @@ class TestNovaTentativaComErro:
 
     def test_cada_recusa_substitui_a_anterior(self):
         outro = json.dumps({"aplicou": True, "trecho": ""})
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([_falha(INVALIDO), _falha(outro), _sucesso()])
         terceira = _chamada(structured, 2)
         assert len(terceira) == 3
         assert terceira[1][1] == outro
 
     def test_uso_soma_as_tentativas_recusadas(self):
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             resultado, _ = _chamar(
                 [
                     _falha(INVALIDO, tokens=(10, 5)),
@@ -147,7 +147,7 @@ class TestNovaTentativaComErro:
         assert resultado["usage"]["total_tokens"] == 59
 
     def test_erro_transitorio_sem_raw_mantem_a_correcao(self):
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             resultado, structured = _chamar([_falha(INVALIDO), TimeoutError("lento"), _sucesso()])
         assert _chamada(structured, 2) == _chamada(structured, 1)
         assert resultado["usage"]["input_tokens"] == 30
@@ -159,7 +159,7 @@ class TestNovaTentativaComErro:
             "raw": _raw("", tool_calls=[{"name": "ComEvidencia", "args": args}]),
             "parsing_error": "erro",
         }
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([falha, _sucesso()])
         assert _chamada(structured, 1)[1] == ("ai", json.dumps(args))
         assert "Aplicar exige trecho." in _chamada(structured, 1)[2][1]
@@ -170,7 +170,7 @@ class TestNovaTentativaComErro:
             "raw": _raw("", invalid_tool_calls=[{"name": "x", "args": '{"aplicou": tru'}]),
             "parsing_error": "json inválido",
         }
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([falha, _sucesso()])
         assert _chamada(structured, 1)[1] == ("ai", '{"aplicou": tru')
 
@@ -181,13 +181,13 @@ class TestNovaTentativaComErro:
             {"type": "text", "text": INVALIDO[5:]},
         ]
         falha = {"parsed": None, "raw": _raw(blocos), "parsing_error": "erro"}
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([falha, _sucesso()])
         assert _chamada(structured, 1)[1] == ("ai", INVALIDO)
 
     def test_sem_resposta_bruta_o_pedido_vai_junto_do_prompt(self):
         falha = {"parsed": None, "raw": _raw(""), "parsing_error": "vazio"}
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([falha, _sucesso()])
         segunda = _chamada(structured, 1)
         assert len(segunda) == 1
@@ -197,14 +197,14 @@ class TestNovaTentativaComErro:
 
     def test_parsed_none_sem_parsing_error_pede_o_formato(self):
         sem_parse = {"parsed": None, "raw": _raw("texto livre"), "parsing_error": None}
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([sem_parse, _sucesso()])
         segunda = _chamada(structured, 1)
         assert segunda[1] == ("ai", "texto livre")
         assert "formato estruturado" in segunda[2][1]
 
     def test_json_malformado(self):
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([_falha("{quebrado", erro="falha do parser"), _sucesso()])
         segunda = _chamada(structured, 1)
         assert segunda[1] == ("ai", "{quebrado")
@@ -227,7 +227,7 @@ class TestNovaTentativaComErro:
         base = MagicMock()
         base.with_structured_output.return_value = structured
         with (
-            pytest.warns(UserWarning),
+            pytest.warns(UserWarning, match="Tentativa"),
             patch("dataframeit.llm._create_langchain_llm", return_value=base),
         ):
             call_langchain("T", Muitos, "{texto}", _config())
@@ -237,7 +237,10 @@ class TestNovaTentativaComErro:
         assert all(len(linha) < 450 for linha in linhas)
 
     def test_esgota_as_tentativas(self):
-        with pytest.warns(UserWarning), pytest.raises(ProviderRejectedOutputError, match="parsing"):
+        with (
+            pytest.warns(UserWarning, match="Tentativa"),
+            pytest.raises(ProviderRejectedOutputError, match="parsing"),
+        ):
             _chamar([_falha(INVALIDO)] * 2, max_retries=2)
 
 
@@ -353,7 +356,7 @@ class TestOpenAIReal:
         rodar, requisicoes = openai_falso
         # "404" no texto recusado não pode impedir a nova tentativa.
         invalido = json.dumps({"aplicou": True, "trecho": None, "processo": "Rcl 404"})
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             resultado = rodar(
                 [invalido, json.dumps({"aplicou": True, "trecho": "x"})], responses_api
             )
@@ -379,7 +382,7 @@ class TestOpenAIReal:
         monkeypatch.setitem(ComEvidencia.model_config, "title", "Evidencia do caso")
         ComEvidencia.model_rebuild(force=True)
         try:
-            with pytest.warns(UserWarning):
+            with pytest.warns(UserWarning, match="Tentativa"):
                 rodar([INVALIDO, json.dumps({"aplicou": True, "trecho": "x"})])
         finally:
             monkeypatch.undo()
@@ -399,7 +402,7 @@ class TestCapturaNoInvoke:
             ImageConfig.model_validate({"aspect_ratio": 16})
         except ValidationError as erro:
             de_configuracao = erro
-        with pytest.warns(UserWarning), pytest.raises(ValidationError):
+        with pytest.warns(UserWarning, match="Tentativa"), pytest.raises(ValidationError):
             _, _structured = self._chamar_levantando([de_configuracao] * 3)
 
     def test_recusa_do_sdk_sem_resposta_anexada_vai_junto_do_prompt(self):
@@ -407,7 +410,7 @@ class TestCapturaNoInvoke:
             ComEvidencia.model_validate_json(INVALIDO)
         except ValidationError as erro:
             do_sdk = erro
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             resultado, structured = _chamar([do_sdk, _sucesso()])
         segunda = _chamada(structured, 1)
         assert len(segunda) == 1
@@ -419,7 +422,7 @@ class TestCapturaNoInvoke:
 
     def test_output_parser_exception_no_invoke_pede_correcao(self):
         erro = OutputParserException("sem tool call", llm_output="texto solto")
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([erro, _sucesso()])
         segunda = _chamada(structured, 1)
         assert segunda[1] == ("ai", "texto solto")
@@ -430,7 +433,7 @@ class TestCapturaNoInvoke:
             ComEvidencia.model_validate_json(INVALIDO)
         except ValidationError as erro:
             do_sdk = erro
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([_falha(INVALIDO), do_sdk, _sucesso()])
         assert len(_chamada(structured, 2)) == 1
 
@@ -455,7 +458,7 @@ class TestCorpoDoSdk:
 
     def test_parser_sem_llm_output_pede_o_formato_generico(self):
         erro = OutputParserException("Consider `method='json_schema'`")
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([erro, _sucesso()])
         segunda = _chamada(structured, 1)
         assert len(segunda) == 1
@@ -478,6 +481,6 @@ class TestDiagnostico:
             _chamar([_falha("{quebrado", erro=OutputParserException("recusa"))], max_retries=1)
 
     def test_texto_bruto_do_erro_tem_teto(self):
-        with pytest.warns(UserWarning):
+        with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([_falha("{x", erro="e" * 5000), _sucesso()])
         assert len(_chamada(structured, 1)[2][1]) < 2300

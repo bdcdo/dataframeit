@@ -33,11 +33,11 @@ def test_api_compatibility():
     template = "Analise: {documento}\n{format}"
 
     # Verificar que ValueError é lançado sem questions/perguntas
-    with pytest.raises(ValueError, match="(?i)questions"):
+    with pytest.raises(ValueError, match=r"(?i)questions"):
         dataframeit_new(df, prompt=template)
 
     # Verificar que ValueError é lançado sem prompt
-    with pytest.raises(ValueError, match="(?i)prompt"):
+    with pytest.raises(ValueError, match=r"(?i)prompt"):
         dataframeit_new(df, questions=TestModel)
 
 
@@ -83,8 +83,8 @@ def test_resume_functionality():
     assert count == 0
 
     # Com resume e algumas linhas processadas
-    df.at[0, "_dataframeit_status"] = "processed"
-    df.at[1, "_dataframeit_status"] = "processed"
+    df.loc[0, "_dataframeit_status"] = "processed"
+    df.loc[1, "_dataframeit_status"] = "processed"
     pending, count = _get_processing_indices(df, "_dataframeit_status", True)
     assert pending == [False, False, True, True]
     assert count == 2

@@ -79,7 +79,7 @@ def test_raises_when_no_candidate_matches():
     df = pd.DataFrame({"id": [1], "payload": ["x"]})
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.raises(ValueError) as exc_info,
+        pytest.raises(ValueError, match="Nenhuma coluna de texto identificada") as exc_info,
     ):
         dataframeit(df, _Model, "analise")
     msg = str(exc_info.value)

@@ -127,7 +127,7 @@ def make_config(**overrides) -> LLMConfig:
 
 def auth_lock_is_available(lock_path: Path) -> bool:
     """Consulta o lock em outro processo, onde o estado do SO é independente."""
-    probe = subprocess.run(
+    probe = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
         [
             sys.executable,
             "-c",
@@ -489,7 +489,7 @@ class TestBackendLifecycle:
                 assert launch_config.env["CODEX_SQLITE_HOME"] == str(isolated_home)
                 assert isolated_home != source_home
                 assert not isolated_auth.is_symlink()
-                assert os.path.samefile(isolated_auth, source_auth)
+                assert Path(isolated_auth).samefile(source_auth)
                 lock_path = source_home / "auth.json.dataframeit.lock"
                 assert not auth_lock_is_available(lock_path)
 

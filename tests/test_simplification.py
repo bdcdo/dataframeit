@@ -39,7 +39,7 @@ def test_basic_functionality():
     assert count == 0
 
     # Testar com resume
-    df_test.at[0, "_dataframeit_status"] = "processed"
+    df_test.loc[0, "_dataframeit_status"] = "processed"
     pending, count = _get_processing_indices(df_test, "_dataframeit_status", True)
     assert pending[0] is False
     assert all(pending[1:])

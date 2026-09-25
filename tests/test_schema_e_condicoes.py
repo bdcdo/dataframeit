@@ -6,6 +6,7 @@ não serializa.
 """
 
 import json
+import re
 import types
 import typing
 from typing import Literal, Optional, Union
@@ -218,7 +219,7 @@ class TestValidacaoAntesDeProcessar:
         ],
     )
     def test_condition_em_campo_aninhado_levanta_erro(self, opcoes):
-        with pytest.raises(ValueError, match="endereco.cidade"):
+        with pytest.raises(ValueError, match=r"endereco\.cidade"):
             _executar(ModeloComCondicaoAninhada, **opcoes)
 
     def test_condition_em_item_de_lista_levanta_erro(self):
@@ -231,7 +232,7 @@ class TestValidacaoAntesDeProcessar:
         class Modelo(BaseModel):
             itens: list[Item] = []
 
-        with pytest.raises(ValueError, match="itens.valor"):
+        with pytest.raises(ValueError, match=r"itens\.valor"):
             _executar(Modelo, use_search=True, search_per_field=True)
 
     @pytest.mark.parametrize(
@@ -256,7 +257,7 @@ class TestValidacaoAntesDeProcessar:
         class Modelo(BaseModel):
             interno: Optional[Interno] = None
 
-        with pytest.raises(ValueError, match="interno.campo"):
+        with pytest.raises(ValueError, match=r"interno\.campo"):
             _executar(Modelo, use_search=True, search_per_field=True)
 
     def test_dependencia_circular_levanta_erro_antes_das_linhas(self):
@@ -299,7 +300,7 @@ class TestValidacaoAntesDeProcessar:
         class Modelo(BaseModel):
             itens: list[Item] = []
 
-        with pytest.raises(ValueError, match="itens.subs.x"):
+        with pytest.raises(ValueError, match=r"itens\.subs\.x"):
             _executar(Modelo, use_search=True, search_per_field=True)
 
     @pytest.mark.parametrize(
@@ -314,7 +315,7 @@ class TestValidacaoAntesDeProcessar:
         class Modelo(BaseModel):
             campo: Optional[str] = Field(None, json_schema_extra={"prompt_append": "x"})
 
-        with pytest.raises(ValueError) as erro:
+        with pytest.raises(ValueError, match=re.escape(f"requerem {falta}")) as erro:
             _executar(Modelo, **opcoes)
         assert f"requerem {falta}" in str(erro.value)
 
@@ -642,7 +643,7 @@ def test_condition_em_lista_com_referencia_adiantada_levanta_erro():
     class Modelo(BaseModel):
         itens: list["Item"] = []
 
-    with pytest.raises(ValueError, match="itens.valor"):
+    with pytest.raises(ValueError, match=r"itens\.valor"):
         _executar(Modelo, use_search=True, search_per_field=True)
 
 
@@ -653,7 +654,7 @@ def test_configuracao_em_lista_de_listas_levanta_erro():
     class Modelo(BaseModel):
         matriz: list[list[Item]] = []
 
-    with pytest.raises(ValueError, match="matriz.x"):
+    with pytest.raises(ValueError, match=r"matriz\.x"):
         _executar(Modelo, use_search=True, search_per_field=True)
 
 

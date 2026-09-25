@@ -27,7 +27,7 @@ def test_reprocess_columns_validation_invalid_column():
     df = pd.DataFrame({"texto": ["a", "b"]})
 
     with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="campo_inexistente") as exc_info:
             dataframeit(
                 df,
                 questions=SimpleModel,

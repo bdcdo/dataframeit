@@ -200,7 +200,8 @@ class TestDependencies:
         deps = {"a": ["b"], "b": ["a"]}
         cycle = detect_circular_dependencies(deps)
         assert cycle is not None
-        assert "a" in cycle and "b" in cycle
+        assert "a" in cycle
+        assert "b" in cycle
 
     def test_detect_circular_dependencies_complex_cycle(self):
         """Testa detecção de ciclo complexo."""
@@ -749,7 +750,7 @@ def test_ordem_de_execucao_nao_depende_do_hash_seed():
     saidas = set()
     for semente in ("0", "1", "2", "3"):
         ambiente = {**os.environ, "PYTHONHASHSEED": semente}
-        saida = subprocess.run(
+        saida = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
             [sys.executable, "-c", codigo],
             env=ambiente,
             capture_output=True,

@@ -108,7 +108,7 @@ def test_use_search_validates_depth():
     # Mock validate_provider_dependencies para não precisar do provider instalado
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.raises(ValueError) as exc_info,
+        pytest.raises(ValueError, match="search_depth") as exc_info,
     ):
         dataframeit(
             df,
@@ -128,7 +128,7 @@ def test_use_search_validates_max_results_min():
 
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.raises(ValueError) as exc_info,
+        pytest.raises(ValueError, match="max_results") as exc_info,
     ):
         dataframeit(
             df,
@@ -148,7 +148,7 @@ def test_use_search_validates_max_results_max():
 
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.raises(ValueError) as exc_info,
+        pytest.raises(ValueError, match="max_results") as exc_info,
     ):
         dataframeit(
             df,
@@ -203,7 +203,7 @@ def test_use_search_requires_api_key():
         with patch("importlib.import_module") as mock_import:
             mock_import.return_value = MagicMock()
 
-            with pytest.raises(ValueError) as exc_info:
+            with pytest.raises(ValueError, match="TAVILY_API_KEY") as exc_info:
                 validate_search_dependencies()
 
             assert "TAVILY_API_KEY" in str(exc_info.value)
@@ -436,7 +436,7 @@ def test_extract_usage_advanced_depth():
     usage = _extract_usage(mock_result, provider, search_config, "tavily_search")
 
     assert usage["search_count"] == 2
-    assert usage["search_credits"] == 4  # advanced = 2 créditos × 2 buscas
+    assert usage["search_credits"] == 4  # advanced = 2 créditos x 2 buscas
 
 
 def test_extract_usage_with_object_metadata():
@@ -743,7 +743,7 @@ def test_field_config_without_per_field_raises():
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
-        pytest.raises(ValueError) as exc_info,
+        pytest.raises(ValueError, match="search_per_field=True") as exc_info,
     ):
         dataframeit(
             df,
@@ -868,7 +868,7 @@ class RegulatoryModel(BaseModel):
 def test_search_groups_requires_use_search():
     """Verifica que search_groups requer use_search=True."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="use_search=True") as exc_info:
         _validate_search_groups(
             {"grupo": {"fields": ["nome"]}},
             RegulatoryModel,
@@ -882,7 +882,7 @@ def test_search_groups_requires_use_search():
 def test_search_groups_requires_per_field():
     """Verifica que search_groups requer search_per_field=True."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="search_per_field=True") as exc_info:
         _validate_search_groups(
             {"grupo": {"fields": ["nome"]}},
             RegulatoryModel,
@@ -896,7 +896,7 @@ def test_search_groups_requires_per_field():
 def test_search_groups_validates_unknown_fields():
     """Verifica que campos inexistentes geram erro."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="campo_inexistente") as exc_info:
         _validate_search_groups(
             {"grupo": {"fields": ["campo_inexistente"]}},
             RegulatoryModel,
@@ -911,7 +911,7 @@ def test_search_groups_validates_unknown_fields():
 def test_search_groups_validates_duplicate_fields():
     """Verifica que campos em múltiplos grupos geram erro."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="fabricante") as exc_info:
         _validate_search_groups(
             {
                 "grupo1": {"fields": ["nome", "fabricante"]},
@@ -933,7 +933,7 @@ def test_search_groups_validates_field_config_conflict():
         campo_a: str = Field(json_schema_extra={"prompt": "custom"})
         campo_b: str
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="campo_a") as exc_info:
         _validate_search_groups(
             {"grupo": {"fields": ["campo_a", "campo_b"]}},
             ModelWithConfig,
@@ -949,7 +949,7 @@ def test_search_groups_validates_field_config_conflict():
 def test_search_groups_validates_search_depth(search_depth):
     """Verifica que search_depth inválido no grupo gera erro, inclusive o vazio."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="search_depth") as exc_info:
         _validate_search_groups(
             {"grupo": {"fields": ["nome"], "search_depth": search_depth}},
             RegulatoryModel,
@@ -963,7 +963,7 @@ def test_search_groups_validates_search_depth(search_depth):
 def test_search_groups_validates_max_results():
     """Verifica que max_results inválido no grupo gera erro."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="max_results") as exc_info:
         _validate_search_groups(
             {"grupo": {"fields": ["nome"], "max_results": 100}},
             RegulatoryModel,
@@ -1955,7 +1955,7 @@ def test_issue_84_search_count_per_item():
 def test_warn_search_rate_limit_triggers_on_high_concurrent():
     """Emite warning quando queries concorrentes excedem limite recomendado."""
 
-    with pytest.warns(UserWarning) as record:
+    with pytest.warns(UserWarning, match="rate limits de busca") as record:
         _warn_search_rate_limit(
             num_rows=100,
             num_fields=4,
@@ -1975,7 +1975,7 @@ def test_warn_search_rate_limit_triggers_on_high_concurrent():
 def test_warn_search_rate_limit_triggers_on_high_rpm():
     """Emite warning quando taxa estimada excede o limite do Tavily."""
 
-    with pytest.warns(UserWarning) as record:
+    with pytest.warns(UserWarning, match="rate limits de busca") as record:
         _warn_search_rate_limit(
             num_rows=1000,
             num_fields=1,
@@ -2039,7 +2039,7 @@ def test_warn_search_rate_limit_exa_higher_threshold():
 def test_warn_search_rate_limit_shows_provider_name():
     """A mensagem cita o provedor atual."""
 
-    with pytest.warns(UserWarning) as record:
+    with pytest.warns(UserWarning, match="rate limits de busca") as record:
         _warn_search_rate_limit(
             num_rows=100,
             num_fields=4,
@@ -2050,7 +2050,7 @@ def test_warn_search_rate_limit_shows_provider_name():
         )
     assert "Tavily" in str(record[0].message)
 
-    with pytest.warns(UserWarning) as record:
+    with pytest.warns(UserWarning, match="rate limits de busca") as record:
         _warn_search_rate_limit(
             num_rows=100,
             num_fields=4,

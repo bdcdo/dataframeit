@@ -26,7 +26,7 @@ def test_save_trace_requires_use_search():
     df = pd.DataFrame({"texto": ["a"]})
 
     with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="save_trace requer use_search=True") as exc_info:
             dataframeit(
                 df,
                 questions=SimpleModel,
@@ -46,7 +46,9 @@ def test_save_trace_invalid_value():
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
     ):
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(
+            ValueError, match="save_trace deve ser True, 'full' ou 'minimal'"
+        ) as exc_info:
             dataframeit(
                 df,
                 questions=SimpleModel,

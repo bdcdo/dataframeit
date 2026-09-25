@@ -48,7 +48,7 @@ def test_get_provider_exa():
 def test_get_provider_invalid():
     """Verifica que get_provider levanta erro para provedor inválido."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="não suportado") as exc_info:
         get_provider("invalid_provider")
 
     assert "não suportado" in str(exc_info.value)
@@ -82,16 +82,16 @@ def test_tavily_calculate_credits_basic():
     """Verifica cálculo de créditos Tavily com depth basic."""
 
     provider = TavilyProvider()
-    credits = provider.calculate_credits(search_count=3, search_depth="basic")
-    assert credits == 3  # 3 buscas × 1 crédito
+    creditos = provider.calculate_credits(search_count=3, search_depth="basic")
+    assert creditos == 3  # 3 buscas x 1 crédito
 
 
 def test_tavily_calculate_credits_advanced():
     """Verifica cálculo de créditos Tavily com depth advanced."""
 
     provider = TavilyProvider()
-    credits = provider.calculate_credits(search_count=3, search_depth="advanced")
-    assert credits == 6  # 3 buscas × 2 créditos
+    creditos = provider.calculate_credits(search_count=3, search_depth="advanced")
+    assert creditos == 6  # 3 buscas x 2 créditos
 
 
 # =============================================================================
@@ -114,16 +114,16 @@ def test_exa_calculate_credits_small_results():
     """Verifica cálculo de créditos Exa com <=25 resultados."""
 
     provider = ExaProvider()
-    credits = provider.calculate_credits(search_count=3, max_results=10)
-    assert credits == 3  # 3 buscas × 1 crédito
+    creditos = provider.calculate_credits(search_count=3, max_results=10)
+    assert creditos == 3  # 3 buscas x 1 crédito
 
 
 def test_exa_calculate_credits_large_results():
     """Verifica cálculo de créditos Exa com >25 resultados."""
 
     provider = ExaProvider()
-    credits = provider.calculate_credits(search_count=3, max_results=50)
-    assert credits == 15  # 3 buscas × 5 créditos
+    creditos = provider.calculate_credits(search_count=3, max_results=50)
+    assert creditos == 15  # 3 buscas x 5 créditos
 
 
 # =============================================================================
@@ -216,7 +216,7 @@ def test_validate_search_dependencies_exa_missing_key():
         with patch("importlib.import_module") as mock_import:
             mock_import.return_value = MagicMock()
 
-            with pytest.raises(ValueError) as exc_info:
+            with pytest.raises(ValueError, match="EXA_API_KEY") as exc_info:
                 validate_search_dependencies("exa")
 
             assert "EXA_API_KEY" in str(exc_info.value)
@@ -228,7 +228,7 @@ def test_validate_search_dependencies_exa_missing_key():
 def test_validate_search_dependencies_invalid_provider():
     """Verifica erro para provedor inválido."""
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="não suportado") as exc_info:
         validate_search_dependencies("invalid")
 
     assert "não suportado" in str(exc_info.value)
@@ -252,7 +252,7 @@ def test_search_provider_invalid_raises():
     df = pd.DataFrame({"texto": ["teste"]})
 
     with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="search_provider") as exc_info:
             dataframeit(
                 df,
                 questions=SampleModel,
@@ -367,7 +367,7 @@ def test_extract_usage_with_exa_provider():
 
     assert usage["search_provider"] == "exa"
     assert usage["search_count"] == 2
-    # Exa: 2 buscas × 1 crédito (max_results <= 25)
+    # Exa: 2 buscas x 1 crédito (max_results <= 25)
     assert usage["search_credits"] == 2
 
 

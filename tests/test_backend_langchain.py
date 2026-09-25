@@ -245,7 +245,7 @@ def test_erro_de_construcao_continua_sendo_erro_da_linha():
     with (
         patch("dataframeit.llm._create_langchain_llm", side_effect=ValueError("sem chave")),
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.warns(UserWarning),
+        pytest.warns(UserWarning, match="Falha ao processar linha"),
     ):
         resultado = dataframeit(
             pd.DataFrame({"texto": ["a", "b"]}),
@@ -265,7 +265,7 @@ def test_import_nao_altera_loggers_de_outras_bibliotecas():
         "import dataframeit, dataframeit.core, dataframeit.llm, dataframeit.agent\n"
         "print([logging.getLogger(n).level for n in nomes])\n"
     )
-    saida = subprocess.run(
+    saida = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
         [sys.executable, "-c", codigo],
         capture_output=True,
         text=True,

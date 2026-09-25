@@ -5,8 +5,8 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 """
 
 import importlib.util
-import os
 import tempfile
+from pathlib import Path
 from typing import Literal
 
 import pandas as pd
@@ -366,7 +366,7 @@ def test_read_df_csv_with_model():
         assert df["itens"].iloc[1] == ["c", "d", "e"]
         assert df["quantidade"].iloc[0] == 2
     finally:
-        os.unlink(temp_path)
+        Path(temp_path).unlink()
 
 
 def test_read_df_csv_auto_normalize():
@@ -383,7 +383,7 @@ def test_read_df_csv_auto_normalize():
         assert df["col2"].iloc[0] == "texto normal"  # Não alterado
         assert df["col3"].iloc[0] == 100  # Não alterado
     finally:
-        os.unlink(temp_path)
+        Path(temp_path).unlink()
 
 
 @pytest.mark.skipif(not HAS_OPENPYXL, reason="openpyxl não instalado")
@@ -406,7 +406,7 @@ def test_read_df_excel_with_model():
         assert df["dados"].iloc[0] == {"x": 1}
         assert df["dados"].iloc[1] == {"y": 2}
     finally:
-        os.unlink(temp_path)
+        Path(temp_path).unlink()
 
 
 def test_read_df_file_not_found():
@@ -425,7 +425,7 @@ def test_read_df_unsupported_format():
         with pytest.raises(ValueError, match=r"\.xyz"):
             read_df(temp_path)
     finally:
-        os.unlink(temp_path)
+        Path(temp_path).unlink()
 
 
 def test_read_df_without_normalization():
@@ -440,7 +440,7 @@ def test_read_df_without_normalization():
         # Deve manter como string
         assert df["col1"].iloc[0] == "[1, 2]"
     finally:
-        os.unlink(temp_path)
+        Path(temp_path).unlink()
 
 
 def test_read_df_complex_model():
@@ -468,7 +468,7 @@ def test_read_df_complex_model():
         assert df["nome"].iloc[0] == "paciente1"  # Não alterado
         assert df["status"].iloc[0] == "ativo"  # Não alterado
     finally:
-        os.unlink(temp_path)
+        Path(temp_path).unlink()
 
 
 # =============================================================================
