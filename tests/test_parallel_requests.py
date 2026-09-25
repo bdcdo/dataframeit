@@ -1,6 +1,7 @@
 """Testes para a funcionalidade de requisições paralelas."""
 
 import inspect
+import threading
 import warnings
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
+from dataframeit import ProviderOverloadedError, core
 from dataframeit.core import dataframeit
 from dataframeit.errors import is_rate_limit_error
 
@@ -270,3 +272,99 @@ def test_parallel_with_reprocess_columns():
         assert result["campo1"].tolist() == ["novo_valor", "novo_valor"]
         # campo2 deve manter os valores originais
         assert result["campo2"].tolist() == ["original_a", "original_b"]
+
+
+# =============================================================================
+# Redução de workers por rate limit e falha fora da linha
+# =============================================================================
+
+
+class _TimerFalso:
+    """Registra o intervalo sem iniciar a thread que limparia o evento."""
+
+    intervalos: list
+
+    def __init__(self, intervalo, funcao):
+        _TimerFalso.intervalos.append(intervalo)
+
+    def start(self):
+        pass
+
+
+def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch, capsys):
+    """'a' e 'c' batem no rate limit; só a primeira reduz, porque já resta um worker."""
+    esperas = []
+    _TimerFalso.intervalos = []
+    monkeypatch.setattr(core.time, "sleep", esperas.append)
+    monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
+
+    # 'b' roda no mesmo lote que 'a'; a espera garante que ele passe pela
+    # checagem do evento antes que a falha de 'a' o acione.
+    b_chamado = threading.Event()
+
+    def llm(text, *args, **kwargs):
+        if text == "b":
+            b_chamado.set()
+        if text == "a":
+            b_chamado.wait(timeout=5)
+        if text in {"a", "c"}:
+            msg = "429 too many requests"
+            raise ProviderOverloadedError(msg)
+        return {"data": {"campo1": text, "campo2": text}, "usage": None}
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(record=True) as avisos,
+    ):
+        warnings.simplefilter("always")
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", "b", "c", "d"]}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=2,
+            track_tokens=False,
+        )
+
+    reducoes = [str(a.message) for a in avisos if "Rate limit detectado" in str(a.message)]
+    assert reducoes == ["Rate limit detectado! Reduzindo workers de 2 para 1."]
+    assert _TimerFalso.intervalos == [5.0]
+    # 'c' e 'd' rodam depois da redução, com o evento de rate limit ainda ativo.
+    assert esperas == [2.0, 2.0]
+    assert resultado["_dataframeit_status"].tolist() == ["error", "processed", "error", "processed"]
+    saida = capsys.readouterr().out
+    assert "AVISO: WORKERS REDUZIDOS POR RATE LIMIT" in saida
+    assert "Workers iniciais: 2" in saida
+    assert "Workers finais:   1" in saida
+
+
+class _ErroIlegivel(Exception):
+    """Erro cujo texto não pode ser montado, como o de um SDK com __str__ quebrado."""
+
+    def __str__(self):
+        msg = "sem texto"
+        raise RuntimeError(msg)
+
+
+def test_falha_ao_registrar_o_erro_nao_interrompe_as_outras_linhas():
+    def llm(text, *args, **kwargs):
+        if text == "b":
+            raise _ErroIlegivel
+        return {"data": {"campo1": text, "campo2": text}, "usage": None}
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.warns(UserWarning, match="Erro inesperado no executor: sem texto"),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=2,
+            track_tokens=False,
+        )
+
+    # A linha 'b' fica sem status nem valor, pendente para a próxima execução.
+    assert resultado["campo1"].tolist()[0::2] == ["a", "c"]
+    assert pd.isna(resultado["campo1"].iloc[1])

@@ -2186,3 +2186,43 @@ def test_dataframeit_passes_search_provider_to_warning():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    ("grupo", "mensagem"),
+    [
+        (["nome"], "deve ser um dicionário"),
+        ({"prompt": "x"}, "deve ter chave 'fields'"),
+        ({"fields": []}, "'fields' deve ser uma lista não-vazia"),
+        ({"fields": "nome"}, "'fields' deve ser uma lista não-vazia"),
+    ],
+)
+def test_search_groups_com_estrutura_invalida_levanta_pela_api(grupo, mensagem):
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        pytest.raises(ValueError, match=f"Grupo 'grupo'.*{mensagem}"),
+    ):
+        dataframeit(
+            pd.DataFrame({"texto": ["x"]}),
+            questions=RegulatoryModel,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+            search_groups={"grupo": grupo},
+        )
+
+
+def test_warn_search_rate_limit_nao_sugere_delay_ja_suficiente():
+    """Com rate_limit_delay acima do recomendado, a dica só reduz o paralelismo."""
+
+    with pytest.warns(UserWarning, match="rate limits de busca") as record:
+        _warn_search_rate_limit(
+            num_rows=100,
+            num_fields=4,
+            parallel_requests=20,
+            search_per_field=True,
+            rate_limit_delay=10.0,
+        )
+
+    assert str(record[0].message).endswith("Para evitar HTTP 429, use: parallel_requests=2.")
