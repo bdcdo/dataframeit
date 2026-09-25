@@ -42,18 +42,20 @@ def test_save_trace_invalid_value():
     """Testa que valores inválidos para save_trace levantam ValueError."""
     df = pd.DataFrame({"texto": ["a"]})
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with pytest.raises(ValueError) as exc_info:
-                dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    save_trace="invalid",
-                    use_search=True,
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            dataframeit(
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                save_trace="invalid",
+                use_search=True,
+            )
 
-            assert "save_trace deve ser True, 'full' ou 'minimal'" in str(exc_info.value)
+        assert "save_trace deve ser True, 'full' ou 'minimal'" in str(exc_info.value)
 
 
 def test_save_trace_normalizes_true_to_full():
@@ -72,18 +74,20 @@ def test_save_trace_normalizes_true_to_full():
         },
     }
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with patch("dataframeit.agent.call_agent", return_value=mock_result):
-                result = dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    save_trace=True,  # Deve funcionar como "full"
-                    use_search=True,
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent", return_value=mock_result),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            save_trace=True,  # Deve funcionar como "full"
+            use_search=True,
+        )
 
-                assert "_trace" in result.columns
+        assert "_trace" in result.columns
 
 
 # ============================================================================
@@ -207,23 +211,25 @@ def test_save_trace_creates_trace_column():
         },
     }
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with patch("dataframeit.agent.call_agent", return_value=mock_result):
-                result = dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    save_trace="full",
-                    use_search=True,
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent", return_value=mock_result),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            save_trace="full",
+            use_search=True,
+        )
 
-                assert "_trace" in result.columns
-                trace_json = result["_trace"].iloc[0]
-                assert trace_json is not None
-                trace = json.loads(trace_json)
-                assert trace["model"] == "test-model"
-                assert trace["search_queries"] == ["query1"]
+        assert "_trace" in result.columns
+        trace_json = result["_trace"].iloc[0]
+        assert trace_json is not None
+        trace = json.loads(trace_json)
+        assert trace["model"] == "test-model"
+        assert trace["search_queries"] == ["query1"]
 
 
 def test_save_trace_per_field_creates_multiple_columns():
@@ -251,26 +257,28 @@ def test_save_trace_per_field_creates_multiple_columns():
         },
     }
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with patch("dataframeit.agent.call_agent_per_field", return_value=mock_result):
-                result = dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    save_trace="full",
-                    use_search=True,
-                    search_per_field=True,
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent_per_field", return_value=mock_result),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            save_trace="full",
+            use_search=True,
+            search_per_field=True,
+        )
 
-                assert "_trace_campo1" in result.columns
-                assert "_trace_campo2" in result.columns
+        assert "_trace_campo1" in result.columns
+        assert "_trace_campo2" in result.columns
 
-                trace1 = json.loads(result["_trace_campo1"].iloc[0])
-                trace2 = json.loads(result["_trace_campo2"].iloc[0])
+        trace1 = json.loads(result["_trace_campo1"].iloc[0])
+        trace2 = json.loads(result["_trace_campo2"].iloc[0])
 
-                assert trace1["search_queries"] == ["query campo1"]
-                assert trace2["search_queries"] == ["query campo2"]
+        assert trace1["search_queries"] == ["query campo1"]
+        assert trace2["search_queries"] == ["query campo2"]
 
 
 def test_save_trace_disabled_by_default():
@@ -282,18 +290,20 @@ def test_save_trace_disabled_by_default():
         "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
     }
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with patch("dataframeit.agent.call_agent", return_value=mock_result):
-                result = dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    use_search=True,
-                    # save_trace não especificado (default None)
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent", return_value=mock_result),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            use_search=True,
+            # save_trace não especificado (default None)
+        )
 
-                assert "_trace" not in result.columns
+        assert "_trace" not in result.columns
 
 
 def test_save_trace_json_is_valid():
@@ -317,20 +327,22 @@ def test_save_trace_json_is_valid():
             },
         }
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with patch("dataframeit.agent.call_agent", side_effect=mock_call):
-                result = dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    save_trace="full",
-                    use_search=True,
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent", side_effect=mock_call),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            save_trace="full",
+            use_search=True,
+        )
 
-                # Verifica que todos os traces são JSON válidos
-                for trace_json in result["_trace"]:
-                    trace = json.loads(trace_json)
-                    assert "messages" in trace
-                    assert "search_queries" in trace
-                    assert "model" in trace
+        # Verifica que todos os traces são JSON válidos
+        for trace_json in result["_trace"]:
+            trace = json.loads(trace_json)
+            assert "messages" in trace
+            assert "search_queries" in trace
+            assert "model" in trace

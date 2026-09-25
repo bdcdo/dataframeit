@@ -49,16 +49,18 @@ def test_reprocess_columns_accepts_single_string():
         "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
     }
 
-    with patch("dataframeit.core.call_langchain", return_value=mock_result):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            # Deve aceitar string simples sem erro
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                reprocess_columns="campo1",  # String, não lista
-            )
-            assert "campo1" in result.columns
+    # Deve aceitar string simples sem erro
+    with (
+        patch("dataframeit.core.call_langchain", return_value=mock_result),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns="campo1",  # String, não lista
+        )
+        assert "campo1" in result.columns
 
 
 def test_reprocess_columns_processes_all_rows():
@@ -84,17 +86,19 @@ def test_reprocess_columns_processes_all_rows():
             "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                reprocess_columns=["campo1", "campo2"],
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1", "campo2"],
+        )
 
-            # Todas as 3 linhas devem ter sido processadas
-            assert call_count == 3
+        # Todas as 3 linhas devem ter sido processadas
+        assert call_count == 3
 
 
 def test_reprocess_columns_only_updates_specified_columns():
@@ -115,19 +119,21 @@ def test_reprocess_columns_only_updates_specified_columns():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                reprocess_columns=["campo1"],  # Só reprocessar campo1
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1"],  # Só reprocessar campo1
+        )
 
-            # campo1 deve ter sido atualizado
-            assert result["campo1"].tolist() == ["novo_valor", "novo_valor"]
-            # campo2 deve manter os valores originais (não estava em reprocess_columns)
-            assert result["campo2"].tolist() == ["original_a", "original_b"]
+        # campo1 deve ter sido atualizado
+        assert result["campo1"].tolist() == ["novo_valor", "novo_valor"]
+        # campo2 deve manter os valores originais (não estava em reprocess_columns)
+        assert result["campo2"].tolist() == ["original_a", "original_b"]
 
 
 def test_reprocess_columns_updates_all_columns_for_new_rows():
@@ -152,24 +158,26 @@ def test_reprocess_columns_updates_all_columns_for_new_rows():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                reprocess_columns=["campo1"],  # Só reprocessar campo1
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1"],  # Só reprocessar campo1
+        )
 
-            # Linhas 1-2 (já processadas): só campo1 atualizado, campo2 mantém original
-            assert result["campo1"].iloc[0] == "novo1"
-            assert result["campo1"].iloc[1] == "novo2"
-            assert result["campo2"].iloc[0] == "original_a"
-            assert result["campo2"].iloc[1] == "original_b"
+        # Linhas 1-2 (já processadas): só campo1 atualizado, campo2 mantém original
+        assert result["campo1"].iloc[0] == "novo1"
+        assert result["campo1"].iloc[1] == "novo2"
+        assert result["campo2"].iloc[0] == "original_a"
+        assert result["campo2"].iloc[1] == "original_b"
 
-            # Linha 3 (nova): ambas as colunas atualizadas
-            assert result["campo1"].iloc[2] == "novo3"
-            assert result["campo2"].iloc[2] == "novo_3"
+        # Linha 3 (nova): ambas as colunas atualizadas
+        assert result["campo1"].iloc[2] == "novo3"
+        assert result["campo2"].iloc[2] == "novo_3"
 
 
 def test_reprocess_columns_does_not_skip_processed_rows():
@@ -192,17 +200,19 @@ def test_reprocess_columns_does_not_skip_processed_rows():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                reprocess_columns=["campo1", "campo2"],
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1", "campo2"],
+        )
 
-            # Ambas as linhas devem ter sido processadas
-            assert call_count == 2
+        # Ambas as linhas devem ter sido processadas
+        assert call_count == 2
 
 
 def test_resume_true_skips_processed_without_reprocess():
@@ -227,21 +237,23 @@ def test_resume_true_skips_processed_without_reprocess():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                resume=True,
-                # sem reprocess_columns
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            resume=True,
+            # sem reprocess_columns
+        )
 
-            # Apenas a linha não processada deve ser processada
-            assert call_count == 1
-            # Linhas já processadas mantêm valores antigos
-            assert result["campo1"].tolist()[0] == "old1"
-            assert result["campo1"].tolist()[1] == "old2"
+        # Apenas a linha não processada deve ser processada
+        assert call_count == 1
+        # Linhas já processadas mantêm valores antigos
+        assert result["campo1"].tolist()[0] == "old1"
+        assert result["campo1"].tolist()[1] == "old2"
 
 
 def test_reprocess_columns_with_existing_columns_no_warning():
@@ -259,24 +271,24 @@ def test_reprocess_columns_with_existing_columns_no_warning():
         "usage": {},
     }
 
-    with patch("dataframeit.core.call_langchain", return_value=mock_result):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
+    with (
+        patch("dataframeit.core.call_langchain", return_value=mock_result),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(record=True) as w,
+    ):
+        warnings.simplefilter("always")
 
-                dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    reprocess_columns=["campo1"],
-                    resume=False,  # Normalmente geraria warning
-                )
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1"],
+            resume=False,  # Normalmente geraria warning
+        )
 
-                # Não deve ter warning sobre conflito de colunas
-                conflict_warnings = [
-                    warning for warning in w if "já existem" in str(warning.message)
-                ]
-                assert len(conflict_warnings) == 0
+        # Não deve ter warning sobre conflito de colunas
+        conflict_warnings = [warning for warning in w if "já existem" in str(warning.message)]
+        assert len(conflict_warnings) == 0
 
 
 def test_reprocess_columns_resume_after_interrupt():
@@ -306,15 +318,17 @@ def test_reprocess_columns_resume_after_interrupt():
         }
 
     # Primeira execução: vai processar 1 linha e travar na segunda
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm_with_interrupt):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            with contextlib.suppress(KeyboardInterrupt):
-                dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    reprocess_columns=["campo1"],
-                )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm_with_interrupt),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        contextlib.suppress(KeyboardInterrupt),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1"],
+        )
 
     # Após interrupção:
     # - Linha 1: campo1 atualizado para "new1", campo2 manteve "old_a" (reprocess só campo1)
@@ -335,14 +349,16 @@ def test_reprocess_columns_resume_after_interrupt():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm_normal):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                reprocess_columns=["campo1"],  # Continua o reprocessamento
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm_normal),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            reprocess_columns=["campo1"],  # Continua o reprocessamento
+        )
 
     # Deve ter processado as 3 linhas (todas ainda estavam como "processed")
     assert call_count == 3

@@ -81,15 +81,17 @@ def test_use_search_validates_depth():
     df = pd.DataFrame({"texto": ["Paracetamol"]})
 
     # Mock validate_provider_dependencies para não precisar do provider instalado
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError) as exc_info:
-            dataframeit(
-                df,
-                questions=MedicamentoInfo,
-                prompt="Pesquise sobre {texto}",
-                use_search=True,
-                search_depth="invalid",
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError) as exc_info,
+    ):
+        dataframeit(
+            df,
+            questions=MedicamentoInfo,
+            prompt="Pesquise sobre {texto}",
+            use_search=True,
+            search_depth="invalid",
+        )
 
     assert "search_depth" in str(exc_info.value)
 
@@ -100,15 +102,17 @@ def test_use_search_validates_max_results_min():
 
     df = pd.DataFrame({"texto": ["Paracetamol"]})
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError) as exc_info:
-            dataframeit(
-                df,
-                questions=MedicamentoInfo,
-                prompt="Pesquise sobre {texto}",
-                use_search=True,
-                max_results=0,
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError) as exc_info,
+    ):
+        dataframeit(
+            df,
+            questions=MedicamentoInfo,
+            prompt="Pesquise sobre {texto}",
+            use_search=True,
+            max_results=0,
+        )
 
     assert "max_results" in str(exc_info.value)
 
@@ -119,15 +123,17 @@ def test_use_search_validates_max_results_max():
 
     df = pd.DataFrame({"texto": ["Paracetamol"]})
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError) as exc_info:
-            dataframeit(
-                df,
-                questions=MedicamentoInfo,
-                prompt="Pesquise sobre {texto}",
-                use_search=True,
-                max_results=21,
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError) as exc_info,
+    ):
+        dataframeit(
+            df,
+            questions=MedicamentoInfo,
+            prompt="Pesquise sobre {texto}",
+            use_search=True,
+            max_results=21,
+        )
 
     assert "max_results" in str(exc_info.value)
 
@@ -754,16 +760,18 @@ def test_field_config_without_per_field_raises():
 
     df = pd.DataFrame({"texto": ["teste"]})
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with patch("dataframeit.core.validate_search_dependencies"):
-            with pytest.raises(ValueError) as exc_info:
-                dataframeit(
-                    df,
-                    questions=ModelWithConfig,
-                    prompt="Analise {texto}",
-                    use_search=True,
-                    search_per_field=False,  # Deve dar erro
-                )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        pytest.raises(ValueError) as exc_info,
+    ):
+        dataframeit(
+            df,
+            questions=ModelWithConfig,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=False,  # Deve dar erro
+        )
 
     assert "search_per_field=True" in str(exc_info.value)
 

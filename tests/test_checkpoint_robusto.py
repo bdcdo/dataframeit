@@ -240,14 +240,16 @@ def test_texto_obrigatorio_vazio_em_csv_continua_acusado(tmp_path):
             checkpoint_path=ckpt,
         )
 
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="observacao"):
-            dataframeit(
-                read_df(str(ckpt), ComObservacao),
-                questions=ComObservacao,
-                prompt="{texto}",
-                resume=True,
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="observacao"),
+    ):
+        dataframeit(
+            read_df(str(ckpt), ComObservacao),
+            questions=ComObservacao,
+            prompt="{texto}",
+            resume=True,
+        )
 
 
 def test_campo_condicional_ausente_com_condicao_verdadeira_e_acusado():
@@ -266,16 +268,16 @@ def test_campo_condicional_ausente_com_condicao_verdadeira_e_acusado():
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
+        pytest.raises(ValueError, match="cpf"),
     ):
-        with pytest.raises(ValueError, match="cpf"):
-            dataframeit(
-                df,
-                questions=Pessoa,
-                prompt="{texto}",
-                use_search=True,
-                search_per_field=True,
-                resume=True,
-            )
+        dataframeit(
+            df,
+            questions=Pessoa,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+            resume=True,
+        )
 
 
 def test_campo_condicional_presente_mantem_as_restricoes():

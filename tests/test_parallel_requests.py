@@ -29,40 +29,44 @@ def test_parallel_requests_1_uses_sequential():
     """Testa que parallel_requests=1 usa processamento sequencial."""
     df = pd.DataFrame({"texto": ["a"]})
 
-    with patch("dataframeit.core._process_rows") as mock_seq:
-        with patch("dataframeit.core._process_rows_parallel") as mock_par:
-            mock_seq.return_value = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-            with patch("dataframeit.core.validate_provider_dependencies"):
-                dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    parallel_requests=1,  # Default
-                )
+    with (
+        patch("dataframeit.core._process_rows") as mock_seq,
+        patch("dataframeit.core._process_rows_parallel") as mock_par,
+    ):
+        mock_seq.return_value = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        with patch("dataframeit.core.validate_provider_dependencies"):
+            dataframeit(
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                parallel_requests=1,  # Default
+            )
 
-                # Deve usar processamento sequencial
-                mock_seq.assert_called_once()
-                mock_par.assert_not_called()
+            # Deve usar processamento sequencial
+            mock_seq.assert_called_once()
+            mock_par.assert_not_called()
 
 
 def test_parallel_requests_gt1_uses_parallel():
     """Testa que parallel_requests > 1 usa processamento paralelo."""
     df = pd.DataFrame({"texto": ["a"]})
 
-    with patch("dataframeit.core._process_rows") as mock_seq:
-        with patch("dataframeit.core._process_rows_parallel") as mock_par:
-            mock_par.return_value = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-            with patch("dataframeit.core.validate_provider_dependencies"):
-                dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    parallel_requests=5,
-                )
+    with (
+        patch("dataframeit.core._process_rows") as mock_seq,
+        patch("dataframeit.core._process_rows_parallel") as mock_par,
+    ):
+        mock_par.return_value = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        with patch("dataframeit.core.validate_provider_dependencies"):
+            dataframeit(
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                parallel_requests=5,
+            )
 
-                # Deve usar processamento paralelo
-                mock_par.assert_called_once()
-                mock_seq.assert_not_called()
+            # Deve usar processamento paralelo
+            mock_par.assert_called_once()
+            mock_seq.assert_not_called()
 
 
 def test_parallel_processes_all_rows():
@@ -79,20 +83,22 @@ def test_parallel_processes_all_rows():
             "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                parallel_requests=3,
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            parallel_requests=3,
+        )
 
-            # Todas as 5 linhas devem ter sido processadas
-            assert call_count == 5
-            # Verificar que todas as linhas têm valores (não None)
-            assert result["campo1"].notna().all()
-            assert result["campo2"].notna().all()
+        # Todas as 5 linhas devem ter sido processadas
+        assert call_count == 5
+        # Verificar que todas as linhas têm valores (não None)
+        assert result["campo1"].notna().all()
+        assert result["campo2"].notna().all()
 
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
@@ -106,28 +112,30 @@ def test_tracks_tokens_with_stable_schema(parallel_requests):
             "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                parallel_requests=parallel_requests,
-                track_tokens=True,
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            parallel_requests=parallel_requests,
+            track_tokens=True,
+        )
 
-            # Verificar colunas de tokens
-            assert "_input_tokens" in result.columns
-            assert "_cached_input_tokens" in result.columns
-            assert "_output_tokens" in result.columns
-            assert "_reasoning_tokens" in result.columns
-            assert "_total_tokens" not in result.columns
+        # Verificar colunas de tokens
+        assert "_input_tokens" in result.columns
+        assert "_cached_input_tokens" in result.columns
+        assert "_output_tokens" in result.columns
+        assert "_reasoning_tokens" in result.columns
+        assert "_total_tokens" not in result.columns
 
-            # Cada linha deve ter os tokens registrados
-            assert result["_input_tokens"].tolist() == [100, 100, 100]
-            assert result["_cached_input_tokens"].tolist() == [0, 0, 0]
-            assert result["_output_tokens"].tolist() == [50, 50, 50]
-            assert result["_reasoning_tokens"].tolist() == [0, 0, 0]
+        # Cada linha deve ter os tokens registrados
+        assert result["_input_tokens"].tolist() == [100, 100, 100]
+        assert result["_cached_input_tokens"].tolist() == [0, 0, 0]
+        assert result["_output_tokens"].tolist() == [50, 50, 50]
+        assert result["_reasoning_tokens"].tolist() == [0, 0, 0]
 
 
 def test_is_rate_limit_error_detects_429():
@@ -169,21 +177,23 @@ def test_parallel_handles_errors_gracefully():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm_with_error):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            with warnings.catch_warnings(record=True):
-                warnings.simplefilter("always")
-                result = dataframeit(
-                    df,
-                    questions=SimpleModel,
-                    prompt="Teste {texto}",
-                    parallel_requests=2,
-                )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm_with_error),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(record=True),
+    ):
+        warnings.simplefilter("always")
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            parallel_requests=2,
+        )
 
-                # Linhas 1 e 3 processadas, linha 2 com erro
-                statuses = result["_dataframeit_status"].tolist()
-                assert statuses.count("processed") == 2
-                assert statuses.count("error") == 1
+        # Linhas 1 e 3 processadas, linha 2 com erro
+        statuses = result["_dataframeit_status"].tolist()
+        assert statuses.count("processed") == 2
+        assert statuses.count("error") == 1
 
 
 def test_parallel_respects_resume():
@@ -208,20 +218,22 @@ def test_parallel_respects_resume():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                parallel_requests=2,
-                resume=True,
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            parallel_requests=2,
+            resume=True,
+        )
 
-            # Apenas 2 linhas não processadas devem ser chamadas
-            assert call_count == 2
-            # Primeira linha mantém valores antigos
-            assert result["campo1"].iloc[0] == "old1"
+        # Apenas 2 linhas não processadas devem ser chamadas
+        assert call_count == 2
+        # Primeira linha mantém valores antigos
+        assert result["campo1"].iloc[0] == "old1"
 
 
 def test_parallel_with_reprocess_columns():
@@ -242,17 +254,19 @@ def test_parallel_with_reprocess_columns():
             "usage": {},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            result = dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                parallel_requests=2,
-                reprocess_columns=["campo1"],
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        result = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            parallel_requests=2,
+            reprocess_columns=["campo1"],
+        )
 
-            # campo1 deve ter sido atualizado
-            assert result["campo1"].tolist() == ["novo_valor", "novo_valor"]
-            # campo2 deve manter os valores originais
-            assert result["campo2"].tolist() == ["original_a", "original_b"]
+        # campo1 deve ter sido atualizado
+        assert result["campo1"].tolist() == ["novo_valor", "novo_valor"]
+        # campo2 deve manter os valores originais
+        assert result["campo2"].tolist() == ["original_a", "original_b"]

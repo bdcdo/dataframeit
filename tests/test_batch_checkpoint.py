@@ -219,35 +219,41 @@ def test_no_checkpoint_when_params_none(tmp_path):
 
 def test_validation_batch_size_without_path():
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="devem ser usados juntos"):
-            dataframeit(df, questions=SimpleModel, prompt="Teste {texto}", batch_size=10)
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="devem ser usados juntos"),
+    ):
+        dataframeit(df, questions=SimpleModel, prompt="Teste {texto}", batch_size=10)
 
 
 def test_validation_path_without_batch_size(tmp_path):
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="devem ser usados juntos"):
-            dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                checkpoint_path=tmp_path / "x.csv",
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="devem ser usados juntos"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            checkpoint_path=tmp_path / "x.csv",
+        )
 
 
 @pytest.mark.parametrize("bad_value", [0, -1, 1.5, "10"])
 def test_validation_invalid_batch_size(bad_value, tmp_path):
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="batch_size deve ser int"):
-            dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                batch_size=bad_value,
-                checkpoint_path=tmp_path / "x.csv",
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="batch_size deve ser int"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=bad_value,
+            checkpoint_path=tmp_path / "x.csv",
+        )
 
 
 def test_unsupported_extension_rejected_early(tmp_path):

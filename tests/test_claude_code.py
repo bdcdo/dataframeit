@@ -26,9 +26,11 @@ class TestValidateProviderDependencies:
         """Deve levantar ImportError com mensagem amigável quando claude_agent_sdk não está instalado."""
         from dataframeit.errors import validate_provider_dependencies
 
-        with patch("importlib.import_module", side_effect=ImportError("No module")):
-            with pytest.raises(ImportError, match="claude_agent_sdk"):
-                validate_provider_dependencies("claude_code")
+        with (
+            patch("importlib.import_module", side_effect=ImportError("No module")),
+            pytest.raises(ImportError, match="claude_agent_sdk"),
+        ):
+            validate_provider_dependencies("claude_code")
 
     def test_claude_code_installed_passes(self):
         """Deve passar sem erro quando claude_agent_sdk está instalado."""
@@ -64,16 +66,18 @@ class TestUseSearchWithClaudeCode:
         """Deve levantar ValueError quando use_search=True com provider='claude_code'."""
         from dataframeit import dataframeit
 
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            with pytest.raises(ValueError, match=r"use_search.*claude_code"):
-                dataframeit(
-                    ["texto teste"],
-                    questions=SampleModel,
-                    prompt="Analise: {texto}",
-                    provider="claude_code",
-                    model="haiku",
-                    use_search=True,
-                )
+        with (
+            patch("dataframeit.core.validate_provider_dependencies"),
+            pytest.raises(ValueError, match=r"use_search.*claude_code"),
+        ):
+            dataframeit(
+                ["texto teste"],
+                questions=SampleModel,
+                prompt="Analise: {texto}",
+                provider="claude_code",
+                model="haiku",
+                use_search=True,
+            )
 
 
 class TestBuildJsonSystemPrompt:

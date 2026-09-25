@@ -192,12 +192,12 @@ def test_reexecucao_sobre_a_propria_saida_avisa():
 
 
 def test_perguntas_emite_deprecation_warning():
-    with pytest.warns(DeprecationWarning, match="questions"):
-        with (
-            patch("dataframeit.core.call_langchain", side_effect=_responde(x="1")),
-            patch("dataframeit.core.validate_provider_dependencies"),
-        ):
-            dataframeit(pd.DataFrame({"texto": ["a"]}), perguntas=Modelo, prompt="{texto}")
+    with (
+        pytest.warns(DeprecationWarning, match="questions"),
+        patch("dataframeit.core.call_langchain", side_effect=_responde(x="1")),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(pd.DataFrame({"texto": ["a"]}), perguntas=Modelo, prompt="{texto}")
 
 
 @pytest.mark.parametrize("valor", [np.int64(2), 3])

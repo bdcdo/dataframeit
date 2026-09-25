@@ -715,9 +715,11 @@ class TestCondicaoNoModoPorGrupo:
 
         config = _config_por_grupo({"g": ["a", "c"]})
 
-        with patch("dataframeit.agent.call_agent") as call_agent:
-            with pytest.raises(ValueError, match="grupo 'g'"):
-                call_agent_per_group("texto", ModeloCiclico, "Analise {texto}", config)
+        with (
+            patch("dataframeit.agent.call_agent") as call_agent,
+            pytest.raises(ValueError, match="grupo 'g'"),
+        ):
+            call_agent_per_group("texto", ModeloCiclico, "Analise {texto}", config)
         call_agent.assert_not_called()
 
     def test_grupo_segue_a_ordem_de_search_groups(self):
@@ -789,14 +791,14 @@ class TestCondicaoForaDoModoPorCampo:
             patch("dataframeit.core.validate_search_dependencies"),
             patch("dataframeit.core.call_langchain", return_value=_RESPOSTA_PF) as call_langchain,
             patch("dataframeit.agent.call_agent", return_value=_RESPOSTA_PF) as call_agent,
+            pytest.raises(ValueError, match="search_per_field=True"),
         ):
-            with pytest.raises(ValueError, match="search_per_field=True"):
-                dataframeit(
-                    pd.DataFrame({"texto": ["x"]}),
-                    questions=ModeloPessoaCondicional,
-                    prompt="Analise {texto}",
-                    **opcoes_busca,
-                )
+            dataframeit(
+                pd.DataFrame({"texto": ["x"]}),
+                questions=ModeloPessoaCondicional,
+                prompt="Analise {texto}",
+                **opcoes_busca,
+            )
         call_langchain.assert_not_called()
         call_agent.assert_not_called()
 
