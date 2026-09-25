@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
@@ -57,7 +57,7 @@ class SearchProvider(ABC):
         """Limite aproximado de requisições por minuto, usado no aviso de rate limit."""
 
     @abstractmethod
-    def create_tool(self, max_results: int, **kwargs: object) -> BaseTool:
+    def create_tool(self, max_results: int, **kwargs: Any) -> BaseTool:
         """Cria a ferramenta de busca do LangChain.
 
         Args:
@@ -69,7 +69,7 @@ class SearchProvider(ABC):
         """
 
     @abstractmethod
-    def calculate_credits(self, search_count: int, **kwargs: object) -> int:
+    def calculate_credits(self, search_count: int, **kwargs: Any) -> int:
         """Calcula créditos/custos consumidos.
 
         Args:

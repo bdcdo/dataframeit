@@ -453,7 +453,7 @@ def read_df(
     path: str,
     model: type[BaseModel] | None = None,
     normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
-    **kwargs: Any,  # noqa: ANN401 (repassado à função de leitura do pandas)
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
 

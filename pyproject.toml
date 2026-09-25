@@ -197,6 +197,10 @@ ignore = [
     "N818",
 ]
 
+[tool.ruff.lint.flake8-annotations]
+# *args e **kwargs repassados a outra API ficam com Any, o tipo de quem os recebe.
+allow-star-arg-any = true
+
 [tool.ruff.lint.flake8-unused-arguments]
 # **kwargs nos provedores de busca recebe os parâmetros dos outros provedores,
 # que a interface comum repassa a todos.

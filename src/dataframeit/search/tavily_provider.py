@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import re
 import warnings
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
 from langchain_core.tools import BaseTool, ToolException
 
 from .base import SearchProvider, register_provider
+
+T = TypeVar("T")
 
 # Status que indicam argumento inválido escolhido pelo modelo, e não falha da
 # conta ou do serviço. O wrapper do langchain_tavily só põe o status no texto:
@@ -26,7 +28,7 @@ _ERROS_DO_MODELO = (400, 422)
 _STATUS_NO_TEXTO = re.compile(r"^Error (\d{3}):")
 
 
-def _levantar_erro(resultado: object) -> object:
+def _levantar_erro(resultado: T) -> T:
     """Levanta o erro que o TavilySearch devolveu como {"error": e}."""
     if not (isinstance(resultado, dict) and isinstance(resultado.get("error"), Exception)):
         return resultado
@@ -88,7 +90,7 @@ class TavilyProvider(SearchProvider):
         self,
         max_results: int,
         search_depth: Literal["basic", "advanced"] = "basic",
-        **kwargs: object,
+        **kwargs: Any,
     ) -> BaseTool:
         """Cria ferramenta TavilySearch.
 
@@ -123,10 +125,10 @@ class TavilyProvider(SearchProvider):
             resultados", e volta ao modelo para ele tentar outra consulta.
             """
 
-            def _run(self, *args: object, **kwargs: object) -> object:
+            def _run(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 return _levantar_erro(super()._run(*args, **kwargs))
 
-            async def _arun(self, *args: object, **kwargs: object) -> object:
+            async def _arun(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 return _levantar_erro(await super()._arun(*args, **kwargs))
 
         return _TavilySearchQueLevantaErro(
@@ -137,7 +139,7 @@ class TavilyProvider(SearchProvider):
         )
 
     def calculate_credits(
-        self, search_count: int, search_depth: str = "basic", **kwargs: object
+        self, search_count: int, search_depth: str = "basic", **kwargs: Any
     ) -> int:
         """Calcula créditos Tavily consumidos.
 

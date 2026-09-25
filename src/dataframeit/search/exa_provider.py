@@ -11,6 +11,8 @@ Recomendado para:
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.tools import BaseTool, StructuredTool
 
 from .base import SearchProvider, register_provider
@@ -64,7 +66,7 @@ class ExaProvider(SearchProvider):
         # Plano padrão: ~5 QPS
         return 300
 
-    def create_tool(self, max_results: int, **kwargs: object) -> BaseTool:
+    def create_tool(self, max_results: int, **kwargs: Any) -> BaseTool:
         """Cria ferramenta ExaSearchResults.
 
         Args:
@@ -99,7 +101,7 @@ class ExaProvider(SearchProvider):
             description=exa.description,
         )
 
-    def calculate_credits(self, search_count: int, max_results: int = 5, **kwargs: object) -> int:
+    def calculate_credits(self, search_count: int, max_results: int = 5, **kwargs: Any) -> int:
         """Calcula créditos Exa consumidos.
 
         Exa cobra por busca, com preço variando pelo número de resultados:
