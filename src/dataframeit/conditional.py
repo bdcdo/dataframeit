@@ -308,13 +308,12 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
         state[field] = _IN_PROGRESS
         path.append(field)
 
-        for dep in dependencies.get(field, []):
-            # Ignora campos aninhados - verifica apenas campo raiz
-            root_dep = dep.split(".")[0]
-            if root_dep in dependencies:
-                cycle = dfs(root_dep)
-                if cycle:
-                    return cycle
+        for dep in dependencies[field]:
+            # Um caminho aninhado depende do campo raiz. Quem chama já recusou a
+            # dependência inexistente, e todo campo raiz é chave do grafo.
+            cycle = dfs(dep.split(".")[0])
+            if cycle:
+                return cycle
 
         path.pop()
         state[field] = _DONE
@@ -355,10 +354,7 @@ def topological_sort(dependencies: dict[str, list[str]]) -> list[str]:
     # Cada campo depende de um conjunto de raízes: 'endereco.cidade' e
     # 'endereco.uf' são a mesma dependência, e contá-las duas vezes deixaria o
     # grau de entrada acima de zero para sempre, com o campo fora da ordem.
-    root_deps = {
-        field: {dep.split(".")[0] for dep in deps if dep.split(".")[0] in dependencies}
-        for field, deps in dependencies.items()
-    }
+    root_deps = {field: {dep.split(".")[0] for dep in deps} for field, deps in dependencies.items()}
     in_degree = {field: len(roots) for field, roots in root_deps.items()}
 
     # Fila com nós sem dependências
