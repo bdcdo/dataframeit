@@ -7,11 +7,24 @@ Este módulo contém funções para:
 - Executar funções com retry e backoff exponencial
 """
 
+from __future__ import annotations
+
 import importlib
+import os
 import random
 import re
 import time
 import warnings
+from typing import TYPE_CHECKING, TypeVar
+
+from .search import get_provider
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+    from .search import SearchProvider
+
+T = TypeVar("T")
 
 CODEX_FILE_AUTH_LOGIN_COMMAND = "codex --config cli_auth_credentials_store='\"file\"' login"
 
@@ -167,7 +180,7 @@ _PROVIDER_OVERRIDES = {
 }
 
 
-def _infer_provider_info(provider: str) -> dict:
+def _infer_provider_info(provider: str | None) -> dict:
     """Infere informações do provider dinamicamente.
 
     Args:
@@ -247,7 +260,7 @@ def _get_missing_package_message(
 """.strip()
 
 
-def validate_provider_dependencies(provider: str):
+def validate_provider_dependencies(provider: str) -> None:
     """Valida se as dependências do provider estão instaladas ANTES de iniciar.
 
     Args:
@@ -273,14 +286,14 @@ def validate_provider_dependencies(provider: str):
     # Validar LangChain base
     try:
         importlib.import_module("langchain")
-    except ImportError:
+    except ImportError as err:
         raise ImportError(
             _get_missing_package_message("langchain", "langchain", "LangChain", "dataframeit[all]")
-        )
+        ) from err
 
     try:
         importlib.import_module("langchain_core")
-    except ImportError:
+    except ImportError as err:
         raise ImportError(
             _get_missing_package_message(
                 "langchain_core",
@@ -288,7 +301,7 @@ def validate_provider_dependencies(provider: str):
                 "LangChain Core",
                 "dataframeit[all]",
             )
-        )
+        ) from err
 
     # Validar provider específico (inferir dinamicamente)
     if provider:
@@ -297,13 +310,13 @@ def validate_provider_dependencies(provider: str):
         name = provider_data["name"]
         try:
             importlib.import_module(package)
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 _get_missing_package_message(package, install, name, "dataframeit[all]")
-            )
+            ) from err
 
 
-def validate_search_dependencies(search_provider: str = "tavily"):
+def validate_search_dependencies(search_provider: str = "tavily") -> None:
     """Valida se as dependências do provedor de busca estão instaladas e API key configurada.
 
     Args:
@@ -313,28 +326,24 @@ def validate_search_dependencies(search_provider: str = "tavily"):
         ImportError: Com mensagem amigável se pacote do provedor não estiver instalado.
         ValueError: Com mensagem amigável se API key não estiver configurada.
     """
-    import os
-
-    from .search import get_provider
-
     provider = get_provider(search_provider)
 
     try:
         importlib.import_module(provider.package_name)
-    except ImportError:
+    except ImportError as err:
         raise ImportError(
             _get_missing_package_message(
                 provider.package_name,
                 provider.install_name,
                 provider.friendly_name,
             )
-        )
+        ) from err
 
     if not os.environ.get(provider.env_var):
         raise ValueError(_get_missing_search_api_key_message(provider))
 
 
-def _get_missing_search_api_key_message(provider) -> str:
+def _get_missing_search_api_key_message(provider: SearchProvider) -> str:
     """Gera mensagem amigável para API key de busca não configurada."""
     return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -370,7 +379,9 @@ _INVALID_KEY_MARKERS = (
 )
 
 
-def get_friendly_error_message(error: Exception, provider: str | None = None) -> str:
+def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria de erro)
+    error: Exception, provider: str | None = None
+) -> str:
     """Converte erro técnico em mensagem amigável para usuários iniciantes.
 
     Args:
@@ -397,7 +408,7 @@ def get_friendly_error_message(error: Exception, provider: str | None = None) ->
     # 'exa-py', mas não 'hexagonal'.
     is_exa = re.search(r"(?<![a-z0-9])exa(?![a-z0-9])", error_str) is not None
 
-    def is_category(patterns, codes=()):
+    def is_category(patterns: Iterable[str], codes: Iterable[int] = ()) -> bool:
         """Com status HTTP estruturado, só ele decide; sem, valem os padrões."""
         if status is not None:
             return status in codes
@@ -656,6 +667,10 @@ def get_friendly_error_message(error: Exception, provider: str | None = None) ->
 
 # Status HTTP 4xx que indicam falha transitória; os demais 4xx são definitivos.
 _RECOVERABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
+_HTTP_ERROR_MIN = 400
+_HTTP_SERVER_ERROR_MIN = 500
+_HTTP_ERROR_MAX = 599
+_HTTP_TOO_MANY_REQUESTS = 429
 
 # Atributos em que SDKs e clientes HTTP expõem o status da resposta:
 # status_code (openai, anthropic, groq, mistral, cohere), code (google.genai,
@@ -670,7 +685,7 @@ def _own_http_status(error: BaseException) -> int | None:
     candidates.append(getattr(getattr(error, "response", None), "status_code", None))
     for value in candidates:
         # A faixa descarta códigos que não são status HTTP de erro, inclusive bool.
-        if isinstance(value, int) and 400 <= value <= 599:
+        if isinstance(value, int) and _HTTP_ERROR_MIN <= value <= _HTTP_ERROR_MAX:
             return value
     return None
 
@@ -705,7 +720,7 @@ def _matches_error_pattern(pattern: str, error_str: str) -> bool:
     return pattern.lower() in error_str
 
 
-def is_recoverable_error(error: Exception) -> bool:
+def is_recoverable_error(error: Exception) -> bool:  # noqa: PLR0911 (precedência da docstring)
     """Verifica se um erro é recuperável (vale a pena fazer retry).
 
     A decisão segue esta precedência: as classes Provider*Error; o
@@ -732,7 +747,7 @@ def is_recoverable_error(error: Exception) -> bool:
 
     status = _http_error_status(error)
     if status is not None:
-        return status >= 500 or status in _RECOVERABLE_CLIENT_STATUSES
+        return status >= _HTTP_SERVER_ERROR_MIN or status in _RECOVERABLE_CLIENT_STATUSES
 
     error_str = f"{type(error).__name__}: {error}".lower()
 
@@ -769,7 +784,7 @@ def is_rate_limit_error(error: Exception) -> bool:
 
     status = _http_error_status(error)
     if status is not None:
-        return status == 429
+        return status == _HTTP_TOO_MANY_REQUESTS
 
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ("ratelimit", "resourceexhausted", "toomanyrequests", "429")
@@ -777,11 +792,11 @@ def is_rate_limit_error(error: Exception) -> bool:
 
 
 def retry_with_backoff(
-    func,
+    func: Callable[[], T],
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
-) -> dict:
+) -> T:
     """Executa função com retry e backoff exponencial.
 
     Args:
@@ -806,10 +821,6 @@ def retry_with_backoff(
         retry_info["attempts"] = attempt + 1
         try:
             result = func()
-            # Adicionar retry_info ao resultado se for dict
-            if isinstance(result, dict):
-                result["_retry_info"] = retry_info
-            return result
         except Exception as e:
             error_name = type(e).__name__
             error_msg = str(e)
@@ -829,7 +840,7 @@ def retry_with_backoff(
 
             # Calcular delay com backoff exponencial
             delay = min(base_delay * (2**attempt), max_delay)
-            jitter = random.uniform(0, 0.1) * delay
+            jitter = random.uniform(0, 0.1) * delay  # noqa: S311 (jitter de espera, sem uso criptográfico)
             total_delay = delay + jitter
 
             retry_info["retries"] = attempt + 1
@@ -842,3 +853,12 @@ def retry_with_backoff(
             )
 
             time.sleep(total_delay)
+        else:
+            # Adicionar retry_info ao resultado se for dict
+            if isinstance(result, dict):
+                result["_retry_info"] = retry_info
+            return result
+
+    # range(max_retries) vazio: nenhuma tentativa foi feita.
+    msg = f"max_retries deve ser >= 1; recebido {max_retries!r}"
+    raise ValueError(msg)
