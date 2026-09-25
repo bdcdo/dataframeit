@@ -545,11 +545,19 @@ def test_falha_ao_reprocessar_diz_que_os_valores_ficaram(parallel_requests):
 @pytest.mark.parametrize(
     ("parallel_requests", "rotulo"), [(1, "[~120 req/min]"), (2, "[2 workers]")]
 )
-def test_rate_limit_delay_espera_depois_de_cada_linha(
-    monkeypatch, capsys, parallel_requests, rotulo
-):
+def test_rate_limit_delay_espera_depois_de_cada_linha(monkeypatch, parallel_requests, rotulo):
     esperas = []
     monkeypatch.setattr(core.time, "sleep", esperas.append)
+    # O rótulo é lido na chamada ao tqdm, e não no stderr: o tqdm do piso
+    # (4.1.0) fixa sys.stderr na importação, fora do alcance do capsys.
+    rotulos = []
+    tqdm_original = core.tqdm
+
+    def tqdm_que_registra(*args, **kwargs):
+        rotulos.append(kwargs.get("desc", ""))
+        return tqdm_original(*args, **kwargs)
+
+    monkeypatch.setattr(core, "tqdm", tqdm_que_registra)
 
     resultado, _ = _rodar(
         pd.DataFrame({"texto": ["a", "b"]}),
@@ -559,7 +567,8 @@ def test_rate_limit_delay_espera_depois_de_cada_linha(
 
     assert resultado["x"].tolist() == ["x-a", "x-b"]
     assert esperas == [0.5, 0.5]
-    assert rotulo in capsys.readouterr().err
+    assert len(rotulos) == 1
+    assert rotulo in rotulos[0]
 
 
 # =============================================================================

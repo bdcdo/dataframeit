@@ -459,11 +459,16 @@ def test_validador_do_modelo_inteiro_acusa_todos_os_campos():
 
 
 def test_default_factory_que_le_outro_campo_invalido_tambem_e_acusado():
-    """Com o campo lido pela factory inválido, o default não pode ser calculado."""
+    """Com o campo lido pela factory inválido, o default não pode ser calculado.
+
+    A factory lê com .get: antes da 2.12, o Pydantic a chama mesmo depois de
+    'quantidade' falhar, com os dados validados vazios, e um dados['quantidade']
+    levantaria KeyError em vez de ValidationError.
+    """
 
     class Pedido(BaseModel):
         quantidade: int
-        rotulo: str = Field(default_factory=lambda dados: f"{dados['quantidade']} unidades")
+        rotulo: str = Field(default_factory=lambda dados: f"{dados.get('quantidade')} unidades")
 
     df = pd.DataFrame(
         {
