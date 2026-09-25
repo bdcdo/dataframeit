@@ -2,6 +2,14 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
 from .core import dataframeit
+from .errors import (
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderOutputError,
+    ProviderOverloadedError,
+    ProviderRejectedOutputError,
+    ProviderTransientError,
+)
 from .utils import (
     get_complex_fields,
     normalize_complex_columns,
@@ -24,4 +32,11 @@ __all__ = [
     'normalize_value',
     'normalize_complex_columns',
     'get_complex_fields',
+    'ProviderError',
+    'ProviderTransientError',
+    'ProviderOverloadedError',
+    'ProviderRejectedOutputError',
+    'ProviderConfigurationError',
+    'ProviderOutputError',
+    '__version__',
 ]
