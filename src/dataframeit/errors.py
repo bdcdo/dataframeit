@@ -589,9 +589,11 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
 ║  1. Aguarde alguns minutos e tente novamente                                 ║
-║  2. Use o parâmetro rate_limit_delay para espaçar as requisições:            ║
+║  2. Use rate_limit_delay: cada worker espera esse tempo depois de cada       ║
+║     linha processada, e o teto fica em                                       ║
+║     parallel_requests * 60 / rate_limit_delay linhas por minuto:             ║
 ║                                                                              ║
-║     dataframeit(..., rate_limit_delay=1.0)  # 1 segundo entre requisições    ║
+║     dataframeit(..., rate_limit_delay=1.0)  # até 60 linhas/min por worker   ║
 ║                                                                              ║
 ║  3. Considere atualizar seu plano para limites maiores                       ║
 ║                                                                              ║

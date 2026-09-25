@@ -736,7 +736,10 @@ def dataframeit(
         max_retries: Número total de tentativas por linha, contando a primeira (int >= 1).
         base_delay: Delay base para retry.
         max_delay: Delay máximo para retry.
-        rate_limit_delay: Delay em segundos entre requisições para evitar rate limits (padrão: 0.0).
+        rate_limit_delay: Pausa em segundos que cada worker faz depois de cada linha
+            processada com sucesso (padrão: 0.0). Linhas com erro não pausam. O teto de
+            vazão fica em parallel_requests * 60 / rate_limit_delay linhas por minuto,
+            sem contar o tempo das próprias chamadas.
         track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
         model_kwargs: Parâmetros extras do modelo (ex: temperature, reasoning_effort).
             Com provider='codex', aceita somente effort.
