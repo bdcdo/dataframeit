@@ -171,6 +171,9 @@ ignore = [
 # core.py imprime de propósito as estatísticas de uso e o aviso de workers
 # reduzidos, que o usuário lê no fim da execução.
 "src/dataframeit/core.py" = ["T201"]
+# __all__ lista primeiro a função dataframeit, na ordem da API pública, e o
+# pacote é descrito no README e no site; __init__.py só reexporta a API.
+"src/dataframeit/__init__.py" = ["D104", "RUF022"]
 # Os testes usam Optional[X] e Union[X, Y] de propósito: typing.Union e o
 # types.UnionType de `X | None` passam por ramos diferentes em utils.py, e
 # reescrever as anotações deixaria o ramo de typing.Union sem cobertura.
