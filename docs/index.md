@@ -12,9 +12,9 @@
 
 <div class="cta-buttons" markdown>
 
-[:material-rocket-launch: Começar Agora](getting-started/quickstart/){ .cta-button .primary }
+[:material-rocket-launch: Começar Agora](getting-started/quickstart.md){ .cta-button .primary }
 
-[:material-robot: Referência para LLMs](reference/llm-reference/){ .cta-button .secondary }
+[:material-robot: Referência para LLMs](reference/llm-reference.md){ .cta-button .secondary }
 
 </div>
 
@@ -22,7 +22,7 @@
 
 ## O que é?
 
-DataFrameIt processa textos em DataFrames usando **Modelos de Linguagem (LLMs)** e extrai informações estruturadas definidas por **modelos Pydantic**. Uma função, um modelo, um prompt — pronto.
+DataFrameIt processa textos em DataFrames usando **Modelos de Linguagem (LLMs)** e extrai informações estruturadas definidas por **modelos Pydantic**. Uma função, um modelo e um prompt bastam.
 
 ```python
 from pydantic import BaseModel
@@ -45,9 +45,9 @@ resultado = dataframeit(df, Sentimento, "Analise o sentimento do texto.")
 <div class="feature-card" markdown>
 <div class="icon" markdown>:material-cloud-sync:</div>
 
-### Múltiplos Providers
+### Múltiplos Provedores
 
-Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — todos via LangChain.
+OpenAI, Google Gemini, Anthropic, Groq e outros via LangChain, além de Codex e Claude Code pelos SDKs oficiais.
 </div>
 
 <div class="feature-card" markdown>
@@ -55,7 +55,7 @@ Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — todos via
 
 ### Saída Estruturada
 
-Validação automática com Pydantic. Defina campos, tipos e descrições — o LLM respeita.
+Validação automática com Pydantic. Defina campos, tipos e descrições; uma resposta fora do modelo volta ao LLM com o erro para correção.
 </div>
 
 <div class="feature-card" markdown>
@@ -63,7 +63,7 @@ Validação automática com Pydantic. Defina campos, tipos e descrições — o 
 
 ### Resiliência
 
-Retry automático com backoff exponencial. Rate limiting configurável. Nunca perde progresso.
+Retry automático com backoff exponencial, rate limiting configurável e checkpoints periódicos para retomar execuções longas.
 </div>
 
 <div class="feature-card" markdown>
@@ -79,7 +79,7 @@ Processamento paralelo com auto-ajuste. Métricas de throughput em tempo real.
 
 ### Busca Web
 
-Integração com Tavily para enriquecer dados com informações da internet.
+Tavily ou Exa para enriquecer dados com informações da internet, com busca por campo e campos condicionais.
 </div>
 
 <div class="feature-card" markdown>
@@ -87,7 +87,7 @@ Integração com Tavily para enriquecer dados com informações da internet.
 
 ### Múltiplas Entradas
 
-DataFrame, Series, lista, dicionário — tudo funciona. Polars incluído.
+DataFrame e Series do pandas ou do Polars, lista e dicionário. A saída volta no mesmo formato da entrada.
 </div>
 
 </div>
@@ -95,9 +95,10 @@ DataFrame, Series, lista, dicionário — tudo funciona. Polars incluído.
 ## Instalação Rápida
 
 ```bash
-pip install dataframeit[openai]  # OpenAI GPT-6 (provider padrão)
-pip install dataframeit[google]  # Google Gemini 3.8
-pip install dataframeit[anthropic]  # Anthropic Claude 5
+pip install dataframeit[openai]     # OpenAI (provider padrão)
+pip install dataframeit[google]     # Google Gemini
+pip install dataframeit[anthropic]  # Anthropic
+pip install dataframeit[all]        # todos os providers, busca web, Polars e Excel
 ```
 
 ## Próximos Passos
@@ -105,22 +106,22 @@ pip install dataframeit[anthropic]  # Anthropic Claude 5
 <div class="nav-grid" markdown>
 
 <div class="nav-card" markdown>
-### :material-download: [Instalação](getting-started/installation/)
+### :material-download: [Instalação](getting-started/installation.md)
 Configure com seu provider preferido
 </div>
 
 <div class="nav-card" markdown>
-### :material-rocket-launch: [Início Rápido](getting-started/quickstart/)
+### :material-rocket-launch: [Início Rápido](getting-started/quickstart.md)
 Primeiro projeto em 5 minutos
 </div>
 
 <div class="nav-card" markdown>
-### :material-book-open-variant: [Guias](guides/basic-usage/)
+### :material-book-open-variant: [Guias](guides/basic-usage.md)
 Paralelismo, retry, busca web
 </div>
 
 <div class="nav-card" markdown>
-### :material-robot: [Referência para LLMs](reference/llm-reference/)
+### :material-robot: [Referência para LLMs](reference/llm-reference.md)
 Documentação compacta para assistentes de código
 </div>
 

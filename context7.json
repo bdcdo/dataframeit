@@ -1,4 +1,12 @@
 {
   "url": "https://context7.com/bdcdo/dataframeit",
-  "public_key": "pk_PctIFJifBeXFdoHhKzPRQ"
+  "public_key": "pk_PctIFJifBeXFdoHhKzPRQ",
+  "projectTitle": "DataFrameIt",
+  "description": "Enrich pandas and Polars DataFrames with LLMs: extract structured fields defined by Pydantic models, row by row.",
+  "excludeFolders": ["docs/en", "docs/overrides", "docs/stylesheets", "site", "dist", "tests", ".github"],
+  "rules": [
+    "Mark where the row text goes in the prompt with the literal {texto}; without it, the text is appended to the end of the prompt.",
+    "The _dataframeit_status and _error_details columns are dropped when no row failed; check that the column exists before filtering on it.",
+    "Web search (use_search=True) works only with LangChain providers, not with provider='claude_code' or provider='codex'."
+  ]
 }

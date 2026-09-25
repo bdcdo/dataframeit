@@ -1,28 +1,40 @@
 # Busca Web
 
-Enriqueça seus dados com busca web usando Tavily.
+Enriqueça seus dados com busca web usando Tavily ou Exa.
 
 ## Visão Geral
 
 O DataFrameIt pode buscar informações na web para complementar a análise de cada texto. Isso é útil quando você precisa de contexto adicional que não está no texto original.
+
+Com `use_search=True`, cada linha é processada por um agente que decide quando buscar, com até `max_search_calls` buscas (padrão 10), e depois responde no formato do modelo Pydantic. A busca funciona com os providers via LangChain; `claude_code` e `codex` não a suportam.
 
 ## Configuração
 
 ### 1. Instale a Dependência
 
 ```bash
-pip install dataframeit[search]
-# ou
-pip install langchain-tavily
+pip install dataframeit[search]       # Tavily (padrão)
+pip install dataframeit[search-exa]   # Exa
+pip install dataframeit[search-all]   # os dois
 ```
 
 ### 2. Configure a API Key
 
 ```bash
-export TAVILY_API_KEY="sua-chave-tavily"
+export TAVILY_API_KEY="sua-chave-tavily"   # https://tavily.com/
+export EXA_API_KEY="sua-chave-exa"         # https://exa.ai/
 ```
 
-Obtenha sua chave em: [Tavily](https://tavily.com/)
+### 3. Escolha o Provedor de Busca
+
+| Provedor | `search_provider` | Profundidade | Cobrança |
+|----------|-------------------|--------------|----------|
+| Tavily | `"tavily"` (padrão) | `search_depth='basic'` ou `'advanced'` | 1 crédito por busca básica, 2 por avançada |
+| Exa | `"exa"` | ignora `search_depth` | 1 crédito (US$ 0,005) por busca com até 25 resultados, 5 acima disso |
+
+```python
+resultado = dataframeit(df, Model, PROMPT, use_search=True, search_provider="exa")
+```
 
 ## Uso Básico
 
@@ -61,12 +73,16 @@ resultado = dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `use_search` | bool | `False` | Habilita busca web via Tavily |
-| `search_per_field` | bool | `False` | Executa busca separada para cada campo do modelo |
+| `use_search` | bool | `False` | Habilita busca web |
+| `search_provider` | str | `'tavily'` | `'tavily'` ou `'exa'` |
+| `search_per_field` | bool | `False` | Executa um agente separado para cada campo do modelo |
 | `max_results` | int | `5` | Resultados por busca (1-20) |
-| `search_depth` | str | `'basic'` | `'basic'` (1 crédito) ou `'advanced'` (2 créditos) |
+| `search_depth` | str | `'basic'` | `'basic'` (1 crédito) ou `'advanced'` (2 créditos); só Tavily |
 | `max_search_calls` | int | `10` | Máximo de buscas por execução do agente; as seguintes são bloqueadas e o agente responde com o que encontrou |
+| `search_groups` | dict | `None` | Campos que compartilham um agente de busca; ver [Grupos de Busca](#grupos-de-busca) |
 | `save_trace` | bool/str | `None` | Salva trace do agente: `True`/`"full"` ou `"minimal"` |
+
+Com busca, a saída ganha a coluna `_search_credits`, com os créditos gastos em cada linha. Os campos podem ainda ser condicionais (`condition` e `depends_on`); ver [Campos Condicionais](../examples/conditional-fields.md).
 
 ## Exemplos
 
@@ -81,13 +97,13 @@ resultado = dataframeit(
 
 ### Busca por Campo
 
-Quando o modelo tem muitos campos, pode ser útil fazer buscas separadas:
+Quando o modelo tem muitos campos, pode ser útil dar a cada campo um agente próprio:
 
 ```python
 resultado = dataframeit(
     df, Model, PROMPT,
     use_search=True,
-    search_per_field=True  # Uma busca por campo do modelo
+    search_per_field=True  # Um agente de busca por campo do modelo
 )
 ```
 
@@ -103,9 +119,9 @@ resultado = dataframeit(
 )
 ```
 
-## Configuração Per-Field (v0.5.2+)
+## Configuração por Campo
 
-A partir da versão 0.5.2, você pode configurar prompts e parâmetros de busca específicos para cada campo usando `json_schema_extra` do Pydantic.
+Você pode configurar prompts e parâmetros de busca específicos para cada campo usando `json_schema_extra` do Pydantic.
 
 ### Opções Disponíveis
 
@@ -118,7 +134,7 @@ A partir da versão 0.5.2, você pode configurar prompts e parâmetros de busca 
 | `max_search_calls` | Override do máximo de buscas do agente deste campo |
 
 !!! note "Requer search_per_field=True"
-    A configuração per-field só funciona quando `search_per_field=True`. Se você usar `json_schema_extra` com configurações de prompt ou busca sem habilitar `search_per_field`, um erro será levantado.
+    A configuração por campo só funciona quando `search_per_field=True`. Se você usar `json_schema_extra` com configurações de prompt ou busca sem habilitar `search_per_field`, um erro será levantado.
 
 ### Exemplo: Prompt Customizado
 
@@ -184,14 +200,14 @@ Você pode combinar configurações de prompt e parâmetros de busca:
 estudos_clinicos: str = Field(
     description="Estudos clínicos relevantes",
     json_schema_extra={
-        "prompt_append": "Busque por ensaios clínicos recentes (2020-2024).",
+        "prompt_append": "Busque ensaios clínicos publicados nos últimos cinco anos.",
         "search_depth": "advanced",
         "max_results": 15
     }
 )
 ```
 
-## Debug: Salvar Trace do Agente (v0.5.3+)
+## Debug: Salvar Trace do Agente
 
 Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
 
@@ -206,7 +222,8 @@ Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
 ### Colunas Geradas
 
 - **Agente único**: `_trace`
-- **Per-field**: `_trace_{nome_do_campo}` para cada campo
+- **Por campo**: `_trace_{nome_do_campo}` para cada campo
+- **Com grupos**: `_trace_{nome_do_grupo}` para cada grupo, além dos campos isolados
 
 ### Estrutura do Trace
 
@@ -220,7 +237,7 @@ Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
     "search_queries": ["query1", "query2"],
     "total_tool_calls": 3,  # as duas buscas e a resposta estruturada
     "duration_seconds": 3.45,
-    "model": "gpt-4o-mini"
+    "model": "gpt-6-luna"
 }
 ```
 
@@ -256,7 +273,7 @@ resultado = dataframeit(
 )
 ```
 
-### Exemplo: Trace Per-Field
+### Exemplo: Trace por Campo
 
 ```python
 resultado = dataframeit(
@@ -270,28 +287,28 @@ resultado = dataframeit(
 
 # Cada campo tem seu próprio trace
 trace_principio = json.loads(resultado['_trace_principio_ativo'].iloc[0])
-trace_indicacao = json.loads(resultado['_trace_indicacao'].iloc[0])
+trace_doenca_rara = json.loads(resultado['_trace_doenca_rara'].iloc[0])
 ```
 
-## Grupos de Busca (v0.5.3+)
+## Grupos de Busca
 
 Quando vários campos precisam do mesmo contexto de busca, você pode agrupá-los para reduzir chamadas de API redundantes.
 
 ### Motivação
 
-Sem grupos, se você tiver 6 campos com `search_per_field=True`, serão feitas 6 buscas por linha. Com grupos, campos relacionados compartilham uma única busca.
+Sem grupos, 6 campos com `search_per_field=True` significam 6 agentes por linha, cada um com suas buscas. Com grupos, campos relacionados compartilham um agente.
 
 **Exemplo:**
 - Campos `status_anvisa`, `avaliacao_conitec`, `existe_pcdt` são todos sobre regulação
-- Sem grupos: 3 buscas separadas (redundante)
-- Com grupos: 1 busca compartilhada (eficiente)
+- Sem grupos: 3 agentes, que tendem a repetir as mesmas buscas
+- Com grupos: 1 agente compartilhado
 
 ### Parâmetros de Grupo
 
 | Parâmetro | Tipo | Obrigatório | Descrição |
 |-----------|------|-------------|-----------|
 | `fields` | list | Sim | Lista de campos que pertencem ao grupo |
-| `prompt` | str | Não | Prompt customizado para o grupo. Use `{query}` para o texto |
+| `prompt` | str | Não | Prompt customizado para o grupo. Use `{texto}` (ou o sinônimo `{query}`) para o texto |
 | `max_results` | int | Não | Override de número de resultados (1-20) |
 | `search_depth` | str | Não | Override: `"basic"` ou `"advanced"` |
 | `max_search_calls` | int | Não | Override do máximo de buscas do agente do grupo |
@@ -302,12 +319,12 @@ Sem grupos, se você tiver 6 campos com `search_per_field=True`, serão feitas 6
 from pydantic import BaseModel, Field
 
 class MedicamentoRegulatorio(BaseModel):
-    # Campos do grupo "regulatory" (1 busca compartilhada)
+    # Campos do grupo "regulatory" (1 agente compartilhado)
     status_anvisa: str = Field(description="Status de aprovação na ANVISA")
     avaliacao_conitec: str = Field(description="Avaliação da CONITEC")
     existe_pcdt: str = Field(description="Se existe PCDT publicado")
 
-    # Campos isolados (1 busca cada)
+    # Campos isolados (1 agente cada)
     nome: str = Field(description="Nome comercial")
     fabricante: str = Field(description="Laboratório fabricante")
 
@@ -327,9 +344,7 @@ resultado = dataframeit(
 )
 ```
 
-**Resultado:**
-- Antes: 5 buscas (1 por campo)
-- Depois: 3 buscas (1 para grupo + 2 isolados)
+**Resultado:** 3 agentes por linha (1 do grupo + 2 isolados) em vez de 5.
 
 ### Múltiplos Grupos
 
@@ -372,7 +387,7 @@ trace_nome = json.loads(resultado['_trace_nome'].iloc[0])
 1. **Requer `use_search=True` e `search_per_field=True`**
 2. **Campos devem existir no modelo Pydantic**
 3. **Campos não podem estar em múltiplos grupos**
-4. **Campos em grupos não podem ter `json_schema_extra` de busca** - escolha entre configuração per-field ou grupo, não ambos
+4. **Campos em grupos não podem ter `json_schema_extra` de busca**: escolha entre configuração por campo ou grupo, não ambos
 
 ## Caso de Uso: Verificação de Fatos
 
@@ -423,23 +438,22 @@ resultado = dataframeit(
 ## Custos e Limites
 
 !!! warning "Atenção aos custos"
-    Cada linha do DataFrame faz uma busca web. Para datasets grandes, isso pode gerar custos significativos na API do Tavily.
+    Cada agente pode fazer até `max_search_calls` buscas (padrão 10), e há um agente por linha, ou um por campo e por linha com `search_per_field=True`. Para datasets grandes, isso pode gerar custos significativos. Os créditos gastos ficam em `_search_credits` e no resumo ao fim da execução.
 
-- **Free tier**: 1000 buscas/mês
-- **Busca básica**: ~$0.01 por busca
-- **Busca avançada**: ~$0.02 por busca
+Os preços mudam; consulte a página de cada provedor ([Tavily](https://tavily.com/pricing), [Exa](https://exa.ai/pricing)). O Tavily tem plano gratuito de 1000 buscas por mês.
 
 ### Dicas para Economizar
 
 1. Use `max_results=3` a `5` (suficiente para maioria dos casos)
 2. Prefira `search_depth='basic'`
 3. Filtre seu DataFrame antes de processar
-4. Use `search_per_field=False` quando possível
+4. Use `search_per_field=False` quando possível, ou agrupe campos com `search_groups`
+5. Reduza `max_search_calls` quando uma ou duas buscas bastam
 
 ## Rate Limits e Processamento Paralelo
 
 !!! danger "Erros HTTP 429"
-    Ao usar `parallel_requests` com busca web, é fácil exceder os limites de taxa do provedor de busca. Isso faz com que buscas falhem silenciosamente e retornem dados incompletos.
+    Ao usar `parallel_requests` com busca web, é fácil exceder os limites de taxa do provedor de busca. Uma busca que falha interrompe o agente e a linha volta ao ciclo de novas tentativas; esgotadas as tentativas, a linha fica com status `'error'`.
 
 ### Limites por Provedor
 
@@ -452,12 +466,12 @@ Se você precisa de maior throughput, considere `search_provider="exa"`.
 
 ### Como as Queries são Contadas
 
-| Configuração | Queries por linha |
-|--------------|------------------|
-| `search_per_field=False` | 1 por linha |
-| `search_per_field=True` | 1 por campo, por linha |
+| Configuração | Agentes por linha | Buscas por linha, no máximo |
+|--------------|-------------------|-----------------------------|
+| `search_per_field=False` | 1 | `max_search_calls` |
+| `search_per_field=True` | 1 por campo ou grupo | `max_search_calls` por agente |
 
-Com `parallel_requests=20` e `search_per_field=True` em um modelo de 4 campos, podem ir ~80 queries concorrentes — muito acima dos limites dos provedores.
+Com `parallel_requests=20` e `search_per_field=True` em um modelo de 4 campos, rodam 80 agentes ao mesmo tempo, muito acima dos limites dos provedores.
 
 ### Configurações Recomendadas
 

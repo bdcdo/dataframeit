@@ -76,9 +76,12 @@ plugins:
             Performance: Performance
             Busca Web: Web Search
             Provedores: Providers
+            Perguntas Frequentes: FAQ
             Referência: Reference
             API: API
+            Exceções: Exceptions
             Referência para LLMs: LLM Reference
+            Histórico de Versões: Changelog
             Exemplos: Examples
             Notebooks: Notebooks
             Campos Condicionais: Conditional Fields
@@ -89,7 +92,8 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      check_paths: true
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
@@ -118,9 +122,12 @@ nav:
     - Performance: guides/performance.md
     - Busca Web: guides/web-search.md
     - Provedores: guides/providers.md
+    - Perguntas Frequentes: guides/faq.md
   - Referência:
     - API: reference/api.md
+    - Exceções: reference/exceptions.md
     - Referência para LLMs: reference/llm-reference.md
+    - Histórico de Versões: changelog.md
   - Exemplos:
     - Notebooks: examples/index.md
     - Campos Condicionais: examples/conditional-fields.md

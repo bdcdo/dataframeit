@@ -11,11 +11,16 @@ DataFrameIt processa textos em DataFrames usando LLMs e extrai informações est
 ## Instalação
 
 ```bash
-pip install dataframeit[openai]    # OpenAI (padrão)
-pip install dataframeit[google]    # Google Gemini
-pip install dataframeit[anthropic] # Anthropic Claude
-pip install dataframeit[codex]     # Codex SDK oficial (experimental)
+pip install dataframeit[openai]       # OpenAI (padrão)
+pip install dataframeit[google]       # Google Gemini
+pip install dataframeit[anthropic]    # Anthropic Claude
+pip install dataframeit[groq]         # Groq
+pip install dataframeit[codex]        # Codex SDK oficial (experimental)
 pip install dataframeit[claude-code]  # Claude Code pelo Claude Agent SDK
+pip install dataframeit[search]       # Busca web com Tavily
+pip install dataframeit[search-exa]   # Busca web com Exa
+pip install dataframeit[polars]       # Entrada e saída em polars (inclui pyarrow, para .parquet)
+pip install dataframeit[excel]        # Leitura e checkpoint em .xlsx
 ```
 
 **Variáveis de ambiente:**
@@ -23,6 +28,9 @@ pip install dataframeit[claude-code]  # Claude Code pelo Claude Agent SDK
 export OPENAI_API_KEY="..."     # Para OpenAI
 export GOOGLE_API_KEY="..."     # Para Gemini
 export ANTHROPIC_API_KEY="..."  # Para Anthropic
+export GROQ_API_KEY="..."       # Para Groq
+export TAVILY_API_KEY="..."     # Para busca com Tavily
+export EXA_API_KEY="..."        # Para busca com Exa
 ```
 
 O provider `codex` é opcional, não faz parte do extra `all`, usa o runtime empacotado e requer autenticação local em arquivo, sem `OPENAI_API_KEY`. Consulte [Instalação](../getting-started/installation.md) para configurar o extra e as credenciais.
@@ -40,14 +48,20 @@ resultado = dataframeit(
     prompt,                  # Template do prompt
     text_column=None,        # Coluna com textos (None = inferência automática)
     model=None,              # None = modelo padrão do provider
-    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'claude_code', 'codex'
+    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'groq', 'claude_code', 'codex'
     resume=True,             # Continua de onde parou
+    reprocess_columns=None,  # Colunas a refazer mesmo em linhas já processadas
+    status_column=None,      # None = '_dataframeit_status'
     parallel_requests=1,     # Workers paralelos
-    rate_limit_delay=0.0,    # Delay entre requisições (segundos)
-    max_retries=3,           # Tentativas em caso de erro
+    rate_limit_delay=0.0,    # Pausa de cada worker depois de cada linha bem-sucedida (segundos)
+    max_retries=3,           # Total de tentativas por linha, contando a primeira
+    base_delay=1.0,          # Espera antes da primeira nova tentativa; dobra a cada uma
+    max_delay=30.0,          # Teto da espera entre tentativas
     track_tokens=True,       # Rastreia uso de tokens
     api_key=None,            # API key (usa env var se None)
     model_kwargs=None,       # Parâmetros extras (temperature, etc)
+    batch_size=None,         # Salva checkpoint a cada N linhas
+    checkpoint_path=None,    # Arquivo do checkpoint (.csv, .xlsx, .parquet)
     # Busca web (requer TAVILY_API_KEY ou EXA_API_KEY)
     use_search=False,        # Habilita busca web
     search_provider='tavily',  # 'tavily' ou 'exa'
@@ -174,8 +188,7 @@ resultado = dataframeit(
 # Codex SDK oficial (experimental)
 resultado = dataframeit(
     df, Model, PROMPT,
-    provider='codex',
-    model='gpt-5.4',
+    provider='codex',                  # model=None: o runtime escolhe
     model_kwargs={'effort': 'medium'}
 )
 
@@ -191,7 +204,6 @@ resultado = dataframeit(
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='openai',
-    model='gpt-4.1-mini',
     model_kwargs={'temperature': 0.2}
 )
 ```
@@ -214,7 +226,7 @@ resultado = dataframeit(
 # Rate limiting (previne erro 429)
 resultado = dataframeit(
     df, Model, PROMPT,
-    rate_limit_delay=1.0  # 1 segundo entre requisições
+    rate_limit_delay=1.0  # cada worker pausa 1 segundo depois de cada linha
 )
 
 # Combinados
@@ -232,13 +244,13 @@ resultado = dataframeit(
 ```python
 resultado = dataframeit(df, Model, PROMPT, max_retries=5)
 
-# Verificar erros
-erros = resultado[resultado['_dataframeit_status'] == 'error']
-print(erros['_error_details'])
-
-# Filtrar sucesso
-sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
+# As colunas de status só existem se alguma linha falhou ou registrou detalhe
+if '_dataframeit_status' in resultado.columns:
+    erros = resultado[resultado['_dataframeit_status'] == 'error']
+    print(erros['_error_details'])
 ```
+
+Falhas de configuração (extra faltando, parâmetro inválido) levantam exceção antes da primeira chamada. Falhas numa linha não interrompem a execução: a linha fica com status `'error'` e o motivo em `_error_details`. Ver [Exceções](exceptions.md).
 
 ---
 
@@ -248,28 +260,35 @@ Com `track_tokens=True`, o DataFrameIt cria `_input_tokens`, `_cached_input_toke
 
 | Coluna | Descrição |
 |--------|-----------|
-| `_dataframeit_status` | `'processed'`, `'error'`, `None` |
-| `_error_details` | Mensagem de erro |
+| `_dataframeit_status` | `'processed'`, `'error'`, `None`; removida quando nenhuma linha falhou nem registrou detalhe |
+| `_error_details` | Mensagem de erro, `"Sucesso após N retry(s)"` ou `"Texto ausente"`; removida junto com a de status |
 | `_input_tokens` | Tokens de entrada (com `track_tokens=True`) |
 | `_cached_input_tokens` | Parcela da entrada atendida por cache (com `track_tokens=True`) |
 | `_output_tokens` | Tokens de saída (com `track_tokens=True`) |
 | `_reasoning_tokens` | Parcela da saída usada em raciocínio (com `track_tokens=True`) |
+| `_search_credits` | Créditos de busca gastos na linha (com `use_search=True`) |
+| `_trace`, `_trace_{campo}`, `_trace_{grupo}` | Trace do agente em JSON (com `save_trace`) |
 
 ---
 
 ## Processamento Incremental
 
 ```python
-# Processa e salva
-resultado = dataframeit(df, Model, PROMPT, resume=True)
-resultado.to_excel('parcial.xlsx', index=False)
+# Checkpoint automático a cada 100 linhas
+resultado = dataframeit(
+    df, Model, PROMPT,
+    batch_size=100,
+    checkpoint_path='parcial.parquet',
+)
 
-# Carrega e continua
+# Se a execução parar, recarregue o checkpoint e continue
 from dataframeit import read_df
 
-df = read_df('parcial.xlsx', Model)
+df = read_df('parcial.parquet', Model)
 resultado = dataframeit(df, Model, PROMPT, resume=True)
 ```
+
+Com `resume=True` (padrão), linhas com status `'error'` não são refeitas. Para refazê-las, limpe o status delas antes de rodar de novo.
 
 ---
 

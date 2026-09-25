@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Adicionado
+
+- As exceções `ProviderError`, `ProviderTransientError`, `ProviderOverloadedError`, `ProviderRejectedOutputError`, `ProviderConfigurationError` e `ProviderOutputError` e o `__version__` passam a ser exportados por `dataframeit`.
+
 ### Alterado
 
 - Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha quando a resposta os traz, o que inclui a OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
@@ -194,7 +198,7 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 - **IDs de modelos Claude na documentação usavam formato com ponto** (ex: `claude-sonnet-4.5`), que não é aceito pela API Anthropic. Corrigidos para o formato com hífen (`claude-sonnet-4-5`, `claude-opus-4-6`, `claude-haiku-4-5`).
 - **Documentação de modelos Gemini desatualizada**: tabelas em `docs/` atualizadas para refletir modelos realmente disponíveis (`gemini-3-flash-preview` preview, `gemini-2.5-flash`/`gemini-2.5-pro` estáveis).
 
-## [0.5.3] - 2025-01-19
+## [0.5.3] - 2026-01-19
 
 ### Adicionado
 
@@ -222,7 +226,7 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
   - **Traces por grupo**: Com `save_trace=True`, gera `_trace_{nome_grupo}` para grupos
   - **Validações**: Campos não podem estar em múltiplos grupos; campos em grupos não podem ter `json_schema_extra` de busca
 
-## [0.5.2] - 2025-01-12
+## [0.5.2] - 2026-01-12
 
 ### Adicionado
 
@@ -299,14 +303,14 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 - Adicionada seção completa no guia de Busca Web (`docs/guides/web-search.md`)
 - Criado CHANGELOG.md
 
-## [0.5.1] - 2025-01-10
+## [0.5.1] - 2026-01-10
 
 ### Corrigido
 
 - Corrigido bug onde `create_agent` recebia `model_provider` em vez do LLM inicializado
 - Agente de busca agora usa corretamente o modelo LLM inicializado
 
-## [0.5.0] - 2025-01-08
+## [0.5.0] - 2026-01-08
 
 ### Adicionado
 
@@ -321,10 +325,12 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 [0.10.0]: https://github.com/bdcdo/dataframeit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...v0.8.1
-[0.8.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...v0.8.0
+[0.8.0]: https://github.com/bdcdo/dataframeit/compare/e1fc5adc81d101f9446cc1f9d684ea86d9155fc5...v0.8.0
+[0.7.1]: https://github.com/bdcdo/dataframeit/compare/63edb7dbcc84f7659f40c88057db734b633f2855...e1fc5adc81d101f9446cc1f9d684ea86d9155fc5
+[0.7.0]: https://github.com/bdcdo/dataframeit/compare/v0.6.0...63edb7dbcc84f7659f40c88057db734b633f2855
 [0.6.0]: https://github.com/bdcdo/dataframeit/compare/v0.5.4...v0.6.0
-[0.5.4]: https://github.com/bdcdo/dataframeit/compare/v0.5.3...v0.5.4
-[0.5.3]: https://github.com/bdcdo/dataframeit/compare/v0.5.2...v0.5.3
-[0.5.2]: https://github.com/bdcdo/dataframeit/compare/v0.5.1...v0.5.2
-[0.5.1]: https://github.com/bdcdo/dataframeit/compare/v0.5.0...v0.5.1
-[0.5.0]: https://github.com/bdcdo/dataframeit/releases/tag/v0.5.0
+[0.5.4]: https://github.com/bdcdo/dataframeit/compare/51105282203d0e1cdbbc70a4649519ffa0d91bfe...v0.5.4
+[0.5.3]: https://github.com/bdcdo/dataframeit/compare/9d6eeed1cfd1c817a1ad926eb1b4fd95a37f6d63...51105282203d0e1cdbbc70a4649519ffa0d91bfe
+[0.5.2]: https://github.com/bdcdo/dataframeit/compare/v0.5.1...9d6eeed1cfd1c817a1ad926eb1b4fd95a37f6d63
+[0.5.1]: https://github.com/bdcdo/dataframeit/compare/a4acf89cf80cfde2e93a6ca9874c9d32157647bd...v0.5.1
+[0.5.0]: https://github.com/bdcdo/dataframeit/commit/a4acf89cf80cfde2e93a6ca9874c9d32157647bd

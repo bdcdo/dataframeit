@@ -31,7 +31,7 @@ class Sentiment(BaseModel):
 How to handle errors and configure retry.
 
 - Configure `max_retries`, `base_delay`, `max_delay`
-- Check `_dataframeit_status` column
+- Check `_dataframeit_status` column, which only appears when some row fails
 - Analyze `_error_details`
 
 ---
@@ -41,19 +41,20 @@ How to handle errors and configure retry.
 
 Continue processing from where it stopped.
 
-- Use `resume=True`
-- Save and load partial results
+- Save checkpoints with `batch_size` and `checkpoint_path`
+- Reload with `read_df` and continue with `resume=True`
 - Reprocess only error rows
 
 ---
 
-### 4. Custom Placeholder
+### 4. Prompt and Text Column
 **[04_custom_placeholder.ipynb](https://github.com/bdcdo/dataframeit/blob/main/example/04_custom_placeholder.ipynb)**
 
-Control where text appears in the prompt.
+Control where text appears in the prompt and which column it comes from.
 
-- Use `{texto}` in template
-- Create complex multi-part prompts
+- Place `{texto}` in the template, or let the text go at the end
+- Inference of `text_column` and when to set it
+- Rows with empty text
 
 ---
 
@@ -108,6 +109,16 @@ Control request rate.
 - Configure `rate_limit_delay`
 - Use `parallel_requests`
 - Combine for maximum efficiency
+
+---
+
+### 9. Web Search
+**[example_09_web_search.py](https://github.com/bdcdo/dataframeit/blob/main/example/example_09_web_search.py)**
+
+Script with agent-based web search.
+
+- `use_search`, `search_per_field` and `save_trace`
+- Tavily or Exa as the search provider
 
 ---
 

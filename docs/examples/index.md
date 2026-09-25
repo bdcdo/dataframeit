@@ -31,7 +31,7 @@ class Sentimento(BaseModel):
 Como lidar com erros e configurar retry.
 
 - Configurar `max_retries`, `base_delay`, `max_delay`
-- Verificar coluna `_dataframeit_status`
+- Verificar coluna `_dataframeit_status`, que só aparece quando alguma linha falha
 - Analisar `_error_details`
 
 ---
@@ -41,19 +41,20 @@ Como lidar com erros e configurar retry.
 
 Continuar processamento de onde parou.
 
-- Usar `resume=True`
-- Salvar e carregar resultados parciais
+- Salvar checkpoints com `batch_size` e `checkpoint_path`
+- Recarregar com `read_df` e continuar com `resume=True`
 - Reprocessar apenas linhas com erro
 
 ---
 
-### 4. Placeholder Customizado
+### 4. Prompt e Coluna de Texto
 **[04_custom_placeholder.ipynb](https://github.com/bdcdo/dataframeit/blob/main/example/04_custom_placeholder.ipynb)**
 
-Controlar onde o texto aparece no prompt.
+Controlar onde o texto aparece no prompt e de qual coluna ele vem.
 
-- Usar `{texto}` no template
-- Criar prompts complexos multi-parte
+- Posicionar `{texto}` no template, ou deixar o texto ir ao final
+- Inferência de `text_column` e quando informá-la
+- Linhas com texto vazio
 
 ---
 
@@ -108,6 +109,16 @@ Controlar taxa de requisições.
 - Configurar `rate_limit_delay`
 - Usar `parallel_requests`
 - Combinar para máxima eficiência
+
+---
+
+### 9. Busca Web
+**[example_09_web_search.py](https://github.com/bdcdo/dataframeit/blob/main/example/example_09_web_search.py)**
+
+Script com busca web por agente.
+
+- `use_search`, `search_per_field` e `save_trace`
+- Tavily ou Exa como provedor de busca
 
 ---
 

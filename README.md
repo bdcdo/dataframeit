@@ -3,6 +3,7 @@
 [![PyPI version](https://badge.fury.io/py/dataframeit.svg)](https://badge.fury.io/py/dataframeit)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://github.com/bdcdo/dataframeit/actions/workflows/tests.yml/badge.svg)](https://github.com/bdcdo/dataframeit/actions/workflows/tests.yml)
 
 **English** · [Português](https://github.com/bdcdo/dataframeit/blob/main/README.pt-BR.md) · [Español](https://github.com/bdcdo/dataframeit/blob/main/README.es.md)
 
@@ -10,25 +11,29 @@
 
 DataFrameIt processes text in DataFrames using Large Language Models (LLMs) and extracts structured information defined by Pydantic models.
 
-**[Full Documentation](https://bdcdo.github.io/dataframeit/en/)** | **[LLM Reference](https://bdcdo.github.io/dataframeit/en/reference/llm-reference/)**
+**[Full Documentation](https://brunodcdo.com.br/dataframeit/en/)** | **[LLM Reference](https://brunodcdo.com.br/dataframeit/en/reference/llm-reference/)**
 
 ## Installation
 
 ```bash
-pip install dataframeit[openai]  # OpenAI (default provider)
-pip install dataframeit[google]  # Google Gemini
-pip install dataframeit[anthropic]  # Anthropic Claude
-pip install dataframeit[codex]  # Official Codex SDK (experimental)
+pip install dataframeit[openai]       # OpenAI (default provider)
+pip install dataframeit[google]       # Google Gemini
+pip install dataframeit[anthropic]    # Anthropic Claude
+pip install dataframeit[groq]         # Groq
+pip install dataframeit[codex]        # Official Codex SDK (experimental)
 pip install dataframeit[claude-code]  # Claude Code via the Claude Agent SDK
+pip install dataframeit[all]          # all providers except Codex, web search, Polars and Excel
 ```
+
+Optional extras: `search` (Tavily), `search-exa` (Exa), `search-all`, `polars`, `excel`.
 
 Set up provider authentication:
 
 ```bash
-export OPENAI_API_KEY="your-key"  # or GOOGLE_API_KEY, ANTHROPIC_API_KEY
+export OPENAI_API_KEY="your-key"  # or GOOGLE_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY
 ```
 
-The experimental `codex` provider is optional, is not part of the `all` extra, uses the bundled runtime and requires local file-based authentication. See the [installation docs](https://bdcdo.github.io/dataframeit/en/getting-started/installation/) to set up the extra and the credentials.
+The experimental `codex` provider is optional, is not part of the `all` extra, uses the bundled runtime and requires local file-based authentication. See the [installation docs](https://brunodcdo.com.br/dataframeit/en/getting-started/installation/) to set up the extra and the credentials.
 
 ## Quick Example
 
@@ -65,20 +70,19 @@ print(result)
 | Terrible service... | negative | high |
 | Delivery was fine... | neutral | medium |
 
-Field and class names are arbitrary — the examples in the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) notebooks use Portuguese ones.
+Field and class names are arbitrary; the examples in the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) notebooks use Portuguese ones.
 
 ## Features
 
-- **Multiple providers**: Google Gemini, OpenAI, Anthropic, Cohere and Mistral via LangChain, plus Claude Code and Codex through their SDKs
-- **Multiple input types**: DataFrame, Series, list, dict
-- **Structured output**: Automatic validation with Pydantic
-- **Resilience**: Automatic retry with exponential backoff
-- **Performance**: Parallel processing, configurable rate limiting
-- **Web search**: Tavily integration to enrich data
-- **Tracking**: Token monitoring and throughput metrics
-- **Per-field configuration**: Custom prompts and search parameters per field (v0.5.2+)
+- **Multiple providers**: OpenAI, Google Gemini, Anthropic and Groq with their own extras, any other LangChain provider (Cohere, Mistral, Vertex AI, Bedrock, Azure) by installing its package, plus Claude Code and Codex through their official SDKs
+- **Multiple input types**: pandas or Polars DataFrame and Series, list, dict
+- **Structured output**: Pydantic validation; a rejected answer goes back to the model with the error
+- **Resilience**: Automatic retry with exponential backoff, and periodic checkpoints (`batch_size` + `checkpoint_path`) to resume long runs
+- **Performance**: Parallel processing that halves workers on rate limits, configurable rate limiting
+- **Web search**: Tavily or Exa, per field or per group of fields, with conditional fields (`condition`, `depends_on`)
+- **Tracking**: Token usage, search credits and throughput metrics
 
-## Per-Field Configuration (New in v0.5.2)
+## Per-Field Configuration
 
 Set field-specific prompts and search parameters using `json_schema_extra`:
 
@@ -125,25 +129,24 @@ result = dataframeit(
 )
 ```
 
-**Available options in `json_schema_extra`:**
-
-| Option | Description |
-|--------|-------------|
-| `prompt` or `prompt_replace` | Fully replaces the base prompt |
-| `prompt_append` | Appends text to the base prompt |
-| `search_depth` | `"basic"` or `"advanced"` (per-field override) |
-| `max_results` | Number of search results (1-20) |
+The full list of per-field options (including `max_search_calls`, `condition` and `depends_on`) is in the [web search guide](https://brunodcdo.com.br/dataframeit/en/guides/web-search/).
 
 ## Documentation
 
-- [Quickstart](https://bdcdo.github.io/dataframeit/en/getting-started/quickstart/)
-- [Guides](https://bdcdo.github.io/dataframeit/en/guides/basic-usage/)
-- [API Reference](https://bdcdo.github.io/dataframeit/en/reference/api/)
-- [LLM Reference](https://bdcdo.github.io/dataframeit/en/reference/llm-reference/) - Compact page optimized for coding assistants
+- [Quickstart](https://brunodcdo.com.br/dataframeit/en/getting-started/quickstart/)
+- [Guides](https://brunodcdo.com.br/dataframeit/en/guides/basic-usage/)
+- [API Reference](https://brunodcdo.com.br/dataframeit/en/reference/api/)
+- [LLM Reference](https://brunodcdo.com.br/dataframeit/en/reference/llm-reference/) - Compact page optimized for coding assistants
+- [FAQ](https://brunodcdo.com.br/dataframeit/en/guides/faq/)
+- [Changelog](https://github.com/bdcdo/dataframeit/blob/main/CHANGELOG.md)
 
 ## Examples
 
 See the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) folder for Jupyter notebooks with complete use cases.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/bdcdo/dataframeit/blob/main/CONTRIBUTING.md).
 
 ## License
 

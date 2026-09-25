@@ -22,7 +22,14 @@ keywords = [
     "pandas",
     "pydantic",
     "langchain",
+    "polars",
+    "openai",
     "gemini",
+    "anthropic",
+    "claude",
+    "web-search",
+    "tavily",
+    "exa",
     "text-extraction",
     "structured-output",
     "data-enrichment",
@@ -118,7 +125,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/bdcdo/dataframeit"
-Documentation = "https://bdcdo.github.io/dataframeit/en/"
+Documentation = "https://brunodcdo.com.br/dataframeit/en/"
 Repository = "https://github.com/bdcdo/dataframeit.git"
 Issues = "https://github.com/bdcdo/dataframeit/issues"
 Changelog = "https://github.com/bdcdo/dataframeit/blob/main/CHANGELOG.md"

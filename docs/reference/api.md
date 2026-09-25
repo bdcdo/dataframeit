@@ -46,7 +46,7 @@ def dataframeit(
 | Parâmetro | Tipo | Obrigatório | Descrição |
 |-----------|------|-------------|-----------|
 | `data` | DataFrame, Series, list, dict | Sim | Dados contendo os textos a processar |
-| `questions` | Pydantic BaseModel | Sim | Modelo Pydantic definindo campos a extrair |
+| `questions` | Pydantic BaseModel | Sim | Modelo Pydantic definindo campos a extrair (`perguntas` é aceito como nome obsoleto do mesmo parâmetro) |
 | `prompt` | str | Sim | Template do prompt. Use `{texto}` para posicionar o texto |
 | `text_column` | str | Não | Nome da coluna com textos. Se `None`, tenta `texto`, `text`, `decisao`, `content`, `content_text` na ordem (ou a única coluna, se o DataFrame tiver apenas uma). Sem candidato e com várias colunas, levanta `ValueError` |
 
@@ -54,9 +54,9 @@ def dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `resume` | bool | `True` | Continua de onde parou: processa só as linhas sem status, sem re-tentar as que têm `'error'` |
+| `resume` | bool | `True` | Com `True`, continua de onde parou: processa só as linhas sem status e preserva as que têm `'processed'` ou `'error'`. Com `False`, processa toda linha que não esteja `'processed'`; se as colunas do modelo já existirem e `reprocess_columns` não for passado, emite um aviso e devolve os dados sem processar |
 | `reprocess_columns` | list | `None` | Lista de colunas para forçar reprocessamento; ao retomar com modelo alterado, deve cobrir os campos incompatíveis das linhas já processadas |
-| `status_column` | str | `None` | Nome customizado para coluna de status |
+| `status_column` | str | `None` | Nome da coluna de status; `None` usa `_dataframeit_status` |
 
 #### Modelo
 
@@ -71,10 +71,10 @@ def dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `max_retries` | int | `3` | Máximo de tentativas por linha |
-| `base_delay` | float | `1.0` | Delay inicial para retry (segundos) |
-| `max_delay` | float | `30.0` | Delay máximo para retry (segundos) |
-| `rate_limit_delay` | float | `0.0` | Delay entre requisições (segundos) |
+| `max_retries` | int | `3` | Total de tentativas por linha, contando a primeira (int >= 1) |
+| `base_delay` | float | `1.0` | Espera antes da primeira nova tentativa (segundos); dobra a cada tentativa |
+| `max_delay` | float | `30.0` | Teto da espera entre tentativas (segundos) |
+| `rate_limit_delay` | float | `0.0` | Pausa de cada worker depois de cada linha bem-sucedida (segundos) |
 
 #### Performance
 
@@ -115,12 +115,22 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 
 ### Colunas Adicionadas
 
-As colunas de status abaixo existem independentemente do tracking de tokens. Quando `track_tokens=True`, consulte a [Referência LLM](llm-reference.md#colunas-adicionadas-automaticamente) para as colunas de uso e sua semântica.
+| Coluna | Quando existe | Conteúdo |
+|--------|---------------|----------|
+| `_dataframeit_status` (ou o nome em `status_column`) | Ver nota abaixo | `'processed'`, `'error'` ou `None` (linha ainda não processada) |
+| `_error_details` | Ver nota abaixo | Mensagem do erro; numa linha bem-sucedida que precisou de novas tentativas, `"Sucesso após N retry(s)"`; numa linha com texto vazio, `"Texto ausente"` |
+| `_input_tokens`, `_output_tokens`, `_cached_input_tokens`, `_reasoning_tokens` | `track_tokens=True` | Uso de tokens da linha; ver [Referência para LLMs](llm-reference.md#colunas-adicionadas-automaticamente) |
+| `_search_credits` | `use_search=True` | Créditos de busca gastos na linha |
+| `_trace`, `_trace_{campo}` ou `_trace_{grupo}` | `save_trace` definido | Trace do agente em JSON |
 
-| Coluna | Descrição |
-|--------|-----------|
-| `_dataframeit_status` | `'processed'`, `'error'`, ou `None` |
-| `_error_details` | Detalhes do erro (quando aplicável) |
+Quando nenhuma linha termina com erro e nenhuma registra detalhe, `_dataframeit_status` e `_error_details` são removidas da saída. Por isso, antes de filtrar por status, confira se a coluna existe:
+
+```python
+if '_dataframeit_status' in resultado.columns:
+    erros = resultado[resultado['_dataframeit_status'] == 'error']
+```
+
+Linhas com texto vazio ou ausente não vão ao modelo: recebem status `'error'` e o detalhe `"Texto ausente"`.
 
 ### Exemplos
 
@@ -192,35 +202,64 @@ df = read_df('dados.csv', encoding='utf-8')
 
 ## normalize_value()
 
-Normaliza valores Python para tipos compatíveis com pandas.
+Converte em estrutura Python um valor que foi gravado como texto, como acontece ao salvar listas e dicionários em CSV ou Excel.
 
 ```python
 def normalize_value(value: Any) -> Any
 ```
 
-Converte:
-- `tuple` → `list`
-- Objetos Pydantic → `dict`
-- Valores aninhados recursivamente
+- Uma string que começa com `[` ou `{` é lida como JSON; se não for JSON válido, é lida como literal Python (`"['a', 'b']"`), sem executar código.
+- Listas, dicionários e tuplas voltam como estão.
+- Qualquer outro valor, inclusive string que não seja estrutura, volta inalterado.
+
+```python
+normalize_value('[1, 2, 3]')      # [1, 2, 3]
+normalize_value('{"a": 1}')       # {'a': 1}
+normalize_value('texto normal')   # 'texto normal'
+```
 
 ---
 
 ## normalize_complex_columns()
 
-Normaliza colunas com tipos complexos em um DataFrame.
+Aplica `normalize_value()` às colunas indicadas, alterando o DataFrame no lugar.
 
 ```python
-def normalize_complex_columns(df: pd.DataFrame, complex_fields: list) -> pd.DataFrame
+def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None
 ```
+
+Colunas ausentes do DataFrame são ignoradas.
 
 ---
 
 ## get_complex_fields()
 
-Identifica campos complexos em um modelo Pydantic.
+Identifica os campos de um modelo Pydantic que guardam estrutura em vez de valor simples.
 
 ```python
-def get_complex_fields(pydantic_model) -> list[str]
+def get_complex_fields(pydantic_model) -> set
 ```
 
-Retorna lista de nomes de campos que contêm `List`, `Tuple`, ou modelos aninhados.
+Retorna o conjunto de nomes dos campos cujo tipo é `list`, `dict`, `tuple` ou modelo Pydantic aninhado, inclusive dentro de `Optional` e `Union`.
+
+```python
+from dataframeit import get_complex_fields, normalize_complex_columns, read_df
+
+df = read_df('saida.csv')
+normalize_complex_columns(df, get_complex_fields(MeuModelo))
+```
+
+`read_df(path, model=MeuModelo)` faz essa normalização sozinho.
+
+---
+
+## Exceções
+
+As exceções que o dataframeit levanta estão em [Exceções](exceptions.md).
+
+## Versão
+
+```python
+import dataframeit
+dataframeit.__version__
+```

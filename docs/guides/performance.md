@@ -46,20 +46,24 @@ resultado = dataframeit(
     df,
     Model,
     PROMPT,
-    rate_limit_delay=1.0  # 1 segundo entre requisições
+    rate_limit_delay=1.0  # cada worker pausa 1 segundo depois de cada linha
 )
 ```
 
 ### Calculando o Delay Ideal
 
+`rate_limit_delay` é uma pausa de cada worker depois de cada linha concluída com sucesso. Com vários workers, as pausas correm em paralelo, e a taxa máxima de requisições é `parallel_requests × 60 / rate_limit_delay` por minuto. Para ficar abaixo de um limite:
+
 ```
-delay = 60 / requisições_por_minuto
+delay = 60 × parallel_requests / requisições_por_minuto
 
 Exemplos:
-- 60 req/min  → delay = 1.0s
-- 500 req/min → delay = 0.12s
-- 50 req/min  → delay = 1.2s
+- 60 req/min,  1 worker   → delay = 1.0s
+- 60 req/min,  5 workers  → delay = 5.0s
+- 500 req/min, 5 workers  → delay = 0.6s
 ```
+
+A taxa real fica abaixo desse teto, porque cada chamada ao modelo também leva tempo.
 
 ### Por Provider
 
@@ -73,7 +77,7 @@ O limite de requisições por minuto depende do modelo e do nível da conta, e m
 ### Combinando com Paralelismo
 
 ```python
-# 5 workers + delay entre requisições
+# 5 workers, cada um pausando 0,5s depois de cada linha: até 600 req/min
 resultado = dataframeit(
     df,
     Model,
@@ -124,17 +128,30 @@ resultado = dataframeit(
     PROMPT,
     track_tokens=True
 )
-
-# Ao final, exibe:
-# ============================================================
-# ESTATÍSTICAS DE USO DE TOKENS
-# ============================================================
-# Modelo: gpt-6-luna
-# Total de tokens: 15,432
-#   • Input:  12,345 tokens
-#   • Output: 3,087 tokens
-# ============================================================
 ```
+
+Ao final, o DataFrameIt imprime um resumo (sempre em português):
+
+```
+============================================================
+ESTATISTICAS DE USO
+============================================================
+Modelo: gpt-6-luna
+Total de tokens: 15,432
+  - Input:  12,345 tokens
+  - Output: 3,087 tokens
+------------------------------------------------------------
+METRICAS DE THROUGHPUT
+------------------------------------------------------------
+Tempo total: 45.2s
+Workers paralelos: 5
+Requisicoes: 100
+  - RPM (req/min): 132.7
+  - TPM (tokens/min): 20,478
+============================================================
+```
+
+Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
 
 ### Colunas Adicionadas
 
@@ -158,21 +175,7 @@ print(f"Custo estimado: ${custo_total:.4f}")
 
 ## Métricas de Throughput
 
-O DataFrameIt exibe métricas automaticamente:
-
-```
-============================================================
-MÉTRICAS DE THROUGHPUT
-============================================================
-Tempo total: 45.2s
-Workers paralelos: 5
-Requisições: 100
-  - RPM (req/min): 132.7
-  - TPM (tokens/min): 20,478
-============================================================
-```
-
-Use essas métricas para calibrar `parallel_requests` para sua conta.
+A seção de throughput do resumo acima mostra as requisições e os tokens por minuto efetivos. Use esses números para calibrar `parallel_requests` e `rate_limit_delay` para os limites da sua conta.
 
 ## Configuração Otimizada
 

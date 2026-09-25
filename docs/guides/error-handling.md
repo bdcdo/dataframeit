@@ -1,6 +1,6 @@
 # Tratamento de Erros
 
-Configure retry, fallbacks e monitore erros no processamento.
+Configure as novas tentativas e monitore os erros do processamento. Falhas de configuração, como extra faltando ou parâmetro inválido, levantam exceção antes da primeira chamada ao modelo; ver [Exceções](../reference/exceptions.md). Esta página trata das falhas por linha, que não interrompem a execução.
 
 ## Colunas de Status
 
@@ -8,8 +8,10 @@ O DataFrameIt adiciona automaticamente colunas de controle:
 
 | Coluna | Valores | Descrição |
 |--------|---------|-----------|
-| `_dataframeit_status` | `'processed'`, `'error'`, `None` | Status do processamento |
-| `_error_details` | string ou `None` | Detalhes do erro |
+| `_dataframeit_status` | `'processed'`, `'error'`, `None` | Status do processamento; `None` é linha ainda não processada |
+| `_error_details` | string ou `None` | Motivo do erro; numa linha bem-sucedida que precisou de novas tentativas, `"Sucesso após N retry(s)"`; numa linha com texto vazio, `"Texto ausente"` |
+
+Quando nenhuma linha falha e nenhuma registra detalhe, as duas colunas são removidas da saída. Confira se a coluna existe antes de filtrar por ela.
 
 ## Verificando Erros
 
@@ -18,18 +20,16 @@ from dataframeit import dataframeit
 
 resultado = dataframeit(df, Model, PROMPT)
 
-# Contar erros
-total_erros = (resultado['_dataframeit_status'] == 'error').sum()
-print(f"Total de erros: {total_erros}")
+if '_dataframeit_status' not in resultado.columns:
+    print("Nenhuma linha falhou.")
+else:
+    erros = resultado[resultado['_dataframeit_status'] == 'error']
+    print(f"Total de erros: {len(erros)}")
+    for idx, row in erros.iterrows():
+        print(f"Linha {idx}: {row['_error_details']}")
 
-# Filtrar linhas com erro
-erros = resultado[resultado['_dataframeit_status'] == 'error']
-for idx, row in erros.iterrows():
-    print(f"Linha {idx}: {row['_error_details']}")
-
-# Filtrar apenas sucesso
-sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
-sucesso.to_excel('resultado_limpo.xlsx', index=False)
+    sucesso = resultado[resultado['_dataframeit_status'] == 'processed']
+    sucesso.to_excel('resultado_limpo.xlsx', index=False)
 ```
 
 ## Configurando Retry
@@ -41,22 +41,23 @@ resultado = dataframeit(
     df,
     Model,
     PROMPT,
-    max_retries=5,        # Máximo de tentativas (padrão: 3)
-    base_delay=2.0,       # Delay inicial em segundos (padrão: 1.0)
-    max_delay=60.0        # Delay máximo em segundos (padrão: 30.0)
+    max_retries=5,        # Total de tentativas, contando a primeira (padrão: 3)
+    base_delay=2.0,       # Espera antes da primeira nova tentativa (padrão: 1.0)
+    max_delay=60.0        # Teto da espera (padrão: 30.0)
 )
 ```
 
-**Como funciona o backoff:**
+**Como funciona o backoff** com a configuração acima:
 
 ```
 Tentativa 1: falha → espera 2s
 Tentativa 2: falha → espera 4s
 Tentativa 3: falha → espera 8s
 Tentativa 4: falha → espera 16s
-Tentativa 5: falha → espera 32s (limitado a 60s)
-Tentativa 6: falha → marca como erro
+Tentativa 5: falha → marca como erro
 ```
+
+A espera antes da tentativa `n + 1` é `min(base_delay × 2^(n-1), max_delay)`, acrescida de até 10% de variação aleatória para que workers paralelos não repitam a chamada no mesmo instante. Um erro permanente encerra a linha na hora, sem esgotar as tentativas.
 
 ## Tipos de Erros
 
@@ -83,17 +84,21 @@ Na OpenAI, o SDK valida a resposta dentro da chamada e levanta o erro antes de d
 - **Requisição inválida** (`BadRequestError`, `InvalidArgument`): parâmetro que o provider recusa
 - **Prompt maior que a janela de contexto** (`ContextOverflowError`)
 - **Configuração local incompatível com o provider**
+- **Orçamento ou limite de turnos do `claude_code` esgotado** (`max_budget_usd`, `max_turns`)
 
 ## Processamento Incremental
 
-Para datasets grandes, use `resume=True` para continuar de onde parou:
+Para datasets grandes, salve checkpoints durante a execução e continue de onde parou:
 
 ```python
-# Primeira execução
-resultado = dataframeit(df, Model, PROMPT, resume=True)
-resultado.to_excel('parcial.xlsx', index=False)
+# Grava o progresso a cada 100 linhas
+resultado = dataframeit(
+    df, Model, PROMPT,
+    batch_size=100,
+    checkpoint_path='parcial.xlsx',
+)
 
-# Se houver interrupção, carregue e continue
+# Se houver interrupção, carregue o checkpoint e continue
 from dataframeit import read_df
 
 df = read_df('parcial.xlsx', Model)
@@ -128,7 +133,7 @@ resultado = dataframeit(df, Model, PROMPT, resume=True)
 # Previne erros de rate limit
 resultado = dataframeit(
     df, Model, PROMPT,
-    rate_limit_delay=1.0  # 1 segundo entre requisições
+    rate_limit_delay=1.0  # cada worker pausa 1 segundo depois de cada linha
 )
 ```
 

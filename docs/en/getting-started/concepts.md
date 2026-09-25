@@ -77,15 +77,16 @@ Extract the requested information from the document above.
 """
 ```
 
-### 3. Providers via LangChain
+### 3. Providers
 
-DataFrameIt uses LangChain to abstract different LLM providers:
+DataFrameIt uses LangChain to abstract different LLM providers. The `codex` and `claude_code` providers use the official SDKs of those tools, with their local authentication; see [Providers](../guides/providers.md).
 
 | Provider | Popular Models | Environment Variable |
 |----------|----------------|---------------------|
 | `openai` | gpt-6-luna, gpt-6-sol, gpt-6-astra | `OPENAI_API_KEY` |
 | `google_genai` | gemini-3.8-flash, gemini-3.6-flash, gemini-3.5-flash-lite | `GOOGLE_API_KEY` |
 | `anthropic` | claude-sonnet-5, claude-opus-5-5, claude-haiku-4-5 | `ANTHROPIC_API_KEY` |
+| `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `GROQ_API_KEY` |
 
 ## Processing Flow
 
@@ -94,7 +95,7 @@ For each DataFrame row:
 │
 ├─► 1. Build prompt (template + row text)
 │
-├─► 2. Send to LLM via LangChain
+├─► 2. Send to the provider (with web search, to an agent that searches before answering)
 │
 ├─► 3. Receive structured response
 │
@@ -102,11 +103,11 @@ For each DataFrame row:
 │   │
 │   ├─► Success: mark as 'processed'
 │   │
-│   └─► Error: retry with exponential backoff
+│   └─► Transient error or rejected response: new attempt with exponential backoff
 │       │
-│       ├─► Success after retry: mark as 'processed'
+│       ├─► Success on a new attempt: mark as 'processed'
 │       │
-│       └─► Failure after max_retries: mark as 'error'
+│       └─► Attempts exhausted, or permanent error: mark as 'error'
 │
 └─► 5. Add extracted fields to DataFrame
 ```
@@ -118,10 +119,12 @@ DataFrameIt automatically adds the status columns. When `track_tokens=True`, it 
 | Column | Description |
 |--------|-------------|
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, or `None` |
-| `_error_details` | Error details (when status is `'error'`) |
+| `_error_details` | Error details, or details of the retries on a row that succeeded |
+
+Both columns are removed from the output when no row fails or records any detail.
 
 ## Next Steps
 
 - [Basic Usage](../guides/basic-usage.md): Practical examples
-- [Error Handling](../guides/error-handling.md): Configure retry and fallbacks
+- [Error Handling](../guides/error-handling.md): Configure retry and monitor failures
 - [Performance](../guides/performance.md): Parallelism and rate limiting

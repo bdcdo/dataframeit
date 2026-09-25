@@ -1,27 +1,31 @@
 """
-Exemplo 09: Busca Web com Tavily
-================================
+Exemplo 09: Busca Web
+=====================
 
-Este exemplo demonstra como usar busca web via Tavily para enriquecer
-DataFrames com informacoes atualizadas da internet.
+Este exemplo mostra como usar busca web (Tavily ou Exa) para enriquecer
+DataFrames com informações atualizadas da internet.
 
 Conceitos demonstrados:
 - Ativar busca web com use_search=True
-- Configurar parametros de busca (max_results, search_depth)
+- Escolher o provedor de busca com search_provider ("tavily" ou "exa")
+- Configurar parâmetros de busca (max_results, search_depth, max_search_calls)
 - Usar search_per_field para modelos com muitos campos
-- Rastrear creditos e contagem de buscas
+- Acompanhar créditos de busca e tokens
 
 Para executar este exemplo:
 1. Configure suas chaves de API:
-   export TAVILY_API_KEY="sua-chave-tavily"
-   export OPENAI_API_KEY="sua-chave-openai"  # ou outro provider
-2. Instale dependencias: pip install dataframeit[search,openai]
+   export TAVILY_API_KEY="sua-chave-tavily"   # ou EXA_API_KEY, com search_provider="exa"
+   export OPENAI_API_KEY="sua-chave-openai"   # ou a chave de outro provider
+2. Instale as dependências: pip install dataframeit[search,openai]
+   (para Exa: pip install dataframeit[search-exa,openai])
 3. Execute: python3 example_09_web_search.py
 
-Nota: A busca web consome creditos do Tavily.
-- search_depth="basic": 1 credito por busca
-- search_depth="advanced": 2 creditos por busca
-Free tier: 1000 creditos/mes
+Custos: com use_search=True, cada linha é processada por um agente que decide
+quando buscar e pode fazer até max_search_calls buscas (padrão 10). Uma linha
+pode, portanto, consumir várias buscas. No Tavily:
+- search_depth="basic": 1 crédito por busca
+- search_depth="advanced": 2 créditos por busca
+Os créditos gastos ficam na coluna _search_credits e no resumo ao fim da execução.
 """
 
 from pydantic import BaseModel, Field
@@ -32,32 +36,32 @@ from dataframeit import dataframeit
 # ============================================================================
 # 1. DEFINIR MODELO PYDANTIC
 # ============================================================================
-# Modelo para informacoes de medicamentos que requerem busca na web
+# Modelo para informações de medicamentos que exigem busca na web
 
 
 class MedicamentoInfo(BaseModel):
-    """Estrutura para informacoes de medicamentos."""
+    """Estrutura para informações de medicamentos."""
 
     principio_ativo: str = Field(
         ...,
-        description="Principio ativo principal do medicamento"
+        description="Princípio ativo principal do medicamento"
     )
 
     indicacao: str = Field(
         ...,
-        description="Indicacao terapeutica principal"
+        description="Indicação terapêutica principal"
     )
 
     contraindicacoes: str = Field(
         ...,
-        description="Principais contraindicacoes"
+        description="Principais contraindicações"
     )
 
     forma_farmaceutica: Literal[
         'comprimido', 'capsula', 'liquido', 'injetavel', 'pomada', 'outro'
     ] = Field(
         ...,
-        description="Forma farmaceutica mais comum"
+        description="Forma farmacêutica mais comum"
     )
 
 
@@ -65,14 +69,14 @@ class MedicamentoInfo(BaseModel):
 # 2. DEFINIR TEMPLATE DO PROMPT
 # ============================================================================
 TEMPLATE = """
-Voce e um farmaceutico especializado.
+Você é um farmacêutico especializado.
 
-Pesquise informacoes sobre o medicamento abaixo e extraia os dados solicitados.
+Pesquise informações sobre o medicamento abaixo e extraia os dados solicitados.
 
 Medicamento: {texto}
 
-Use a ferramenta de busca para encontrar informacoes atualizadas e confiaveis.
-Priorize fontes como bulas, Anvisa, e sites medicos reconhecidos.
+Use a ferramenta de busca para encontrar informações atualizadas e confiáveis.
+Priorize fontes como bulas, Anvisa e sites médicos reconhecidos.
 """
 
 # ============================================================================
@@ -99,23 +103,25 @@ print("\n")
 # 4. PROCESSAR COM BUSCA WEB
 # ============================================================================
 print("=" * 80)
-print("PROCESSANDO COM BUSCA WEB (TAVILY)...")
+print("PROCESSANDO COM BUSCA WEB...")
 print("=" * 80)
 
-# O dataframeit vai usar um agente LangChain com acesso a ferramenta de busca
-# Tavily para pesquisar informacoes antes de responder
+# O dataframeit usa um agente LangChain com acesso à ferramenta de busca, que
+# pesquisa antes de responder. Cada linha pode gerar até max_search_calls buscas.
 df_resultado = dataframeit(
     df,
     MedicamentoInfo,
     TEMPLATE,
     text_column='medicamento',
-    # Configuracao de busca
-    use_search=True,              # Ativa busca web via Tavily
+    # Configuração de busca
+    use_search=True,              # Ativa a busca web
+    search_provider="tavily",     # "tavily" (padrão) ou "exa", que usa EXA_API_KEY
     max_results=5,                # Resultados por busca (1-20)
-    search_depth="basic",         # "basic" (1 credito) ou "advanced" (2 creditos)
-    # Configuracao do LLM
-    model='gpt-4o-mini',          # Modelo recomendado para agentes
-    provider='openai',            # Provider (openai, google_genai, anthropic)
+    search_depth="basic",         # Tavily: "basic" (1 crédito) ou "advanced" (2 créditos)
+    max_search_calls=3,           # Limite de buscas do agente em cada linha (padrão: 10)
+    # Configuração do LLM
+    provider='openai',            # Provider (openai, google_genai, anthropic, ...)
+    model='gpt-6-luna',           # Modelo padrão do provider openai
     parallel_requests=2,          # Linhas processadas em paralelo
     resume=True,                  # Permite continuar se interrompido
 )
@@ -135,16 +141,16 @@ colunas_exibir = [
 print(df_resultado[colunas_exibir].to_string())
 
 # ============================================================================
-# 6. VISUALIZAR METRICAS DE BUSCA
+# 6. VISUALIZAR MÉTRICAS DE BUSCA
 # ============================================================================
 print("\n")
 print("=" * 80)
-print("METRICAS DE BUSCA")
+print("MÉTRICAS DE BUSCA")
 print("=" * 80)
 
 if '_search_credits' in df_resultado.columns:
     total_creditos = df_resultado['_search_credits'].sum()
-    print(f"Creditos Tavily consumidos: {total_creditos}")
+    print(f"Créditos de busca consumidos: {total_creditos}")
 
 if '_input_tokens' in df_resultado.columns:
     total_tokens = (
@@ -154,16 +160,17 @@ if '_input_tokens' in df_resultado.columns:
     print(f"Total de tokens utilizados: {int(total_tokens)}")
 
 # ============================================================================
-# 7. EXEMPLO AVANCADO: BUSCA POR CAMPO
+# 7. EXEMPLO AVANÇADO: BUSCA POR CAMPO
 # ============================================================================
 print("\n")
 print("=" * 80)
-print("EXEMPLO AVANCADO: BUSCA POR CAMPO (search_per_field)")
+print("EXEMPLO AVANÇADO: BUSCA POR CAMPO (search_per_field)")
 print("=" * 80)
 print("""
 Para modelos com muitos campos, use search_per_field=True.
 Isso executa um agente separado para cada campo do modelo Pydantic,
-evitando sobrecarga de contexto.
+evitando sobrecarga de contexto. Cada agente tem o próprio limite de
+max_search_calls buscas.
 
 Exemplo:
     df_resultado = dataframeit(
@@ -175,24 +182,24 @@ Exemplo:
         ...
     )
 
-Nota: search_per_field aumenta o numero de buscas e tokens,
+Nota: search_per_field aumenta o número de buscas e tokens,
 mas melhora a qualidade para modelos complexos.
 """)
 
 # ============================================================================
-# 8. EXEMPLO AVANCADO: SALVAR TRACE DO AGENTE
+# 8. EXEMPLO AVANÇADO: SALVAR TRACE DO AGENTE
 # ============================================================================
 print("\n")
 print("=" * 80)
-print("EXEMPLO AVANCADO: SALVAR TRACE DO AGENTE (save_trace)")
+print("EXEMPLO AVANÇADO: SALVAR TRACE DO AGENTE (save_trace)")
 print("=" * 80)
 print("""
-Para debugar e auditar o raciocinio do agente, use save_trace=True.
+Para depurar e auditar o raciocínio do agente, use save_trace=True.
 Isso salva o trace completo em uma coluna _trace (JSON), incluindo:
 - Todas as mensagens da conversa (human, ai, tool)
 - Queries de busca realizadas
 - Contagem de tool calls
-- Duracao e modelo usado
+- Duração e modelo usado
 
 Exemplo:
     df_resultado = dataframeit(
@@ -208,12 +215,12 @@ Exemplo:
     import json
     trace = json.loads(df_resultado['_trace'].iloc[0])
     print(f"Buscas realizadas: {trace['search_queries']}")
-    print(f"Duracao: {trace['duration_seconds']}s")
+    print(f"Duração: {trace['duration_seconds']}s")
     print(f"Modelo: {trace['model']}")
 
 Com search_per_field=True, gera colunas _trace_{campo} para cada campo.
 """)
 
 print("\n" + "=" * 80)
-print("EXEMPLO CONCLUIDO!")
+print("EXEMPLO CONCLUÍDO!")
 print("=" * 80)

@@ -136,7 +136,7 @@ Be precise with dates, amounts, and names.
 If information is not available, use null.
 """
 
-result = dataframeit(df_decisions, CourtDecision, PROMPT, text_column='text')
+result = dataframeit(df_decisions, CourtDecision, PROMPT)
 ```
 
 ## Custom Validations
