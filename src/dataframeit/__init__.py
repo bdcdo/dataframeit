@@ -1,3 +1,5 @@
+"""Aplica um LLM linha a linha em DataFrames, com saída validada por Pydantic."""
+
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 

@@ -54,7 +54,8 @@ def argumentos_desconhecidos(codigo):
 
 
 def test_ha_exemplos_para_checar():
-    assert NOTEBOOKS and SCRIPTS
+    assert NOTEBOOKS
+    assert SCRIPTS
 
 
 @pytest.mark.parametrize("caminho", NOTEBOOKS + SCRIPTS, ids=lambda caminho: caminho.name)
