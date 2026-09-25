@@ -15,7 +15,7 @@ import random
 import re
 import time
 import warnings
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from .search import get_provider
 
@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 
     from .search import SearchProvider
 
-T = TypeVar("T")
 
 CODEX_FILE_AUTH_LOGIN_COMMAND = "codex --config cli_auth_credentials_store='\"file\"' login"
 
@@ -794,21 +793,21 @@ def is_rate_limit_error(error: Exception) -> bool:
 
 
 def retry_with_backoff(
-    func: Callable[[], T],
+    func: Callable[[], dict],
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
-) -> T:
+) -> dict:
     """Executa função com retry e backoff exponencial.
 
     Args:
-        func: Função a ser executada.
-        max_retries: Número máximo de tentativas.
+        func: Função a ser executada, que devolve o dicionário de resultado.
+        max_retries: Número máximo de tentativas; o core já recusou valor < 1.
         base_delay: Delay base em segundos.
         max_delay: Delay máximo em segundos.
 
     Returns:
-        Dicionário com 'result' (resultado da função) e 'retry_info' (informações de retry).
+        O dicionário devolvido por func, com as tentativas em '_retry_info'.
 
     Raises:
         Exception: Última exceção após esgotar tentativas ou erro não-recuperável.
@@ -819,13 +818,13 @@ def retry_with_backoff(
         "errors": [],
     }
 
-    for attempt in range(max_retries):
+    attempt = 0
+    while True:
         retry_info["attempts"] = attempt + 1
         try:
             result = func()
             # Dentro do try: uma falha ao anotar o resultado também ganha nova tentativa.
-            if isinstance(result, dict):
-                result["_retry_info"] = retry_info
+            result["_retry_info"] = retry_info
             return result  # noqa: TRY300 (o else mudaria quais falhas são re-tentadas)
         except Exception as e:
             error_name = type(e).__name__
@@ -841,7 +840,7 @@ def retry_with_backoff(
                 raise
 
             # Última tentativa - não fazer mais retry
-            if attempt == max_retries - 1:
+            if attempt >= max_retries - 1:
                 raise
 
             # Calcular delay com backoff exponencial
@@ -860,6 +859,4 @@ def retry_with_backoff(
 
             time.sleep(total_delay)
 
-    # range(max_retries) vazio: nenhuma tentativa foi feita.
-    msg = f"max_retries deve ser >= 1; recebido {max_retries!r}"
-    raise ValueError(msg)
+        attempt += 1
