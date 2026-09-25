@@ -65,7 +65,7 @@ def test_status_transitorio_estruturado_e_recuperavel(status):
 
 
 @pytest.mark.parametrize(
-    "erro, esperado",
+    ("erro", "esperado"),
     [
         (ErroComCode("400 INVALID_ARGUMENT", 400), False),
         (ErroComCode("503 UNAVAILABLE", 503), True),
@@ -197,7 +197,7 @@ def test_cadeia_de_causas_ciclica_termina():
     assert is_recoverable_error(erro_a) is True
 
 
-@pytest.mark.parametrize("status, esperado", [(429, True), (503, False), (400, False)])
+@pytest.mark.parametrize(("status", "esperado"), [(429, True), (503, False), (400, False)])
 def test_rate_limit_usa_o_status_estruturado(status, esperado):
     erro = ErroComStatusCode("falha sem pista na mensagem", status)
 

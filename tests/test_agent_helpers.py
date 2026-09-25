@@ -439,9 +439,7 @@ def _msg_with_tool_calls(tool_names):
 def _make_provider(name="tavily", credits_fn=None):
     provider = MagicMock()
     provider.name = name
-    provider.calculate_credits.side_effect = (
-        credits_fn if credits_fn else lambda search_count, **kw: search_count
-    )
+    provider.calculate_credits.side_effect = credits_fn or (lambda search_count, **kw: search_count)
     return provider
 
 

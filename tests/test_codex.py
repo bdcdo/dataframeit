@@ -268,7 +268,8 @@ class TestProviderDependency:
 
         def import_module(name):
             if name == "langchain_google_genai":
-                raise ImportError("missing")
+                msg = "missing"
+                raise ImportError(msg)
             return MagicMock()
 
         with patch("importlib.import_module", side_effect=import_module):
@@ -648,7 +649,8 @@ class TestBackendLifecycle:
 
         def fail_runtime_directory(path, *args, **kwargs):
             if path.name in {"workspace", "home"}:
-                raise OSError("read only")
+                msg = "read only"
+                raise OSError(msg)
             return original_mkdir(path, *args, **kwargs)
 
         with (

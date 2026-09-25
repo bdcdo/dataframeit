@@ -273,7 +273,7 @@ class TestGetFieldExecutionOrder:
             },
         }
 
-        order, deps = get_field_execution_order(ComplexModel, field_configs)
+        order, _deps = get_field_execution_order(ComplexModel, field_configs)
         assert order.index("tipo") < order.index("cpf")
         assert order.index("tipo") < order.index("cnpj")
         assert order.index("cpf") < order.index("validacao")
@@ -405,7 +405,7 @@ class TestGetFieldExecutionOrder:
             "b": {"depends_on": ["a"]},
         }
         with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
-            order, deps = get_field_execution_order(M, configs)
+            _order, deps = get_field_execution_order(M, configs)
         assert deps["b"] == []
         assert any(
             "depends_on" in rec.message and "condition" in rec.message for rec in caplog.records
@@ -465,7 +465,7 @@ class TestGetFieldExecutionOrder:
             },
         }
         with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
-            order, deps = get_field_execution_order(M, configs)
+            _order, deps = get_field_execution_order(M, configs)
         assert deps["b"] == ["a"]
         assert not any(
             "callable" in rec.message and "depends_on" in rec.message for rec in caplog.records
@@ -533,7 +533,7 @@ class TestIntegrationScenarios:
             "cnpj": {"depends_on": ["tipo"], "condition": {"field": "tipo", "equals": "pj"}},
         }
 
-        order, deps = get_field_execution_order(PessoaModel, field_configs)
+        order, _deps = get_field_execution_order(PessoaModel, field_configs)
         assert order.index("tipo") < order.index("cpf")
         assert order.index("tipo") < order.index("cnpj")
 
@@ -571,7 +571,7 @@ class TestIntegrationScenarios:
             "cep": {"depends_on": ["estado"], "condition": {"field": "estado", "exists": True}},
         }
 
-        order, deps = get_field_execution_order(EnderecoModel, field_configs)
+        order, _deps = get_field_execution_order(EnderecoModel, field_configs)
         assert order.index("pais") < order.index("estado")
         assert order.index("estado") < order.index("cep")
 
@@ -815,11 +815,11 @@ class TestCondicaoForaDoModoPorCampo:
                 "dataframeit.core.call_langchain",
                 return_value={"data": {"a": "1", "b": "2"}, "usage": None},
             ) as call_langchain,
+            pytest.raises(ValueError, match="depends_on"),
         ):
-            with pytest.raises(ValueError, match="depends_on"):
-                dataframeit(
-                    pd.DataFrame({"texto": ["x"]}),
-                    questions=ModeloDependsOn,
-                    prompt="Analise {texto}",
-                )
+            dataframeit(
+                pd.DataFrame({"texto": ["x"]}),
+                questions=ModeloDependsOn,
+                prompt="Analise {texto}",
+            )
         call_langchain.assert_not_called()

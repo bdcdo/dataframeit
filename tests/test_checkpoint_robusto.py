@@ -307,7 +307,8 @@ def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, p
         processadas = int((df["_dataframeit_status"] == "processed").sum())
         gravacoes.append(processadas)
         if processadas == 6 and len(gravacoes) < 4:
-            raise OSError("disco cheio")
+            msg = "disco cheio"
+            raise OSError(msg)
         _save_checkpoint(df, path)
 
     _, llm = _llm_contador()

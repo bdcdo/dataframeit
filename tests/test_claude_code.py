@@ -361,7 +361,7 @@ def _resultado(**campos):
 
 
 @pytest.mark.parametrize(
-    "campos, classe",
+    ("campos", "classe"),
     [
         ({"subtype": "error_max_budget_usd"}, ProviderError),
         ({"subtype": "error_max_turns"}, ProviderError),

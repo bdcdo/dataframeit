@@ -162,7 +162,8 @@ def test_parallel_handles_errors_gracefully():
         nonlocal call_count
         call_count += 1
         if call_count == 2:
-            raise ValueError("Erro no processamento")
+            msg = "Erro no processamento"
+            raise ValueError(msg)
         return {
             "data": {"campo1": f"v{call_count}", "campo2": f"x{call_count}"},
             "usage": {},

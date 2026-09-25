@@ -370,7 +370,7 @@ _INVALID_KEY_MARKERS = (
 )
 
 
-def get_friendly_error_message(error: Exception, provider: str = None) -> str:
+def get_friendly_error_message(error: Exception, provider: str | None = None) -> str:
     """Converte erro técnico em mensagem amigável para usuários iniciantes.
 
     Args:

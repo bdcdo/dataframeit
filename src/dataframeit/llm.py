@@ -417,7 +417,8 @@ def _request_correction(pydantic_model, raw_message, error, correction: dict, ra
         summary = "Structured output retornou None"
     correction["ai"] = raw_text or None
     correction["human"] = _CORRECTION_REQUEST.format(errors=detail)
-    raise ProviderRejectedOutputError(f"Falha no parsing do structured output: {summary}")
+    msg = f"Falha no parsing do structured output: {summary}"
+    raise ProviderRejectedOutputError(msg)
 
 
 _CORRECTION_REQUEST = (

@@ -71,7 +71,8 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
 
     def falha(self, query, **kwargs):
-        raise RuntimeError("401 Unauthorized: invalid api key")
+        msg = "401 Unauthorized: invalid api key"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
 
@@ -142,7 +143,8 @@ def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
     import asyncio
 
     async def falha(self, **kwargs):
-        raise ValueError("Error 432: usage limit.")
+        msg = "Error 432: usage limit."
+        raise ValueError(msg)
 
     monkeypatch.setattr(tavily_disponivel, "raw_results_async", falha)
 
@@ -287,7 +289,7 @@ def test_max_search_calls_por_campo_e_por_grupo():
 
     def falso(text, model, prompt, config, save_trace=None):
         limites[tuple(model.model_fields)] = config.search_config.max_search_calls
-        return {"data": {c: "x" for c in model.model_fields}, "usage": {}}
+        return {"data": dict.fromkeys(model.model_fields, "x"), "usage": {}}
 
     with (
         patch("dataframeit.core.validate_provider_dependencies"),

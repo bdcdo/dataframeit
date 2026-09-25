@@ -194,6 +194,11 @@ ignore = [
     "INP001",
 ]
 
+[tool.ruff.lint.flake8-type-checking]
+# O Pydantic resolve as anotações dos modelos em tempo de execução, então os
+# imports usados nelas não podem ir para um bloco TYPE_CHECKING.
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

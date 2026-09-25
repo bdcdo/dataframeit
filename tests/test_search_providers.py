@@ -199,7 +199,8 @@ def test_validate_search_dependencies_exa_missing_package():
 
         def side_effect(name):
             if name == "langchain_exa":
-                raise ImportError("No module named 'langchain_exa'")
+                msg = "No module named 'langchain_exa'"
+                raise ImportError(msg)
             return MagicMock()
 
         mock_import.side_effect = side_effect

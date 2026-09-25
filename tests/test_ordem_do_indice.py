@@ -29,18 +29,20 @@ def _llm_que_ecoa_o_texto(textos_enviados):
 
 def _executar(dados, parallel_requests=1, **kwargs):
     textos_enviados = []
-    with patch(
-        "dataframeit.core.call_langchain",
-        side_effect=_llm_que_ecoa_o_texto(textos_enviados),
+    with (
+        patch(
+            "dataframeit.core.call_langchain",
+            side_effect=_llm_que_ecoa_o_texto(textos_enviados),
+        ),
+        patch("dataframeit.core.validate_provider_dependencies"),
     ):
-        with patch("dataframeit.core.validate_provider_dependencies"):
-            resultado = dataframeit(
-                dados,
-                questions=ModeloSimples,
-                prompt="Teste {texto}",
-                parallel_requests=parallel_requests,
-                **kwargs,
-            )
+        resultado = dataframeit(
+            dados,
+            questions=ModeloSimples,
+            prompt="Teste {texto}",
+            parallel_requests=parallel_requests,
+            **kwargs,
+        )
     return resultado, textos_enviados
 
 

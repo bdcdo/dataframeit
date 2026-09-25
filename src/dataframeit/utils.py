@@ -86,12 +86,11 @@ def parse_json(resposta: str) -> dict:
     try:
         return json.loads(json_string)
     except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'..."
-        )
+        msg = f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'..."
+        raise ValueError(msg)
 
 
-def check_dependency(package: str, install_name: str = None):
+def check_dependency(package: str, install_name: str | None = None):
     """Verifica se dependência está instalada.
 
     Args:
@@ -105,7 +104,8 @@ def check_dependency(package: str, install_name: str = None):
     try:
         importlib.import_module(package)
     except ImportError:
-        raise ImportError(f"'{package}' não instalado. Instale com: pip install {install_name}")
+        msg = f"'{package}' não instalado. Instale com: pip install {install_name}"
+        raise ImportError(msg)
 
 
 def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
@@ -168,10 +168,11 @@ def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
             original_index=keys,
         )
 
-    raise TypeError(
+    msg = (
         f"Tipo não suportado: {type(data).__name__}. "
         "Use pandas.DataFrame, polars.DataFrame, pandas.Series, polars.Series, list ou dict."
     )
+    raise TypeError(msg)
 
 
 def from_pandas(
@@ -286,7 +287,7 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") 
     for col in df.columns:
         if str(col).startswith("_trace_"):
             trace_cols.append(col)
-        elif col in ["_search_credits"]:
+        elif col == "_search_credits":
             search_cols.append(col)
         elif col in TOKEN_COLUMNS:
             continue
@@ -339,10 +340,7 @@ def is_complex_type(field_type) -> bool:
     # Modelo aninhado: a linha guarda o model_dump, um dict
     from pydantic import BaseModel
 
-    if isinstance(field_type, type) and issubclass(field_type, BaseModel):
-        return True
-
-    return False
+    return bool(isinstance(field_type, type) and issubclass(field_type, BaseModel))
 
 
 def get_complex_fields(pydantic_model) -> set:
@@ -490,7 +488,8 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
     import os
 
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Arquivo não encontrado: {path}")
+        msg = f"Arquivo não encontrado: {path}"
+        raise FileNotFoundError(msg)
 
     # Detectar formato pelo sufixo
     _, ext = os.path.splitext(path.lower())
@@ -505,9 +504,8 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
     elif ext == ".json":
         df = pd.read_json(path, **kwargs)
     else:
-        raise ValueError(
-            f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
-        )
+        msg = f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
+        raise ValueError(msg)
 
     # Com o modelo, os campos de texto são relidos como texto cru: sem isso,
     # "2023" volta como número e "N/A" ou "NA" viram ausência, e a retomada

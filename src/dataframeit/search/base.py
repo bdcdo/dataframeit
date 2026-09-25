@@ -15,49 +15,41 @@ class SearchProvider(ABC):
     @abstractmethod
     def name(self) -> str:
         """Nome identificador do provedor (ex: 'tavily', 'exa')."""
-        pass
 
     @property
     @abstractmethod
     def env_var(self) -> str:
         """Nome da variável de ambiente para a API key."""
-        pass
 
     @property
     @abstractmethod
     def package_name(self) -> str:
         """Nome do pacote Python/LangChain (ex: 'langchain_tavily')."""
-        pass
 
     @property
     @abstractmethod
     def install_name(self) -> str:
         """Nome do pacote para pip install (ex: 'langchain-tavily')."""
-        pass
 
     @property
     @abstractmethod
     def signup_url(self) -> str:
         """URL para criar conta e obter API key."""
-        pass
 
     @property
     @abstractmethod
     def friendly_name(self) -> str:
         """Nome exibido nas mensagens de erro (ex: 'Tavily Search')."""
-        pass
 
     @property
     @abstractmethod
     def free_tier(self) -> str:
         """Descrição curta do plano de entrada, exibida na mensagem de API key ausente."""
-        pass
 
     @property
     @abstractmethod
     def requests_per_minute(self) -> int:
         """Limite aproximado de requisições por minuto, usado no aviso de rate limit."""
-        pass
 
     @abstractmethod
     def create_tool(self, max_results: int, **kwargs) -> Any:
@@ -70,7 +62,6 @@ class SearchProvider(ABC):
         Returns:
             Instância da ferramenta de busca configurada.
         """
-        pass
 
     @abstractmethod
     def calculate_credits(self, search_count: int, **kwargs) -> int:
@@ -83,7 +74,6 @@ class SearchProvider(ABC):
         Returns:
             Número de créditos consumidos (para rastreamento de custos).
         """
-        pass
 
 
 # Registry de provedores disponíveis
@@ -115,9 +105,8 @@ def get_provider(name: str) -> SearchProvider:
 
     if name not in _PROVIDERS:
         available = list(_PROVIDERS.keys())
-        raise ValueError(
-            f"Provedor de busca '{name}' não suportado. Provedores disponíveis: {available}"
-        )
+        msg = f"Provedor de busca '{name}' não suportado. Provedores disponíveis: {available}"
+        raise ValueError(msg)
     return _PROVIDERS[name]()
 
 

@@ -1,5 +1,6 @@
 """Testes para a funcionalidade reprocess_columns."""
 
+import contextlib
 import warnings
 from unittest.mock import patch
 
@@ -297,7 +298,8 @@ def test_reprocess_columns_resume_after_interrupt():
         call_count += 1
         if call_count == 2:
             # Simula interrupção após processar 1 linha
-            raise KeyboardInterrupt("Simulando interrupção")
+            msg = "Simulando interrupção"
+            raise KeyboardInterrupt(msg)
         return {
             "data": {"campo1": f"new{call_count}", "campo2": f"new_{call_count}"},
             "usage": {},
@@ -306,15 +308,13 @@ def test_reprocess_columns_resume_after_interrupt():
     # Primeira execução: vai processar 1 linha e travar na segunda
     with patch("dataframeit.core.call_langchain", side_effect=mock_llm_with_interrupt):
         with patch("dataframeit.core.validate_provider_dependencies"):
-            try:
+            with contextlib.suppress(KeyboardInterrupt):
                 dataframeit(
                     df,
                     questions=SimpleModel,
                     prompt="Teste {texto}",
                     reprocess_columns=["campo1"],
                 )
-            except KeyboardInterrupt:
-                pass
 
     # Após interrupção:
     # - Linha 1: campo1 atualizado para "new1", campo2 manteve "old_a" (reprocess só campo1)

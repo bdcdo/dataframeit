@@ -59,7 +59,8 @@ def test_inplace_modification():
         def check(self):
             self.count += 1
             if self.count >= self.n:
-                raise KeyboardInterrupt("Simulando interrupção do usuário")
+                msg = "Simulando interrupção do usuário"
+                raise KeyboardInterrupt(msg)
 
     # Modificar temporariamente o processamento para simular interrupção
     print("Iniciando processamento (será interrompido após 2 linhas)...")

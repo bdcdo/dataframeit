@@ -53,7 +53,8 @@ def test_status_column_personalizado_sem_erros_some_da_saida():
 def test_status_column_personalizado_com_erro_fica_no_fim():
     def llm(text, *args, **kwargs):
         if text.endswith("b"):
-            raise ValueError("falhou")
+            msg = "falhou"
+            raise ValueError(msg)
         return {"data": {"x": "ok"}, "usage": None}
 
     with warnings.catch_warnings():
@@ -424,7 +425,8 @@ def _entrada(tipo, textos):
 def test_status_column_personalizado_fica_depois_dos_tokens(tipo):
     def llm(text, *args, **kwargs):
         if text.endswith("b"):
-            raise ValueError("falhou")
+            msg = "falhou"
+            raise ValueError(msg)
         return {
             "data": {"x": "ok"},
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},

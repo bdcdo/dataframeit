@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-import dataframeit.core as core
+from dataframeit import core
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -631,7 +631,8 @@ def test_completed_checkpoint_adds_missing_cached_token_column_without_provider(
 def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch):
     @contextmanager
     def failing_backend(*args):
-        raise ValueError("invalid schema, configuration or authentication")
+        msg = "invalid schema, configuration or authentication"
+        raise ValueError(msg)
         yield
 
     codex_module = importlib.import_module("dataframeit.codex")

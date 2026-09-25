@@ -22,7 +22,9 @@ _FIELD_CONFIG_KEYS = (
 _CONDITIONAL_KEYS = ("condition", "depends_on")
 
 
-def _collect_configured_fields(pydantic_model, prefix: str = "", _visited: set = None) -> list:
+def _collect_configured_fields(
+    pydantic_model, prefix: str = "", _visited: set | None = None
+) -> list:
     """Coleta todos os campos com json_schema_extra de busca, incluindo aninhados.
 
     Args:
@@ -79,7 +81,9 @@ def _list_layers(annotation, target) -> int | None:
     return max(depths) + (1 if get_origin(annotation) is list else 0)
 
 
-def _walk_fields(pydantic_model, prefix: str = "", list_depth: int = 0, _visited: set = None):
+def _walk_fields(
+    pydantic_model, prefix: str = "", list_depth: int = 0, _visited: set | None = None
+):
     """Percorre todos os campos, inclusive aninhados, com a profundidade de lista.
 
     Yields:
@@ -277,7 +281,7 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
         None
     """
     # Estado de cada nó: 0 = não visitado, 1 = em progresso, 2 = concluído
-    state = {field: 0 for field in dependencies}
+    state = dict.fromkeys(dependencies, 0)
     path = []
 
     def dfs(field: str) -> list[str] | None:
@@ -286,7 +290,7 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
         if state[field] == 1:  # Ciclo detectado
             # Retorna o ciclo completo
             cycle_start = path.index(field)
-            return path[cycle_start:] + [field]
+            return [*path[cycle_start:], field]
 
         state[field] = 1
         path.append(field)
@@ -332,7 +336,8 @@ def topological_sort(dependencies: dict[str, list[str]]) -> list[str]:
     # Detectar ciclos primeiro
     cycle = detect_circular_dependencies(dependencies)
     if cycle:
-        raise ValueError(f"Dependências circulares detectadas: {' -> '.join(cycle)}")
+        msg = f"Dependências circulares detectadas: {' -> '.join(cycle)}"
+        raise ValueError(msg)
 
     # Cada campo depende de um conjunto de raízes: 'endereco.cidade' e
     # 'endereco.uf' são a mesma dependência, e contá-las duas vezes deixaria o
@@ -433,7 +438,8 @@ def get_field_execution_order(
 
         missing = check_dependencies_exist(field_name, depends_on, all_fields)
         if missing:
-            raise ValueError(f"Campo '{field_name}' depende de campos inexistentes: {missing}")
+            msg = f"Campo '{field_name}' depende de campos inexistentes: {missing}"
+            raise ValueError(msg)
 
         dependencies[field_name] = depends_on
 
@@ -490,7 +496,8 @@ def get_group_execution_units(pydantic_model, groups: dict, dependencies: dict[s
             else f"'{units[int(key)][1]}'"
             for key in cycle
         ]
-        raise ValueError(f"Dependências circulares entre grupos e campos: {' -> '.join(labels)}")
+        msg = f"Dependências circulares entre grupos e campos: {' -> '.join(labels)}"
+        raise ValueError(msg)
 
     return units, unit_of_field, unit_dependencies
 

@@ -24,7 +24,8 @@ class ComEvidencia(BaseModel):
     @model_validator(mode="after")
     def exigir_trecho(self):
         if self.aplicou and not self.trecho:
-            raise ValueError("Aplicar exige trecho.")
+            msg = "Aplicar exige trecho."
+            raise ValueError(msg)
         return self
 
 
@@ -63,7 +64,8 @@ def _erro_do_parser(bruto):
         )
         erro.__cause__ = causa
         return erro
-    raise AssertionError("o bruto deveria ser inválido")
+    msg = "o bruto deveria ser inválido"
+    raise AssertionError(msg)
 
 
 def _falha(conteudo, erro=None, **kwargs):
@@ -398,7 +400,7 @@ class TestCapturaNoInvoke:
         except ValidationError as erro:
             de_configuracao = erro
         with pytest.warns(UserWarning), pytest.raises(ValidationError):
-            _, structured = self._chamar_levantando([de_configuracao] * 3)
+            _, _structured = self._chamar_levantando([de_configuracao] * 3)
 
     def test_recusa_do_sdk_sem_resposta_anexada_vai_junto_do_prompt(self):
         try:

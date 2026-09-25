@@ -205,7 +205,8 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
         _raise_for_result_error(result)
 
         if not response_text.strip():
-            raise ValueError("Claude Code SDK retornou resposta vazia")
+            msg = "Claude Code SDK retornou resposta vazia"
+            raise ValueError(msg)
 
         # Parse e validação
         parsed = parse_json(response_text)

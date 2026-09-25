@@ -224,7 +224,7 @@ class TestValidacaoAntesDeProcessar:
             _executar(Modelo, use_search=True, search_per_field=True)
 
     @pytest.mark.parametrize(
-        "extra, trecho",
+        ("extra", "trecho"),
         [
             ({"max_results": 50}, "max_results"),
             ({"max_results": 0}, "max_results"),
@@ -292,7 +292,7 @@ class TestValidacaoAntesDeProcessar:
             _executar(Modelo, use_search=True, search_per_field=True)
 
     @pytest.mark.parametrize(
-        "opcoes, falta",
+        ("opcoes", "falta"),
         [
             ({}, "use_search=True e search_per_field=True"),
             ({"search_per_field": True}, "use_search=True"),
@@ -437,7 +437,7 @@ def test_reprocess_columns_por_campo_chama_so_os_campos_pedidos(parallel_request
 
     def call_agent(text, model, prompt, config, save_trace=None):
         chamadas.append((text, list(model.model_fields)))
-        return {"data": {campo: "novo" for campo in model.model_fields}, "usage": {}}
+        return {"data": dict.fromkeys(model.model_fields, "novo"), "usage": {}}
 
     provider, busca = _patches_de_execucao()
     with provider, busca, patch("dataframeit.agent.call_agent", side_effect=call_agent):
@@ -516,7 +516,7 @@ def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
 
 def _propriedades_do_campo(schema) -> dict:
     """Propriedades de primeiro nível do schema, sem o $defs dos aninhados."""
-    return {nome: prop for nome, prop in schema.get("properties", {}).items()}
+    return dict(schema.get("properties", {}).items())
 
 
 def test_item_de_lista_e_busca_aninhada_mandam_o_campo_limpo():
@@ -563,7 +563,7 @@ def test_reprocess_columns_nao_repete_busca_aninhada_de_campo_nao_pedido():
 
     def falso(text, model, prompt, config, save_trace=None):
         modelos.append(model.__name__)
-        return {"data": {c: "v" for c in model.model_fields}, "usage": {}}
+        return {"data": dict.fromkeys(model.model_fields, "v"), "usage": {}}
 
     with patch("dataframeit.agent.call_agent", side_effect=falso):
         call_agent_per_field(

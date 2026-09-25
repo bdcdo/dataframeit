@@ -1,5 +1,6 @@
 """Testes para funcionalidade de busca web via Tavily."""
 
+import contextlib
 import os
 import sys
 import types
@@ -145,7 +146,8 @@ def test_use_search_requires_tavily_package():
 
         def side_effect(name):
             if name == "langchain_tavily":
-                raise ImportError("No module named 'langchain_tavily'")
+                msg = "No module named 'langchain_tavily'"
+                raise ImportError(msg)
             return MagicMock()
 
         mock_import.side_effect = side_effect
@@ -516,7 +518,7 @@ def test_call_agent_per_field_iterates_fields():
         call_count += 1
 
         # Extrair nome do campo do modelo
-        field_name = list(model.model_fields.keys())[0]
+        field_name = next(iter(model.model_fields.keys()))
 
         return {
             "data": {field_name: f"valor_{field_name}"},
@@ -563,7 +565,7 @@ def test_call_agent_per_field_sums_usage():
     from dataframeit.llm import LLMConfig, SearchConfig
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
-        field_name = list(model.model_fields.keys())[0]
+        field_name = next(iter(model.model_fields.keys()))
         return {
             "data": {field_name: f"valor_{field_name}"},
             "usage": {
@@ -792,7 +794,7 @@ def test_call_agent_per_field_uses_custom_prompt():
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
         captured_prompts.append(prompt)
-        field_name = list(model.model_fields.keys())[0]
+        field_name = next(iter(model.model_fields.keys()))
         return {
             "data": {field_name: "valor"},
             "usage": {
@@ -835,7 +837,7 @@ def test_call_agent_per_field_uses_config_override():
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
         captured_configs.append(config)
-        field_name = list(model.model_fields.keys())[0]
+        field_name = next(iter(model.model_fields.keys()))
         return {
             "data": {field_name: "valor"},
             "usage": {
@@ -1910,7 +1912,7 @@ def test_enrich_list_items_with_search():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        enriched, usage, traces = _enrich_list_items_with_search(
+        _enriched, usage, _traces = _enrich_list_items_with_search(
             list_items, PedidoItem, search_fields, "texto", config
         )
 
@@ -2150,7 +2152,7 @@ def test_dataframeit_warns_when_search_and_parallel():
         patch("dataframeit.core._process_rows_parallel") as mock_process,
     ):
         mock_process.return_value = {"total_tokens": 0}
-        try:
+        with contextlib.suppress(Exception):
             dataframeit(
                 df,
                 questions=MedicamentoInfo,
@@ -2159,8 +2161,6 @@ def test_dataframeit_warns_when_search_and_parallel():
                 search_per_field=True,
                 parallel_requests=10,
             )
-        except Exception:
-            pass
         mock_warn.assert_called_once()
         kwargs = mock_warn.call_args.kwargs
         assert kwargs["num_rows"] == 100
@@ -2183,7 +2183,7 @@ def test_dataframeit_warns_per_field_large_dataset_without_parallel():
         patch("dataframeit.core._process_rows") as mock_process,
     ):
         mock_process.return_value = {"total_tokens": 0}
-        try:
+        with contextlib.suppress(Exception):
             dataframeit(
                 df,
                 questions=MedicamentoInfo,
@@ -2192,8 +2192,6 @@ def test_dataframeit_warns_per_field_large_dataset_without_parallel():
                 search_per_field=True,
                 parallel_requests=1,
             )
-        except Exception:
-            pass
         mock_warn.assert_called_once()
 
 
@@ -2208,7 +2206,7 @@ def test_dataframeit_no_warn_without_search():
         patch("dataframeit.core._process_rows_parallel") as mock_process,
     ):
         mock_process.return_value = {"total_tokens": 0}
-        try:
+        with contextlib.suppress(Exception):
             dataframeit(
                 df,
                 questions=MedicamentoInfo,
@@ -2216,8 +2214,6 @@ def test_dataframeit_no_warn_without_search():
                 use_search=False,
                 parallel_requests=10,
             )
-        except Exception:
-            pass
         mock_warn.assert_not_called()
 
 
@@ -2233,7 +2229,7 @@ def test_dataframeit_no_warn_small_sequential_search():
         patch("dataframeit.core._process_rows") as mock_process,
     ):
         mock_process.return_value = {"total_tokens": 0}
-        try:
+        with contextlib.suppress(Exception):
             dataframeit(
                 df,
                 questions=MedicamentoInfo,
@@ -2242,8 +2238,6 @@ def test_dataframeit_no_warn_small_sequential_search():
                 search_per_field=False,
                 parallel_requests=1,
             )
-        except Exception:
-            pass
         mock_warn.assert_not_called()
 
 
@@ -2259,7 +2253,7 @@ def test_dataframeit_passes_search_provider_to_warning():
         patch("dataframeit.core._process_rows_parallel") as mock_process,
     ):
         mock_process.return_value = {"total_tokens": 0}
-        try:
+        with contextlib.suppress(Exception):
             dataframeit(
                 df,
                 questions=MedicamentoInfo,
@@ -2268,8 +2262,6 @@ def test_dataframeit_passes_search_provider_to_warning():
                 search_provider="exa",
                 parallel_requests=10,
             )
-        except Exception:
-            pass
         mock_warn.assert_called_once()
         assert mock_warn.call_args.kwargs["search_provider"] == "exa"
 

@@ -316,7 +316,7 @@ def _build_item_context(item_dict: dict, inner_model) -> str:
     """
     context_parts = []
 
-    for field_name, field_info in inner_model.model_fields.items():
+    for field_name in inner_model.model_fields:
         value = item_dict.get(field_name)
         if value is not None and not isinstance(value, (dict, list)):
             # Usar apenas valores simples (strings, números)
@@ -339,9 +339,7 @@ def _set_nested_value(obj: dict, path: str, value):
     current = obj
 
     for i, part in enumerate(parts[:-1]):
-        if part not in current:
-            current[part] = {}
-        elif not isinstance(current[part], dict):
+        if part not in current or not isinstance(current[part], dict):
             current[part] = {}
         current = current[part]
 
@@ -452,7 +450,8 @@ def call_agent(
         # Extrair resposta estruturada
         structured = result.get("structured_response")
         if structured is None:
-            raise ValueError("Agente não retornou resposta estruturada")
+            msg = "Agente não retornou resposta estruturada"
+            raise ValueError(msg)
 
         data = structured.model_dump() if hasattr(structured, "model_dump") else structured
 
@@ -948,7 +947,6 @@ def _extract_usage(
     Returns:
         Dicionário com tokens e créditos de busca.
     """
-
     usage = _empty_usage(search_provider=provider.name)
 
     # Extrair token usage das mensagens

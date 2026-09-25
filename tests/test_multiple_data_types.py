@@ -71,7 +71,7 @@ class TestToPandas:
     def test_pandas_series_preserves_index(self):
         """Testa que o índice da Series é preservado."""
         series = pd.Series(["a", "b"], index=["x", "y"])
-        result, info = to_pandas(series)
+        _result, info = to_pandas(series)
 
         assert info.original_index is not None
         assert list(info.original_index) == ["x", "y"]

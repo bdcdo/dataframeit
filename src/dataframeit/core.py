@@ -451,7 +451,7 @@ def _warn_search_rate_limit(
         f"Configuração pode exceder rate limits de busca ({provider_name}). "
         f"parallel_requests={parallel_requests}, search_per_field={search_per_field}, "
         f"rate_limit_delay={rate_limit_delay}s, total de queries estimadas={total_queries}. "
-        + "Problemas: "
+        "Problemas: "
         + "; ".join(issues)
         + ". "
         + "Para evitar HTTP 429, use: "
@@ -467,15 +467,18 @@ def _validate_search_overrides(
 ) -> None:
     """Valida os overrides de busca de um grupo ou campo; None é ausência."""
     if search_depth is not None and search_depth not in ("basic", "advanced"):
-        raise ValueError(f"{label}: search_depth deve ser 'basic' ou 'advanced'")
+        msg = f"{label}: search_depth deve ser 'basic' ou 'advanced'"
+        raise ValueError(msg)
     if max_results is not None and (
         isinstance(max_results, bool)
         or not isinstance(max_results, numbers.Real)
         or not 1 <= max_results <= 20
     ):
-        raise ValueError(f"{label}: max_results deve estar entre 1 e 20")
+        msg = f"{label}: max_results deve estar entre 1 e 20"
+        raise ValueError(msg)
     if max_search_calls is not None and not _is_positive_int(max_search_calls):
-        raise ValueError(f"{label}: max_search_calls deve ser int >= 1")
+        msg = f"{label}: max_search_calls deve ser int >= 1"
+        raise ValueError(msg)
 
 
 def _is_positive_int(value) -> bool:
@@ -503,10 +506,11 @@ def _validate_field_configs(
             )
             if not on
         ]
-        raise ValueError(
+        msg = (
             "Campos com configuração em json_schema_extra (prompt, prompt_append, "
             f"search_depth, max_results, max_search_calls) requerem {' e '.join(missing)}"
         )
+        raise ValueError(msg)
 
     for path, field_info, list_depth in _walk_fields(questions):
         extra = field_info.json_schema_extra
@@ -515,19 +519,21 @@ def _validate_field_configs(
 
         # Condições só são avaliadas entre campos de primeiro nível
         if "." in path and any(k in extra for k in _CONDITIONAL_KEYS):
-            raise ValueError(
+            msg = (
                 f"Campo '{path}' usa 'condition' ou 'depends_on' em json_schema_extra, "
                 "que só são aplicados a campos de primeiro nível do modelo"
             )
+            raise ValueError(msg)
 
         if any(k in extra for k in _FIELD_CONFIG_KEYS):
             # Um item de lista é enriquecido no próprio dicionário; uma segunda
             # lista no caminho não tem item único onde gravar o valor.
             if list_depth > 1:
-                raise ValueError(
+                msg = (
                     f"Campo '{path}' tem configuração de busca dentro de uma lista que "
                     "está dentro de outra lista, o que não é suportado"
                 )
+                raise ValueError(msg)
             _validate_search_overrides(
                 f"Campo '{path}'",
                 extra.get("search_depth"),
@@ -545,11 +551,12 @@ def _validate_field_configs(
             and any(k in field_info.json_schema_extra for k in _CONDITIONAL_KEYS)
         ]
         if conditional_fields:
-            raise ValueError(
+            msg = (
                 f"Campos {conditional_fields} usam 'condition' ou 'depends_on' em "
                 "json_schema_extra, que só são aplicados com use_search=True e "
                 "search_per_field=True"
             )
+            raise ValueError(msg)
         return
 
     from .agent import _get_field_config
@@ -584,9 +591,11 @@ def _validate_search_groups(
     """
     # Validar pré-requisitos
     if not use_search:
-        raise ValueError("search_groups requer use_search=True")
+        msg = "search_groups requer use_search=True"
+        raise ValueError(msg)
     if not search_per_field:
-        raise ValueError("search_groups requer search_per_field=True")
+        msg = "search_groups requer search_per_field=True"
+        raise ValueError(msg)
 
     expected_fields = set(pydantic_model.model_fields.keys())
     all_grouped_fields = set()
@@ -595,29 +604,34 @@ def _validate_search_groups(
     for group_name, group_config in search_groups.items():
         # Validar estrutura
         if not isinstance(group_config, dict):
-            raise ValueError(f"Grupo '{group_name}' deve ser um dicionário")
+            msg = f"Grupo '{group_name}' deve ser um dicionário"
+            raise ValueError(msg)
         if "fields" not in group_config:
-            raise ValueError(f"Grupo '{group_name}' deve ter chave 'fields'")
+            msg = f"Grupo '{group_name}' deve ter chave 'fields'"
+            raise ValueError(msg)
 
         fields = group_config["fields"]
         if not isinstance(fields, list) or not fields:
-            raise ValueError(f"Grupo '{group_name}': 'fields' deve ser uma lista não-vazia")
+            msg = f"Grupo '{group_name}': 'fields' deve ser uma lista não-vazia"
+            raise ValueError(msg)
 
         # Validar que campos existem no modelo
         unknown_fields = set(fields) - expected_fields
         if unknown_fields:
-            raise ValueError(
+            msg = (
                 f"Grupo '{group_name}': campos {unknown_fields} não existem no modelo Pydantic. "
                 f"Campos disponíveis: {expected_fields}"
             )
+            raise ValueError(msg)
 
         # Validar que campos não pertencem a múltiplos grupos
         duplicate_fields = all_grouped_fields & set(fields)
         if duplicate_fields:
-            raise ValueError(
+            msg = (
                 f"Campos {duplicate_fields} pertencem a múltiplos grupos. "
                 f"Cada campo pode pertencer a apenas um grupo."
             )
+            raise ValueError(msg)
         all_grouped_fields.update(fields)
 
         # Validar que campos do grupo não têm json_schema_extra de busca
@@ -627,11 +641,12 @@ def _validate_search_groups(
             if isinstance(extra, dict):
                 conflicting_keys = set(extra.keys()) & set(_FIELD_CONFIG_KEYS)
                 if conflicting_keys:
-                    raise ValueError(
+                    msg = (
                         f"Campo '{field_name}' no grupo '{group_name}' tem json_schema_extra "
                         f"com chaves de busca {conflicting_keys}. Escolha entre configuração "
                         f"per-field (json_schema_extra) ou grupo (search_groups), não ambos."
                     )
+                    raise ValueError(msg)
 
         _validate_search_overrides(
             f"Grupo '{group_name}'",
@@ -778,10 +793,12 @@ def dataframeit(
         )
         questions = perguntas
     elif questions is None:
-        raise ValueError("Parâmetro 'questions' é obrigatório")
+        msg = "Parâmetro 'questions' é obrigatório"
+        raise ValueError(msg)
 
     if prompt is None:
-        raise ValueError("Parâmetro 'prompt' é obrigatório")
+        msg = "Parâmetro 'prompt' é obrigatório"
+        raise ValueError(msg)
 
     # Se {texto} não estiver no template, adiciona automaticamente ao final
     if "{texto}" not in prompt:
@@ -793,53 +810,63 @@ def dataframeit(
         or isinstance(max_retries, bool)
         or max_retries < 1
     ):
-        raise ValueError(
+        msg = (
             f"max_retries deve ser int >= 1 (número total de tentativas por linha); "
             f"recebido {max_retries!r}"
         )
+        raise ValueError(msg)
 
     # Validar parâmetros de checkpoint
     if (batch_size is None) != (checkpoint_path is None):
-        raise ValueError("batch_size e checkpoint_path devem ser usados juntos")
+        msg = "batch_size e checkpoint_path devem ser usados juntos"
+        raise ValueError(msg)
     if batch_size is not None:
         if (
             not isinstance(batch_size, numbers.Integral)
             or isinstance(batch_size, bool)
             or batch_size < 1
         ):
-            raise ValueError(f"batch_size deve ser int >= 1; recebido {batch_size!r}")
+            msg = f"batch_size deve ser int >= 1; recebido {batch_size!r}"
+            raise ValueError(msg)
         _validate_checkpoint_extension(checkpoint_path)
 
     # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
     if use_search and provider in {"claude_code", "codex"}:
-        raise ValueError(
+        msg = (
             f"Busca web (use_search=True) não é suportada com provider='{provider}'. "
             "Use um provider LangChain como 'google_genai' ou 'openai' para busca web."
         )
+        raise ValueError(msg)
 
     # Validar parâmetros de busca
     if use_search:
         available_providers = get_available_providers()
         if search_provider not in available_providers:
-            raise ValueError(f"search_provider deve ser um de {available_providers}")
+            msg = f"search_provider deve ser um de {available_providers}"
+            raise ValueError(msg)
         if search_provider == "tavily" and search_depth not in ("basic", "advanced"):
-            raise ValueError("search_depth deve ser 'basic' ou 'advanced'")
+            msg = "search_depth deve ser 'basic' ou 'advanced'"
+            raise ValueError(msg)
         if not 1 <= max_results <= 20:
-            raise ValueError("max_results deve estar entre 1 e 20")
+            msg = "max_results deve estar entre 1 e 20"
+            raise ValueError(msg)
         if not _is_positive_int(max_search_calls):
-            raise ValueError(f"max_search_calls deve ser int >= 1; recebido {max_search_calls!r}")
+            msg = f"max_search_calls deve ser int >= 1; recebido {max_search_calls!r}"
+            raise ValueError(msg)
 
     # Validar e normalizar save_trace
     trace_mode = None
     if save_trace:
         if not use_search:
-            raise ValueError("save_trace requer use_search=True")
+            msg = "save_trace requer use_search=True"
+            raise ValueError(msg)
         if save_trace is True:
             trace_mode = "full"
         elif save_trace in ("full", "minimal"):
             trace_mode = save_trace
         else:
-            raise ValueError("save_trace deve ser True, 'full' ou 'minimal'")
+            msg = "save_trace deve ser True, 'full' ou 'minimal'"
+            raise ValueError(msg)
 
     # Criar SearchConfig se busca habilitada
     search_config = None
@@ -877,16 +904,18 @@ def dataframeit(
             elif len(df_pandas.columns) == 1:
                 text_column = df_pandas.columns[0]
             else:
-                raise ValueError(
+                msg = (
                     f"Nenhuma coluna de texto identificada entre {TEXT_COLUMN_CANDIDATES}. "
                     f"Colunas disponíveis: {list(df_pandas.columns)}. "
                     f"Passe text_column= explicitamente."
                 )
+                raise ValueError(msg)
         if text_column not in df_pandas.columns:
-            raise ValueError(
+            msg = (
                 f"Coluna '{text_column}' não encontrada no DataFrame. "
                 f"Colunas disponíveis: {list(df_pandas.columns)}."
             )
+            raise ValueError(msg)
     else:
         # Para Series/list/dict, usa coluna interna
         text_column = DEFAULT_TEXT_COLUMN
@@ -894,15 +923,17 @@ def dataframeit(
     # Extrair campos do modelo Pydantic
     expected_columns = list(questions.model_fields.keys())
     if not expected_columns:
-        raise ValueError("Modelo Pydantic não pode estar vazio")
+        msg = "Modelo Pydantic não pode estar vazio"
+        raise ValueError(msg)
 
     # Cada campo extraído é gravado numa coluna de mesmo nome, que não pode ser
     # a do texto de entrada.
     if text_column in expected_columns:
-        raise ValueError(
+        msg = (
             f"O campo '{text_column}' do modelo tem o nome da coluna de texto, e a "
             "resposta sobrescreveria o texto de entrada. Renomeie o campo ou a coluna."
         )
+        raise ValueError(msg)
 
     # Validar e processar search_groups
     if search_groups:
@@ -919,10 +950,11 @@ def dataframeit(
         # Verificar que todas as colunas a reprocessar estão no modelo
         invalid_cols = [col for col in reprocess_columns if col not in expected_columns]
         if invalid_cols:
-            raise ValueError(
+            msg = (
                 f"Colunas {invalid_cols} não estão no modelo Pydantic. "
                 f"Colunas disponíveis: {expected_columns}"
             )
+            raise ValueError(msg)
 
     status_col = status_column or "_dataframeit_status"
     complex_fields = get_complex_fields(questions)
@@ -944,7 +976,8 @@ def dataframeit(
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
-            f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
+            f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
+            stacklevel=1,
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
@@ -981,11 +1014,12 @@ def dataframeit(
         column for column in incompatible_columns if column not in reprocessed_columns
     ]
     if uncovered_columns:
-        raise ValueError(
+        msg = (
             "O DataFrame contém linhas processadas incompatíveis com o modelo atual: "
             f"campos incompatíveis {uncovered_columns}. "
             f"Inclua-os em reprocess_columns={incompatible_columns!r}."
         )
+        raise ValueError(msg)
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
     if (
@@ -1014,18 +1048,20 @@ def dataframeit(
     # retornou acima, só é completado por posição e não passa por aqui.
     if not df_pandas.index.is_unique:
         duplicated = df_pandas.index[df_pandas.index.duplicated()].unique().tolist()
-        raise ValueError(
+        msg = (
             f"O índice tem rótulos repetidos ({duplicated[:5]}). "
             "Use df.reset_index(drop=True) antes de chamar dataframeit."
         )
+        raise ValueError(msg)
 
     if model is None and provider not in _RUNTIME_DEFAULT_PROVIDERS:
         if provider not in DEFAULT_MODELS:
-            raise ValueError(
+            msg = (
                 f"provider='{provider}' não tem modelo padrão em DEFAULT_MODELS. "
                 f"Confira o nome do provider ou informe 'model'. "
                 f"Providers com modelo padrão: {', '.join(DEFAULT_MODELS)}."
             )
+            raise ValueError(msg)
         model = DEFAULT_MODELS[provider]
 
     # Criar config do LLM
@@ -1183,16 +1219,16 @@ def _setup_columns(
                     grouped_fields.update(group_config.fields)
 
                 # Adicionar colunas de trace para grupos
-                for group_name in search_config.groups.keys():
+                for group_name in search_config.groups:
                     trace_cols.append(f"_trace_{group_name}")
 
                 # Adicionar colunas de trace para campos isolados (não em grupos)
-                for field in pydantic_model.model_fields.keys():
+                for field in pydantic_model.model_fields:
                     if field not in grouped_fields:
                         trace_cols.append(f"_trace_{field}")
             else:
                 # Sem grupos: uma coluna por campo
-                trace_cols = [f"_trace_{field}" for field in pydantic_model.model_fields.keys()]
+                trace_cols = [f"_trace_{field}" for field in pydantic_model.model_fields]
         else:
             # Coluna única
             trace_cols = ["_trace"]
@@ -1338,18 +1374,20 @@ def _validate_checkpoint_extension(path: str | Path) -> None:
 
     ext = Path(path).suffix.lower()
     if ext not in _SUPPORTED_CHECKPOINT_EXTS:
-        raise ValueError(
+        msg = (
             f"Extensão {ext or '(nenhuma)'} não suportada para checkpoint. "
             f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
         )
+        raise ValueError(msg)
     requires = _CHECKPOINT_EXT_REQUIRES.get(ext)
     if requires is not None:
         module, pip_name = requires
         if importlib.util.find_spec(module) is None:
-            raise ImportError(
+            msg = (
                 f"Checkpoint {ext} requer o pacote '{module}', que não está instalado. "
                 f"Execute: pip install {pip_name}"
             )
+            raise ImportError(msg)
 
 
 def _structures_as_json(df: pd.DataFrame) -> pd.DataFrame:
@@ -1383,10 +1421,11 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
     elif ext == ".parquet":
         df.to_parquet(tmp, index=False)
     else:
-        raise ValueError(
+        msg = (
             f"Extensão {ext} não suportada para checkpoint. "
             f"Use uma de: {', '.join(_SUPPORTED_CHECKPOINT_EXTS)}"
         )
+        raise ValueError(msg)
     os.replace(tmp, path)
 
 
@@ -1583,7 +1622,7 @@ def _process_rows(
             friendly_msg = get_friendly_error_message(e, config.provider)
             print(f"\n{friendly_msg}\n")
 
-            warnings.warn(f"Falha ao processar linha {idx}.")
+            warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
             df.at[idx, status_col] = "error"
             df.at[idx, "_error_details"] = error_details
 
@@ -1693,7 +1732,7 @@ def _process_rows_parallel(
         """Processa uma única linha (executada em thread separada)."""
         nonlocal current_workers, workers_reduced, checkpoint_counter
 
-        i, idx, row = row_data
+        _i, idx, row = row_data
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
         if _is_missing_text(row[text_column]):
             snapshot = None
@@ -1815,7 +1854,7 @@ def _process_rows_parallel(
                 friendly_msg = get_friendly_error_message(e, config.provider)
                 print(f"\n{friendly_msg}\n")
 
-                warnings.warn(f"Falha ao processar linha {idx}.")
+                warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
                 df.at[idx, status_col] = "error"
                 df.at[idx, "_error_details"] = error_details
 
@@ -1852,7 +1891,7 @@ def _process_rows_parallel(
                     except Exception as e:
                         pbar.update(1)
                         completed += 1
-                        warnings.warn(f"Erro inesperado no executor: {e}")
+                        warnings.warn(f"Erro inesperado no executor: {e}", stacklevel=1)
 
     # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
     if batch_size and checkpoint_counter > last_saved_checkpoint:

@@ -279,7 +279,8 @@ def test_resume_after_simulated_crash(tmp_path):
         total_calls[0] += 1
         # Após 4 chamadas (que garante 2 checkpoints com batch_size=2), crash.
         if total_calls[0] > 4:
-            raise SystemExit("simulated kill")
+            msg = "simulated kill"
+            raise SystemExit(msg)
         return {
             "data": {"campo1": f"v{total_calls[0]}"},
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
@@ -288,15 +289,15 @@ def test_resume_after_simulated_crash(tmp_path):
     with (
         patch("dataframeit.core.call_langchain", side_effect=mock_llm),
         patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(SystemExit),
     ):
-        with pytest.raises(SystemExit):
-            dataframeit(
-                df,
-                questions=SimpleModel,
-                prompt="Teste {texto}",
-                batch_size=2,
-                checkpoint_path=ckpt,
-            )
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=2,
+            checkpoint_path=ckpt,
+        )
 
     assert ckpt.exists(), "1º checkpoint deve estar persistido após o crash"
     loaded = pd.read_csv(ckpt)

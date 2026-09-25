@@ -67,7 +67,7 @@ def _agente_falso(modelo):
         schema = kwargs["response_format"].schema
         agente = MagicMock()
         agente.invoke.return_value = {
-            "structured_response": schema(**{nome: "ok" for nome in schema.model_fields}),
+            "structured_response": schema(**dict.fromkeys(schema.model_fields, "ok")),
             "messages": [],
         }
         return agente
@@ -200,7 +200,8 @@ def test_build_once_nao_guarda_falha():
     def construir():
         tentativas.append(1)
         if len(tentativas) == 1:
-            raise ValueError("chave ausente")
+            msg = "chave ausente"
+            raise ValueError(msg)
         return "modelo"
 
     unico = _BuildOnce(construir)
