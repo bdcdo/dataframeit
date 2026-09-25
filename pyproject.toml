@@ -116,6 +116,10 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.16,<0.17",
+    "ty==0.0.84",
+    "vulture>=2.16,<3",
+    "deptry>=0.25,<0.26",
+    "pre-commit>=4.6,<5",
 ]
 docs = [
     "mkdocs>=1.5.0",
@@ -143,14 +147,52 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
-ignore = ["E501"]
+select = ["ALL"]
+ignore = [
+    # Conflitam com o ruff format, que decide vírgula final e concatenação.
+    "COM812",
+    "ISC001",
+    # Docstring de classe sem linha em branco antes (D211) e resumo na primeira
+    # linha (D212), o estilo que as docstrings do pacote já seguem.
+    "D203",
+    "D213",
+    # O modo imperativo do D401 é conferido contra verbos em inglês e acusa toda
+    # docstring em português; D413 pede linha em branco depois da última seção,
+    # que nenhuma docstring do pacote usa.
+    "D401",
+    "D413",
+    # O projeto não põe aviso de copyright em cada arquivo; a licença é o LICENSE.
+    "CPY001",
+    # O ruff format cuida do comprimento; o que sobra são strings e URLs longas.
+    "E501",
+]
 
 [tool.ruff.lint.per-file-ignores]
+# core.py imprime de propósito as estatísticas de uso e o aviso de workers
+# reduzidos, que o usuário lê no fim da execução.
+"src/dataframeit/core.py" = ["T201"]
 # Os testes usam Optional[X] e Union[X, Y] de propósito: typing.Union e o
 # types.UnionType de `X | None` passam por ramos diferentes em utils.py, e
 # reescrever as anotações deixaria o ramo de typing.Union sem cobertura.
-"tests/**" = ["UP007", "UP045"]
+"tests/**" = [
+    "UP007",
+    "UP045",
+    # assert é a forma do pytest.
+    "S101",
+    # Os valores esperados ficam literais no teste, onde são lidos.
+    "PLR2004",
+    # Funções de teste, fixtures e dublês dispensam anotação e docstring.
+    "ANN",
+    "D",
+    # Dublês e fixtures repetem a assinatura que substituem, mesmo sem usar
+    # todos os argumentos, e os testes chamam APIs com booleanos posicionais.
+    "ARG",
+    "FBT",
+    # Os testes exercitam funções e atributos privados do pacote.
+    "SLF001",
+    # O pytest coleta tests/ como módulos soltos, sem pacote.
+    "INP001",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
