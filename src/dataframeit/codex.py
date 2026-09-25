@@ -168,8 +168,11 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
                     msg = "Schemas recursivos com metadados não são suportados"
                     raise ProviderConfigurationError(msg)
                 sibling_values = {key: value for key, value in node.items() if key != "$ref"}
+                # Copia antes de limpar: numa definição recursiva, o nó é parte
+                # da própria definição, e a cópia tirada depois o levaria vazio.
+                expanded = copy.deepcopy(resolved_ref)
                 node.clear()
-                node.update(copy.deepcopy(resolved_ref))
+                node.update(expanded)
                 node.update(sibling_values)
                 return visit(node, expanded_refs | {ref})
 

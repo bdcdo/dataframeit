@@ -166,6 +166,16 @@ def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponive
     assert "No search results" in str(ferramenta.invoke({"query": "x"}))
 
 
+def test_tavily_com_resultado_devolve_a_resposta_ao_modelo(tavily_disponivel, monkeypatch):
+    resultados = {"results": [{"title": "Bula", "url": "https://exemplo.org", "content": "x"}]}
+    monkeypatch.setattr(tavily_disponivel, "raw_results", lambda self, **kwargs: resultados)
+
+    ferramenta = get_provider("tavily").create_tool(max_results=3)
+    resposta = ferramenta.invoke({"query": "dipirona"})
+
+    assert resposta["results"] == resultados["results"]
+
+
 # =============================================================================
 # Teto de buscas por execução
 # =============================================================================
@@ -417,3 +427,49 @@ def test_recursion_limit_interrompe_modelo_que_insiste_em_buscar():
             {"messages": [("user", "q")]}, config={"recursion_limit": _recursion_limit(2)}
         )
     assert len(chamadas) < 20
+
+
+def test_chamada_da_busca_sem_consulta_conta_mas_nao_entra_no_trace(monkeypatch):
+    """O modelo pode chamar a busca sem o argumento query; não há consulta a registrar."""
+
+    mensagens = [
+        AIMessage(content="", tool_calls=[{"name": "busca_web", "args": {}, "id": "1"}]),
+        ToolMessage(content="resultado", tool_call_id="1", name="busca_web"),
+    ]
+    _, resultado = _chamar_agente(monkeypatch, _config(), mensagens)
+
+    assert resultado["trace"]["search_queries"] == []
+    assert resultado["trace"]["total_tool_calls"] == 1
+    assert resultado["usage"]["search_count"] == 1
+
+
+def test_agente_sem_resposta_estruturada_vira_erro_da_linha(monkeypatch):
+
+    class AgenteSemResposta:
+        def invoke(self, _payload, config=None):
+            return {"messages": []}
+
+    class FerramentaFalsa:
+        name = "busca_web"
+
+    monkeypatch.setattr("dataframeit.llm._create_langchain_llm", lambda *a, **k: object())
+    monkeypatch.setattr("langchain.agents.create_agent", lambda **kwargs: AgenteSemResposta())
+    provider = MagicMock()
+    provider.create_tool = lambda **kwargs: FerramentaFalsa()
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.get_provider", return_value=provider),
+        pytest.warns(UserWarning, match="Falha ao processar linha 0"),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a"]}),
+            questions=Resposta,
+            prompt="{texto}",
+            use_search=True,
+            max_retries=1,
+            track_tokens=False,
+        )
+
+    assert resultado["_dataframeit_status"].tolist() == ["error"]
+    assert "Agente não retornou resposta estruturada" in resultado["_error_details"].iloc[0]

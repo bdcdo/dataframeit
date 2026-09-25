@@ -222,6 +222,11 @@ def test_normalize_value_regular_string():
     assert result == "texto normal"
 
 
+def test_normalize_value_so_com_espacos_volta_intacto():
+    """Célula só com espaços não é JSON e mantém os espaços, sem virar vazio."""
+    assert normalize_value("   ") == "   "
+
+
 def test_normalize_value_number():
     """Testa que números não são alterados."""
     assert normalize_value(42) == 42

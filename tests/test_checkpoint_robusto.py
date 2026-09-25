@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from dataframeit import read_df
 from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
@@ -378,3 +378,127 @@ def test_accepts_only_text_cobre_optional_e_literal():
     assert not accepts_only_text(Literal["a", 1])
     assert not accepts_only_text(Optional[int])
     assert not accepts_only_text(list[str])
+
+
+# =============================================================================
+# Validação das linhas já processadas na retomada
+# =============================================================================
+
+
+def _retomar(df, modelo, **opcoes):
+    """Retoma um checkpoint sem provider; devolve o resultado e o dublê do LLM."""
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent") as call_agent,
+        patch("dataframeit.core.call_langchain") as call_langchain,
+    ):
+        resultado = dataframeit(df, questions=modelo, prompt="{texto}", resume=True, **opcoes)
+    return resultado, call_agent, call_langchain
+
+
+def test_condicao_que_levanta_na_retomada_conta_como_verdadeira():
+    """Sem saber se o campo foi pulado, a retomada acusa o obrigatório ausente.
+
+    'in' com um número levanta TypeError ao comparar; a condição callable não
+    serve aqui, porque evaluate_condition já captura o erro dela.
+    """
+
+    class Pessoa(BaseModel):
+        tipo: str
+        cpf: str = Field(json_schema_extra={"condition": {"field": "tipo", "in": 5}})
+
+    df = pd.DataFrame(
+        {"texto": ["a"], "tipo": ["pf"], "cpf": [None], "_dataframeit_status": ["processed"]}
+    )
+
+    with pytest.raises(ValueError, match=r"campos incompatíveis \['cpf'\]"):
+        _retomar(df, Pessoa, use_search=True, search_per_field=True)
+
+
+def test_erro_em_campo_com_alias_acusa_so_esse_campo():
+    """O Pydantic localiza o erro pelo alias; a retomada o traduz para o nome do campo."""
+
+    class Registro(BaseModel):
+        nome: str
+        cpf: int = Field(alias="CPF")
+
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "nome": ["Ana"],
+            "cpf": ["não é número"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"campos incompatíveis \['cpf'\]"):
+        _retomar(df, Registro)
+
+
+def test_validador_do_modelo_inteiro_acusa_todos_os_campos():
+    """Erro sem campo, de um model_validator, não diz qual coluna refazer."""
+
+    class Intervalo(BaseModel):
+        inicio: int
+        fim: int
+
+        @model_validator(mode="after")
+        def fim_depois_do_inicio(self):
+            if self.fim < self.inicio:
+                msg = "fim antes do início"
+                raise ValueError(msg)
+            return self
+
+    df = pd.DataFrame(
+        {"texto": ["a"], "inicio": [5], "fim": [1], "_dataframeit_status": ["processed"]}
+    )
+
+    with pytest.raises(ValueError, match=r"campos incompatíveis \['inicio', 'fim'\]"):
+        _retomar(df, Intervalo)
+
+
+def test_default_factory_que_le_outro_campo_invalido_tambem_e_acusado():
+    """Com o campo lido pela factory inválido, o default não pode ser calculado.
+
+    A factory lê com .get: antes da 2.12, o Pydantic a chama mesmo depois de
+    'quantidade' falhar, com os dados validados vazios, e um dados['quantidade']
+    levantaria KeyError em vez de ValidationError.
+    """
+
+    class Pedido(BaseModel):
+        quantidade: int
+        rotulo: str = Field(default_factory=lambda dados: f"{dados.get('quantidade')} unidades")
+
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "quantidade": ["muitos"],
+            "rotulo": [None],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"campos incompatíveis \['quantidade', 'rotulo'\]"):
+        _retomar(df, Pedido)
+
+
+def test_retomada_com_varias_linhas_puladas_pela_mesma_condicao():
+    class Pessoa(BaseModel):
+        tipo: str
+        cpf: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
+
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "tipo": ["pj", "pf", "pj"],
+            "cpf": [None, "111", None],
+            "_dataframeit_status": ["processed"] * 3,
+        }
+    )
+
+    resultado, call_agent, _ = _retomar(df, Pessoa, use_search=True, search_per_field=True)
+
+    call_agent.assert_not_called()
+    assert resultado["cpf"].iloc[1] == "111"
+    assert resultado["cpf"].iloc[[0, 2]].isna().all()

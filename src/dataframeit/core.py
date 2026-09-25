@@ -11,8 +11,9 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pandas as pd
 from pandas.api.types import is_scalar
@@ -904,6 +905,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     if (batch_size is None) != (checkpoint_path is None):
         msg = "batch_size e checkpoint_path devem ser usados juntos"
         raise ValueError(msg)
+    checkpoint = None
     if batch_size is not None and checkpoint_path is not None:
         if (
             not isinstance(batch_size, numbers.Integral)
@@ -913,6 +915,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             msg = f"batch_size deve ser int >= 1; recebido {batch_size!r}"
             raise ValueError(msg)
         _validate_checkpoint_extension(checkpoint_path)
+        checkpoint = _Checkpoint(checkpoint_path, batch_size)
 
     # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
     if use_search and provider in {"claude_code", "codex"}:
@@ -1027,9 +1030,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             use_search=use_search,
             search_per_field=search_per_field,
         )
-        # search_config existe: _validate_search_groups exige use_search=True.
-        if search_config is not None:
-            search_config.groups = validated_groups
+        # _validate_search_groups exige use_search=True, com que a SearchConfig
+        # foi montada acima; o cast só registra isso para o ty.
+        cast("SearchConfig", search_config).groups = validated_groups
 
     # Validar reprocess_columns
     if reprocess_columns is not None:
@@ -1240,8 +1243,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 reprocess_columns=reprocess_columns,
                 parallel_requests=parallel_requests,
                 trace_mode=trace_mode,
-                batch_size=batch_size,
-                checkpoint_path=checkpoint_path,
+                checkpoint=checkpoint,
             )
         else:
             token_stats = _process_rows(
@@ -1257,8 +1259,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 track_tokens=track_tokens,
                 reprocess_columns=reprocess_columns,
                 trace_mode=trace_mode,
-                batch_size=batch_size,
-                checkpoint_path=checkpoint_path,
+                checkpoint=checkpoint,
             )
 
     # Exibir estatísticas de tokens e throughput
@@ -1523,17 +1524,14 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
     tmp.replace(path)
 
 
-def _try_save_checkpoint(df: pd.DataFrame, path: str | Path | None) -> bool:
+def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
     """Grava o checkpoint e devolve se deu certo; falha vira aviso.
 
     Uma falha de gravação (disco cheio, arquivo aberto no Excel, coluna que o
     parquet não serializa) não diz nada sobre a linha que acabou de ser
     processada, e por isso nunca muda o status dela nem interrompe a execução.
-    A próxima gravação tenta de novo, com o estado completo. Sem caminho,
-    não há checkpoint a gravar.
+    A próxima gravação tenta de novo, com o estado completo.
     """
-    if path is None:
-        return False
     try:
         _save_checkpoint(df, path)
     except Exception as error:  # noqa: BLE001 (ver a docstring)
@@ -1546,6 +1544,42 @@ def _try_save_checkpoint(df: pd.DataFrame, path: str | Path | None) -> bool:
         )
         return False
     return True
+
+
+@dataclass(frozen=True)
+class _Checkpoint:
+    """Arquivo do checkpoint e a cada quantas linhas processadas gravá-lo.
+
+    batch_size e checkpoint_path só são aceitos juntos, e um único objeto
+    opcional deixa o par inteiro presente ou ausente.
+    """
+
+    path: str | Path
+    batch_size: int
+
+
+class _SnapshotWriter:
+    """Grava os snapshots do modo paralelo sem regredir o checkpoint.
+
+    As threads gravam fora da trava das linhas, e um snapshot mais antigo
+    pode chegar depois de um mais novo. O rótulo cresce com as linhas
+    contadas, e o snapshot de rótulo maior contém tudo o que os de rótulo
+    menor contêm; o atrasado é descartado sem perda. A trava própria impede
+    duas gravações simultâneas no mesmo arquivo temporário.
+    """
+
+    def __init__(self, checkpoint: _Checkpoint) -> None:
+        self.checkpoint = checkpoint
+        self.last_saved = 0
+        self._lock = threading.Lock()
+
+    def save(self, frame: pd.DataFrame, label: int) -> None:
+        """Grava o snapshot, a menos que um de rótulo maior já tenha sido gravado."""
+        with self._lock:
+            if label <= self.last_saved:
+                return
+            if _try_save_checkpoint(frame, self.checkpoint.path):
+                self.last_saved = label
 
 
 def _set_cell(df: pd.DataFrame, idx: Hashable, column: str, value: object) -> None:
@@ -1577,7 +1611,7 @@ def _record_missing_text(
     )
 
 
-def _record_success(  # noqa: C901, PLR0913 (grava cada família de colunas da linha)
+def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     df: pd.DataFrame,
     idx: Hashable,
     result: dict,
@@ -1626,9 +1660,8 @@ def _record_success(  # noqa: C901, PLR0913 (grava cada família de colunas da l
             for field_name, trace in result.get("traces", {}).items():
                 _set_cell(df, idx, f"_trace_{field_name}", json.dumps(trace, ensure_ascii=False))
         else:
-            trace = result.get("trace")
-            if trace:
-                _set_cell(df, idx, "_trace", json.dumps(trace, ensure_ascii=False))
+            # Com trace_mode, a linha passou por call_agent, que sempre devolve o trace.
+            _set_cell(df, idx, "_trace", json.dumps(result["trace"], ensure_ascii=False))
 
     _set_cell(df, idx, status_col, "processed")
     # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
@@ -1712,8 +1745,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     track_tokens: bool,
     reprocess_columns: Sequence[str] | None = None,
     trace_mode: str | None = None,
-    batch_size: int | None = None,
-    checkpoint_path: str | Path | None = None,
+    checkpoint: _Checkpoint | None = None,
 ) -> dict:
     """Processa cada linha do DataFrame, em sequência.
 
@@ -1731,8 +1763,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
         reprocess_columns: Lista de colunas para forçar reprocessamento.
             Se especificado, não pula linhas já processadas.
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
-        batch_size: A cada quantas linhas processadas o checkpoint é gravado.
-        checkpoint_path: Arquivo do checkpoint.
+        checkpoint: Arquivo do checkpoint e intervalo de gravação, ou None.
 
     Returns:
         Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
@@ -1804,9 +1835,9 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
 
         rows_processed_this_run += 1
         if (
-            batch_size
-            and rows_processed_this_run % batch_size == 0
-            and _try_save_checkpoint(df, checkpoint_path)
+            checkpoint
+            and rows_processed_this_run % checkpoint.batch_size == 0
+            and _try_save_checkpoint(df, checkpoint.path)
         ):
             rows_saved = rows_processed_this_run
 
@@ -1814,8 +1845,8 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
             time.sleep(config.rate_limit_delay)
 
     # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
-    if batch_size and rows_processed_this_run > rows_saved:
-        _try_save_checkpoint(df, checkpoint_path)
+    if checkpoint and rows_processed_this_run > rows_saved:
+        _try_save_checkpoint(df, checkpoint.path)
 
     return token_stats
 
@@ -1835,8 +1866,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     reprocess_columns: Sequence[str] | None,
     parallel_requests: int,
     trace_mode: str | None = None,
-    batch_size: int | None = None,
-    checkpoint_path: str | Path | None = None,
+    checkpoint: _Checkpoint | None = None,
 ) -> dict:
     """Processa linhas do DataFrame em paralelo com auto-redução de workers.
 
@@ -1856,8 +1886,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         parallel_requests: Número inicial de workers paralelos.
             Será reduzido automaticamente se detectar erros de rate limit (429).
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
-        batch_size: A cada quantas linhas processadas o checkpoint é gravado.
-        checkpoint_path: Arquivo do checkpoint.
+        checkpoint: Arquivo do checkpoint e intervalo de gravação, ou None.
 
     Returns:
         Dict com estatísticas de tokens e métricas de throughput.
@@ -1872,33 +1901,22 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     rate_limit_event = threading.Event()
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
-    # processam linhas sigam durante a I/O, mas tem trava própria: duas
-    # gravações simultâneas disputam o mesmo arquivo temporário. Cada snapshot
-    # é copiado sob `lock` na mesma seção que incrementa checkpoint_counter e
-    # leva esse valor como rótulo; por isso o snapshot de rótulo maior contém
-    # tudo o que os de rótulo menor contêm, e um mais antigo que chegue depois
-    # pode ser descartado sem perda.
-    checkpoint_write_lock = threading.Lock()
-    last_saved_checkpoint = 0
+    # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
+    # na mesma seção que incrementa checkpoint_counter e leva esse valor como
+    # rótulo, que o _SnapshotWriter usa para descartar o snapshot atrasado.
+    writer = _SnapshotWriter(checkpoint) if checkpoint else None
 
-    def _save_snapshot(snapshot: tuple[pd.DataFrame, int] | None) -> None:
-        nonlocal last_saved_checkpoint
-        if snapshot is None:
-            return
-        frame, label = snapshot
-        with checkpoint_write_lock:
-            if label <= last_saved_checkpoint:
-                return
-            if _try_save_checkpoint(frame, checkpoint_path):
-                last_saved_checkpoint = label
+    def _save_snapshot(snapshot: Callable[[], None] | None) -> None:
+        if snapshot is not None:
+            snapshot()
 
-    def _count_row() -> tuple[pd.DataFrame, int] | None:
+    def _count_row() -> Callable[[], None] | None:
         """Conta a linha; na hora do checkpoint, copia o DataFrame. Chamar sob `lock`."""
         nonlocal checkpoint_counter
         checkpoint_counter += 1
-        if batch_size and checkpoint_counter % batch_size == 0:
+        if writer and checkpoint_counter % writer.checkpoint.batch_size == 0:
             # Copia sob lock, serializa fora, para não bloquear threads na I/O.
-            return (df.copy(), checkpoint_counter)
+            return partial(writer.save, df.copy(), checkpoint_counter)
         return None
 
     token_stats = _empty_token_stats()
@@ -2028,8 +2046,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     pbar.update(1)
 
     # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
-    if batch_size and checkpoint_counter > last_saved_checkpoint:
-        _try_save_checkpoint(df, checkpoint_path)
+    if writer and checkpoint_counter > writer.last_saved:
+        _try_save_checkpoint(df, writer.checkpoint.path)
 
     elapsed = time.time() - start_time
     token_stats["elapsed_seconds"] = elapsed

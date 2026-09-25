@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import importlib
 import json
 import operator
 import re
@@ -124,24 +123,6 @@ def parse_json(resposta: str) -> dict:
     except json.JSONDecodeError as e:
         msg = f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'..."
         raise ValueError(msg) from e
-
-
-def check_dependency(package: str, install_name: str | None = None) -> None:
-    """Verifica se dependência está instalada.
-
-    Args:
-        package: Nome do pacote para importação.
-        install_name: Nome do pacote para instalação (padrão: package).
-
-    Raises:
-        ImportError: Se a dependência não estiver instalada.
-    """
-    install_name = install_name or package
-    try:
-        importlib.import_module(package)
-    except ImportError as e:
-        msg = f"'{package}' não instalado. Instale com: pip install {install_name}"
-        raise ImportError(msg) from e
 
 
 def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:

@@ -1,5 +1,8 @@
 """Classificação e mensagens de erro dos providers."""
 
+import importlib
+import importlib.util
+
 import pytest
 
 from dataframeit import errors
@@ -7,6 +10,7 @@ from dataframeit.errors import (
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
+    validate_provider_dependencies,
 )
 
 # =============================================================================
@@ -144,3 +148,70 @@ def test_model_error_real_quando_disponivel():
     assert is_recoverable_error(exceptions.ModelInvalidRequestError("x")) is False
     assert is_recoverable_error(exceptions.ModelRateLimitError("x")) is True
     assert is_rate_limit_error(exceptions.ModelRateLimitError("x")) is True
+
+
+def test_sem_hierarquia_de_erros_do_langchain_core_classifica_pelo_status(monkeypatch):
+    """langchain-core anterior a 1.6 não tem ModelError, e o import cai no fallback.
+
+    O módulo é carregado numa cópia à parte: o dataframeit.errors já importado,
+    de que os outros módulos guardam referências, fica intacto.
+    """
+    exceptions = pytest.importorskip("langchain_core.exceptions")
+    for nome in ("ModelError", "ModelRateLimitError"):
+        monkeypatch.delattr(exceptions, nome, raising=False)
+    spec = importlib.util.find_spec("dataframeit.errors")
+    copia = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copia)
+
+    class ErroHttp(Exception):
+        status_code = 503
+
+    assert copia._ModelError is None
+    assert copia._ModelRateLimitError is None
+    assert copia.is_recoverable_error(ErroHttp("service unavailable")) is True
+    assert copia.is_rate_limit_error(ErroHttp("service unavailable")) is False
+
+
+def test_403_escolhe_a_caixa_de_permissao():
+    mensagem = get_friendly_error_message(Exception("403 Forbidden: model access"), "openai")
+    assert "ERRO DE PERMISSÃO" in mensagem
+
+
+def test_timeout_escolhe_a_caixa_de_tempo_esgotado():
+    mensagem = get_friendly_error_message(TimeoutError("request timed out"), "openai")
+    assert "TEMPO ESGOTADO" in mensagem
+
+
+# =============================================================================
+# Dependências do provider
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("ausente", "pacote_na_mensagem"),
+    [("langchain", "langchain"), ("langchain_core", "langchain-core")],
+)
+def test_langchain_ausente_pede_a_instalacao(monkeypatch, ausente, pacote_na_mensagem):
+    import_module = importlib.import_module
+
+    def importar(nome):
+        if nome == ausente:
+            raise ImportError(nome)
+        return import_module(nome)
+
+    monkeypatch.setattr(importlib, "import_module", importar)
+
+    with pytest.raises(ImportError, match=f"pip install {pacote_na_mensagem} ") as exc_info:
+        validate_provider_dependencies("openai")
+
+    assert "dataframeit[all]" in str(exc_info.value)
+
+
+def test_sem_provider_valida_so_o_langchain(monkeypatch):
+    """Com provider=None, o init_chat_model infere o provider pelo nome do modelo."""
+    importados = []
+    monkeypatch.setattr(importlib, "import_module", importados.append)
+
+    validate_provider_dependencies(None)
+
+    assert importados == ["langchain", "langchain_core"]

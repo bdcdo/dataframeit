@@ -746,3 +746,44 @@ def test_reprocess_columns_em_grupo_nao_pede_campo_de_condicao_falsa():
     assert ("b", ["cpf"]) not in chamadas
     assert ("a", ["cpf"]) in chamadas
     assert ("c", ["tipo", "cpf"]) in chamadas
+
+
+# =============================================================================
+# Referência adiantada a um modelo declarado depois do dono
+# =============================================================================
+
+
+# O dono é declarado antes da folha, e o Pydantic só resolve a referência na
+# primeira validação. Até lá, a anotação guarda um typing.ForwardRef, e é isso
+# que a varredura dos campos configurados encontra.
+class DonoDeFolhaPosterior(BaseModel):
+    folhas: typing.List["FolhaPosterior"] = []  # noqa: UP006 (typing.List guarda a referência como ForwardRef)
+
+
+class FolhaPosterior(BaseModel):
+    valor: Optional[str] = Field(None, json_schema_extra={"prompt_append": "y"})
+
+
+def test_configuracao_em_modelo_declarado_depois_do_dono_e_detectada():
+    """A configuração da folha exige busca por campo, mesmo com o dono ainda incompleto."""
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="requerem use_search=True e search_per_field=True"),
+    ):
+        dataframeit(
+            pd.DataFrame({"texto": ["x"]}), questions=DonoDeFolhaPosterior, prompt="{texto}"
+        )
+
+
+def test_resolve_forward_refs_deixa_annotated_como_esta():
+    """Annotated não é remontado: a anotação volta intacta, sem quebrar a varredura."""
+
+    class Folha(BaseModel):
+        x: int
+
+    class Dono(BaseModel):
+        a: int
+
+    anotado = typing.Annotated[list["Folha"], "metadado"]
+
+    assert resolve_forward_refs(anotado, Dono) is anotado

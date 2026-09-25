@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit import core, dataframeit
+from dataframeit import ProviderError, core, dataframeit
 from dataframeit.core import _print_token_stats
 
 
@@ -471,3 +471,144 @@ def test_estatisticas_de_busca_de_ponta_a_ponta_usam_o_provider(capsys):
     saida = capsys.readouterr().out
     assert "EXA" in saida
     assert "TAVILY" not in saida
+
+
+# =============================================================================
+# Validação da entrada
+# =============================================================================
+
+
+def test_text_column_inexistente_levanta_com_as_colunas_disponiveis():
+    with pytest.raises(ValueError, match=r"Coluna 'corpo' não encontrada.*\['texto'\]"):
+        _rodar(pd.DataFrame({"texto": ["a"]}), text_column="corpo")
+
+
+def test_modelo_sem_campos_levanta():
+    class Vazio(BaseModel):
+        pass
+
+    with pytest.raises(ValueError, match="Modelo Pydantic não pode estar vazio"):
+        _rodar(pd.DataFrame({"texto": ["a"]}), questions=Vazio)
+
+
+# =============================================================================
+# Retomada desligada, com resume=False
+# =============================================================================
+
+
+def test_resume_false_processa_o_dataframe_novo():
+    resultado, call_langchain = _rodar(pd.DataFrame({"texto": ["a", "b"]}), resume=False)
+
+    assert resultado["x"].tolist() == ["x-a", "x-b"]
+    assert call_langchain.call_count == 2
+
+
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_resume_false_nao_refaz_linha_ja_processada(parallel_requests):
+    """Com resume=False, só a linha que não está 'processed' vai ao LLM."""
+    df = pd.DataFrame({"texto": ["a", "b"], "_dataframeit_status": ["processed", "processed"]})
+
+    resultado, call_langchain = _rodar(df, resume=False, parallel_requests=parallel_requests)
+
+    call_langchain.assert_not_called()
+    assert resultado["x"].isna().all()
+
+
+# =============================================================================
+# Falha de reprocess_columns numa linha já processada
+# =============================================================================
+
+
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_falha_ao_reprocessar_diz_que_os_valores_ficaram(parallel_requests):
+    def falha(text, *args, **kwargs):
+        msg = "chave recusada"
+        raise ProviderError(msg)
+
+    df = pd.DataFrame({"texto": ["a"], "x": ["antigo"], "_dataframeit_status": ["processed"]})
+    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
+        resultado, _ = _rodar(
+            df, llm=falha, reprocess_columns=["x"], parallel_requests=parallel_requests
+        )
+
+    assert resultado["x"].tolist() == ["antigo"]
+    detalhe = resultado["_error_details"].iloc[0]
+    assert detalhe.startswith("[Erro não-recuperável] ProviderError: chave recusada")
+    assert detalhe.endswith("(reprocess_columns falhou; a linha mantém os valores anteriores)")
+
+
+# =============================================================================
+# rate_limit_delay
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("parallel_requests", "rotulo"), [(1, "[~120 req/min]"), (2, "[2 workers]")]
+)
+def test_rate_limit_delay_espera_depois_de_cada_linha(monkeypatch, parallel_requests, rotulo):
+    esperas = []
+    monkeypatch.setattr(core.time, "sleep", esperas.append)
+    # O rótulo é lido na chamada ao tqdm, e não no stderr: o tqdm do piso
+    # (4.1.0) fixa sys.stderr na importação, fora do alcance do capsys.
+    rotulos = []
+    tqdm_original = core.tqdm
+
+    def tqdm_que_registra(*args, **kwargs):
+        rotulos.append(kwargs.get("desc", ""))
+        return tqdm_original(*args, **kwargs)
+
+    monkeypatch.setattr(core, "tqdm", tqdm_que_registra)
+
+    resultado, _ = _rodar(
+        pd.DataFrame({"texto": ["a", "b"]}),
+        rate_limit_delay=0.5,
+        parallel_requests=parallel_requests,
+    )
+
+    assert resultado["x"].tolist() == ["x-a", "x-b"]
+    assert esperas == [0.5, 0.5]
+    assert len(rotulos) == 1
+    assert rotulo in rotulos[0]
+
+
+# =============================================================================
+# Resumo de uso
+# =============================================================================
+
+
+def test_resumo_detalha_cache_e_raciocinio(capsys):
+    _print_token_stats(
+        {
+            "input_tokens": 100,
+            "cached_input_tokens": 40,
+            "output_tokens": 30,
+            "reasoning_tokens": 10,
+            "total_tokens": 130,
+        },
+        model="m",
+    )
+
+    saida = capsys.readouterr().out
+    assert "└─ Cache: 40 (incluído no Input)" in saida
+    assert "└─ Reasoning: 10 (incluído no Output)" in saida
+
+
+def test_resumo_sem_requisicao_concluida_omite_a_taxa(capsys):
+    """Linhas que falharam com custo informado entram no resumo sem uma taxa de requisições."""
+    _print_token_stats(
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.02,
+            "elapsed_seconds": 2.0,
+            "requests_completed": 0,
+        },
+        model="m",
+        parallel_requests=2,
+    )
+
+    saida = capsys.readouterr().out
+    assert "METRICAS DE THROUGHPUT" in saida
+    assert "TPM (tokens/min): 0" in saida
+    assert "Requisicoes" not in saida

@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit.core import _save_checkpoint, dataframeit
+from dataframeit.core import _Checkpoint, _save_checkpoint, _SnapshotWriter, dataframeit
 
 # Original guardado antes de os testes trocarem importlib.util.find_spec.
 _FIND_SPEC = importlib.util.find_spec
@@ -405,3 +405,47 @@ def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     assert max_ativas[0] == 1
     assert processadas_por_gravacao == sorted(processadas_por_gravacao)
     assert resultado["campo1"].tolist() == ["ok"] * 24
+
+
+def test_checkpoint_parquet_grava_o_resultado(tmp_path):
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / "ckpt.parquet"
+    _, mock_llm = _mock_llm_factory()
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    salvo = pd.read_parquet(ckpt)
+    assert salvo["campo1"].tolist() == ["v1", "v2"]
+    assert salvo["_dataframeit_status"].tolist() == ["processed", "processed"]
+    assert not ckpt.with_name(ckpt.name + ".tmp").exists()
+
+
+def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
+    """No modo paralelo, o snapshot de rótulo menor que chega depois é descartado.
+
+    A ordem em que as threads disputam a trava não se reproduz pela API; o
+    _SnapshotWriter recebe os dois snapshots na ordem invertida diretamente.
+    """
+    gravados = []
+    escritor = _SnapshotWriter(_Checkpoint(tmp_path / "ckpt.csv", batch_size=1))
+    novo = pd.DataFrame({"campo1": ["a", "b"]})
+    antigo = pd.DataFrame({"campo1": ["a"]})
+
+    with patch("dataframeit.core._save_checkpoint", side_effect=lambda df, _: gravados.append(df)):
+        escritor.save(novo, 2)
+        escritor.save(antigo, 1)
+        escritor.save(novo, 2)
+
+    assert len(gravados) == 1
+    assert gravados[0] is novo
+    assert escritor.last_saved == 2

@@ -7,6 +7,9 @@ Testa conversão de/para:
 - dict
 """
 
+import importlib.util
+import sys
+
 import pandas as pd
 import pytest
 
@@ -279,3 +282,22 @@ def test_dict_com_chaves_tupla_mantem_indice_simples():
 
     assert not isinstance(resultado.index, pd.MultiIndex)
     assert list(resultado.index) == [("sp", 2020), ("rj", 2021)]
+
+
+def test_sem_polars_a_entrada_pandas_continua_funcionando(monkeypatch):
+    """Sem o extra polars, o import opcional cai no fallback e o pandas segue igual.
+
+    O módulo é carregado numa cópia à parte, com o import de polars bloqueado,
+    para não trocar o dataframeit.utils de que os outros módulos dependem.
+    """
+    monkeypatch.setitem(sys.modules, "polars", None)
+    spec = importlib.util.find_spec("dataframeit.utils")
+    copia = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copia)
+
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    convertido, info = copia.to_pandas(df)
+
+    assert copia.pl is None
+    assert info.original_type == ORIGINAL_TYPE_PANDAS_DF
+    assert copia.from_pandas(convertido, info).equals(df)
