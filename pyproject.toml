@@ -244,3 +244,20 @@ DEP002 = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["dataframeit"]
+# Caminhos relativos à raiz do repositório, para que os arquivos de dados de
+# jobs diferentes do CI se combinem num só relatório.
+relative_files = true
+
+[tool.coverage.paths]
+# O pacote é importado de src/ (instalação editável e pythonpath do pytest);
+# uma instalação comum o traria de site-packages, que conta como o mesmo código.
+source = ["src/dataframeit", "*/site-packages/dataframeit"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
