@@ -11,7 +11,7 @@ import logging
 import time
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, create_model
 
@@ -66,11 +66,12 @@ _MAX_CONTEXT_FIELDS = 3
 
 
 def _search_config(config: LLMConfig) -> SearchConfig:
-    """SearchConfig da execução com busca; sem ela, os modos de busca não se aplicam."""
-    if config.search_config is None:
-        msg = "Os modos de busca exigem LLMConfig.search_config"
-        raise ValueError(msg)
-    return config.search_config
+    """SearchConfig da execução com busca.
+
+    O core só chama os modos de busca com use_search=True, e é nesse caso que
+    ele monta a SearchConfig; o cast apenas registra essa garantia para o ty.
+    """
+    return cast("SearchConfig", config.search_config)
 
 
 def _query_model(name: str, fields: dict[str, tuple]) -> type[BaseModel]:
@@ -260,7 +261,7 @@ def _get_list_fields_with_nested_search(pydantic_model: type[BaseModel]) -> dict
     return list_fields_with_search
 
 
-def _enrich_list_items_with_search(  # noqa: C901, PLR0913, PLR0917 (laço por item e por campo)
+def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e por campo)
     list_items: list,
     inner_model: type[BaseModel],
     search_fields: list,
@@ -286,18 +287,12 @@ def _enrich_list_items_with_search(  # noqa: C901, PLR0913, PLR0917 (laço por i
     traces = [] if save_trace else None
 
     for item_idx, item in enumerate(list_items or []):
-        if item is None:
+        # A resposta do agente passa por model_dump, e cada item de List[Model]
+        # chega como dicionário. Outro valor não tem campos onde gravar a busca.
+        if not isinstance(item, dict):
             enriched_items.append(item)
             continue
-
-        # Converter item para dicionário se necessário
-        if hasattr(item, "model_dump"):
-            item_dict = item.model_dump()
-        elif isinstance(item, dict):
-            item_dict = item.copy()
-        else:
-            enriched_items.append(item)
-            continue
+        item_dict = item.copy()
 
         item_traces = {} if save_trace else None
 
@@ -305,10 +300,7 @@ def _enrich_list_items_with_search(  # noqa: C901, PLR0913, PLR0917 (laço por i
         item_context = _build_item_context(item_dict, inner_model)
 
         # Para cada campo de busca no modelo interno
-        for path, field_name, field_info, parent_model, has_config in search_fields:
-            if not has_config:
-                continue
-
+        for path, field_name, field_info, parent_model, _ in search_fields:
             extra = field_info.json_schema_extra
             field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
 
@@ -538,10 +530,7 @@ def _run_nested_searches(
     total_usage = _empty_usage()
     traces = {} if save_trace else None
 
-    for path, field_name, field_info, parent_model, has_config in nested_fields:
-        if not has_config:
-            continue
-
+    for path, field_name, field_info, parent_model, _ in nested_fields:
         # Extrair configurações do campo
         extra = field_info.json_schema_extra
         field_config = _get_field_config(extra) if isinstance(extra, dict) else {}
@@ -665,13 +654,9 @@ def call_agent_per_field(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (um 
         extra = field_info.json_schema_extra
         field_configs[field_name] = _get_field_config(extra) if isinstance(extra, dict) else {}
 
-    # Determinar ordem de execução baseada em dependências
-    try:
-        execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
-    except ValueError as e:
-        # O erro é relançado e leva o traceback; o log só registra o motivo.
-        logger.error("Erro ao determinar ordem de execução: %s", e)  # noqa: TRY400
-        raise
+    # Determinar ordem de execução baseada em dependências. Dependência
+    # inexistente ou circular já foi recusada pelo core antes da primeira linha.
+    execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
 
     logger.debug("Ordem de execução de campos: %s", execution_order)
     if any(dependencies.values()):
@@ -977,7 +962,7 @@ def _blocked_tool_call_ids(messages: list) -> set:
     }
 
 
-def _extract_usage(  # noqa: C901, PLR0912 (o diagnóstico em DEBUG descreve cada mensagem)
+def _extract_usage(  # noqa: C901 (o diagnóstico em DEBUG descreve cada mensagem)
     agent_result: dict,
     provider: SearchProvider,
     search_config: SearchConfig,
@@ -1009,14 +994,8 @@ def _extract_usage(  # noqa: C901, PLR0912 (o diagnóstico em DEBUG descreve cad
 
             metadata_info = ""
             if has_metadata:
-                meta = msg.usage_metadata
-                # Suportar tanto dict quanto objeto com atributos
-                if isinstance(meta, dict):
-                    metadata_info = (
-                        f"in={meta.get('input_tokens', 0)}, out={meta.get('output_tokens', 0)}"
-                    )
-                else:
-                    metadata_info = f"in={getattr(meta, 'input_tokens', 0)}, out={getattr(meta, 'output_tokens', 0)}"
+                parsed = _parse_usage_metadata(msg.usage_metadata)
+                metadata_info = f"in={parsed['input_tokens']}, out={parsed['output_tokens']}"
 
             tool_info = ""
             if has_tool_calls:
