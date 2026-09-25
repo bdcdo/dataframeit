@@ -12,10 +12,23 @@ Configure different LLM providers through LangChain or official SDKs for local t
 | Groq | `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `openai/gpt-oss-120b` |
 | OpenAI Codex (experimental) | `codex` | Models supported by the bundled runtime | Chosen by the runtime |
 | Claude Code | `claude_code` | Models and aliases accepted by Claude Code (`sonnet`, `haiku`, `opus`) | Chosen by the runtime |
-| Cohere | `cohere` | command-r, command-r-plus | Pass `model` |
-| Mistral | `mistralai` | mistral-large, mistral-small | Pass `model` |
+| Cohere | `cohere` | [Cohere catalog](https://docs.cohere.com/docs/models) | Pass `model` |
+| Mistral | `mistralai` | [Mistral catalog](https://docs.mistral.ai/getting-started/models/) | Pass `model` |
 
-Without `provider`, dataframeit uses `openai` with `gpt-6-luna`. With `provider` and no `model`, it uses that provider's default model from the table; providers without a default model require `model`.
+Without `provider`, dataframeit uses `openai` with `gpt-6-luna`. With `provider` and no `model`, it uses that provider's default model from the table; providers without a default model require `model`. Any other provider accepted by LangChain's `init_chat_model` also works, as long as the `langchain-<provider>` package is installed.
+
+## Which provider to choose
+
+| Situation | Provider | Why |
+|-----------|----------|-----|
+| Getting started, or high volume at low cost | `openai` (default) | `gpt-6-luna` has the lowest price per token among the models with prices listed below |
+| Free tier for testing | `groq` | Free per-minute limits on each model |
+| A harder task that the default model handles poorly | larger model from the same provider (`gpt-6-sol`, `claude-opus-5-5`) | Costs more per token; compare on a sample first |
+| Codex or Claude Code login, no API key | `codex` or `claude_code` | They use the tool's local authentication; they do not support web search |
+| Data that must stay in Brazil | Vertex AI, Bedrock or Azure | See [Brazilian region](#brazilian-region-sao-paulo) |
+| Web search | any provider via LangChain | `codex` and `claude_code` do not support `use_search=True` |
+
+Before processing the whole dataset, run a sample of 20 to 50 rows and check the result and the cost in the statistics summary.
 
 ## OpenAI (Default)
 
@@ -26,12 +39,11 @@ export OPENAI_API_KEY="your-key"
 
 ```python
 # Default - no need to specify
-result = dataframeit(df, Model, PROMPT, text_column='text')
+result = dataframeit(df, Model, PROMPT)
 
 # With a more advanced model
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='openai',
     model='gpt-6-sol',
     model_kwargs={
@@ -58,14 +70,12 @@ export GOOGLE_API_KEY="your-key"
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='google_genai'  # uses gemini-3.8-flash
 )
 
 # With extra parameters
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='google_genai',
     model='gemini-3.5-flash-lite',
     model_kwargs={
@@ -91,9 +101,7 @@ result = dataframeit(
     df,
     Model,
     PROMPT,
-    text_column='text',
-    provider='codex',
-    model='gpt-5.4',
+    provider='codex',                  # no model: the runtime chooses
     model_kwargs={'effort': 'medium'},
     parallel_requests=3,
 )
@@ -138,14 +146,12 @@ export ANTHROPIC_API_KEY="your-key"
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='anthropic'  # uses claude-sonnet-5
 )
 
 # With max_tokens
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='anthropic',
     model='claude-opus-5-5',
     model_kwargs={
@@ -172,14 +178,12 @@ export GROQ_API_KEY="your-key"
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='groq'  # uses openai/gpt-oss-120b
 )
 
 # Faster/cheaper model
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='groq',
     model='openai/gpt-oss-20b'
 )
@@ -213,7 +217,6 @@ export COHERE_API_KEY="your-key"
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='cohere',
     model='command-r-plus'
 )
@@ -229,7 +232,6 @@ export MISTRAL_API_KEY="your-key"
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='mistralai',
     model='mistral-large-latest'
 )
@@ -237,7 +239,7 @@ result = dataframeit(
 
 ## Brazilian region (São Paulo)
 
-The providers above use global public endpoints. To serve from Brazil — for latency, data residency or regulatory reasons — use one of the three options below. In all of them, `dataframeit` forwards `model_kwargs` straight to LangChain.
+The providers above use global public endpoints. To serve from Brazil, for latency, data residency or regulatory reasons, use one of the three options below. In all of them, `dataframeit` forwards `model_kwargs` straight to LangChain.
 
 ### Vertex AI (Gemini in `southamerica-east1`)
 
@@ -247,7 +249,6 @@ Two variants. The first one needs no extra package install:
 # Variant A: uses langchain-google-genai (already a dep of provider 'google_genai')
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='google_genai',
     model='gemini-3.8-flash',
     model_kwargs={
@@ -263,7 +264,6 @@ result = dataframeit(
 # pip install langchain-google-vertexai
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='google_vertexai',
     model='gemini-3.8-flash',
     model_kwargs={
@@ -291,7 +291,6 @@ aws configure  # or export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='bedrock_converse',
     model='global.anthropic.claude-sonnet-5',
     model_kwargs={'region_name': 'sa-east-1'},
@@ -314,14 +313,13 @@ export OPENAI_API_VERSION="2025-03-01-preview"
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='azure_openai',
-    model='gpt-4o',  # or the deployment name
+    model='gpt-6-luna',  # or the deployment name
     model_kwargs={'azure_deployment': '<deployment-name>'},
 )
 ```
 
-The region is encoded in `AZURE_OPENAI_ENDPOINT` — provision the resource in "Brazil South" via the Azure portal.
+The region is encoded in `AZURE_OPENAI_ENDPOINT`: provision the resource in "Brazil South" via the Azure portal.
 
 The API version (`OPENAI_API_VERSION`) changes often. Check the latest stable version at [aka.ms/azure-openai-api-versions](https://aka.ms/azure-openai-api-versions).
 
@@ -335,7 +333,6 @@ If you prefer not to use environment variables:
 ```python
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='openai',
     api_key='sk-...'  # Your key directly
 )
@@ -350,4 +347,6 @@ result = dataframeit(
 |-----------|-------------|-----------|
 | `temperature` | Creativity. dataframeit sends no default value | Model-dependent: several current models reject it (e.g. Claude Sonnet 5, OpenAI GPT-6 with reasoning and o-series) |
 | `top_p` | Nucleus sampling | Model-dependent, like `temperature` |
-| `max_tokens` | Output limit | All |
+| `max_tokens` | Output limit | Providers via LangChain |
+
+The `codex` and `claude_code` providers do not use these parameters: `codex` accepts only `effort` and rejects the other keys before starting; `claude_code` reads only `max_turns`, `max_budget_usd` and `effort` and ignores the rest.

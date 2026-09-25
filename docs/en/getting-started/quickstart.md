@@ -69,8 +69,7 @@ from dataframeit import dataframeit
 result = dataframeit(
     df,                                      # Your data
     Sentiment,                               # Pydantic model
-    "Analyze the sentiment of the text.",    # Prompt
-    text_column='text'                       # Column name
+    "Analyze the sentiment of the text."     # Prompt
 )
 
 print(result)
@@ -108,7 +107,7 @@ df = pd.DataFrame({
 })
 
 # 3. Process
-result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.", text_column='text')
+result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.")
 
 # 4. Save
 result.to_excel('result.xlsx', index=False)

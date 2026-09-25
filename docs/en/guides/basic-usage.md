@@ -22,7 +22,7 @@ df = pd.DataFrame({
     ]
 })
 
-result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.", text_column='text')
+result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.")
 ```
 
 ## Category Classification
@@ -38,8 +38,7 @@ class Category(BaseModel):
 result = dataframeit(
     df,
     Category,
-    "Classify the text into the most appropriate category.",
-    text_column='text'
+    "Classify the text into the most appropriate category."
 )
 ```
 
@@ -60,7 +59,7 @@ Extract all named entities from the text.
 If there are no entities of some type, return an empty list.
 """
 
-result = dataframeit(df, Entities, PROMPT, text_column='text')
+result = dataframeit(df, Entities, PROMPT)
 ```
 
 ## Text Summarization
@@ -78,7 +77,7 @@ Analyze the text and extract a concise summary.
 Identify the main points and central topic.
 """
 
-result = dataframeit(df, Summary, PROMPT, text_column='text')
+result = dataframeit(df, Summary, PROMPT)
 ```
 
 ## Using Different Input Types
@@ -114,12 +113,11 @@ result = dataframeit(series, Sentiment, PROMPT)
 
 ```python
 # OpenAI with gpt-6-luna (default)
-result = dataframeit(df, Model, PROMPT, text_column='text')
+result = dataframeit(df, Model, PROMPT)
 
 # Google Gemini
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='google_genai',
     model='gemini-3.8-flash'
 )
@@ -127,7 +125,6 @@ result = dataframeit(
 # Anthropic Claude
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='anthropic',
     model='claude-sonnet-5'
 )

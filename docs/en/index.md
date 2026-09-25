@@ -12,9 +12,9 @@
 
 <div class="cta-buttons" markdown>
 
-[:material-rocket-launch: Get Started](getting-started/quickstart/){ .cta-button .primary }
+[:material-rocket-launch: Get Started](getting-started/quickstart.md){ .cta-button .primary }
 
-[:material-robot: LLM Reference](reference/llm-reference/){ .cta-button .secondary }
+[:material-robot: LLM Reference](reference/llm-reference.md){ .cta-button .secondary }
 
 </div>
 
@@ -22,7 +22,7 @@
 
 ## What is it?
 
-DataFrameIt processes text in DataFrames using **Large Language Models (LLMs)** and extracts structured information defined by **Pydantic models**. One function, one model, one prompt — done.
+DataFrameIt processes text in DataFrames using **Large Language Models (LLMs)** and extracts structured information defined by **Pydantic models**. One function, one model and one prompt are all you need.
 
 ```python
 from pydantic import BaseModel
@@ -35,7 +35,7 @@ class Sentiment(BaseModel):
     confidence: Literal['high', 'medium', 'low']
 
 df = pd.DataFrame({'text': ['Excellent product!', 'Terrible service.']})
-result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.", text_column='text')
+result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.")
 ```
 
 ## Features
@@ -47,7 +47,7 @@ result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.", text_c
 
 ### Multiple Providers
 
-Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — all via LangChain.
+OpenAI, Google Gemini, Anthropic, Groq and others via LangChain, plus Codex and Claude Code through the official SDKs.
 </div>
 
 <div class="feature-card" markdown>
@@ -55,7 +55,7 @@ Google Gemini, OpenAI GPT-5, Anthropic Claude 4.5, Cohere, Mistral — all via L
 
 ### Structured Output
 
-Automatic validation with Pydantic. Define fields, types, and descriptions — the LLM respects them.
+Automatic validation with Pydantic. Define fields, types, and descriptions; a response that does not match the model goes back to the LLM with the error for correction.
 </div>
 
 <div class="feature-card" markdown>
@@ -63,7 +63,7 @@ Automatic validation with Pydantic. Define fields, types, and descriptions — t
 
 ### Resilience
 
-Automatic retry with exponential backoff. Configurable rate limiting. Never lose progress.
+Automatic retry with exponential backoff, configurable rate limiting and periodic checkpoints to resume long runs.
 </div>
 
 <div class="feature-card" markdown>
@@ -79,7 +79,7 @@ Parallel processing with auto-adjustment. Real-time throughput metrics.
 
 ### Web Search
 
-Tavily integration to enrich data with information from the internet.
+Tavily or Exa to enrich data with information from the internet, with per-field search and conditional fields.
 </div>
 
 <div class="feature-card" markdown>
@@ -87,7 +87,7 @@ Tavily integration to enrich data with information from the internet.
 
 ### Multiple Inputs
 
-DataFrame, Series, list, dictionary — everything works. Polars included.
+pandas or Polars DataFrame and Series, list and dictionary. The output comes back in the same format as the input.
 </div>
 
 </div>
@@ -95,9 +95,10 @@ DataFrame, Series, list, dictionary — everything works. Polars included.
 ## Quick Installation
 
 ```bash
-pip install dataframeit[openai]  # OpenAI GPT-6 (default provider)
-pip install dataframeit[google]  # Google Gemini 3.8
-pip install dataframeit[anthropic]  # Anthropic Claude 5
+pip install dataframeit[openai]     # OpenAI (default provider)
+pip install dataframeit[google]     # Google Gemini
+pip install dataframeit[anthropic]  # Anthropic
+pip install dataframeit[all]        # all providers, web search, Polars and Excel
 ```
 
 ## Next Steps
@@ -105,22 +106,22 @@ pip install dataframeit[anthropic]  # Anthropic Claude 5
 <div class="nav-grid" markdown>
 
 <div class="nav-card" markdown>
-### :material-download: [Installation](getting-started/installation/)
+### :material-download: [Installation](getting-started/installation.md)
 Set up with your preferred provider
 </div>
 
 <div class="nav-card" markdown>
-### :material-rocket-launch: [Quickstart](getting-started/quickstart/)
+### :material-rocket-launch: [Quickstart](getting-started/quickstart.md)
 First project in 5 minutes
 </div>
 
 <div class="nav-card" markdown>
-### :material-book-open-variant: [Guides](guides/basic-usage/)
+### :material-book-open-variant: [Guides](guides/basic-usage.md)
 Parallelism, retry, web search
 </div>
 
 <div class="nav-card" markdown>
-### :material-robot: [LLM Reference](reference/llm-reference/)
+### :material-robot: [LLM Reference](reference/llm-reference.md)
 Compact docs for code assistants
 </div>
 

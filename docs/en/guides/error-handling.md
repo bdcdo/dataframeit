@@ -1,6 +1,6 @@
 # Error Handling
 
-Configure retry, fallbacks and monitor errors in processing.
+Configure retries and monitor processing errors. Configuration failures, such as a missing extra or an invalid parameter, raise an exception before the first call to the model; see [Exceptions](../reference/exceptions.md). This page covers per-row failures, which do not stop the run.
 
 ## Status Columns
 
@@ -8,28 +8,28 @@ DataFrameIt automatically adds control columns:
 
 | Column | Values | Description |
 |--------|--------|-------------|
-| `_dataframeit_status` | `'processed'`, `'error'`, `None` | Processing status |
-| `_error_details` | string or `None` | Error details |
+| `_dataframeit_status` | `'processed'`, `'error'`, `None` | Processing status; `None` is a row not yet processed |
+| `_error_details` | string or `None` | Reason for the error; on a successful row that needed retries, `"Sucesso após N retry(s)"`; on a row with empty text, `"Texto ausente"` |
+
+When no row fails and none records any detail, both columns are removed from the output. Check that the column exists before filtering on it.
 
 ## Checking Errors
 
 ```python
 from dataframeit import dataframeit
 
-result = dataframeit(df, Model, PROMPT, text_column='text')
+result = dataframeit(df, Model, PROMPT)
 
-# Count errors
-total_errors = (result['_dataframeit_status'] == 'error').sum()
-print(f"Total errors: {total_errors}")
+if '_dataframeit_status' not in result.columns:
+    print("No row failed.")
+else:
+    errors = result[result['_dataframeit_status'] == 'error']
+    print(f"Total errors: {len(errors)}")
+    for idx, row in errors.iterrows():
+        print(f"Row {idx}: {row['_error_details']}")
 
-# Filter rows with errors
-errors = result[result['_dataframeit_status'] == 'error']
-for idx, row in errors.iterrows():
-    print(f"Row {idx}: {row['_error_details']}")
-
-# Filter only successes
-success = result[result['_dataframeit_status'] == 'processed']
-success.to_excel('clean_result.xlsx', index=False)
+    success = result[result['_dataframeit_status'] == 'processed']
+    success.to_excel('clean_result.xlsx', index=False)
 ```
 
 ## Configuring Retry
@@ -41,23 +41,23 @@ result = dataframeit(
     df,
     Model,
     PROMPT,
-    text_column='text',
-    max_retries=5,        # Maximum attempts (default: 3)
-    base_delay=2.0,       # Initial delay in seconds (default: 1.0)
-    max_delay=60.0        # Maximum delay in seconds (default: 30.0)
+    max_retries=5,        # Total attempts, counting the first one (default: 3)
+    base_delay=2.0,       # Wait before the first retry (default: 1.0)
+    max_delay=60.0        # Ceiling for the wait (default: 30.0)
 )
 ```
 
-**How backoff works:**
+**How backoff works** with the configuration above:
 
 ```
 Attempt 1: fails → wait 2s
 Attempt 2: fails → wait 4s
 Attempt 3: fails → wait 8s
 Attempt 4: fails → wait 16s
-Attempt 5: fails → wait 32s (limited to 60s)
-Attempt 6: fails → mark as error
+Attempt 5: fails → mark as error
 ```
+
+The wait before attempt `n + 1` is `min(base_delay × 2^(n-1), max_delay)`, plus up to 10% random jitter so that parallel workers do not repeat the call at the same instant. A permanent error ends the row immediately, without exhausting the attempts.
 
 ## Error Types
 
@@ -84,21 +84,25 @@ With OpenAI, the SDK validates the response inside the call and raises before re
 - **Invalid request** (`BadRequestError`, `InvalidArgument`): a parameter the provider rejects
 - **Prompt larger than the context window** (`ContextOverflowError`)
 - **Local configuration incompatible with the provider**
+- **Budget or turn limit of `claude_code` exhausted** (`max_budget_usd`, `max_turns`)
 
 ## Incremental Processing
 
-For large datasets, use `resume=True` to continue from where you left off:
+For large datasets, save checkpoints during the run and continue from where you left off:
 
 ```python
-# First run
-result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
-result.to_excel('partial.xlsx', index=False)
+# Saves progress every 100 rows
+result = dataframeit(
+    df, Model, PROMPT,
+    batch_size=100,
+    checkpoint_path='partial.xlsx',
+)
 
-# If interrupted, load and continue
+# If interrupted, load the checkpoint and continue
 from dataframeit import read_df
 
 df = read_df('partial.xlsx', Model)
-result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
+result = dataframeit(df, Model, PROMPT, resume=True)
 result.to_excel('complete.xlsx', index=False)
 ```
 
@@ -118,7 +122,7 @@ df.loc[df['_dataframeit_status'] == 'error', '_dataframeit_status'] = None
 df.loc[df['_error_details'].notna(), '_error_details'] = None
 
 # Reprocess only rows without status
-result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
+result = dataframeit(df, Model, PROMPT, resume=True)
 ```
 
 ## Strategies to Reduce Errors
@@ -129,8 +133,7 @@ result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
 # Prevents rate limit errors
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
-    rate_limit_delay=1.0  # 1 second between requests
+    rate_limit_delay=1.0  # each worker pauses 1 second after each row
 )
 ```
 
@@ -171,7 +174,6 @@ If the text is ambiguous, classify as neutral with low confidence.
 # If errors persist, try a more capable model
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     model='gpt-6-sol'  # More capable than gpt-6-luna
 )
 ```

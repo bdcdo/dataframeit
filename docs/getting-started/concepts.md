@@ -77,15 +77,16 @@ Extraia as informações solicitadas do documento acima.
 """
 ```
 
-### 3. Providers via LangChain
+### 3. Provedores
 
-O DataFrameIt usa LangChain para abstrair diferentes provedores de LLM:
+O DataFrameIt usa LangChain para abstrair diferentes provedores de LLM. Os providers `codex` e `claude_code` usam os SDKs oficiais das ferramentas, com a autenticação local delas; ver [Provedores](../guides/providers.md).
 
 | Provider | Modelos Populares | Variável de Ambiente |
 |----------|-------------------|---------------------|
 | `openai` | gpt-6-luna, gpt-6-sol, gpt-6-astra | `OPENAI_API_KEY` |
 | `google_genai` | gemini-3.8-flash, gemini-3.6-flash, gemini-3.5-flash-lite | `GOOGLE_API_KEY` |
 | `anthropic` | claude-sonnet-5, claude-opus-5-5, claude-haiku-4-5 | `ANTHROPIC_API_KEY` |
+| `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `GROQ_API_KEY` |
 
 ## Fluxo de Processamento
 
@@ -94,7 +95,7 @@ Para cada linha do DataFrame:
 │
 ├─► 1. Monta o prompt (template + texto da linha)
 │
-├─► 2. Envia para o LLM via LangChain
+├─► 2. Envia ao provider (com busca web, a um agente que busca antes de responder)
 │
 ├─► 3. Recebe resposta estruturada
 │
@@ -102,11 +103,11 @@ Para cada linha do DataFrame:
 │   │
 │   ├─► Sucesso: marca como 'processed'
 │   │
-│   └─► Erro: retry com backoff exponencial
+│   └─► Erro transitório ou resposta recusada: nova tentativa com backoff exponencial
 │       │
-│       ├─► Sucesso após retry: marca como 'processed'
+│       ├─► Sucesso numa nova tentativa: marca como 'processed'
 │       │
-│       └─► Falha após max_retries: marca como 'error'
+│       └─► Tentativas esgotadas, ou erro permanente: marca como 'error'
 │
 └─► 5. Adiciona campos extraídos ao DataFrame
 ```
@@ -118,10 +119,12 @@ O DataFrameIt adiciona as colunas de status automaticamente. Quando `track_token
 | Coluna | Descrição |
 |--------|-----------|
 | `_dataframeit_status` | Status: `'processed'`, `'error'`, ou `None` |
-| `_error_details` | Detalhes do erro (quando status é `'error'`) |
+| `_error_details` | Detalhes do erro, ou das novas tentativas numa linha que deu certo |
+
+As duas colunas são removidas da saída quando nenhuma linha falha nem registra detalhe.
 
 ## Próximos Passos
 
 - [Uso Básico](../guides/basic-usage.md): Exemplos práticos
-- [Tratamento de Erros](../guides/error-handling.md): Configurar retry e fallbacks
+- [Tratamento de Erros](../guides/error-handling.md): Configurar retry e monitorar falhas
 - [Performance](../guides/performance.md): Paralelismo e rate limiting

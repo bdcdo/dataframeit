@@ -2,7 +2,7 @@
 
 Configure diferentes provedores de LLM via LangChain ou pelos SDKs oficiais de ferramentas locais.
 
-## Providers Suportados
+## Provedores Suportados
 
 | Provider | Identificador | Modelos atuais | Modelo padrão |
 |----------|---------------|----------------|---------------|
@@ -12,10 +12,23 @@ Configure diferentes provedores de LLM via LangChain ou pelos SDKs oficiais de f
 | Groq | `groq` | openai/gpt-oss-120b, openai/gpt-oss-20b | `openai/gpt-oss-120b` |
 | OpenAI Codex (experimental) | `codex` | Modelos suportados pelo runtime empacotado | Escolhido pelo runtime |
 | Claude Code | `claude_code` | Modelos e aliases aceitos pelo Claude Code (`sonnet`, `haiku`, `opus`) | Escolhido pelo runtime |
-| Cohere | `cohere` | command-r, command-r-plus | Informe `model` |
-| Mistral | `mistralai` | mistral-large, mistral-small | Informe `model` |
+| Cohere | `cohere` | [Catálogo da Cohere](https://docs.cohere.com/docs/models) | Informe `model` |
+| Mistral | `mistralai` | [Catálogo da Mistral](https://docs.mistral.ai/getting-started/models/) | Informe `model` |
 
-Sem `provider`, o dataframeit usa `openai` com `gpt-6-luna`. Com `provider` e sem `model`, usa o modelo padrão do provider da tabela; para providers sem modelo padrão, `model` é obrigatório.
+Sem `provider`, o dataframeit usa `openai` com `gpt-6-luna`. Com `provider` e sem `model`, usa o modelo padrão do provider da tabela; para providers sem modelo padrão, `model` é obrigatório. Qualquer outro provider aceito pelo `init_chat_model` do LangChain também funciona, desde que o pacote `langchain-<provider>` esteja instalado.
+
+## Qual provedor escolher
+
+| Situação | Provedor | Por quê |
+|----------|----------|---------|
+| Começar, ou volume alto com custo baixo | `openai` (padrão) | O `gpt-6-luna` tem o menor preço por token entre os modelos com preço listado abaixo |
+| Free tier para testar | `groq` | Limites gratuitos por minuto em cada modelo |
+| Tarefa mais difícil que o modelo padrão resolve mal | modelo maior do mesmo provider (`gpt-6-sol`, `claude-opus-5-5`) | Custa mais por token; compare numa amostra antes |
+| Login do Codex ou do Claude Code, sem chave de API | `codex` ou `claude_code` | Usam a autenticação local da ferramenta; não suportam busca web |
+| Dados que precisam ficar no Brasil | Vertex AI, Bedrock ou Azure | Ver [Servidor no Brasil](#servidor-no-brasil-sao-paulo) |
+| Busca web | qualquer provider via LangChain | `codex` e `claude_code` não suportam `use_search=True` |
+
+Antes de processar o dataset inteiro, rode uma amostra de 20 a 50 linhas e confira o resultado e o custo no resumo de estatísticas.
 
 ## OpenAI (Padrão)
 
@@ -88,8 +101,7 @@ resultado = dataframeit(
     df,
     Model,
     PROMPT,
-    provider='codex',
-    model='gpt-5.4',
+    provider='codex',                  # sem model: o runtime escolhe
     model_kwargs={'effort': 'medium'},
     parallel_requests=3,
 )
@@ -227,7 +239,7 @@ resultado = dataframeit(
 
 ## Servidor no Brasil (São Paulo)
 
-Os providers acima usam endpoints públicos globais. Para servir do Brasil — útil por latência, residência de dados ou exigência regulatória — use um dos três caminhos abaixo. Em todos eles, o `dataframeit` repassa o que vier em `model_kwargs` direto para o LangChain.
+Os providers acima usam endpoints públicos globais. Para servir do Brasil, por latência, residência de dados ou exigência regulatória, use um dos três caminhos abaixo. Em todos eles, o `dataframeit` repassa o que vier em `model_kwargs` direto para o LangChain.
 
 ### Vertex AI (Gemini em `southamerica-east1`)
 
@@ -302,12 +314,12 @@ export OPENAI_API_VERSION="2025-03-01-preview"
 resultado = dataframeit(
     df, Model, PROMPT,
     provider='azure_openai',
-    model='gpt-4o',  # ou o nome do deployment
+    model='gpt-6-luna',  # ou o nome do deployment
     model_kwargs={'azure_deployment': '<nome-do-deployment>'},
 )
 ```
 
-A região é codificada no `AZURE_OPENAI_ENDPOINT` — provisione o recurso em "Brazil South" no portal Azure.
+A região é codificada no `AZURE_OPENAI_ENDPOINT`: provisione o recurso em "Brazil South" no portal Azure.
 
 A versão da API (`OPENAI_API_VERSION`) muda com frequência. Confira a versão estável mais recente em [aka.ms/azure-openai-api-versions](https://aka.ms/azure-openai-api-versions).
 
@@ -335,4 +347,6 @@ resultado = dataframeit(
 |-----------|-----------|-----------|
 | `temperature` | Criatividade. O dataframeit não envia valor padrão | Depende do modelo: vários atuais rejeitam (ex.: Claude Sonnet 5, OpenAI GPT-6 com raciocínio e série o) |
 | `top_p` | Nucleus sampling | Depende do modelo, como `temperature` |
-| `max_tokens` | Limite de saída | Todos |
+| `max_tokens` | Limite de saída | Providers via LangChain |
+
+Os providers `codex` e `claude_code` não usam esses parâmetros: o `codex` aceita só `effort` e recusa as outras chaves antes de começar; o `claude_code` lê só `max_turns`, `max_budget_usd` e `effort` e ignora o resto.

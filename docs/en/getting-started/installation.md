@@ -28,6 +28,14 @@ DataFrameIt integrates multiple LLM providers through LangChain or official SDKs
 
     Models: `claude-sonnet-5`, `claude-opus-5-5`, `claude-haiku-4-5`
 
+=== "Groq"
+
+    ```bash
+    pip install dataframeit[groq]
+    ```
+
+    Models: `openai/gpt-oss-120b`, `openai/gpt-oss-20b` and others from the [Groq catalog](https://console.groq.com/docs/models)
+
 === "Codex (Experimental)"
 
     ```bash
@@ -52,11 +60,23 @@ DataFrameIt integrates multiple LLM providers through LangChain or official SDKs
     pip install dataframeit[all]
     ```
 
-    While experimental, the Codex provider is not included in `all`; install `dataframeit[codex]` separately.
+    Installs the OpenAI, Google, Anthropic, Groq and Claude Code providers, web search (Tavily and Exa), Polars and Excel. While experimental, the Codex provider is not included in `all`; install `dataframeit[codex]` separately.
+
+Other LangChain providers, such as Cohere and Mistral, have no extra: install the corresponding `langchain-<provider>` package. See [Providers](../guides/providers.md).
+
+## With Web Search (Optional)
+
+```bash
+pip install dataframeit[search]       # Tavily
+pip install dataframeit[search-exa]   # Exa
+pip install dataframeit[search-all]   # both
+```
+
+The API key for each search provider is described in [Web Search](../guides/web-search.md).
 
 ## With Polars (Optional)
 
-If you use Polars instead of Pandas:
+If you use Polars instead of Pandas, or want `.parquet` checkpoints (the extra brings `pyarrow`):
 
 ```bash
 pip install dataframeit[openai,polars]
@@ -98,6 +118,14 @@ Configure the credentials for your provider:
 
     Get your key at: [Anthropic Console](https://console.anthropic.com/)
 
+=== "Groq"
+
+    ```bash
+    export GROQ_API_KEY="your-groq-key"
+    ```
+
+    Get your key at: [Groq Console](https://console.groq.com/keys)
+
 === "Codex"
 
     If `auth.json` does not exist yet, install the [official Codex CLI](https://learn.chatgpt.com/docs/codex/cli) and authenticate once:
@@ -111,9 +139,11 @@ Configure the credentials for your provider:
 ## Verifying Installation
 
 ```python
-from dataframeit import dataframeit
-print("DataFrameIt installed successfully!")
+import dataframeit
+print(dataframeit.__version__)
 ```
+
+If the chosen provider is not installed, `dataframeit()` tells you which extra is missing before it starts.
 
 ## Next Step
 

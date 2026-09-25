@@ -11,11 +11,16 @@ DataFrameIt processes texts in DataFrames using LLMs and extracts structured inf
 ## Installation
 
 ```bash
-pip install dataframeit[openai]    # OpenAI (default)
-pip install dataframeit[google]    # Google Gemini
-pip install dataframeit[anthropic] # Anthropic Claude
-pip install dataframeit[codex]     # Official Codex SDK (experimental)
+pip install dataframeit[openai]       # OpenAI (default)
+pip install dataframeit[google]       # Google Gemini
+pip install dataframeit[anthropic]    # Anthropic Claude
+pip install dataframeit[groq]         # Groq
+pip install dataframeit[codex]        # Official Codex SDK (experimental)
 pip install dataframeit[claude-code]  # Claude Code via the Claude Agent SDK
+pip install dataframeit[search]       # Web search with Tavily
+pip install dataframeit[search-exa]   # Web search with Exa
+pip install dataframeit[polars]       # Polars input and output (includes pyarrow, for .parquet)
+pip install dataframeit[excel]        # Reading and checkpoints in .xlsx
 ```
 
 **Environment variables:**
@@ -23,6 +28,9 @@ pip install dataframeit[claude-code]  # Claude Code via the Claude Agent SDK
 export OPENAI_API_KEY="..."     # For OpenAI
 export GOOGLE_API_KEY="..."     # For Gemini
 export ANTHROPIC_API_KEY="..."  # For Anthropic
+export GROQ_API_KEY="..."       # For Groq
+export TAVILY_API_KEY="..."     # For search with Tavily
+export EXA_API_KEY="..."        # For search with Exa
 ```
 
 The `codex` provider is optional, is not included in the `all` extra, uses the bundled runtime, and requires local file-backed authentication without `OPENAI_API_KEY`. See [Installation](../getting-started/installation.md) to configure the extra and credentials.
@@ -40,14 +48,20 @@ result = dataframeit(
     prompt,                  # Prompt template
     text_column=None,        # Column with texts (None = automatic inference)
     model=None,              # None = provider's default model
-    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'claude_code', 'codex'
+    provider='openai',       # 'openai', 'google_genai', 'anthropic', 'groq', 'claude_code', 'codex'
     resume=True,             # Continue from where it stopped
+    reprocess_columns=None,  # Columns to redo even on rows already processed
+    status_column=None,      # None = '_dataframeit_status'
     parallel_requests=1,     # Parallel workers
-    rate_limit_delay=0.0,    # Delay between requests (seconds)
-    max_retries=3,           # Retry attempts on error
+    rate_limit_delay=0.0,    # Pause of each worker after each successful row (seconds)
+    max_retries=3,           # Total attempts per row, counting the first one
+    base_delay=1.0,          # Wait before the first retry; doubles on each one
+    max_delay=30.0,          # Ceiling for the wait between attempts
     track_tokens=True,       # Track token usage
     api_key=None,            # API key (uses env var if None)
     model_kwargs=None,       # Extra parameters (temperature, etc)
+    batch_size=None,         # Save a checkpoint every N rows
+    checkpoint_path=None,    # Checkpoint file (.csv, .xlsx, .parquet)
     # Web search (requires TAVILY_API_KEY or EXA_API_KEY)
     use_search=False,        # Enable web search
     search_provider='tavily',  # 'tavily' or 'exa'
@@ -90,8 +104,7 @@ df = pd.DataFrame({
 result = dataframeit(
     df,
     Analysis,
-    "Analyze the text and extract the requested information.",
-    text_column='text'
+    "Analyze the text and extract the requested information."
 )
 
 # 4. Result contains columns: text, sentiment, confidence, topics, summary
@@ -156,12 +169,11 @@ class Person(BaseModel):
 
 ```python
 # OpenAI with gpt-6-luna (default)
-result = dataframeit(df, Model, PROMPT, text_column='text')
+result = dataframeit(df, Model, PROMPT)
 
 # Google Gemini
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='google_genai',
     model='gemini-3.8-flash'
 )
@@ -169,7 +181,6 @@ result = dataframeit(
 # Anthropic
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='anthropic',
     model='claude-sonnet-5'
 )
@@ -177,9 +188,7 @@ result = dataframeit(
 # Official Codex SDK (experimental)
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
-    provider='codex',
-    model='gpt-5.4',
+    provider='codex',                  # model=None: the runtime chooses
     model_kwargs={'effort': 'medium'}
 )
 
@@ -194,9 +203,7 @@ result = dataframeit(
 # With extra parameters
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     provider='openai',
-    model='gpt-4.1-mini',
     model_kwargs={'temperature': 0.2}
 )
 ```
@@ -213,21 +220,18 @@ The `claude_code` provider uses Claude Code's authentication (credentials of a C
 # Parallel processing
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     parallel_requests=5  # 5 simultaneous workers
 )
 
 # Rate limiting (prevents 429 error)
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
-    rate_limit_delay=1.0  # 1 second between requests
+    rate_limit_delay=1.0  # each worker pauses 1 second after each row
 )
 
 # Combined
 result = dataframeit(
     df, Model, PROMPT,
-    text_column='text',
     parallel_requests=5,
     rate_limit_delay=0.5
 )
@@ -238,15 +242,15 @@ result = dataframeit(
 ## Error Handling
 
 ```python
-result = dataframeit(df, Model, PROMPT, text_column='text', max_retries=5)
+result = dataframeit(df, Model, PROMPT, max_retries=5)
 
-# Check errors
-errors = result[result['_dataframeit_status'] == 'error']
-print(errors['_error_details'])
-
-# Filter success
-success = result[result['_dataframeit_status'] == 'processed']
+# The status columns only exist if some row failed or recorded a detail
+if '_dataframeit_status' in result.columns:
+    errors = result[result['_dataframeit_status'] == 'error']
+    print(errors['_error_details'])
 ```
+
+Configuration failures (missing extra, invalid parameter) raise an exception before the first call. Failures on a row do not stop the run: the row gets status `'error'` and the reason in `_error_details`. See [Exceptions](exceptions.md).
 
 ---
 
@@ -256,28 +260,35 @@ With `track_tokens=True`, DataFrameIt creates `_input_tokens`, `_cached_input_to
 
 | Column | Description |
 |--------|-------------|
-| `_dataframeit_status` | `'processed'`, `'error'`, `None` |
-| `_error_details` | Error message |
+| `_dataframeit_status` | `'processed'`, `'error'`, `None`; removed when no row failed or recorded any detail |
+| `_error_details` | Error message, `"Sucesso após N retry(s)"` or `"Texto ausente"`; removed together with the status column |
 | `_input_tokens` | Input tokens (with `track_tokens=True`) |
 | `_cached_input_tokens` | Input subset served from cache (with `track_tokens=True`) |
 | `_output_tokens` | Output tokens (with `track_tokens=True`) |
 | `_reasoning_tokens` | Output subset used for reasoning (with `track_tokens=True`) |
+| `_search_credits` | Search credits spent on the row (with `use_search=True`) |
+| `_trace`, `_trace_{field}`, `_trace_{group}` | Agent trace in JSON (with `save_trace`) |
 
 ---
 
 ## Incremental Processing
 
 ```python
-# Process and save
-result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
-result.to_excel('partial.xlsx', index=False)
+# Automatic checkpoint every 100 rows
+result = dataframeit(
+    df, Model, PROMPT,
+    batch_size=100,
+    checkpoint_path='partial.parquet',
+)
 
-# Load and continue
+# If the run stops, reload the checkpoint and continue
 from dataframeit import read_df
 
-df = read_df('partial.xlsx', Model)
-result = dataframeit(df, Model, PROMPT, text_column='text', resume=True)
+df = read_df('partial.parquet', Model)
+result = dataframeit(df, Model, PROMPT, resume=True)
 ```
+
+With `resume=True` (default), rows with status `'error'` are not redone. To redo them, clear their status before running again.
 
 ---
 

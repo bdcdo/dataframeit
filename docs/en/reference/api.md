@@ -46,7 +46,7 @@ def dataframeit(
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `data` | DataFrame, Series, list, dict | Yes | Data containing texts to process |
-| `questions` | Pydantic BaseModel | Yes | Pydantic model defining fields to extract |
+| `questions` | Pydantic BaseModel | Yes | Pydantic model defining fields to extract (`perguntas` is accepted as a deprecated name for the same parameter) |
 | `prompt` | str | Yes | Prompt template. Use `{texto}` to position text |
 | `text_column` | str | No | Column name with texts. If `None`, tries `texto`, `text`, `decisao`, `content`, `content_text` in order (or the single column if the DataFrame has only one). With no candidate and several columns, raises `ValueError` |
 
@@ -54,9 +54,9 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `resume` | bool | `True` | Continue from where it stopped: processes only rows without status, without retrying rows marked `'error'` |
+| `resume` | bool | `True` | With `True`, continues from where it stopped: processes only rows without status and keeps those with `'processed'` or `'error'`. With `False`, processes every row that is not `'processed'`; if the model columns already exist and `reprocess_columns` is not passed, it emits a warning and returns the data unprocessed |
 | `reprocess_columns` | list | `None` | Fields to force reprocessing; when resuming with a changed model, it must cover fields incompatible with previously processed rows |
-| `status_column` | str | `None` | Custom name for status column |
+| `status_column` | str | `None` | Name of the status column; `None` uses `_dataframeit_status` |
 
 #### Model
 
@@ -71,10 +71,10 @@ def dataframeit(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `max_retries` | int | `3` | Maximum attempts per row |
-| `base_delay` | float | `1.0` | Initial retry delay (seconds) |
-| `max_delay` | float | `30.0` | Maximum retry delay (seconds) |
-| `rate_limit_delay` | float | `0.0` | Delay between requests (seconds) |
+| `max_retries` | int | `3` | Total attempts per row, counting the first one (int >= 1) |
+| `base_delay` | float | `1.0` | Wait before the first retry (seconds); doubles on each attempt |
+| `max_delay` | float | `30.0` | Ceiling for the wait between attempts (seconds) |
+| `rate_limit_delay` | float | `0.0` | Pause each worker takes after each successful row (seconds) |
 
 #### Performance
 
@@ -115,12 +115,22 @@ Returns data in the same format as input with extracted columns added.
 
 ### Added Columns
 
-The status columns below exist independently of token tracking. When `track_tokens=True`, see the [LLM Reference](llm-reference.md#automatically-added-columns) for the usage columns and their semantics.
+| Column | When it exists | Content |
+|--------|----------------|---------|
+| `_dataframeit_status` (or the name in `status_column`) | See note below | `'processed'`, `'error'` or `None` (row not yet processed) |
+| `_error_details` | See note below | Error message; on a successful row that needed retries, `"Sucesso após N retry(s)"`; on a row with empty text, `"Texto ausente"` |
+| `_input_tokens`, `_output_tokens`, `_cached_input_tokens`, `_reasoning_tokens` | `track_tokens=True` | Token usage of the row; see [LLM Reference](llm-reference.md#automatically-added-columns) |
+| `_search_credits` | `use_search=True` | Search credits spent on the row |
+| `_trace`, `_trace_{field}` or `_trace_{group}` | `save_trace` set | Agent trace in JSON |
 
-| Column | Description |
-|--------|-------------|
-| `_dataframeit_status` | `'processed'`, `'error'`, or `None` |
-| `_error_details` | Error details (when applicable) |
+When no row ends with an error and none records any detail, `_dataframeit_status` and `_error_details` are removed from the output. So, before filtering by status, check that the column exists:
+
+```python
+if '_dataframeit_status' in result.columns:
+    errors = result[result['_dataframeit_status'] == 'error']
+```
+
+Rows with empty or missing text are not sent to the model: they get status `'error'` and the detail `"Texto ausente"`.
 
 ### Examples
 
@@ -136,14 +146,13 @@ class Sentiment(BaseModel):
 df = pd.DataFrame({'text': ['Great!', 'Terrible!']})
 
 # Basic
-result = dataframeit(df, Sentiment, "Analyze the sentiment.", text_column='text')
+result = dataframeit(df, Sentiment, "Analyze the sentiment.")
 
 # With configurations
 result = dataframeit(
     df,
     Sentiment,
     "Analyze the sentiment.",
-    text_column='text',
     provider='openai',
     model='gpt-6-luna',
     parallel_requests=5,
@@ -193,35 +202,64 @@ df = read_df('data.csv', encoding='utf-8')
 
 ## normalize_value()
 
-Normalizes Python values to pandas-compatible types.
+Converts into a Python structure a value that was saved as text, as happens when lists and dictionaries are saved to CSV or Excel.
 
 ```python
 def normalize_value(value: Any) -> Any
 ```
 
-Converts:
-- `tuple` → `list`
-- Pydantic objects → `dict`
-- Nested values recursively
+- A string that starts with `[` or `{` is read as JSON; if it is not valid JSON, it is read as a Python literal (`"['a', 'b']"`), without executing code.
+- Lists, dictionaries and tuples come back as they are.
+- Any other value, including a string that is not a structure, comes back unchanged.
+
+```python
+normalize_value('[1, 2, 3]')      # [1, 2, 3]
+normalize_value('{"a": 1}')       # {'a': 1}
+normalize_value('plain text')     # 'plain text'
+```
 
 ---
 
 ## normalize_complex_columns()
 
-Normalizes columns with complex types in a DataFrame.
+Applies `normalize_value()` to the given columns, modifying the DataFrame in place.
 
 ```python
-def normalize_complex_columns(df: pd.DataFrame, complex_fields: list) -> pd.DataFrame
+def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None
 ```
+
+Columns missing from the DataFrame are ignored.
 
 ---
 
 ## get_complex_fields()
 
-Identifies complex fields in a Pydantic model.
+Identifies the fields of a Pydantic model that hold a structure instead of a simple value.
 
 ```python
-def get_complex_fields(pydantic_model) -> list[str]
+def get_complex_fields(pydantic_model) -> set
 ```
 
-Returns list of field names containing `List`, `Tuple`, or nested models.
+Returns the set of names of the fields whose type is `list`, `dict`, `tuple` or a nested Pydantic model, including inside `Optional` and `Union`.
+
+```python
+from dataframeit import get_complex_fields, normalize_complex_columns, read_df
+
+df = read_df('output.csv')
+normalize_complex_columns(df, get_complex_fields(MyModel))
+```
+
+`read_df(path, model=MyModel)` does this normalization on its own.
+
+---
+
+## Exceptions
+
+The exceptions that dataframeit raises are listed in [Exceptions](exceptions.md).
+
+## Version
+
+```python
+import dataframeit
+dataframeit.__version__
+```
