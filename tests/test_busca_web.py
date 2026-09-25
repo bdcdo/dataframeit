@@ -166,6 +166,16 @@ def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponive
     assert "No search results" in str(ferramenta.invoke({"query": "x"}))
 
 
+def test_tavily_com_resultado_devolve_a_resposta_ao_modelo(tavily_disponivel, monkeypatch):
+    resultados = {"results": [{"title": "Bula", "url": "https://exemplo.org", "content": "x"}]}
+    monkeypatch.setattr(tavily_disponivel, "raw_results", lambda self, **kwargs: resultados)
+
+    ferramenta = get_provider("tavily").create_tool(max_results=3)
+    resposta = ferramenta.invoke({"query": "dipirona"})
+
+    assert resposta["results"] == resultados["results"]
+
+
 # =============================================================================
 # Teto de buscas por execução
 # =============================================================================
