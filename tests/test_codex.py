@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
@@ -958,3 +958,196 @@ class TestProviderErrorClassification:
     )
     def test_other_typed_provider_errors_are_not_recoverable(self, error):
         assert is_recoverable_error(error) is False
+
+
+# O Pydantic não gera esses schemas sozinho, mas json_schema_extra e um
+# model_json_schema sobrescrito deixam o usuário entregar qualquer dicionário,
+# e o structured output do Codex recusa o que não sabe converter.
+class TestSchemaMalformado:
+    @pytest.mark.parametrize(
+        ("propriedade", "mensagem"),
+        [
+            ({"$ref": "#/definitions/Externo"}, "Referência não suportada"),
+            ({"$ref": "#/$defs/Inexistente"}, "Referência inválida"),
+            ({"$ref": "#/$defs/Item/required"}, "Referência inválida"),
+            (True, "representados por objetos"),
+            ({"oneOf": {"type": "string"}}, "oneOf inválido"),
+            ({"type": "string", "discriminator": {"propertyName": "tipo"}}, "sem oneOf"),
+        ],
+    )
+    def test_propriedade_malformada_e_erro_de_configuracao(self, propriedade, mensagem):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Item": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                }
+            },
+            "properties": {"valor": propriedade},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match=mensagem):
+            _to_strict_json_schema(schema)
+
+    def test_defs_que_nao_e_objeto_e_erro_de_configuracao(self):
+        schema = {"type": "object", "$defs": [], "properties": {"x": {"type": "string"}}}
+
+        with pytest.raises(ProviderConfigurationError, match=r"\$defs inválido"):
+            _to_strict_json_schema(schema)
+
+    @pytest.mark.parametrize("erro", [AttributeError, TypeError])
+    def test_falha_do_schema_personalizado_e_erro_de_configuracao(self, erro):
+        def json_schema_extra(schema):
+            raise erro
+
+        class Modelo(BaseModel):
+            model_config = ConfigDict(json_schema_extra=json_schema_extra)
+            valor: str
+
+        with pytest.raises(ProviderConfigurationError, match="modelo Pydantic v2") as exc_info:
+            _build_schema(Modelo)
+
+        assert isinstance(exc_info.value.__cause__, erro)
+
+    def test_schema_personalizado_que_nao_e_objeto_e_recusado(self):
+
+        class Modelo(BaseModel):
+            valor: str
+
+            @classmethod
+            def model_json_schema(cls, *args, **kwargs):
+                return ["não", "é", "objeto"]
+
+        with pytest.raises(ProviderConfigurationError, match="deve retornar um objeto"):
+            _build_schema(Modelo)
+
+
+class TestFalhasDoRuntime:
+    def test_falha_ao_criar_o_runtime_temporario_libera_o_lock(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+        with (
+            patch(
+                "dataframeit.codex.tempfile.TemporaryDirectory",
+                side_effect=OSError("disco cheio"),
+            ),
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match="runtime temporário") as exc_info,
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        assert isinstance(exc_info.value.__cause__, OSError)
+        codex.assert_not_called()
+        assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
+
+    def test_conta_que_exige_login_para_antes_do_backend(self, codex_sdk, monkeypatch, tmp_path):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=True)
+
+        with (
+            patch.object(sdk, "Codex", return_value=client),
+            pytest.raises(ProviderConfigurationError) as exc_info,
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        assert CODEX_FILE_AUTH_LOGIN_COMMAND in str(exc_info.value)
+        client.close.assert_called_once_with()
+        assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
+
+
+class TestClassificacaoDoTurnoQueFalhou:
+    def test_sem_historico_vale_a_classificacao_do_erro_original(self, codex_sdk, tmp_path):
+        sdk, _, _ = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        busy = sdk.ServerBusyError(-32000, "server busy", {"codexErrorInfo": "server_overloaded"})
+        turn.run.side_effect = [busy, make_result(codex_sdk)]
+        thread.read.side_effect = RuntimeError("histórico indisponível")
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+
+        assert result["_retry_info"]["retries"] == 1
+        assert client.thread_start.call_count == 2
+
+    @pytest.mark.parametrize("turno", ["outro", "sem_erro"])
+    def test_turno_ausente_ou_sem_erro_usa_a_classificacao_do_erro_original(
+        self, codex_sdk, tmp_path, turno
+    ):
+        _, sdk_types, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = RuntimeError("falha sem detalhe")
+        registrado = sdk_types.Turn(
+            id="turn-2" if turno == "outro" else "turn-1",
+            items=[],
+            status=sdk_types.TurnStatus.failed,
+            error=None,
+        )
+        thread.read.return_value = sdk_types.ThreadReadResponse.model_construct(
+            thread=generated.Thread.model_construct(turns=[registrado])
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="RuntimeError: falha sem detalhe") as exc_info,
+        ):
+            backend.invoke("texto")
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+        assert client.thread_start.call_count == 1
+
+    @pytest.mark.parametrize("status", [None, 503])
+    def test_falha_http_sem_status_ou_do_servidor_e_transitoria(self, codex_sdk, tmp_path, status):
+        _, _, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = [RuntimeError("stream caiu"), make_result(codex_sdk)]
+        thread.read.return_value = make_failed_turn_read_response(
+            codex_sdk,
+            generated.CodexErrorInfo(
+                root=generated.ResponseStreamDisconnectedCodexErrorInfo(
+                    responseStreamDisconnected=generated.ResponseStreamDisconnected(
+                        httpStatusCode=status
+                    )
+                )
+            ),
+            "stream caiu",
+        )
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+
+        assert result["_retry_info"]["retries"] == 1
+        assert client.thread_start.call_count == 2
+
+    def test_codigo_de_erro_fora_dos_transitorios_e_definitivo(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.run.side_effect = RuntimeError("janela de contexto")
+        thread.read.return_value = make_failed_turn_read_response(
+            codex_sdk,
+            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.context_window_exceeded),
+            "janela de contexto",
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError) as exc_info,
+        ):
+            backend.invoke("texto")
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+        assert client.thread_start.call_count == 1
