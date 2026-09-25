@@ -3,191 +3,126 @@
 from typing import Literal
 
 import pandas as pd
+import pytest
 from pydantic import BaseModel, Field
+
+from dataframeit.core import _get_processing_indices, _setup_columns
+from dataframeit.core import dataframeit as dataframeit_new
+from dataframeit.utils import (
+    ORIGINAL_TYPE_PANDAS_DF,
+    ConversionInfo,
+    from_pandas,
+    parse_json,
+    to_pandas,
+)
 
 
 class TestModel(BaseModel):
     campo1: str = Field(..., description="Primeiro campo")
-    campo2: Literal['A', 'B'] = Field(..., description="Segundo campo")
+    campo2: Literal["A", "B"] = Field(..., description="Segundo campo")
 
 
 def test_api_compatibility():
     """Testa que a API pública é 100% compatível."""
 
     # Importar versão nova
-    from dataframeit.core import dataframeit as dataframeit_new
 
     # Criar DataFrame de teste
-    df = pd.DataFrame({
-        'texto': ['texto 1', 'texto 2'],
-        'id': [1, 2]
-    })
+    df = pd.DataFrame({"texto": ["texto 1", "texto 2"], "id": [1, 2]})
 
     template = "Analise: {documento}\n{format}"
 
-    # Testar todos os parâmetros principais
-    print("Testando compatibilidade de parâmetros...")
-
-    # 1. Parâmetros básicos com nome novo (questions)
-    print("  ✓ questions parameter")
-
-    # 2. Parâmetros com nome antigo (perguntas) - deprecated mas deve funcionar
-    print("  ✓ perguntas parameter (deprecated)")
-
-    # 3. Parâmetros de configuração
-    params = {
-        'resume': True,
-        'model': 'gemini-3-flash-preview',
-        'provider': 'google_genai',
-        'status_column': 'custom_status',
-        'text_column': 'texto',
-        'api_key': None,
-        'max_retries': 3,
-        'base_delay': 1.0,
-        'max_delay': 30.0,
-    }
-
-    for param_name in params:
-        print(f"  ✓ {param_name}")
-
     # Verificar que ValueError é lançado sem questions/perguntas
-    try:
+    with pytest.raises(ValueError, match=r"(?i)questions"):
         dataframeit_new(df, prompt=template)
-        assert False, "Deveria ter lançado ValueError"
-    except ValueError as e:
-        assert "questions" in str(e).lower()
-        print("  ✓ ValueError quando falta 'questions'")
 
     # Verificar que ValueError é lançado sem prompt
-    try:
+    with pytest.raises(ValueError, match=r"(?i)prompt"):
         dataframeit_new(df, questions=TestModel)
-        assert False, "Deveria ter lançado ValueError"
-    except ValueError as e:
-        assert "prompt" in str(e).lower()
-        print("  ✓ ValueError quando falta 'prompt'")
-
-    print("\n✅ Todos os parâmetros da API são compatíveis!")
 
 
 def test_column_management():
     """Testa gerenciamento de colunas."""
-    from dataframeit.core import _setup_columns
 
-    df = pd.DataFrame({'texto': ['a', 'b'], 'id': [1, 2]})
-    expected_cols = ['campo1', 'campo2']
+    df = pd.DataFrame({"texto": ["a", "b"], "id": [1, 2]})
+    expected_cols = ["campo1", "campo2"]
 
     # Testar setup básico
-    _setup_columns(df, expected_cols, None, False)
-    assert 'campo1' in df.columns
-    assert 'campo2' in df.columns
-    assert '_dataframeit_status' in df.columns
-    assert '_error_details' in df.columns
-    print("✅ Colunas criadas corretamente")
+    _setup_columns(df, expected_cols, None, track_tokens=False)
+    assert "campo1" in df.columns
+    assert "campo2" in df.columns
+    assert "_dataframeit_status" in df.columns
+    assert "_error_details" in df.columns
 
     # Testar que não cria duplicatas
     df2 = df.copy()
-    _setup_columns(df2, expected_cols, None, False)
+    _setup_columns(df2, expected_cols, None, track_tokens=False)
     assert list(df.columns) == list(df2.columns)
-    print("✅ Não cria colunas duplicadas")
 
     # Testar status_column customizada
-    df3 = pd.DataFrame({'texto': ['a', 'b'], 'id': [1, 2]})
-    _setup_columns(df3, expected_cols, 'meu_status', False)
-    assert 'meu_status' in df3.columns
-    print("✅ status_column customizada funciona")
+    df3 = pd.DataFrame({"texto": ["a", "b"], "id": [1, 2]})
+    _setup_columns(df3, expected_cols, "meu_status", track_tokens=False)
+    assert "meu_status" in df3.columns
 
 
 def test_resume_functionality():
     """Testa funcionalidade de resume."""
-    from dataframeit.core import _get_processing_indices
 
-    df = pd.DataFrame({
-        'texto': ['a', 'b', 'c', 'd'],
-        '_dataframeit_status': [None, None, None, None]
-    })
+    df = pd.DataFrame(
+        {"texto": ["a", "b", "c", "d"], "_dataframeit_status": [None, None, None, None]}
+    )
 
     # Sem resume
-    pending, count = _get_processing_indices(df, '_dataframeit_status', False)
+    pending, count = _get_processing_indices(df, "_dataframeit_status", resume=False)
     assert pending == [True, True, True, True]
     assert count == 0
-    print("✅ Resume=False: começa do zero")
 
     # Com resume e nada processado
-    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    pending, count = _get_processing_indices(df, "_dataframeit_status", resume=True)
     assert pending == [True, True, True, True]
     assert count == 0
-    print("✅ Resume=True com nada processado: começa do zero")
 
     # Com resume e algumas linhas processadas
-    df.at[0, '_dataframeit_status'] = 'processed'
-    df.at[1, '_dataframeit_status'] = 'processed'
-    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    df.loc[0, "_dataframeit_status"] = "processed"
+    df.loc[1, "_dataframeit_status"] = "processed"
+    pending, count = _get_processing_indices(df, "_dataframeit_status", resume=True)
     assert pending == [False, False, True, True]
     assert count == 2
-    print("✅ Resume=True: retoma da posição correta")
 
     # Com todas linhas processadas
-    df['_dataframeit_status'] = 'processed'
-    pending, count = _get_processing_indices(df, '_dataframeit_status', True)
+    df["_dataframeit_status"] = "processed"
+    pending, count = _get_processing_indices(df, "_dataframeit_status", resume=True)
     assert pending == [False, False, False, False]
     assert count == 4
-    print("✅ Resume=True com tudo processado: nada pendente")
 
 
 def test_utils_functions():
     """Testa funções de utilidade."""
-    from dataframeit.utils import from_pandas, parse_json, to_pandas
 
     # Parse JSON básico
     result = parse_json('{"a": 1, "b": "test"}')
     assert result == {"a": 1, "b": "test"}
-    print("✅ parse_json básico")
 
     # Parse JSON com markdown
     result = parse_json('```json\n{"a": 2}\n```')
     assert result == {"a": 2}
-    print("✅ parse_json com markdown")
 
     # Parse JSON com texto extra
     result = parse_json('Aqui está: {"a": 3} fim')
     assert result == {"a": 3}
-    print("✅ parse_json com texto extra")
 
     # Conversão pandas
-    from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, ConversionInfo
-    df = pd.DataFrame({'a': [1, 2, 3]})
+
+    df = pd.DataFrame({"a": [1, 2, 3]})
     df_result, conversion_info = to_pandas(df)
     assert isinstance(df_result, pd.DataFrame)
     assert isinstance(conversion_info, ConversionInfo)
     assert conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF
-    print("✅ to_pandas com DataFrame pandas")
 
     # Conversão de volta (com ConversionInfo)
     df_back = from_pandas(df_result, conversion_info)
     assert isinstance(df_back, pd.DataFrame)
-    print("✅ from_pandas mantém pandas com ConversionInfo")
 
     # Retrocompatibilidade: from_pandas ainda aceita bool
     df_back2 = from_pandas(df_result, False)
     assert isinstance(df_back2, pd.DataFrame)
-    print("✅ from_pandas retrocompatível com was_polars=False")
-
-
-if __name__ == '__main__':
-    print("=" * 60)
-    print("TESTE DE COMPATIBILIDADE")
-    print("=" * 60)
-    print()
-
-    test_api_compatibility()
-    print()
-    test_column_management()
-    print()
-    test_resume_functionality()
-    print()
-    test_utils_functions()
-
-    print()
-    print("=" * 60)
-    print("✅ COMPATIBILIDADE 100% VERIFICADA!")
-    print("=" * 60)

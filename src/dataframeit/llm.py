@@ -1,14 +1,23 @@
+"""Chamadas de LLM via LangChain: configuração, structured output e correção."""
+
+from __future__ import annotations
+
 import json
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast
 
 from langchain_core.exceptions import OutputParserException
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from .errors import ProviderRejectedOutputError, retry_with_backoff
 from .utils import check_dependency
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import Runnable
 
 T = TypeVar("T")
 
@@ -22,7 +31,7 @@ class _BuildOnce(Generic[T]):
     novo. O lock impede que threads do modo paralelo construam duas vezes.
     """
 
-    def __init__(self, build: Callable[[], T]):
+    def __init__(self, build: Callable[[], T]) -> None:
         self._build = build
         self._lock = threading.Lock()
         self._built = False
@@ -34,7 +43,8 @@ class _BuildOnce(Generic[T]):
                 if not self._built:
                     self._value = self._build()
                     self._built = True
-        return self._value
+        # Depois de _built, _value guarda o valor construído, do tipo T.
+        return cast("T", self._value)
 
 
 @dataclass
@@ -55,6 +65,7 @@ class SearchGroupConfig:
         max_search_calls: Máximo de buscas por execução do agente do grupo.
             Se None, usa o valor global.
     """
+
     fields: list[str]
     prompt: str | None = None
     max_results: int | None = None
@@ -70,6 +81,7 @@ class SearchConfig:
     - tavily: Motor de busca otimizado para IA (default)
     - exa: Motor de busca semântico, mais econômico para alto volume
     """
+
     enabled: bool = False
     provider: str = "tavily"  # "tavily" ou "exa"
     per_field: bool = False  # Um agente por campo
@@ -87,6 +99,7 @@ class LLMConfig:
 
     `model` é None só com providers cujo runtime escolhe o modelo (codex, claude_code).
     """
+
     model: str | None
     provider: str
     api_key: str | None
@@ -112,64 +125,67 @@ def build_prompt(user_prompt: str, text: str) -> str:
     Returns:
         Prompt formatado pronto para envio ao LLM.
     """
-    return user_prompt.replace('{texto}', text)
+    return user_prompt.replace("{texto}", text)
 
 
-def _parse_usage_metadata(meta) -> dict[str, int]:
+def _parse_usage_metadata(meta: object) -> dict[str, int]:
     """Extrai tokens de um usage_metadata dict ou objeto.
 
     ``cache_read`` representa tokens lidos do cache. ``cache_creation`` não
     entra nessa métrica porque continua sendo consumo de entrada sem cache.
     """
     if isinstance(meta, dict):
-        input_tokens = meta.get('input_tokens', 0)
-        output_tokens = meta.get('output_tokens', 0)
-        total_tokens = meta.get('total_tokens', 0)
-        output_details = meta.get('output_token_details') or {}
-        input_details = meta.get('input_token_details') or {}
+        input_tokens = meta.get("input_tokens", 0)
+        output_tokens = meta.get("output_tokens", 0)
+        total_tokens = meta.get("total_tokens", 0)
+        output_details = meta.get("output_token_details") or {}
+        input_details = meta.get("input_token_details") or {}
     else:
-        input_tokens = getattr(meta, 'input_tokens', 0)
-        output_tokens = getattr(meta, 'output_tokens', 0)
-        total_tokens = getattr(meta, 'total_tokens', 0)
-        output_details = getattr(meta, 'output_token_details', None) or {}
-        input_details = getattr(meta, 'input_token_details', None) or {}
+        input_tokens = getattr(meta, "input_tokens", 0)
+        output_tokens = getattr(meta, "output_tokens", 0)
+        total_tokens = getattr(meta, "total_tokens", 0)
+        output_details = getattr(meta, "output_token_details", None) or {}
+        input_details = getattr(meta, "input_token_details", None) or {}
 
     if isinstance(output_details, dict):
-        reasoning_tokens = output_details.get('reasoning', 0)
+        reasoning_tokens = output_details.get("reasoning", 0)
     else:
-        reasoning_tokens = getattr(output_details, 'reasoning', 0)
+        reasoning_tokens = getattr(output_details, "reasoning", 0)
 
     if isinstance(input_details, dict):
-        cached_input_tokens = input_details.get('cache_read', 0)
+        cached_input_tokens = input_details.get("cache_read", 0)
     else:
-        cached_input_tokens = getattr(input_details, 'cache_read', 0)
+        cached_input_tokens = getattr(input_details, "cache_read", 0)
 
     return {
-        'input_tokens': input_tokens,
-        'cached_input_tokens': cached_input_tokens,
-        'output_tokens': output_tokens,
-        'total_tokens': total_tokens,
-        'reasoning_tokens': reasoning_tokens,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "reasoning_tokens": reasoning_tokens,
     }
 
 
 def with_shared_chat_model(config: LLMConfig) -> LLMConfig:
     """Cópia da config com um único modelo LangChain para a execução inteira."""
-    return replace(config, shared_chat_model=_BuildOnce(
-        lambda: _create_langchain_llm(
-            config.model, config.provider, config.api_key, config.model_kwargs
-        )
-    ))
+    return replace(
+        config,
+        shared_chat_model=_BuildOnce(
+            lambda: _create_langchain_llm(
+                config.model, config.provider, config.api_key, config.model_kwargs
+            )
+        ),
+    )
 
 
-def chat_model(config: LLMConfig):
+def chat_model(config: LLMConfig) -> BaseChatModel:
     """Devolve o modelo LangChain da execução, ou cria um se não há compartilhado."""
     if config.shared_chat_model is not None:
         return config.shared_chat_model()
     return _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
 
 
-def build_structured_llm(pydantic_model, config: LLMConfig):
+def build_structured_llm(pydantic_model: type[BaseModel], config: LLMConfig) -> Runnable:
     """Modelo com structured output para ``pydantic_model``.
 
     O método (json_schema, tool calling) é o padrão de cada integração
@@ -183,7 +199,7 @@ def build_structured_llm(pydantic_model, config: LLMConfig):
 
 def call_langchain(
     text: str,
-    pydantic_model,
+    pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
     structured_llm: _BuildOnce | None = None,
@@ -211,10 +227,10 @@ def call_langchain(
     # seguinte leva ao modelo a resposta e o erro, porque repetir o mesmo prompt
     # tende a repetir o mesmo erro. O uso soma as tentativas cuja resposta chegou,
     # recusadas ou não, porque todas são cobradas.
-    correction: dict[str, str | None] = {'ai': None, 'human': None}
+    correction: dict[str, str | None] = {"ai": None, "human": None}
     usage_total: dict[str, int] = {}
 
-    def _call():
+    def _call() -> dict:
         try:
             result = model.invoke(_messages(prompt, correction))
         except ValidationError as error:
@@ -234,28 +250,31 @@ def call_langchain(
             # ajuda o modelo; o pedido fica o genérico de formato. O uso dessa
             # tentativa não chega até aqui.
             _request_correction(
-                pydantic_model, None, error if error.llm_output else None, correction,
-                raw_text=str(error.llm_output or ''),
+                pydantic_model,
+                None,
+                error if error.llm_output else None,
+                correction,
+                raw_text=str(error.llm_output or ""),
             )
 
-        raw_message = result.get('raw')
-        if raw_message is not None and getattr(raw_message, 'usage_metadata', None):
+        raw_message = result.get("raw")
+        if raw_message is not None and getattr(raw_message, "usage_metadata", None):
             _add_usage(usage_total, _parse_usage_metadata(raw_message.usage_metadata))
 
-        if result.get('parsing_error'):
-            _request_correction(pydantic_model, raw_message, result['parsing_error'], correction)
-        parsed = result.get('parsed')
+        if result.get("parsing_error"):
+            _request_correction(pydantic_model, raw_message, result["parsing_error"], correction)
+        parsed = result.get("parsed")
         if parsed is None:
             _request_correction(pydantic_model, raw_message, None, correction)
 
-        return {'data': parsed.model_dump(), 'usage': dict(usage_total) or None}
+        return {"data": parsed.model_dump(), "usage": dict(usage_total) or None}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
 
-def _model_title(pydantic_model) -> str:
+def _model_title(pydantic_model: type[BaseModel]) -> str:
     """O título que o Pydantic põe no ValidationError do modelo."""
-    return pydantic_model.model_config.get('title') or pydantic_model.__name__
+    return pydantic_model.model_config.get("title") or pydantic_model.__name__
 
 
 def _add_usage(total: dict, usage: dict | None) -> None:
@@ -263,61 +282,64 @@ def _add_usage(total: dict, usage: dict | None) -> None:
         total[key] = total.get(key, 0) + (value or 0)
 
 
-def _sdk_rejected_response(error) -> tuple[str, dict | None]:
+def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict | None]:
     """Texto e uso da resposta que o SDK da OpenAI recusou, lidos da resposta HTTP.
 
     O langchain-openai anexa a resposta HTTP à exceção (`error.response`). Sem
     ela, ou com corpo em formato desconhecido, devolve texto vazio e uso None.
     """
     try:
-        return _read_sdk_body(error.response.json())
-    except Exception:
-        return '', None
+        # response é anexada pelo langchain-openai e não faz parte do tipo.
+        return _read_sdk_body(error.response.json())  # ty: ignore[unresolved-attribute]
+    except Exception:  # noqa: BLE001 (resposta ausente ou em formato desconhecido)
+        return "", None
 
 
 def _read_sdk_body(body: dict) -> tuple[str, dict | None]:
     """Chat Completions ou Responses API; falha de formato levanta, e quem chama ignora."""
-    usage = body.get('usage') or {}
-    if 'choices' in body:
-        text = (body['choices'][0].get('message') or {}).get('content') or ''
-        input_details = usage.get('prompt_tokens_details') or {}
-        output_details = usage.get('completion_tokens_details') or {}
-        tokens = (usage.get('prompt_tokens'), usage.get('completion_tokens'))
+    usage = body.get("usage") or {}
+    if "choices" in body:
+        text = (body["choices"][0].get("message") or {}).get("content") or ""
+        input_details = usage.get("prompt_tokens_details") or {}
+        output_details = usage.get("completion_tokens_details") or {}
+        tokens = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
     else:
-        text = ''.join(
-            part.get('text', '')
-            for item in body.get('output') or [] if item.get('type') == 'message'
-            for part in item.get('content') or [] if isinstance(part, dict)
+        text = "".join(
+            part.get("text", "")
+            for item in body.get("output") or []
+            if item.get("type") == "message"
+            for part in item.get("content") or []
+            if isinstance(part, dict)
         )
-        input_details = usage.get('input_tokens_details') or {}
-        output_details = usage.get('output_tokens_details') or {}
-        tokens = (usage.get('input_tokens'), usage.get('output_tokens'))
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        tokens = (usage.get("input_tokens"), usage.get("output_tokens"))
     if tokens == (None, None):
         return text, None
     input_tokens, output_tokens = tokens[0] or 0, tokens[1] or 0
     return text, {
-        'input_tokens': input_tokens,
-        'cached_input_tokens': input_details.get('cached_tokens') or 0,
-        'output_tokens': output_tokens,
-        'total_tokens': usage.get('total_tokens') or input_tokens + output_tokens,
-        'reasoning_tokens': output_details.get('reasoning_tokens') or 0,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": input_details.get("cached_tokens") or 0,
+        "output_tokens": output_tokens,
+        "total_tokens": usage.get("total_tokens") or input_tokens + output_tokens,
+        "reasoning_tokens": output_details.get("reasoning_tokens") or 0,
     }
 
 
-def _messages(prompt: str, correction: dict):
+def _messages(prompt: str, correction: dict) -> str | list[tuple[str, str]]:
     """O prompt sozinho, ou a conversa com a resposta recusada e o pedido de correção.
 
     Sem a resposta bruta, o pedido vai na mesma mensagem do prompt: duas
     mensagens seguidas do usuário não são aceitas por todo provider.
     """
-    if not correction['human']:
+    if not correction["human"]:
         return prompt
-    if correction['ai']:
-        return [('human', prompt), ('ai', correction['ai']), ('human', correction['human'])]
-    return [('human', f"{prompt}\n\n{correction['human']}")]
+    if correction["ai"]:
+        return [("human", prompt), ("ai", correction["ai"]), ("human", correction["human"])]
+    return [("human", f"{prompt}\n\n{correction['human']}")]
 
 
-def _raw_payload(raw_message) -> tuple[dict | None, str]:
+def _raw_payload(raw_message: object) -> tuple[dict | None, str]:
     """Resposta bruta do modelo como dict, quando dá, e como texto.
 
     O structured output chega por tool call (function calling) ou no conteúdo
@@ -325,20 +347,20 @@ def _raw_payload(raw_message) -> tuple[dict | None, str]:
     call com argumentos que não são JSON válido fica em `invalid_tool_calls`.
     """
     if raw_message is None:
-        return None, ''
-    for call in getattr(raw_message, 'tool_calls', None) or []:
-        if isinstance(call.get('args'), dict):
-            return call['args'], json.dumps(call['args'], ensure_ascii=False)
-    for call in getattr(raw_message, 'invalid_tool_calls', None) or []:
-        if call.get('args'):
-            return None, str(call['args'])
-    content = getattr(raw_message, 'content', '')
+        return None, ""
+    for call in getattr(raw_message, "tool_calls", None) or []:
+        if isinstance(call.get("args"), dict):
+            return call["args"], json.dumps(call["args"], ensure_ascii=False)
+    for call in getattr(raw_message, "invalid_tool_calls", None) or []:
+        if call.get("args"):
+            return None, str(call["args"])
+    content = getattr(raw_message, "content", "")
     if isinstance(content, list):
         # Blocos sem texto, como os de raciocínio, não fazem parte da resposta.
-        content = ''.join(
-            block.get('text', '') if isinstance(block, dict) else str(block) for block in content
+        content = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block) for block in content
         )
-    text = str(content or '')
+    text = str(content or "")
     try:
         payload = json.loads(text)
     except ValueError:
@@ -353,11 +375,13 @@ _MAX_INPUT_CHARS = 300
 _MAX_ERROR_TEXT = 2000
 
 
-def _validation_error_of(error, pydantic_model, payload):
+def _validation_error_of(
+    error: Exception | None, pydantic_model: type[BaseModel], payload: dict | None
+) -> ValidationError | None:
     """O ValidationError por campo, direto, embrulhado pelo parser ou revalidando."""
     if isinstance(error, ValidationError):
         return error
-    cause = getattr(error, '__cause__', None)
+    cause = getattr(error, "__cause__", None)
     if isinstance(cause, ValidationError):
         return cause
     if payload is not None:
@@ -372,15 +396,21 @@ def _format_validation_error(error: ValidationError) -> str:
     """Uma linha por erro, com o caminho do campo e o valor recusado."""
     lines = []
     for detail in error.errors()[:_MAX_ERRORS]:
-        location = '.'.join(str(part) for part in detail.get('loc', ())) or '(resposta inteira)'
-        value = json.dumps(detail.get('input'), ensure_ascii=False, default=str)
+        location = ".".join(str(part) for part in detail.get("loc", ())) or "(resposta inteira)"
+        value = json.dumps(detail.get("input"), ensure_ascii=False, default=str)
         if len(value) > _MAX_INPUT_CHARS:
-            value = value[:_MAX_INPUT_CHARS] + '...'
+            value = value[:_MAX_INPUT_CHARS] + "..."
         lines.append(f"- {location}: {detail.get('msg', '')} Valor recusado: {value}")
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
-def _request_correction(pydantic_model, raw_message, error, correction: dict, raw_text: str = ''):
+def _request_correction(
+    pydantic_model: type[BaseModel],
+    raw_message: object,
+    error: Exception | None,
+    correction: dict,
+    raw_text: str = "",
+) -> NoReturn:
     """Prepara o pedido de correção da tentativa seguinte e levanta ProviderRejectedOutputError.
 
     A mensagem da exceção, que fica em `_error_details`, leva o caminho e a regra
@@ -402,11 +432,12 @@ def _request_correction(pydantic_model, raw_message, error, correction: dict, ra
         detail = str(error)[:_MAX_ERROR_TEXT]
         summary = f"resposta fora do esquema ({type(error).__name__})"
     else:
-        detail = 'A resposta não veio no formato estruturado pedido.'
-        summary = 'Structured output retornou None'
-    correction['ai'] = raw_text or None
-    correction['human'] = _CORRECTION_REQUEST.format(errors=detail)
-    raise ProviderRejectedOutputError(f"Falha no parsing do structured output: {summary}")
+        detail = "A resposta não veio no formato estruturado pedido."
+        summary = "Structured output retornou None"
+    correction["ai"] = raw_text or None
+    correction["human"] = _CORRECTION_REQUEST.format(errors=detail)
+    msg = f"Falha no parsing do structured output: {summary}"
+    raise ProviderRejectedOutputError(msg)
 
 
 _CORRECTION_REQUEST = (
@@ -415,7 +446,12 @@ _CORRECTION_REQUEST = (
 )
 
 
-def _create_langchain_llm(model: str, provider: str, api_key: str | None, extra_kwargs: dict[str, Any] | None = None):
+def _create_langchain_llm(
+    model: str | None,
+    provider: str,
+    api_key: str | None,
+    extra_kwargs: dict[str, Any] | None = None,
+) -> BaseChatModel:
     """Cria instância de LLM do LangChain baseado no provider.
 
     Args:
@@ -427,12 +463,13 @@ def _create_langchain_llm(model: str, provider: str, api_key: str | None, extra_
     Returns:
         Instância do LLM configurado.
     """
-    from langchain.chat_models import init_chat_model
+    # langchain.chat_models é pesado, e só carrega quando um modelo é criado.
+    from langchain.chat_models import init_chat_model  # noqa: PLC0415
 
     # Nenhum parâmetro de amostragem é injetado: vários modelos rejeitam
     # `temperature` com erro 400, e a lista muda a cada lançamento. Quem quer
     # determinismo passa `temperature` em `model_kwargs`, nos modelos que aceitam.
-    kwargs = {"model_provider": provider}
+    kwargs: dict[str, Any] = {"model_provider": provider}
     if api_key:
         kwargs["api_key"] = api_key
 
@@ -440,4 +477,6 @@ def _create_langchain_llm(model: str, provider: str, api_key: str | None, extra_
     if extra_kwargs:
         kwargs.update(extra_kwargs)
 
-    return init_chat_model(model, **kwargs)
+    # Com model=None o LangChain devolve um modelo configurável; aqui model só é
+    # None com codex e claude_code, que não criam modelo LangChain.
+    return init_chat_model(model, **kwargs)  # ty: ignore[invalid-return-type]

@@ -1,3 +1,5 @@
+"""Aplica um LLM linha a linha em DataFrames, com saída validada por Pydantic."""
+
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
@@ -27,16 +29,16 @@ except PackageNotFoundError:
     __version__ = "0+unknown"
 
 __all__ = [
-    'dataframeit',
-    'read_df',
-    'normalize_value',
-    'normalize_complex_columns',
-    'get_complex_fields',
-    'ProviderError',
-    'ProviderTransientError',
-    'ProviderOverloadedError',
-    'ProviderRejectedOutputError',
-    'ProviderConfigurationError',
-    'ProviderOutputError',
-    '__version__',
+    "dataframeit",
+    "read_df",
+    "normalize_value",
+    "normalize_complex_columns",
+    "get_complex_fields",
+    "ProviderError",
+    "ProviderTransientError",
+    "ProviderOverloadedError",
+    "ProviderRejectedOutputError",
+    "ProviderConfigurationError",
+    "ProviderOutputError",
+    "__version__",
 ]

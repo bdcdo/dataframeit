@@ -1,12 +1,13 @@
 """Provider e modelo usados quando o usuário não escolhe."""
 
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit.core import DEFAULT_MODELS
+from dataframeit.core import DEFAULT_MODELS, dataframeit
 
 
 class _Modelo(BaseModel):
@@ -18,11 +19,12 @@ def _resposta(*args, **kwargs):
 
 
 def _configs_enviadas(**kwargs):
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["a", "b"]})
-    with patch("dataframeit.core.call_langchain", side_effect=_resposta) as chamada, \
-            patch("dataframeit.core.validate_provider_dependencies") as validacao:
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=_resposta) as chamada,
+        patch("dataframeit.core.validate_provider_dependencies") as validacao,
+    ):
         dataframeit(df, _Modelo, "resuma: {texto}", track_tokens=False, **kwargs)
     return validacao, [c.args[3] for c in chamada.call_args_list]
 
@@ -58,7 +60,6 @@ def test_modelo_explicito_prevalece_sobre_o_default():
 
 
 def test_provider_sem_modelo_padrao_exige_model():
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["a"]})
     with pytest.raises(ValueError, match="provider='mistralai' não tem modelo padrão"):
@@ -66,20 +67,18 @@ def test_provider_sem_modelo_padrao_exige_model():
 
 
 def test_claude_code_sem_modelo_deixa_o_runtime_escolher():
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.claude_code.call_claude_code", side_effect=_resposta) as chamada, \
-            patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.claude_code.call_claude_code", side_effect=_resposta) as chamada,
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(df, _Modelo, "resuma: {texto}", provider="claude_code", track_tokens=False)
 
     assert chamada.call_args.args[3].model is None
 
 
 def test_codex_sem_modelo_deixa_o_runtime_escolher():
-    from contextlib import contextmanager
-
-    from dataframeit.core import dataframeit
 
     configs = []
 
@@ -89,15 +88,16 @@ def test_codex_sem_modelo_deixa_o_runtime_escolher():
         yield type("Backend", (), {"invoke": staticmethod(_resposta)})()
 
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.codex.open_codex_backend", side_effect=backend_falso), \
-            patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.codex.open_codex_backend", side_effect=backend_falso),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(df, _Modelo, "resuma: {texto}", provider="codex", track_tokens=False)
 
     assert [c.model for c in configs] == [None]
 
 
 def test_dataframe_vazio_nao_exige_modelo_padrao():
-    from dataframeit.core import dataframeit
 
     df = pd.DataFrame({"texto": pd.Series([], dtype=str)})
     resultado = dataframeit(df, _Modelo, "resuma: {texto}", provider="mistralai")

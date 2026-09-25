@@ -31,6 +31,7 @@ from dataframeit.errors import (
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
+    validate_provider_dependencies,
 )
 from dataframeit.llm import LLMConfig
 
@@ -126,7 +127,7 @@ def make_config(**overrides) -> LLMConfig:
 
 def auth_lock_is_available(lock_path: Path) -> bool:
     """Consulta o lock em outro processo, onde o estado do SO é independente."""
-    probe = subprocess.run(
+    probe = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
         [
             sys.executable,
             "-c",
@@ -253,34 +254,36 @@ class TestProviderDependency:
         assert CODEX_FILE_AUTH_LOGIN_COMMAND in message
 
     def test_missing_sdk_reports_only_codex_extra(self):
-        from dataframeit.errors import validate_provider_dependencies
 
-        with patch("importlib.import_module", side_effect=ImportError("missing")):
-            with pytest.raises(ImportError) as exc_info:
-                validate_provider_dependencies("codex")
+        with (
+            patch("importlib.import_module", side_effect=ImportError("missing")),
+            pytest.raises(ImportError) as exc_info,
+        ):
+            validate_provider_dependencies("codex")
 
         message = str(exc_info.value)
         assert "dataframeit[codex]" in message
         assert "dataframeit[all]" not in message
 
     def test_langchain_provider_keeps_all_extra_as_alternative(self):
-        from dataframeit.errors import validate_provider_dependencies
 
         def import_module(name):
             if name == "langchain_google_genai":
-                raise ImportError("missing")
+                msg = "missing"
+                raise ImportError(msg)
             return MagicMock()
 
-        with patch("importlib.import_module", side_effect=import_module):
-            with pytest.raises(ImportError) as exc_info:
-                validate_provider_dependencies("google_genai")
+        with (
+            patch("importlib.import_module", side_effect=import_module),
+            pytest.raises(ImportError) as exc_info,
+        ):
+            validate_provider_dependencies("google_genai")
 
         message = str(exc_info.value)
         assert "langchain-google-genai" in message
         assert "dataframeit[all]" in message
 
     def test_sdk_provider_skips_langchain_validation(self):
-        from dataframeit.errors import validate_provider_dependencies
 
         imported = []
 
@@ -364,9 +367,7 @@ class TestStrictPydanticSchema:
     def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
             "type": "object",
-            "properties": {
-                "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
-            },
+            "properties": {"value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
         }
 
         strict_schema = _to_strict_json_schema(schema)
@@ -443,9 +444,11 @@ class TestBackendConfiguration:
     def test_invalid_config_fails_before_client_start(self, codex_sdk, overrides, message):
         sdk, _, _ = codex_sdk
 
-        with patch.object(sdk, "Codex") as codex:
-            with pytest.raises(ProviderConfigurationError, match=message):
-                _validate_config(make_config(**overrides))
+        with (
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match=message),
+        ):
+            _validate_config(make_config(**overrides))
 
         codex.assert_not_called()
 
@@ -486,13 +489,15 @@ class TestBackendLifecycle:
                 assert launch_config.env["CODEX_SQLITE_HOME"] == str(isolated_home)
                 assert isolated_home != source_home
                 assert not isolated_auth.is_symlink()
-                assert os.path.samefile(isolated_auth, source_auth)
+                assert Path(isolated_auth).samefile(source_auth)
                 lock_path = source_home / "auth.json.dataframeit.lock"
                 assert not auth_lock_is_available(lock_path)
 
-                with pytest.raises(ProviderConfigurationError, match="Outra execução"):
-                    with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                        pass
+                with (
+                    pytest.raises(ProviderConfigurationError, match="Outra execução"),
+                    open_codex_backend(make_config(), SampleModel, "{texto}"),
+                ):
+                    pass
                 assert codex.call_count == 1
 
                 def close_while_lock_is_held():
@@ -535,10 +540,10 @@ class TestBackendLifecycle:
         with (
             patch("dataframeit.codex.tempfile.TemporaryDirectory") as temporary_directory,
             patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError) as exc_info,
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
-            with pytest.raises(ProviderConfigurationError) as exc_info:
-                with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                    pass
+            pass
 
         assert CODEX_FILE_AUTH_LOGIN_COMMAND in str(exc_info.value)
         temporary_directory.assert_not_called()
@@ -556,13 +561,15 @@ class TestBackendLifecycle:
             clients.append(client)
 
         monkeypatch.setenv("CODEX_HOME", str(homes[0]))
-        with patch.object(sdk, "Codex", side_effect=clients) as codex:
+        with (
+            patch.object(sdk, "Codex", side_effect=clients) as codex,
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            monkeypatch.setenv("CODEX_HOME", str(homes[1]))
             with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                monkeypatch.setenv("CODEX_HOME", str(homes[1]))
-                with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                    assert not auth_lock_is_available(homes[0] / "auth.json.dataframeit.lock")
-                    assert not auth_lock_is_available(homes[1] / "auth.json.dataframeit.lock")
-                    assert codex.call_count == 2
+                assert not auth_lock_is_available(homes[0] / "auth.json.dataframeit.lock")
+                assert not auth_lock_is_available(homes[1] / "auth.json.dataframeit.lock")
+                assert codex.call_count == 2
 
         for client in clients:
             client.close.assert_called_once_with()
@@ -582,9 +589,9 @@ class TestBackendLifecycle:
             patch.object(Path, "symlink_to") as symlink,
             patch.object(sdk, "Codex") as codex,
             pytest.raises(ProviderConfigurationError, match="hard link"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
-            with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                pass
+            pass
 
         codex.assert_not_called()
         symlink.assert_not_called()
@@ -602,23 +609,23 @@ class TestBackendLifecycle:
         monkeypatch.setenv("CODEX_HOME", str(source_home))
         client = as_context_manager(MagicMock(spec=sdk.Codex))
         client.account.side_effect = RuntimeError("account failed")
-        codex_result = RuntimeError("constructor failed") if failure_stage == "constructor" else client
+        codex_result = (
+            RuntimeError("constructor failed") if failure_stage == "constructor" else client
+        )
 
         with (
             patch.object(sdk, "Codex", side_effect=[codex_result]),
             pytest.raises(RuntimeError, match="failed"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
-            with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                pass
+            pass
 
         if failure_stage == "account":
             client.close.assert_called_once_with()
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
         assert list(source_home.glob("dataframeit-codex-*")) == []
 
-    def test_client_close_failure_still_releases_auth_lock(
-        self, codex_sdk, monkeypatch, tmp_path
-    ):
+    def test_client_close_failure_still_releases_auth_lock(self, codex_sdk, monkeypatch, tmp_path):
         sdk, sdk_types, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
@@ -631,9 +638,9 @@ class TestBackendLifecycle:
         with (
             patch.object(sdk, "Codex", return_value=client),
             pytest.raises(RuntimeError, match="close failed"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
-            with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                pass
+            pass
 
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
         assert list(source_home.glob("dataframeit-codex-*")) == []
@@ -650,16 +657,17 @@ class TestBackendLifecycle:
 
         def fail_runtime_directory(path, *args, **kwargs):
             if path.name in {"workspace", "home"}:
-                raise OSError("read only")
+                msg = "read only"
+                raise OSError(msg)
             return original_mkdir(path, *args, **kwargs)
 
         with (
             patch.object(Path, "mkdir", fail_runtime_directory),
             patch.object(sdk, "Codex") as codex,
             pytest.raises(ProviderConfigurationError, match="diretórios do runtime"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
-            with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                pass
+            pass
 
         codex.assert_not_called()
         assert auth_lock_is_available(source_home / "auth.json.dataframeit.lock")
@@ -679,9 +687,9 @@ class TestBackendLifecycle:
             patch("filelock.FileLock.acquire", side_effect=error_type("unsupported")),
             patch.object(sdk, "Codex") as codex,
             pytest.raises(ProviderConfigurationError, match="acesso exclusivo"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
-            with open_codex_backend(make_config(), SampleModel, "{texto}"):
-                pass
+            pass
 
         codex.assert_not_called()
         assert list(source_home.glob("dataframeit-codex-*")) == []
@@ -749,9 +757,11 @@ class TestCodexInvocation:
             tmp_path, codex_sdk, make_result(codex_sdk, response=response)
         )
 
-        with pytest.warns(UserWarning, match="não-recuperável"):
-            with pytest.raises(ProviderOutputError, match="não corresponde ao schema"):
-                backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderOutputError, match="não corresponde ao schema"),
+        ):
+            backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
 
@@ -778,9 +788,11 @@ class TestCodexInvocation:
             make_result(codex_sdk, response=response, status=turn_status),
         )
 
-        with pytest.warns(UserWarning, match="não-recuperável"):
-            with pytest.raises(ProviderOutputError, match=message):
-                backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderOutputError, match=message),
+        ):
+            backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
 
@@ -806,9 +818,7 @@ class TestCodexInvocation:
         turn.run.side_effect = [RuntimeError("overloaded"), make_result(codex_sdk)]
         thread.read.return_value = make_failed_turn_read_response(
             codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.CodexErrorInfoValue.server_overloaded
-            ),
+            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded),
             "overloaded",
         )
 
@@ -827,9 +837,7 @@ class TestCodexInvocation:
         turn.run.side_effect = [RuntimeError("internal failure"), make_result(codex_sdk)]
         thread.read.return_value = make_failed_turn_read_response(
             codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.CodexErrorInfoValue.internal_server_error
-            ),
+            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.internal_server_error),
             "internal failure",
         )
 
@@ -848,17 +856,17 @@ class TestCodexInvocation:
             codex_sdk,
             generated.CodexErrorInfo(
                 root=generated.HttpConnectionFailedCodexErrorInfo(
-                    httpConnectionFailed=generated.HttpConnectionFailed(
-                        httpStatusCode=429
-                    )
+                    httpConnectionFailed=generated.HttpConnectionFailed(httpStatusCode=429)
                 )
             ),
             "too many requests",
         )
 
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            with pytest.raises(ProviderOverloadedError):
-                backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderOverloadedError),
+        ):
+            backend.invoke("texto")
 
         assert client.thread_start.call_count == 2
         assert thread.read.call_count == 2
@@ -879,9 +887,11 @@ class TestCodexInvocation:
             "unauthorized",
         )
 
-        with pytest.warns(UserWarning, match="não-recuperável"):
-            with pytest.raises(ProviderError) as exc_info:
-                backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError) as exc_info,
+        ):
+            backend.invoke("texto")
 
         assert not isinstance(exc_info.value, ProviderTransientError)
         assert client.thread_start.call_count == 1
@@ -891,9 +901,11 @@ class TestCodexInvocation:
         backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
         client.thread_start.side_effect = RuntimeError("unexpected")
 
-        with pytest.warns(UserWarning, match="não-recuperável"):
-            with pytest.raises(ProviderError, match="RuntimeError: unexpected"):
-                backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="RuntimeError: unexpected"),
+        ):
+            backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
 

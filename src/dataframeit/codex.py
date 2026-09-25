@@ -5,11 +5,10 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
-from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import BaseModel, ValidationError
 from pydantic.errors import PydanticUserError
@@ -24,6 +23,16 @@ from .errors import (
     retry_with_backoff,
 )
 from .llm import LLMConfig, build_prompt
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from openai_codex import Codex, Thread
+    from openai_codex.types import ReasoningEffort
+
+# Status HTTP de rate limit e início da faixa de erro do servidor.
+_HTTP_TOO_MANY_REQUESTS = 429
+_HTTP_SERVER_ERROR_MIN = 500
 
 _ALLOWED_MODEL_KWARGS = frozenset({"effort"})
 _AUTH_LOCK_SUFFIX = ".dataframeit.lock"
@@ -78,15 +87,14 @@ _SUPPORTED_SCHEMA_KEYWORDS = frozenset(
 )
 
 
-def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C901, PLR0915 (um passo por keyword do JSON Schema)
     """Converte o schema Pydantic v2 para structured output estrito."""
     strict_schema = copy.deepcopy(schema)
 
     def resolve_ref(ref: str) -> dict[str, Any]:
         if not ref.startswith("#/$defs/"):
-            raise ProviderConfigurationError(
-                f"Referência não suportada no schema Pydantic v2: {ref}"
-            )
+            msg = f"Referência não suportada no schema Pydantic v2: {ref}"
+            raise ProviderConfigurationError(msg)
 
         current: Any = strict_schema
         try:
@@ -94,46 +102,47 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 part = raw_part.replace("~1", "/").replace("~0", "~")
                 current = current[part]
         except (KeyError, TypeError) as err:
-            raise ProviderConfigurationError(f"Referência inválida no schema: {ref}") from err
+            msg = f"Referência inválida no schema: {ref}"
+            raise ProviderConfigurationError(msg) from err
 
         if not isinstance(current, dict):
-            raise ProviderConfigurationError(f"Referência inválida no schema: {ref}")
+            msg = f"Referência inválida no schema: {ref}"
+            raise ProviderConfigurationError(msg)
         return current
 
-    def visit(node: Any, expanded_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
+    def visit(  # noqa: C901, PLR0912, PLR0915 (um passo por keyword do JSON Schema)
+        node: object, expanded_refs: frozenset[str] = frozenset()
+    ) -> dict[str, Any]:
         if not isinstance(node, dict):
-            raise ProviderConfigurationError(
-                "O structured output do Codex requer schemas JSON representados por objetos"
-            )
+            msg = "O structured output do Codex requer schemas JSON representados por objetos"
+            raise ProviderConfigurationError(msg)
 
         node.pop("default", None)
 
         if "oneOf" in node:
             variants = node.pop("oneOf")
             if not isinstance(variants, list):
-                raise ProviderConfigurationError(
-                    "oneOf inválido no schema Pydantic v2"
-                )
+                msg = "oneOf inválido no schema Pydantic v2"
+                raise ProviderConfigurationError(msg)
             node["anyOf"] = variants
             node.pop("discriminator", None)
         elif "discriminator" in node:
-            raise ProviderConfigurationError(
-                "O structured output do Codex não suporta discriminator sem oneOf"
-            )
+            msg = "O structured output do Codex não suporta discriminator sem oneOf"
+            raise ProviderConfigurationError(msg)
 
         defs = node.get("$defs")
         if defs is not None:
             if not isinstance(defs, dict):
-                raise ProviderConfigurationError("$defs inválido no schema Pydantic v2")
+                msg = "$defs inválido no schema Pydantic v2"
+                raise ProviderConfigurationError(msg)
             for definition in defs.values():
                 visit(definition, expanded_refs)
 
         if node.get("type") == "object":
             additional_properties = node.get("additionalProperties")
             if additional_properties not in (None, False):
-                raise ProviderConfigurationError(
-                    "O structured output do Codex não suporta objetos com chaves dinâmicas"
-                )
+                msg = "O structured output do Codex não suporta objetos com chaves dinâmicas"
+                raise ProviderConfigurationError(msg)
             node["additionalProperties"] = False
 
         properties = node.get("properties")
@@ -156,9 +165,8 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             resolved_ref = resolve_ref(ref)
             if len(node) > 1:
                 if ref in expanded_refs:
-                    raise ProviderConfigurationError(
-                        "Schemas recursivos com metadados não são suportados"
-                    )
+                    msg = "Schemas recursivos com metadados não são suportados"
+                    raise ProviderConfigurationError(msg)
                 sibling_values = {key: value for key, value in node.items() if key != "$ref"}
                 node.clear()
                 node.update(copy.deepcopy(resolved_ref))
@@ -173,18 +181,18 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             )
 
         if not any(keyword in node for keyword in ("type", "anyOf", "$ref")):
-            raise ProviderConfigurationError(
-                "O structured output do Codex exige tipo explícito; Any não é suportado"
-            )
+            msg = "O structured output do Codex exige tipo explícito; Any não é suportado"
+            raise ProviderConfigurationError(msg)
 
         return node
 
     strict_schema = visit(strict_schema)
     if strict_schema.get("type") != "object":
-        raise ProviderConfigurationError(
+        msg = (
             "O structured output do Codex requer um BaseModel com campos no nível raiz; "
             "RootModel não é suportado"
         )
+        raise ProviderConfigurationError(msg)
     return strict_schema
 
 
@@ -192,32 +200,29 @@ def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
     try:
         schema = pydantic_model.model_json_schema()
     except PydanticUserError as err:
-        raise ProviderConfigurationError(
-            "Não foi possível gerar JSON Schema para o modelo Pydantic"
-        ) from err
+        msg = "Não foi possível gerar JSON Schema para o modelo Pydantic"
+        raise ProviderConfigurationError(msg) from err
     except (AttributeError, TypeError) as err:
-        raise ProviderConfigurationError("questions deve ser um modelo Pydantic v2") from err
+        msg = "questions deve ser um modelo Pydantic v2"
+        raise ProviderConfigurationError(msg) from err
     if not isinstance(schema, dict):
-        raise ProviderConfigurationError(
-            "model_json_schema() deve retornar um objeto JSON Schema"
-        )
+        msg = "model_json_schema() deve retornar um objeto JSON Schema"
+        raise ProviderConfigurationError(msg)
     return _to_strict_json_schema(schema)
 
 
-def _validate_config(config: LLMConfig):
-    from openai_codex.types import ReasoningEffort
+def _validate_config(config: LLMConfig) -> ReasoningEffort:
+    from openai_codex.types import ReasoningEffort  # noqa: PLC0415 (extra codex opcional)
 
     if config.api_key:
-        raise ProviderConfigurationError(
-            "provider='codex' usa a autenticação do Codex; não passe api_key"
-        )
+        msg = "provider='codex' usa a autenticação do Codex; não passe api_key"
+        raise ProviderConfigurationError(msg)
 
     model_kwargs = config.model_kwargs or {}
     unknown = sorted(set(model_kwargs) - _ALLOWED_MODEL_KWARGS)
     if unknown:
         raise ProviderConfigurationError(
-            "Parâmetros não suportados em model_kwargs para provider='codex': "
-            + ", ".join(unknown)
+            "Parâmetros não suportados em model_kwargs para provider='codex': " + ", ".join(unknown)
         )
 
     effort = model_kwargs.get("effort", "medium")
@@ -225,26 +230,24 @@ def _validate_config(config: LLMConfig):
         return ReasoningEffort(effort)
     except ValueError as err:
         allowed = ", ".join(item.value for item in ReasoningEffort)
-        raise ProviderConfigurationError(
-            f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
-        ) from err
+        msg = f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
+        raise ProviderConfigurationError(msg) from err
 
 
 @contextmanager
 def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
     """Mantém lock, credencial e diretórios isolados pelo tempo da execução."""
-    from filelock import FileLock, Timeout
+    from filelock import FileLock, Timeout  # noqa: PLC0415 (extra codex opcional)
 
     configured_home = os.environ.get("CODEX_HOME")
-    source_home = (
-        Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
-    )
+    source_home = Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
     source_auth = source_home / "auth.json"
     if not source_auth.is_file():
-        raise ProviderConfigurationError(
+        msg = (
             "Codex não está autenticado. Execute "
             f"`{CODEX_FILE_AUTH_LOGIN_COMMAND}` antes de usar provider='codex'."
         )
+        raise ProviderConfigurationError(msg)
 
     try:
         resolved_auth = source_auth.resolve(strict=True)
@@ -252,14 +255,14 @@ def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
         auth_lock = FileLock(lock_path, thread_local=False)
         acquired_lock = auth_lock.acquire(timeout=0)
     except Timeout as err:
-        raise ProviderConfigurationError(
+        msg = (
             "Outra execução do DataFrameIt já está usando este auth.json do Codex; "
             "aguarde sua conclusão antes de iniciar outra"
-        ) from err
+        )
+        raise ProviderConfigurationError(msg) from err
     except (OSError, NotImplementedError) as err:
-        raise ProviderConfigurationError(
-            "Não foi possível obter acesso exclusivo ao auth.json do Codex"
-        ) from err
+        msg = "Não foi possível obter acesso exclusivo ao auth.json do Codex"
+        raise ProviderConfigurationError(msg) from err
 
     with acquired_lock:
         try:
@@ -268,9 +271,8 @@ def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
                 dir=resolved_auth.parent,
             )
         except OSError as err:
-            raise ProviderConfigurationError(
-                "Não foi possível criar o runtime temporário do Codex"
-            ) from err
+            msg = "Não foi possível criar o runtime temporário do Codex"
+            raise ProviderConfigurationError(msg) from err
 
         with runtime:
             runtime_root = Path(runtime.name)
@@ -280,16 +282,14 @@ def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
                 workspace.mkdir(mode=0o700)
                 codex_home.mkdir(mode=0o700)
             except OSError as err:
-                raise ProviderConfigurationError(
-                    "Não foi possível criar os diretórios do runtime temporário do Codex"
-                ) from err
+                msg = "Não foi possível criar os diretórios do runtime temporário do Codex"
+                raise ProviderConfigurationError(msg) from err
 
             try:
                 os.link(resolved_auth, codex_home / "auth.json")
             except OSError as err:
-                raise ProviderConfigurationError(
-                    "Não foi possível criar hard link para o auth.json do Codex"
-                ) from err
+                msg = "Não foi possível criar hard link para o auth.json do Codex"
+                raise ProviderConfigurationError(msg) from err
 
             yield workspace, codex_home
 
@@ -302,8 +302,8 @@ class CodexBackend:
     _pydantic_model: type[BaseModel]
     _user_prompt: str
     _schema: dict[str, Any]
-    _effort: Any
-    _client: Any
+    _effort: ReasoningEffort
+    _client: Codex
     _workspace: Path
 
     def invoke(self, text: str) -> dict:
@@ -316,8 +316,8 @@ class CodexBackend:
         )
 
     def _invoke_once(self, text: str) -> dict:
-        from openai_codex import ApprovalMode, Sandbox
-        from openai_codex.types import TurnStatus
+        from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
+        from openai_codex.types import TurnStatus  # noqa: PLC0415 (extra codex opcional)
 
         prompt = build_prompt(self._user_prompt, text)
 
@@ -335,25 +335,26 @@ class CodexBackend:
                 effort=self._effort,
                 output_schema=self._schema,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
             self._raise_classified_sdk_error(err)
 
         try:
             result = turn.run()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
             self._raise_failed_turn_error(thread, turn.id, err)
 
         if result.status != TurnStatus.completed:
-            raise ProviderOutputError(f"Turno Codex terminou com status {result.status.value!r}")
+            msg = f"Turno Codex terminou com status {result.status.value!r}"
+            raise ProviderOutputError(msg)
         if result.final_response is None or not result.final_response.strip():
-            raise ProviderOutputError("Codex retornou resposta vazia")
+            msg = "Codex retornou resposta vazia"
+            raise ProviderOutputError(msg)
 
         try:
             validated = self._pydantic_model.model_validate_json(result.final_response)
         except ValidationError as err:
-            raise ProviderOutputError(
-                f"Resposta do Codex não corresponde ao schema: {err}"
-            ) from err
+            msg = f"Resposta do Codex não corresponde ao schema: {err}"
+            raise ProviderOutputError(msg) from err
 
         usage = None
         if result.usage is not None:
@@ -369,9 +370,9 @@ class CodexBackend:
         return {"data": validated.model_dump(), "usage": usage}
 
     @staticmethod
-    def _raise_failed_turn_error(thread, turn_id: str, error: Exception) -> None:
+    def _raise_failed_turn_error(thread: Thread, turn_id: str, error: Exception) -> NoReturn:
         """Recupera o erro tipado que o SDK descarta ao levantar RuntimeError."""
-        from openai_codex.generated.v2_all import (
+        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
             CodexErrorInfoValue,
             HttpConnectionFailedCodexErrorInfo,
             ResponseStreamConnectionFailedCodexErrorInfo,
@@ -381,7 +382,7 @@ class CodexBackend:
 
         try:
             turns = thread.read(include_turns=True).thread.turns
-        except Exception:
+        except Exception:  # noqa: BLE001 (sem o histórico, vale a classificação do erro original)
             CodexBackend._raise_classified_sdk_error(error)
 
         failed_turn = next((item for item in turns if item.id == turn_id), None)
@@ -417,9 +418,9 @@ class CodexBackend:
             if not isinstance(root, variant_type):
                 continue
             status = getattr(root, payload_field).http_status_code
-            if status == 429:
+            if status == _HTTP_TOO_MANY_REQUESTS:
                 raise ProviderOverloadedError(message) from error
-            if status is None or status >= 500:
+            if status is None or status >= _HTTP_SERVER_ERROR_MIN:
                 raise ProviderTransientError(message) from error
             raise ProviderError(message) from error
 
@@ -429,8 +430,8 @@ class CodexBackend:
         raise ProviderError(message) from error
 
     @staticmethod
-    def _raise_classified_sdk_error(error: Exception) -> None:
-        from openai_codex import is_retryable_error
+    def _raise_classified_sdk_error(error: Exception) -> NoReturn:
+        from openai_codex import is_retryable_error  # noqa: PLC0415 (extra codex opcional)
 
         message = f"{type(error).__name__}: {error}"
         if is_retryable_error(error):
@@ -445,7 +446,7 @@ def open_codex_backend(
     user_prompt: str,
 ) -> Iterator[CodexBackend]:
     """Abre um backend ativo e fecha seus recursos na ordem inversa."""
-    from openai_codex import Codex, CodexConfig
+    from openai_codex import Codex, CodexConfig  # noqa: PLC0415 (extra codex opcional)
 
     schema = _build_schema(pydantic_model)
     effort = _validate_config(config)
@@ -462,10 +463,11 @@ def open_codex_backend(
         with Codex(codex_config) as client:
             account = client.account()
             if account.requires_openai_auth and account.account is None:
-                raise ProviderConfigurationError(
+                msg = (
                     "Codex não está autenticado. Execute "
                     f"`{CODEX_FILE_AUTH_LOGIN_COMMAND}` antes de usar provider='codex'."
                 )
+                raise ProviderConfigurationError(msg)
             yield CodexBackend(
                 config=config,
                 _pydantic_model=pydantic_model,

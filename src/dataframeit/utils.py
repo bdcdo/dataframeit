@@ -7,19 +7,30 @@ Este módulo contém funções utilitárias para:
 - Conversão de Series, listas e dicionários
 - Normalização de estruturas Python (listas, dicionários, tuplas)
 """
+
+from __future__ import annotations
+
 import ast
 import functools
 import importlib
 import json
 import operator
 import re
+import sys
 import types
 import typing
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import pandas as pd
 from pandas.api.types import is_string_dtype
+from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Hashable
+
+    from polars import DataFrame as PolarsDataFrame
 
 # Import opcional de Polars
 try:
@@ -29,29 +40,56 @@ except ImportError:
 
 
 # Tipos de dados originais suportados
-ORIGINAL_TYPE_PANDAS_DF = 'pandas_dataframe'
-ORIGINAL_TYPE_POLARS_DF = 'polars_dataframe'
-ORIGINAL_TYPE_PANDAS_SERIES = 'pandas_series'
-ORIGINAL_TYPE_POLARS_SERIES = 'polars_series'
-ORIGINAL_TYPE_LIST = 'list'
-ORIGINAL_TYPE_DICT = 'dict'
+ORIGINAL_TYPE_PANDAS_DF = "pandas_dataframe"
+ORIGINAL_TYPE_POLARS_DF = "polars_dataframe"
+ORIGINAL_TYPE_PANDAS_SERIES = "pandas_series"
+ORIGINAL_TYPE_POLARS_SERIES = "polars_series"
+ORIGINAL_TYPE_LIST = "list"
+ORIGINAL_TYPE_DICT = "dict"
 
 # Coluna padrão usada para dados convertidos
-DEFAULT_TEXT_COLUMN = '_texto'
+DEFAULT_TEXT_COLUMN = "_texto"
 TOKEN_COLUMNS = (
-    '_input_tokens',
-    '_cached_input_tokens',
-    '_output_tokens',
-    '_reasoning_tokens',
+    "_input_tokens",
+    "_cached_input_tokens",
+    "_output_tokens",
+    "_reasoning_tokens",
 )
+
+# Entradas convertidas para DataFrame com a coluna interna de texto.
+_TEXT_COLUMN_INPUTS = (
+    ORIGINAL_TYPE_PANDAS_SERIES,
+    ORIGINAL_TYPE_POLARS_SERIES,
+    ORIGINAL_TYPE_LIST,
+    ORIGINAL_TYPE_DICT,
+)
+_POLARS_INPUTS = (ORIGINAL_TYPE_POLARS_DF, ORIGINAL_TYPE_POLARS_SERIES)
+
+_READERS = {
+    ".xlsx": pd.read_excel,
+    ".xls": pd.read_excel,
+    ".csv": pd.read_csv,
+    ".parquet": pd.read_parquet,
+    ".json": pd.read_json,
+}
+# Tipados como chamável genérico: com **kwargs, o ty não escolhe entre as
+# sobrecargas de read_csv e read_excel, que variam com a versão do pandas.
+_TEXT_READERS: dict[str, Callable[..., pd.DataFrame]] = {
+    ".csv": pd.read_csv,
+    ".xlsx": pd.read_excel,
+    ".xls": pd.read_excel,
+}
+# Argumentos de leitura com que o usuário já controla tipos ou NA.
+_READ_CONTROLS = ("dtype", "converters", "na_values", "keep_default_na", "na_filter", "usecols")
 
 
 @dataclass
 class ConversionInfo:
     """Informações sobre a conversão de dados para pandas DataFrame."""
+
     original_type: str
-    original_index: Any = None  # Guarda índice/chaves originais para reconversão
-    series_name: str = None  # Nome original da Series (se aplicável)
+    original_index: pd.Index | list | None = None  # Índice/chaves originais para reconversão
+    series_name: Hashable | None = None  # Nome original da Series (se aplicável)
 
 
 def parse_json(resposta: str) -> dict:
@@ -74,20 +112,21 @@ def parse_json(resposta: str) -> dict:
         json_string = match.group(1).strip()
     else:
         # Tentar extrair entre chaves
-        start = content.find('{')
-        end = content.rfind('}')
+        start = content.find("{")
+        end = content.rfind("}")
         if start != -1 and end != -1 and end > start:
-            json_string = content[start:end + 1]
+            json_string = content[start : end + 1]
         else:
             json_string = content.strip()
 
     try:
         return json.loads(json_string)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'...")
+        msg = f"Falha ao decodificar JSON. Erro: {e}. Resposta: '{json_string[:200]}'..."
+        raise ValueError(msg) from e
 
 
-def check_dependency(package: str, install_name: str = None):
+def check_dependency(package: str, install_name: str | None = None) -> None:
     """Verifica se dependência está instalada.
 
     Args:
@@ -100,13 +139,12 @@ def check_dependency(package: str, install_name: str = None):
     install_name = install_name or package
     try:
         importlib.import_module(package)
-    except ImportError:
-        raise ImportError(
-            f"'{package}' não instalado. Instale com: pip install {install_name}"
-        )
+    except ImportError as e:
+        msg = f"'{package}' não instalado. Instale com: pip install {install_name}"
+        raise ImportError(msg) from e
 
 
-def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
+def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
     """Converte dados para pandas DataFrame.
 
     Suporta:
@@ -160,23 +198,26 @@ def to_pandas(data) -> tuple[pd.DataFrame, ConversionInfo]:
     if isinstance(data, dict):
         keys = list(data.keys())
         values = list(data.values())
-        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=keys)
+        # tupleize_cols=False: com chaves-tupla, o pd.Index padrão criaria um
+        # MultiIndex, e a saída mudaria de forma para o usuário.
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=pd.Index(keys, tupleize_cols=False))
         return df, ConversionInfo(
             original_type=ORIGINAL_TYPE_DICT,
             original_index=keys,
         )
 
-    raise TypeError(
+    msg = (
         f"Tipo não suportado: {type(data).__name__}. "
         "Use pandas.DataFrame, polars.DataFrame, pandas.Series, polars.Series, list ou dict."
     )
+    raise TypeError(msg)
 
 
 def from_pandas(
     df: pd.DataFrame,
-    conversion_info: ConversionInfo | bool,
-    status_col: str = '_dataframeit_status',
-) -> Any:
+    conversion_info: ConversionInfo | bool,  # noqa: FBT001 (bool aceito por retrocompatibilidade)
+    status_col: str = "_dataframeit_status",
+) -> pd.DataFrame | PolarsDataFrame:
     """Converte DataFrame pandas de volta para o formato original.
 
     Remove automaticamente as colunas internas de controle (_dataframeit_status
@@ -198,65 +239,32 @@ def from_pandas(
             original_type=ORIGINAL_TYPE_POLARS_DF if was_polars else ORIGINAL_TYPE_PANDAS_DF
         )
 
-    error_col = '_error_details'
+    error_col = "_error_details"
 
     # Remover colunas de status/erro se não houver erros
     if status_col in df.columns:
-        has_errors = (df[status_col] == 'error').any()
+        has_errors = (df[status_col] == "error").any()
         has_error_details = error_col in df.columns and df[error_col].notna().any()
 
         if not has_errors and not has_error_details:
             cols_to_drop = [c for c in [status_col, error_col] if c in df.columns]
             df = df.drop(columns=cols_to_drop)
 
-    # pandas DataFrame
-    if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF:
-        return _reorder_columns(df, status_col)
+    # Series, list e dict viram DataFrame sem a coluna interna de texto; a
+    # pandas.Series recupera o índice original.
+    original_type = conversion_info.original_type
+    if original_type in _TEXT_COLUMN_INPUTS and DEFAULT_TEXT_COLUMN in df.columns:
+        df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
+    if original_type == ORIGINAL_TYPE_PANDAS_SERIES and conversion_info.original_index is not None:
+        df.index = conversion_info.original_index
 
-    # polars DataFrame
-    if conversion_info.original_type == ORIGINAL_TYPE_POLARS_DF:
-        df = _reorder_columns(df, status_col)
-        if pl is not None:
-            return pl.from_pandas(df)
-        return df
-
-    # pandas Series - retorna todas as colunas extraídas como DataFrame
-    # (não faz sentido retornar Series quando temos múltiplas colunas de resultado)
-    if conversion_info.original_type == ORIGINAL_TYPE_PANDAS_SERIES:
-        # Remove a coluna de texto original se existir
-        if DEFAULT_TEXT_COLUMN in df.columns:
-            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        # Restaurar índice original
-        if conversion_info.original_index is not None:
-            df.index = conversion_info.original_index
-        return _reorder_columns(df, status_col)
-
-    # polars Series - similar ao pandas Series
-    if conversion_info.original_type == ORIGINAL_TYPE_POLARS_SERIES:
-        if DEFAULT_TEXT_COLUMN in df.columns:
-            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        df = _reorder_columns(df, status_col)
-        if pl is not None:
-            return pl.from_pandas(df)
-        return df
-
-    # list - tratar como Series, retorna DataFrame
-    if conversion_info.original_type == ORIGINAL_TYPE_LIST:
-        if DEFAULT_TEXT_COLUMN in df.columns:
-            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        return _reorder_columns(df, status_col)
-
-    # dict - tratar como DataFrame, retorna DataFrame com chaves como índice
-    if conversion_info.original_type == ORIGINAL_TYPE_DICT:
-        if DEFAULT_TEXT_COLUMN in df.columns:
-            df = df.drop(columns=[DEFAULT_TEXT_COLUMN])
-        return _reorder_columns(df, status_col)
-
-    # Fallback
-    return _reorder_columns(df, status_col)
+    df = _reorder_columns(df, status_col)
+    if original_type in _POLARS_INPUTS and pl is not None:
+        return pl.from_pandas(df)
+    return df
 
 
-def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') -> pd.DataFrame:
+def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") -> pd.DataFrame:
     """Reordena colunas para que internas fiquem no final.
 
     Ordem final das colunas:
@@ -282,13 +290,13 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') 
     status_cols = []
 
     for col in df.columns:
-        if str(col).startswith('_trace_'):
+        if str(col).startswith("_trace_"):
             trace_cols.append(col)
-        elif col in ['_search_credits']:
+        elif col == "_search_credits":
             search_cols.append(col)
         elif col in TOKEN_COLUMNS:
             continue
-        elif col in (status_col, '_error_details'):
+        elif col in (status_col, "_error_details"):
             status_cols.append(col)
         else:
             user_cols.append(col)
@@ -303,14 +311,17 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = '_dataframeit_status') 
 # NORMALIZAÇÃO DE ESTRUTURAS PYTHON (listas, dicts, tuples)
 # =============================================================================
 
-def is_complex_type(field_type) -> bool:
+
+def is_complex_type(field_type: object) -> bool:
     """Verifica se um tipo é complexo (list, dict, tuple ou modelo Pydantic).
 
     Args:
         field_type: Tipo a verificar (pode ser tipo simples ou genérico).
 
     Returns:
-        True se o tipo for list, dict ou tuple.
+        True se o tipo for list, dict, tuple ou subclasse de BaseModel, direto
+        ou dentro de Optional/Union. Um modelo aninhado conta como complexo
+        porque a célula guarda o seu model_dump, um dict.
     """
     origin = get_origin(field_type)
 
@@ -334,14 +345,10 @@ def is_complex_type(field_type) -> bool:
         return True
 
     # Modelo aninhado: a linha guarda o model_dump, um dict
-    from pydantic import BaseModel
-    if isinstance(field_type, type) and issubclass(field_type, BaseModel):
-        return True
-
-    return False
+    return bool(isinstance(field_type, type) and issubclass(field_type, BaseModel))
 
 
-def get_complex_fields(pydantic_model) -> set:
+def get_complex_fields(pydantic_model: type[BaseModel]) -> set:
     """Retorna os nomes dos campos que são tipos complexos (list, dict, tuple).
 
     Args:
@@ -359,7 +366,7 @@ def get_complex_fields(pydantic_model) -> set:
     return complex_fields
 
 
-def accepts_only_text(field_type) -> bool:
+def accepts_only_text(field_type: object) -> bool:
     """True se o tipo só aceita texto: str, Literal de strings ou esses com None."""
     if field_type is str:
         return True
@@ -372,7 +379,7 @@ def accepts_only_text(field_type) -> bool:
     return False
 
 
-def get_text_fields(pydantic_model) -> set:
+def get_text_fields(pydantic_model: type[BaseModel]) -> set:
     """Nomes dos campos que só aceitam texto."""
     return {
         field_name
@@ -381,7 +388,7 @@ def get_text_fields(pydantic_model) -> set:
     }
 
 
-def normalize_value(value: Any) -> Any:
+def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qualquer tipo; cada forma sai cedo)
     """Normaliza um valor, convertendo strings JSON para estruturas Python.
 
     Esta função garante que valores que deveriam ser listas, dicionários ou
@@ -419,7 +426,7 @@ def normalize_value(value: Any) -> Any:
         return value
 
     # Verifica se parece com JSON (começa com [ ou {)
-    if stripped.startswith(('[', '{')):
+    if stripped.startswith(("[", "{")):
         try:
             return json.loads(stripped)
         except (json.JSONDecodeError, ValueError, RecursionError):
@@ -452,9 +459,9 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None:
 
 def read_df(
     path: str,
-    model=None,
-    normalize: bool = True,
-    **kwargs
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
 
@@ -488,43 +495,21 @@ def read_df(
         >>> # Sem normalização
         >>> df = read_df('dados.csv', normalize=False)
     """
-    import os
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Arquivo não encontrado: {path}")
+    if not Path(path).exists():
+        msg = f"Arquivo não encontrado: {path}"
+        raise FileNotFoundError(msg)
 
     # Detectar formato pelo sufixo
-    _, ext = os.path.splitext(path.lower())
+    ext = Path(path.lower()).suffix
 
-    # Carregar DataFrame baseado na extensão
-    if ext in ('.xlsx', '.xls'):
-        df = pd.read_excel(path, **kwargs)
-    elif ext == '.csv':
-        df = pd.read_csv(path, **kwargs)
-    elif ext == '.parquet':
-        df = pd.read_parquet(path, **kwargs)
-    elif ext == '.json':
-        df = pd.read_json(path, **kwargs)
-    else:
-        raise ValueError(
-            f"Formato '{ext}' não suportado. "
-            "Use: .xlsx, .xls, .csv, .parquet ou .json"
-        )
+    reader = _READERS.get(ext)
+    if reader is None:
+        msg = f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
+        raise ValueError(msg)
+    df = reader(path, **kwargs)
 
-    # Com o modelo, os campos de texto são relidos como texto cru: sem isso,
-    # "2023" volta como número e "N/A" ou "NA" viram ausência, e a retomada
-    # acusa ou troca o valor. Só a célula vazia vira ausência. A releitura
-    # fica de fora quando o usuário já controla tipos ou NA.
-    text_readers = {'.csv': pd.read_csv, '.xlsx': pd.read_excel, '.xls': pd.read_excel}
-    controls = ('dtype', 'converters', 'na_values', 'keep_default_na', 'na_filter', 'usecols')
-    if model is not None and ext in text_readers and not any(k in kwargs for k in controls):
-        text_columns = [f for f in get_text_fields(model) if f in df.columns]
-        if text_columns:
-            raw = text_readers[ext](
-                path, usecols=text_columns, dtype=str, na_filter=False, **kwargs
-            )
-            for col in text_columns:
-                df[col] = raw[col].mask(raw[col] == '')
+    if model is not None:
+        _reread_text_columns(df, path, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -542,6 +527,26 @@ def read_df(
     return df
 
 
+def _reread_text_columns(
+    df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
+) -> None:
+    """Relê como texto cru os campos de texto do modelo, in-place.
+
+    Sem isso, "2023" volta como número e "N/A" ou "NA" viram ausência, e a
+    retomada acusa ou troca o valor. Só a célula vazia vira ausência. A
+    releitura fica de fora quando o usuário já controla tipos ou NA.
+    """
+    reader = _TEXT_READERS.get(ext)
+    if reader is None or any(k in kwargs for k in _READ_CONTROLS):
+        return
+    text_columns = [f for f in get_text_fields(model) if f in df.columns]
+    if not text_columns:
+        return
+    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False, **kwargs)
+    for col in text_columns:
+        df[col] = raw[col].mask(raw[col] == "")
+
+
 def _normalize_all_json_columns(df: pd.DataFrame) -> None:
     """Normaliza todas as colunas do DataFrame que parecem conter JSON.
 
@@ -556,10 +561,7 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 
         # Verificar se algum valor parece JSON
         sample = df[col].dropna().head(10)
-        has_json = any(
-            isinstance(v, str) and v.strip().startswith(('[', '{'))
-            for v in sample
-        )
+        has_json = any(isinstance(v, str) and v.strip().startswith(("[", "{")) for v in sample)
 
         if has_json:
             df[col] = df[col].apply(normalize_value)
@@ -569,7 +571,8 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 # EXTRAÇÃO DE MODELOS PYDANTIC ANINHADOS
 # =============================================================================
 
-def is_list_of_pydantic_model(field_type) -> tuple:
+
+def is_list_of_pydantic_model(field_type: object) -> tuple:
     """Verifica se um tipo é List[Model] ou Optional[List[Model]].
 
     Args:
@@ -592,47 +595,37 @@ def is_list_of_pydantic_model(field_type) -> tuple:
         >>> is_list_of_pydantic_model(List[str])
         (False, None)
     """
-    from pydantic import BaseModel
-
     origin = get_origin(field_type)
     args = get_args(field_type)
 
     # Caso 1: Diretamente List[Model]
-    if origin is list and args:
-        inner_type = args[0]
-        if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
-            return (True, inner_type)
+    inner_model = _list_item_model(origin, args)
+    if inner_model is not None:
+        return (True, inner_model)
 
-    # Caso 2: Optional[List[Model]] ou Union[List[Model], None]
-    if origin is typing.Union and args:
+    # Caso 2: Optional[List[Model]] ou Union[List[Model], None], com typing.Union
+    # ou com types.UnionType (X | None)
+    if origin is typing.Union or isinstance(field_type, types.UnionType):
         for arg in args:
             if arg is type(None):
                 continue
-            # Verificar se este argumento é List[Model]
-            arg_origin = get_origin(arg)
-            arg_args = get_args(arg)
-            if arg_origin is list and arg_args:
-                inner_type = arg_args[0]
-                if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
-                    return (True, inner_type)
-
-    # Caso 3: types.UnionType (Python 3.10+)
-    if isinstance(field_type, types.UnionType):
-        args = get_args(field_type)
-        for arg in args:
-            if arg is type(None):
-                continue
-            arg_origin = get_origin(arg)
-            arg_args = get_args(arg)
-            if arg_origin is list and arg_args:
-                inner_type = arg_args[0]
-                if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
-                    return (True, inner_type)
+            inner_model = _list_item_model(get_origin(arg), get_args(arg))
+            if inner_model is not None:
+                return (True, inner_model)
 
     return (False, None)
 
 
-def _lookup_forward_ref(name: str, owner):
+def _list_item_model(origin: object, args: tuple) -> type[BaseModel] | None:
+    """Modelo Pydantic dos itens quando origin e args descrevem list[Model]."""
+    if origin is list and args:
+        inner_type = args[0]
+        if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
+            return inner_type
+    return None
+
+
+def _lookup_forward_ref(name: str, owner: type[BaseModel]) -> type | None:
     """Resolve o nome de uma referência adiantada no contexto do modelo dono.
 
     O Pydantic resolve `List['X']`, mas deixa a string crua em `list['X']`.
@@ -641,25 +634,26 @@ def _lookup_forward_ref(name: str, owner):
     função) e o módulo. O namespace de definição guarda weakrefs do Pydantic
     para modelos, e só esses são desembrulhados.
     """
-    import sys
-
     if name == owner.__name__:
         return owner
 
     namespaces = (
-        getattr(owner, '__pydantic_parent_namespace__', None) or {},
+        getattr(owner, "__pydantic_parent_namespace__", None) or {},
         vars(sys.modules[owner.__module__]) if owner.__module__ in sys.modules else {},
     )
     for namespace in namespaces:
         value = namespace.get(name)
-        if value is not None and type(value).__name__.endswith('WeakRef'):
+        if value is not None and type(value).__name__.endswith("WeakRef"):
             value = value()
         if isinstance(value, type):
             return value
     return None
 
 
-def resolve_forward_refs(annotation, owner):
+def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
+    annotation: Any,  # noqa: ANN401 (anotação de tipo arbitrária)
+    owner: type[BaseModel],
+) -> Any:  # noqa: ANN401
     """Devolve a anotação com as referências adiantadas trocadas pelas classes.
 
     Referência que não se resolve fica como está. A forma de cada tipo é
@@ -692,7 +686,7 @@ def resolve_forward_refs(annotation, owner):
     return annotation.copy_with(resolved)
 
 
-def get_nested_pydantic_models(field_type) -> list:
+def get_nested_pydantic_models(field_type: object) -> list:
     """Extrai todos os modelos Pydantic de uma anotação de tipo.
 
     Trata List[Model], Optional[List[Model]], Union[Model, None], etc.
@@ -714,8 +708,6 @@ def get_nested_pydantic_models(field_type) -> list:
         >>> get_nested_pydantic_models(str)
         []
     """
-    from pydantic import BaseModel
-
     models = []
     origin = get_origin(field_type)
 

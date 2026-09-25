@@ -1,5 +1,8 @@
 """Testes para batch_size + checkpoint_path (issue #92)."""
 
+import importlib.util
+import threading
+import time
 from unittest.mock import patch
 
 import pandas as pd
@@ -7,6 +10,9 @@ import pytest
 from pydantic import BaseModel
 
 from dataframeit.core import _save_checkpoint, dataframeit
+
+# Original guardado antes de os testes trocarem importlib.util.find_spec.
+_FIND_SPEC = importlib.util.find_spec
 
 
 class SimpleModel(BaseModel):
@@ -35,13 +41,17 @@ def test_checkpoint_fires_on_multiples_sequential(tmp_path):
     observed_counts = []
 
     def spy(df_arg, path_arg):
-        observed_counts.append((int((df_arg["_dataframeit_status"] == "processed").sum()), str(path_arg)))
+        observed_counts.append(
+            (int((df_arg["_dataframeit_status"] == "processed").sum()), str(path_arg))
+        )
 
     _, mock_llm = _mock_llm_factory()
 
-    with patch("dataframeit.core._save_checkpoint", side_effect=spy), \
-         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core._save_checkpoint", side_effect=spy),
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(
             df,
             questions=SimpleModel,
@@ -67,12 +77,17 @@ def test_checkpoint_no_duplicate_final_save_sequential(tmp_path):
 
     _, mock_llm = _mock_llm_factory()
 
-    with patch("dataframeit.core._save_checkpoint", side_effect=spy), \
-         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core._save_checkpoint", side_effect=spy),
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(
-            df, questions=SimpleModel, prompt="Teste {texto}",
-            batch_size=2, checkpoint_path=ckpt,
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=2,
+            checkpoint_path=ckpt,
         )
 
     assert observed_counts == [2, 4]
@@ -90,9 +105,11 @@ def test_checkpoint_fires_on_multiples_parallel(tmp_path):
 
     _, mock_llm = _mock_llm_factory()
 
-    with patch("dataframeit.core._save_checkpoint", side_effect=spy), \
-         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core._save_checkpoint", side_effect=spy),
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(
             df,
             questions=SimpleModel,
@@ -119,12 +136,18 @@ def test_checkpoint_no_duplicate_final_save_parallel(tmp_path):
 
     _, mock_llm = _mock_llm_factory()
 
-    with patch("dataframeit.core._save_checkpoint", side_effect=spy), \
-         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core._save_checkpoint", side_effect=spy),
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(
-            df, questions=SimpleModel, prompt="Teste {texto}",
-            parallel_requests=3, batch_size=3, checkpoint_path=ckpt,
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            parallel_requests=3,
+            batch_size=3,
+            checkpoint_path=ckpt,
         )
 
     assert len(observed_counts) == 3
@@ -138,16 +161,20 @@ def test_missing_openpyxl_rejected_early(tmp_path):
     def fake_find_spec(name):
         if name == "openpyxl":
             return None
-        import importlib.util as _iu
-        return _iu.find_spec(name)
+        return _FIND_SPEC(name)
 
-    with patch("dataframeit.core.call_langchain") as mock_llm, \
-         patch("dataframeit.core.validate_provider_dependencies"), \
-         patch("importlib.util.find_spec", side_effect=fake_find_spec):
+    with (
+        patch("dataframeit.core.call_langchain") as mock_llm,
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("importlib.util.find_spec", side_effect=fake_find_spec),
+    ):
         with pytest.raises(ImportError, match="openpyxl"):
             dataframeit(
-                df, questions=SimpleModel, prompt="Teste {texto}",
-                batch_size=1, checkpoint_path=tmp_path / "x.xlsx",
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                batch_size=1,
+                checkpoint_path=tmp_path / "x.xlsx",
             )
         mock_llm.assert_not_called()
 
@@ -159,16 +186,20 @@ def test_missing_pyarrow_rejected_early(tmp_path):
     def fake_find_spec(name):
         if name == "pyarrow":
             return None
-        import importlib.util as _iu
-        return _iu.find_spec(name)
+        return _FIND_SPEC(name)
 
-    with patch("dataframeit.core.call_langchain") as mock_llm, \
-         patch("dataframeit.core.validate_provider_dependencies"), \
-         patch("importlib.util.find_spec", side_effect=fake_find_spec):
+    with (
+        patch("dataframeit.core.call_langchain") as mock_llm,
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("importlib.util.find_spec", side_effect=fake_find_spec),
+    ):
         with pytest.raises(ImportError, match="pyarrow"):
             dataframeit(
-                df, questions=SimpleModel, prompt="Teste {texto}",
-                batch_size=1, checkpoint_path=tmp_path / "x.parquet",
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                batch_size=1,
+                checkpoint_path=tmp_path / "x.parquet",
             )
         mock_llm.assert_not_called()
 
@@ -178,9 +209,11 @@ def test_no_checkpoint_when_params_none(tmp_path):
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
     _, mock_llm = _mock_llm_factory()
 
-    with patch("dataframeit.core._save_checkpoint") as mock_save, \
-         patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core._save_checkpoint") as mock_save,
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         dataframeit(df, questions=SimpleModel, prompt="Teste {texto}")
 
     mock_save.assert_not_called()
@@ -188,41 +221,57 @@ def test_no_checkpoint_when_params_none(tmp_path):
 
 def test_validation_batch_size_without_path():
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="devem ser usados juntos"):
-            dataframeit(df, questions=SimpleModel, prompt="Teste {texto}", batch_size=10)
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="devem ser usados juntos"),
+    ):
+        dataframeit(df, questions=SimpleModel, prompt="Teste {texto}", batch_size=10)
 
 
 def test_validation_path_without_batch_size(tmp_path):
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="devem ser usados juntos"):
-            dataframeit(
-                df, questions=SimpleModel, prompt="Teste {texto}",
-                checkpoint_path=tmp_path / "x.csv",
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="devem ser usados juntos"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            checkpoint_path=tmp_path / "x.csv",
+        )
 
 
 @pytest.mark.parametrize("bad_value", [0, -1, 1.5, "10"])
 def test_validation_invalid_batch_size(bad_value, tmp_path):
     df = pd.DataFrame({"texto": ["a"]})
-    with patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(ValueError, match="batch_size deve ser int"):
-            dataframeit(
-                df, questions=SimpleModel, prompt="Teste {texto}",
-                batch_size=bad_value, checkpoint_path=tmp_path / "x.csv",
-            )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match="batch_size deve ser int"),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=bad_value,
+            checkpoint_path=tmp_path / "x.csv",
+        )
 
 
 def test_unsupported_extension_rejected_early(tmp_path):
     """Extensão inválida falha na validação antes de processar linhas."""
     df = pd.DataFrame({"texto": ["a", "b"]})
-    with patch("dataframeit.core.call_langchain") as mock_llm, \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core.call_langchain") as mock_llm,
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         with pytest.raises(ValueError, match="Extensão"):
             dataframeit(
-                df, questions=SimpleModel, prompt="Teste {texto}",
-                batch_size=1, checkpoint_path=tmp_path / "x.txt",
+                df,
+                questions=SimpleModel,
+                prompt="Teste {texto}",
+                batch_size=1,
+                checkpoint_path=tmp_path / "x.txt",
             )
         mock_llm.assert_not_called()
 
@@ -238,19 +287,25 @@ def test_resume_after_simulated_crash(tmp_path):
         total_calls[0] += 1
         # Após 4 chamadas (que garante 2 checkpoints com batch_size=2), crash.
         if total_calls[0] > 4:
-            raise SystemExit("simulated kill")
+            msg = "simulated kill"
+            raise SystemExit(msg)
         return {
             "data": {"campo1": f"v{total_calls[0]}"},
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm), \
-         patch("dataframeit.core.validate_provider_dependencies"):
-        with pytest.raises(SystemExit):
-            dataframeit(
-                df, questions=SimpleModel, prompt="Teste {texto}",
-                batch_size=2, checkpoint_path=ckpt,
-            )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(SystemExit),
+    ):
+        dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=2,
+            checkpoint_path=ckpt,
+        )
 
     assert ckpt.exists(), "1º checkpoint deve estar persistido após o crash"
     loaded = pd.read_csv(ckpt)
@@ -266,11 +321,17 @@ def test_resume_after_simulated_crash(tmp_path):
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
         }
 
-    with patch("dataframeit.core.call_langchain", side_effect=mock_llm_ok), \
-         patch("dataframeit.core.validate_provider_dependencies"):
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=mock_llm_ok),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
         final = dataframeit(
-            loaded, questions=SimpleModel, prompt="Teste {texto}",
-            resume=True, batch_size=2, checkpoint_path=ckpt,
+            loaded,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            resume=True,
+            batch_size=2,
+            checkpoint_path=ckpt,
         )
 
     resume_calls = total_calls[0] - calls_before_resume
@@ -305,8 +366,6 @@ def test_save_checkpoint_rejects_unsupported_extension(tmp_path):
 def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     """Duas gravações simultâneas disputavam o mesmo .tmp, e o FileNotFoundError
     do os.replace regravava como 'error' uma linha já processada."""
-    import threading
-    import time
 
     df = pd.DataFrame({"texto": [f"t{i}" for i in range(24)]})
     ckpt = tmp_path / "ckpt.csv"
@@ -328,12 +387,18 @@ def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
         time.sleep(0.005)
         return {"data": {"campo1": "ok"}, "usage": None}
 
-    with patch("dataframeit.core.call_langchain", side_effect=llm_lento), \
-            patch("dataframeit.core.validate_provider_dependencies"), \
-            patch("dataframeit.core._save_checkpoint", side_effect=gravacao_lenta):
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm_lento),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core._save_checkpoint", side_effect=gravacao_lenta),
+    ):
         resultado = dataframeit(
-            df, SimpleModel, "p {texto}",
-            parallel_requests=6, batch_size=1, checkpoint_path=str(ckpt),
+            df,
+            SimpleModel,
+            "p {texto}",
+            parallel_requests=6,
+            batch_size=1,
+            checkpoint_path=str(ckpt),
             track_tokens=False,
         )
 

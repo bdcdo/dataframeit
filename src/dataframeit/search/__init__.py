@@ -12,9 +12,9 @@ from .tavily_provider import TavilyProvider  # isort: skip
 from .exa_provider import ExaProvider  # isort: skip
 
 __all__ = [
-    'SearchProvider',
-    'get_provider',
-    'get_available_providers',
-    'TavilyProvider',
-    'ExaProvider',
+    "ExaProvider",
+    "SearchProvider",
+    "TavilyProvider",
+    "get_available_providers",
+    "get_provider",
 ]

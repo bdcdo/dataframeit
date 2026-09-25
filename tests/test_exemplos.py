@@ -24,9 +24,7 @@ PARAMETROS_ACEITOS = set(inspect.signature(dataframeit).parameters)
 def _codigo_da_celula(celula):
     """Código Python da célula, sem as linhas de comando do Jupyter (! e %)."""
     linhas = "".join(celula["source"]).splitlines()
-    return "\n".join(
-        linha for linha in linhas if not linha.lstrip().startswith(("!", "%"))
-    )
+    return "\n".join(linha for linha in linhas if not linha.lstrip().startswith(("!", "%")))
 
 
 def _codigos(caminho):
@@ -34,9 +32,7 @@ def _codigos(caminho):
         return [caminho.read_text(encoding="utf-8")]
     notebook = json.loads(caminho.read_text(encoding="utf-8"))
     return [
-        _codigo_da_celula(celula)
-        for celula in notebook["cells"]
-        if celula["cell_type"] == "code"
+        _codigo_da_celula(celula) for celula in notebook["cells"] if celula["cell_type"] == "code"
     ]
 
 
@@ -58,7 +54,8 @@ def argumentos_desconhecidos(codigo):
 
 
 def test_ha_exemplos_para_checar():
-    assert NOTEBOOKS and SCRIPTS
+    assert NOTEBOOKS
+    assert SCRIPTS
 
 
 @pytest.mark.parametrize("caminho", NOTEBOOKS + SCRIPTS, ids=lambda caminho: caminho.name)

@@ -5,13 +5,14 @@ from __future__ import annotations
 import importlib
 import threading
 from contextlib import contextmanager
+from typing import ClassVar
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-import dataframeit.core as core
+from dataframeit import core
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -75,7 +76,7 @@ def make_config(
 
 
 class RecordingCodexBackend:
-    instances: list[RecordingCodexBackend] = []
+    instances: ClassVar[list[RecordingCodexBackend]] = []
 
     def __init__(self, config, pydantic_model, user_prompt):
         self.config = config
@@ -631,7 +632,8 @@ def test_completed_checkpoint_adds_missing_cached_token_column_without_provider(
 def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch):
     @contextmanager
     def failing_backend(*args):
-        raise ValueError("invalid schema, configuration or authentication")
+        msg = "invalid schema, configuration or authentication"
+        raise ValueError(msg)
         yield
 
     codex_module = importlib.import_module("dataframeit.codex")
@@ -640,7 +642,7 @@ def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch):
     data = pd.DataFrame({"text": ["pending"]})
     original = data.copy(deep=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="invalid schema"):
         core.dataframeit(
             data,
             questions=ResultModel,
