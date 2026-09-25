@@ -18,7 +18,7 @@ from .errors import (
     retry_with_backoff,
 )
 from .llm import LLMConfig, _parse_usage_metadata, build_prompt
-from .utils import check_dependency, parse_json
+from .utils import parse_json
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -181,8 +181,6 @@ def call_claude_code(
     Returns:
         Dicionário com 'data' (dados extraídos) e 'usage' (metadata).
     """
-    check_dependency("claude_agent_sdk", "claude-agent-sdk")
-
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 (extra claude-code opcional)
 
     # Construir prompt e schema
