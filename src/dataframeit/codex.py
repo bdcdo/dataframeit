@@ -8,7 +8,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import BaseModel, ValidationError
 from pydantic.errors import PydanticUserError
@@ -26,6 +26,13 @@ from .llm import LLMConfig, build_prompt
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from openai_codex import Codex, Thread
+    from openai_codex.types import ReasoningEffort
+
+# Status HTTP de rate limit e início da faixa de erro do servidor.
+_HTTP_TOO_MANY_REQUESTS = 429
+_HTTP_SERVER_ERROR_MIN = 500
 
 _ALLOWED_MODEL_KWARGS = frozenset({"effort"})
 _AUTH_LOCK_SUFFIX = ".dataframeit.lock"
@@ -80,7 +87,7 @@ _SUPPORTED_SCHEMA_KEYWORDS = frozenset(
 )
 
 
-def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C901, PLR0915 (um passo por keyword do JSON Schema)
     """Converte o schema Pydantic v2 para structured output estrito."""
     strict_schema = copy.deepcopy(schema)
 
@@ -103,7 +110,9 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             raise ProviderConfigurationError(msg)
         return current
 
-    def visit(node: Any, expanded_refs: frozenset[str] = frozenset()) -> dict[str, Any]:
+    def visit(  # noqa: C901, PLR0912, PLR0915 (um passo por keyword do JSON Schema)
+        node: object, expanded_refs: frozenset[str] = frozenset()
+    ) -> dict[str, Any]:
         if not isinstance(node, dict):
             msg = "O structured output do Codex requer schemas JSON representados por objetos"
             raise ProviderConfigurationError(msg)
@@ -202,8 +211,8 @@ def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
     return _to_strict_json_schema(schema)
 
 
-def _validate_config(config: LLMConfig):
-    from openai_codex.types import ReasoningEffort
+def _validate_config(config: LLMConfig) -> ReasoningEffort:
+    from openai_codex.types import ReasoningEffort  # noqa: PLC0415 (extra codex opcional)
 
     if config.api_key:
         msg = "provider='codex' usa a autenticação do Codex; não passe api_key"
@@ -228,7 +237,7 @@ def _validate_config(config: LLMConfig):
 @contextmanager
 def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
     """Mantém lock, credencial e diretórios isolados pelo tempo da execução."""
-    from filelock import FileLock, Timeout
+    from filelock import FileLock, Timeout  # noqa: PLC0415 (extra codex opcional)
 
     configured_home = os.environ.get("CODEX_HOME")
     source_home = Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
@@ -293,8 +302,8 @@ class CodexBackend:
     _pydantic_model: type[BaseModel]
     _user_prompt: str
     _schema: dict[str, Any]
-    _effort: Any
-    _client: Any
+    _effort: ReasoningEffort
+    _client: Codex
     _workspace: Path
 
     def invoke(self, text: str) -> dict:
@@ -307,8 +316,8 @@ class CodexBackend:
         )
 
     def _invoke_once(self, text: str) -> dict:
-        from openai_codex import ApprovalMode, Sandbox
-        from openai_codex.types import TurnStatus
+        from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
+        from openai_codex.types import TurnStatus  # noqa: PLC0415 (extra codex opcional)
 
         prompt = build_prompt(self._user_prompt, text)
 
@@ -326,12 +335,12 @@ class CodexBackend:
                 effort=self._effort,
                 output_schema=self._schema,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
             self._raise_classified_sdk_error(err)
 
         try:
             result = turn.run()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
             self._raise_failed_turn_error(thread, turn.id, err)
 
         if result.status != TurnStatus.completed:
@@ -361,9 +370,9 @@ class CodexBackend:
         return {"data": validated.model_dump(), "usage": usage}
 
     @staticmethod
-    def _raise_failed_turn_error(thread, turn_id: str, error: Exception) -> None:
+    def _raise_failed_turn_error(thread: Thread, turn_id: str, error: Exception) -> NoReturn:
         """Recupera o erro tipado que o SDK descarta ao levantar RuntimeError."""
-        from openai_codex.generated.v2_all import (
+        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
             CodexErrorInfoValue,
             HttpConnectionFailedCodexErrorInfo,
             ResponseStreamConnectionFailedCodexErrorInfo,
@@ -373,7 +382,7 @@ class CodexBackend:
 
         try:
             turns = thread.read(include_turns=True).thread.turns
-        except Exception:
+        except Exception:  # noqa: BLE001 (sem o histórico, vale a classificação do erro original)
             CodexBackend._raise_classified_sdk_error(error)
 
         failed_turn = next((item for item in turns if item.id == turn_id), None)
@@ -409,9 +418,9 @@ class CodexBackend:
             if not isinstance(root, variant_type):
                 continue
             status = getattr(root, payload_field).http_status_code
-            if status == 429:
+            if status == _HTTP_TOO_MANY_REQUESTS:
                 raise ProviderOverloadedError(message) from error
-            if status is None or status >= 500:
+            if status is None or status >= _HTTP_SERVER_ERROR_MIN:
                 raise ProviderTransientError(message) from error
             raise ProviderError(message) from error
 
@@ -421,8 +430,8 @@ class CodexBackend:
         raise ProviderError(message) from error
 
     @staticmethod
-    def _raise_classified_sdk_error(error: Exception) -> None:
-        from openai_codex import is_retryable_error
+    def _raise_classified_sdk_error(error: Exception) -> NoReturn:
+        from openai_codex import is_retryable_error  # noqa: PLC0415 (extra codex opcional)
 
         message = f"{type(error).__name__}: {error}"
         if is_retryable_error(error):
@@ -437,7 +446,7 @@ def open_codex_backend(
     user_prompt: str,
 ) -> Iterator[CodexBackend]:
     """Abre um backend ativo e fecha seus recursos na ordem inversa."""
-    from openai_codex import Codex, CodexConfig
+    from openai_codex import Codex, CodexConfig  # noqa: PLC0415 (extra codex opcional)
 
     schema = _build_schema(pydantic_model)
     effort = _validate_config(config)
