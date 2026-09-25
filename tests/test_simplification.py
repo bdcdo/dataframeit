@@ -17,17 +17,6 @@ def test_basic_functionality():
     # Criar DataFrame de teste
     df = pd.DataFrame({"texto": ["texto 1", "texto 2", "texto 3"], "coluna_existente": [1, 2, 3]})
 
-    # Template simples
-    template = """
-    Analise o texto: {documento}
-    {format}
-    """
-
-    print("DataFrame original:")
-    print(df)
-    print("\nModelo Pydantic:", TestModel.model_fields.keys())
-    print("Template:", template[:50], "...")
-
     # Verificar que as colunas são configuradas corretamente
     from dataframeit.core import _setup_columns
 
@@ -35,7 +24,6 @@ def test_basic_functionality():
     expected_cols = list(TestModel.model_fields.keys())
     _setup_columns(df_test, expected_cols, None, False)
 
-    print("\nColunas após setup:", list(df_test.columns))
     assert "campo1" in df_test.columns
     assert "campo2" in df_test.columns
     assert "_dataframeit_status" in df_test.columns
@@ -45,19 +33,15 @@ def test_basic_functionality():
     from dataframeit.core import _get_processing_indices
 
     pending, count = _get_processing_indices(df_test, "_dataframeit_status", False)
-    print(f"Processamento: pending={pending}, processed={count}")
     assert all(pending)
     assert count == 0
 
     # Testar com resume
     df_test.at[0, "_dataframeit_status"] = "processed"
     pending, count = _get_processing_indices(df_test, "_dataframeit_status", True)
-    print(f"Com resume: pending={pending}, processed={count}")
     assert pending[0] is False
     assert all(pending[1:])
     assert count == 1
-
-    print("\n✅ Funcionalidade básica OK!")
 
 
 def test_llm_config():
@@ -74,13 +58,8 @@ def test_llm_config():
         rate_limit_delay=0.0,
     )
 
-    print("\nConfig criado:")
-    print(f"  Model: {config.model}")
-    print(f"  Provider: {config.provider}")
-
     assert config.model == "gemini-3-flash-preview"
     assert config.provider == "google_genai"
-    print("✅ Config OK!")
 
 
 def test_utils():
@@ -92,14 +71,12 @@ def test_utils():
     result, conversion_info = to_pandas(df_pd)
     assert isinstance(result, pd.DataFrame)
     assert conversion_info.original_type == ORIGINAL_TYPE_PANDAS_DF
-    print("✅ Conversão pandas OK!")
 
     # Testar parse_json
     json_str = '{"campo1": "valor", "campo2": "A"}'
     parsed = parse_json(json_str)
     assert parsed["campo1"] == "valor"
     assert parsed["campo2"] == "A"
-    print("✅ Parse JSON OK!")
 
     # Testar parse de JSON com markdown
     markdown_json = """```json
@@ -107,7 +84,6 @@ def test_utils():
 ```"""
     parsed2 = parse_json(markdown_json)
     assert parsed2["campo1"] == "teste"
-    print("✅ Parse JSON markdown OK!")
 
 
 def test_hide_error_columns_when_no_errors():
@@ -126,7 +102,6 @@ def test_hide_error_columns_when_no_errors():
     assert "_dataframeit_status" not in result.columns
     assert "_error_details" not in result.columns
     assert "texto" in result.columns
-    print("✅ Colunas de erro ocultadas quando não há erros!")
 
     # Caso 2: Com erros - colunas devem ser mantidas
     df_with_errors = pd.DataFrame(
@@ -139,7 +114,6 @@ def test_hide_error_columns_when_no_errors():
     result = from_pandas(df_with_errors, False)
     assert "_dataframeit_status" in result.columns
     assert "_error_details" in result.columns
-    print("✅ Colunas de erro mantidas quando há erros!")
 
     # Caso 3: Com retry info (_error_details preenchido mas sem status='error')
     df_with_retries = pd.DataFrame(
@@ -152,7 +126,6 @@ def test_hide_error_columns_when_no_errors():
     result = from_pandas(df_with_retries, False)
     assert "_dataframeit_status" in result.columns
     assert "_error_details" in result.columns
-    print("✅ Colunas mantidas quando há info de retries!")
 
 
 def test_prompt_building():
@@ -163,28 +136,5 @@ def test_prompt_building():
     text = "Este é um texto de teste"
 
     prompt = build_prompt(template, text)
-    print("\nPrompt construído:")
-    print(prompt)
     assert "Este é um texto de teste" in prompt
     assert "{texto}" not in prompt  # Placeholder deve ter sido substituído
-    print("✅ Construção de prompt OK!")
-
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("TESTE DE VALIDAÇÃO DA SIMPLIFICAÇÃO")
-    print("=" * 60)
-
-    test_basic_functionality()
-    print()
-    test_llm_config()
-    print()
-    test_utils()
-    print()
-    test_hide_error_columns_when_no_errors()
-    print()
-    test_prompt_building()
-
-    print("\n" + "=" * 60)
-    print("✅ TODOS OS TESTES PASSARAM!")
-    print("=" * 60)

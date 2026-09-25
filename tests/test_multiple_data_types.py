@@ -43,7 +43,6 @@ class TestToPandas:
         assert isinstance(result, pd.DataFrame)
         assert info.original_type == ORIGINAL_TYPE_PANDAS_DF
         assert len(result) == 2
-        print("✅ to_pandas com pandas.DataFrame")
 
     @pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
     def test_polars_dataframe(self):
@@ -54,7 +53,6 @@ class TestToPandas:
         assert isinstance(result, pd.DataFrame)
         assert info.original_type == ORIGINAL_TYPE_POLARS_DF
         assert len(result) == 2
-        print("✅ to_pandas com polars.DataFrame")
 
     def test_pandas_series(self):
         """Testa conversão de pandas Series."""
@@ -66,7 +64,6 @@ class TestToPandas:
         assert DEFAULT_TEXT_COLUMN in result.columns
         assert len(result) == 3
         assert info.series_name == "minha_serie"
-        print("✅ to_pandas com pandas.Series")
 
     def test_pandas_series_preserves_index(self):
         """Testa que o índice da Series é preservado."""
@@ -75,7 +72,6 @@ class TestToPandas:
 
         assert info.original_index is not None
         assert list(info.original_index) == ["x", "y"]
-        print("✅ to_pandas preserva índice de pandas.Series")
 
     @pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
     def test_polars_series(self):
@@ -88,7 +84,6 @@ class TestToPandas:
         assert DEFAULT_TEXT_COLUMN in result.columns
         assert len(result) == 2
         assert info.series_name == "minha_serie"
-        print("✅ to_pandas com polars.Series")
 
     def test_list(self):
         """Testa conversão de list."""
@@ -100,7 +95,6 @@ class TestToPandas:
         assert DEFAULT_TEXT_COLUMN in result.columns
         assert len(result) == 3
         assert list(result[DEFAULT_TEXT_COLUMN]) == data
-        print("✅ to_pandas com list")
 
     def test_dict(self):
         """Testa conversão de dict."""
@@ -116,7 +110,6 @@ class TestToPandas:
         assert DEFAULT_TEXT_COLUMN in result.columns
         assert len(result) == 3
         assert list(result.index) == ["doc1", "doc2", "doc3"]
-        print("✅ to_pandas com dict")
 
     def test_unsupported_type_raises_error(self):
         """Testa que tipos não suportados geram erro."""
@@ -125,7 +118,6 @@ class TestToPandas:
 
         with pytest.raises(TypeError, match="Tipo não suportado"):
             to_pandas("string simples")
-        print("✅ to_pandas rejeita tipos não suportados")
 
 
 class TestFromPandas:
@@ -139,7 +131,6 @@ class TestFromPandas:
         result = from_pandas(df, info)
 
         assert isinstance(result, pd.DataFrame)
-        print("✅ from_pandas com pandas.DataFrame")
 
     @pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
     def test_polars_dataframe(self):
@@ -150,7 +141,6 @@ class TestFromPandas:
         result = from_pandas(df, info)
 
         assert isinstance(result, pl.DataFrame)
-        print("✅ from_pandas com polars.DataFrame")
 
     def test_pandas_series_returns_dataframe(self):
         """Testa que pandas Series retorna DataFrame com resultados."""
@@ -175,7 +165,6 @@ class TestFromPandas:
         assert "sentimento" in result.columns
         assert "score" in result.columns
         assert list(result.index) == ["a", "b"]  # Índice restaurado
-        print("✅ from_pandas com pandas.Series retorna DataFrame")
 
     def test_list_returns_dataframe(self):
         """Testa que list retorna DataFrame."""
@@ -192,7 +181,6 @@ class TestFromPandas:
         assert isinstance(result, pd.DataFrame)
         assert DEFAULT_TEXT_COLUMN not in result.columns
         assert "sentimento" in result.columns
-        print("✅ from_pandas com list retorna DataFrame")
 
     def test_dict_returns_dataframe_with_keys_as_index(self):
         """Testa que dict retorna DataFrame com chaves como índice."""
@@ -213,7 +201,6 @@ class TestFromPandas:
         assert isinstance(result, pd.DataFrame)
         assert DEFAULT_TEXT_COLUMN not in result.columns
         assert list(result.index) == ["doc1", "doc2"]
-        print("✅ from_pandas com dict retorna DataFrame com chaves como índice")
 
     def test_retrocompat_bool_false(self):
         """Testa retrocompatibilidade com was_polars=False."""
@@ -222,7 +209,6 @@ class TestFromPandas:
         result = from_pandas(df, False)
 
         assert isinstance(result, pd.DataFrame)
-        print("✅ from_pandas retrocompatível com bool False")
 
     @pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
     def test_retrocompat_bool_true(self):
@@ -232,7 +218,6 @@ class TestFromPandas:
         result = from_pandas(df, True)
 
         assert isinstance(result, pl.DataFrame)
-        print("✅ from_pandas retrocompatível com bool True")
 
 
 class TestRoundTrip:
@@ -251,7 +236,6 @@ class TestRoundTrip:
         assert isinstance(result, pd.DataFrame)
         assert list(result.index) == ["a", "b"]
         assert "resultado" in result.columns
-        print("✅ Roundtrip pandas.Series")
 
     def test_list_roundtrip(self):
         """Testa ida e volta com list."""
@@ -266,7 +250,6 @@ class TestRoundTrip:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 3
         assert "categoria" in result.columns
-        print("✅ Roundtrip list")
 
     def test_dict_roundtrip(self):
         """Testa ida e volta com dict."""
@@ -284,51 +267,3 @@ class TestRoundTrip:
         assert isinstance(result, pd.DataFrame)
         assert list(result.index) == ["documento_1", "documento_2"]
         assert "resumo" in result.columns
-        print("✅ Roundtrip dict")
-
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("TESTES DE MÚLTIPLOS TIPOS DE DADOS")
-    print("=" * 60)
-    print()
-
-    # Testes to_pandas
-    test_to = TestToPandas()
-    test_to.test_pandas_dataframe()
-    test_to.test_pandas_series()
-    test_to.test_pandas_series_preserves_index()
-    test_to.test_list()
-    test_to.test_dict()
-    test_to.test_unsupported_type_raises_error()
-
-    if HAS_POLARS:
-        test_to.test_polars_dataframe()
-        test_to.test_polars_series()
-
-    print()
-
-    # Testes from_pandas
-    test_from = TestFromPandas()
-    test_from.test_pandas_dataframe()
-    test_from.test_pandas_series_returns_dataframe()
-    test_from.test_list_returns_dataframe()
-    test_from.test_dict_returns_dataframe_with_keys_as_index()
-    test_from.test_retrocompat_bool_false()
-
-    if HAS_POLARS:
-        test_from.test_polars_dataframe()
-        test_from.test_retrocompat_bool_true()
-
-    print()
-
-    # Testes roundtrip
-    test_rt = TestRoundTrip()
-    test_rt.test_pandas_series_roundtrip()
-    test_rt.test_list_roundtrip()
-    test_rt.test_dict_roundtrip()
-
-    print()
-    print("=" * 60)
-    print("TODOS OS TESTES PASSARAM!")
-    print("=" * 60)

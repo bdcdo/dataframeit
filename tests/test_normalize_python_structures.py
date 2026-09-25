@@ -85,21 +85,18 @@ def test_is_complex_type_list():
     assert is_complex_type(list) is True
     assert is_complex_type(list[str]) is True
     assert is_complex_type(list[int]) is True
-    print("✅ is_complex_type detecta list")
 
 
 def test_is_complex_type_dict():
     """Testa detecção de tipo dict."""
     assert is_complex_type(dict) is True
     assert is_complex_type(dict[str, int]) is True
-    print("✅ is_complex_type detecta dict")
 
 
 def test_is_complex_type_tuple():
     """Testa detecção de tipo tuple."""
     assert is_complex_type(tuple) is True
     assert is_complex_type(tuple[int, str]) is True
-    print("✅ is_complex_type detecta tuple")
 
 
 def test_is_complex_type_simple():
@@ -108,7 +105,6 @@ def test_is_complex_type_simple():
     assert is_complex_type(int) is False
     assert is_complex_type(float) is False
     assert is_complex_type(bool) is False
-    print("✅ is_complex_type ignora tipos simples")
 
 
 def test_is_complex_type_optional():
@@ -116,7 +112,6 @@ def test_is_complex_type_optional():
     assert is_complex_type(list[str] | None) is True
     assert is_complex_type(dict[str, int] | None) is True
     assert is_complex_type(str | None) is False
-    print("✅ is_complex_type detecta Optional com complexos")
 
 
 # =============================================================================
@@ -128,7 +123,6 @@ def test_get_complex_fields_simple_model():
     """Testa modelo sem campos complexos."""
     fields = get_complex_fields(SimpleModel)
     assert len(fields) == 0
-    print("✅ get_complex_fields retorna vazio para modelo simples")
 
 
 def test_get_complex_fields_with_list():
@@ -136,7 +130,6 @@ def test_get_complex_fields_with_list():
     fields = get_complex_fields(ModelWithList)
     assert "itens" in fields
     assert "quantidade" not in fields
-    print("✅ get_complex_fields detecta campo lista")
 
 
 def test_get_complex_fields_with_dict():
@@ -144,7 +137,6 @@ def test_get_complex_fields_with_dict():
     fields = get_complex_fields(ModelWithDict)
     assert "dados" in fields
     assert "nome" not in fields
-    print("✅ get_complex_fields detecta campo dict")
 
 
 def test_get_complex_fields_with_tuple():
@@ -152,7 +144,6 @@ def test_get_complex_fields_with_tuple():
     fields = get_complex_fields(ModelWithTuple)
     assert "coordenadas" in fields
     assert "label" not in fields
-    print("✅ get_complex_fields detecta campo tuple")
 
 
 def test_get_complex_fields_optional():
@@ -160,7 +151,6 @@ def test_get_complex_fields_optional():
     fields = get_complex_fields(ModelWithOptionalList)
     assert "tags" in fields
     assert "nome" not in fields
-    print("✅ get_complex_fields detecta Optional[list]")
 
 
 def test_get_complex_fields_complex_model():
@@ -171,7 +161,6 @@ def test_get_complex_fields_complex_model():
     assert "danos_morais" in fields
     assert "nome" not in fields
     assert "status" not in fields
-    print("✅ get_complex_fields detecta todos os campos complexos")
 
 
 # =============================================================================
@@ -184,7 +173,6 @@ def test_normalize_value_list_string():
     result = normalize_value("[1, 2, 3]")
     assert result == [1, 2, 3]
     assert isinstance(result, list)
-    print("✅ normalize_value converte string JSON para lista")
 
 
 def test_normalize_value_dict_string():
@@ -192,21 +180,18 @@ def test_normalize_value_dict_string():
     result = normalize_value('{"a": 1, "b": 2}')
     assert result == {"a": 1, "b": 2}
     assert isinstance(result, dict)
-    print("✅ normalize_value converte string JSON para dict")
 
 
 def test_normalize_value_list_of_strings():
     """Testa normalização de lista de strings."""
     result = normalize_value('["item1", "item2", "item3"]')
     assert result == ["item1", "item2", "item3"]
-    print("✅ normalize_value converte lista de strings")
 
 
 def test_normalize_value_nested():
     """Testa normalização de estrutura aninhada."""
     result = normalize_value('[{"nome": "tratamento1"}, {"nome": "tratamento2"}]')
     assert result == [{"nome": "tratamento1"}, {"nome": "tratamento2"}]
-    print("✅ normalize_value converte estruturas aninhadas")
 
 
 def test_normalize_value_already_list():
@@ -215,7 +200,6 @@ def test_normalize_value_already_list():
     result = normalize_value(original)
     assert result == original
     assert result is original
-    print("✅ normalize_value preserva lista existente")
 
 
 def test_normalize_value_already_dict():
@@ -224,28 +208,24 @@ def test_normalize_value_already_dict():
     result = normalize_value(original)
     assert result == original
     assert result is original
-    print("✅ normalize_value preserva dict existente")
 
 
 def test_normalize_value_none():
     """Testa que None é preservado."""
     result = normalize_value(None)
     assert result is None
-    print("✅ normalize_value preserva None")
 
 
 def test_normalize_value_regular_string():
     """Testa que string normal não é alterada."""
     result = normalize_value("texto normal")
     assert result == "texto normal"
-    print("✅ normalize_value preserva string normal")
 
 
 def test_normalize_value_number():
     """Testa que números não são alterados."""
     assert normalize_value(42) == 42
     assert normalize_value(3.14) == 3.14
-    print("✅ normalize_value preserva números")
 
 
 def test_normalize_value_invalid_json():
@@ -253,7 +233,6 @@ def test_normalize_value_invalid_json():
     invalid = "[1, 2, 3"  # Falta o ]
     result = normalize_value(invalid)
     assert result == invalid
-    print("✅ normalize_value preserva JSON inválido como string")
 
 
 def test_normalize_value_string_starting_with_bracket_not_json():
@@ -261,7 +240,6 @@ def test_normalize_value_string_starting_with_bracket_not_json():
     text = "[Nota do editor] Este é um texto"
     result = normalize_value(text)
     assert result == text
-    print("✅ normalize_value preserva texto com [ no início")
 
 
 # =============================================================================
@@ -278,7 +256,6 @@ def test_normalize_complex_columns_basic():
     assert df["itens"].iloc[0] == ["a", "b", "c"]
     assert df["itens"].iloc[1] == ["d", "e"]
     assert df["quantidade"].iloc[0] == 3
-    print("✅ normalize_complex_columns normaliza colunas de lista")
 
 
 def test_normalize_complex_columns_mixed():
@@ -290,7 +267,6 @@ def test_normalize_complex_columns_mixed():
     assert df["itens"].iloc[0] == ["a", "b"]
     assert df["itens"].iloc[1] == ["c", "d"]
     assert df["itens"].iloc[2] is None
-    print("✅ normalize_complex_columns lida com valores mistos")
 
 
 def test_normalize_complex_columns_dict():
@@ -301,7 +277,6 @@ def test_normalize_complex_columns_dict():
 
     assert df["dados"].iloc[0] == {"chave": "valor"}
     assert df["dados"].iloc[1] == {"outro": 123}
-    print("✅ normalize_complex_columns normaliza colunas de dict")
 
 
 def test_normalize_complex_columns_nonexistent():
@@ -312,7 +287,6 @@ def test_normalize_complex_columns_nonexistent():
     normalize_complex_columns(df, {"coluna_inexistente"})
 
     assert list(df.columns) == ["a"]
-    print("✅ normalize_complex_columns ignora colunas inexistentes")
 
 
 # =============================================================================
@@ -355,7 +329,6 @@ def test_integration_save_load_simulation():
     assert df_loaded["condicoes_de_saude"].iloc[0] == ["diabetes", "hipertensão"]
     assert df_loaded["condicoes_de_saude"].iloc[1] == ["asma"]
     assert df_loaded["tratamentos"].iloc[0] == [{"nome": "insulina"}]
-    print("✅ Ciclo salvar/carregar funciona corretamente")
 
 
 def test_integration_complex_model_fields():
@@ -371,8 +344,6 @@ def test_integration_complex_model_fields():
     # Campos simples não devem estar
     assert "nome" not in fields
     assert "status" not in fields
-
-    print("✅ ComplexModel tem campos complexos detectados corretamente")
 
 
 # =============================================================================
@@ -394,7 +365,6 @@ def test_read_df_csv_with_model():
         assert df["itens"].iloc[0] == ["a", "b"]
         assert df["itens"].iloc[1] == ["c", "d", "e"]
         assert df["quantidade"].iloc[0] == 2
-        print("✅ read_df CSV com modelo funciona")
     finally:
         os.unlink(temp_path)
 
@@ -412,7 +382,6 @@ def test_read_df_csv_auto_normalize():
         assert df["col1"].iloc[0] == [1, 2]
         assert df["col2"].iloc[0] == "texto normal"  # Não alterado
         assert df["col3"].iloc[0] == 100  # Não alterado
-        print("✅ read_df CSV normaliza automaticamente")
     finally:
         os.unlink(temp_path)
 
@@ -436,18 +405,14 @@ def test_read_df_excel_with_model():
         df = read_df(temp_path, ModelWithDict)
         assert df["dados"].iloc[0] == {"x": 1}
         assert df["dados"].iloc[1] == {"y": 2}
-        print("✅ read_df Excel com modelo funciona")
     finally:
         os.unlink(temp_path)
 
 
 def test_read_df_file_not_found():
     """Testa erro quando arquivo não existe."""
-    try:
+    with pytest.raises(FileNotFoundError):
         read_df("/caminho/inexistente/arquivo.csv")
-        assert False, "Deveria ter lançado FileNotFoundError"
-    except FileNotFoundError:
-        print("✅ read_df lança FileNotFoundError corretamente")
 
 
 def test_read_df_unsupported_format():
@@ -457,11 +422,8 @@ def test_read_df_unsupported_format():
         temp_path = f.name
 
     try:
-        read_df(temp_path)
-        assert False, "Deveria ter lançado ValueError"
-    except ValueError as e:
-        assert ".xyz" in str(e)
-        print("✅ read_df lança ValueError para formato não suportado")
+        with pytest.raises(ValueError, match=r"\.xyz"):
+            read_df(temp_path)
     finally:
         os.unlink(temp_path)
 
@@ -477,7 +439,6 @@ def test_read_df_without_normalization():
         df = read_df(temp_path, normalize=False)
         # Deve manter como string
         assert df["col1"].iloc[0] == "[1, 2]"
-        print("✅ read_df com normalize=False mantém strings")
     finally:
         os.unlink(temp_path)
 
@@ -506,7 +467,6 @@ def test_read_df_complex_model():
         assert df["danos_morais"].iloc[0] == ["sim", 50000.0]
         assert df["nome"].iloc[0] == "paciente1"  # Não alterado
         assert df["status"].iloc[0] == "ativo"  # Não alterado
-        print("✅ read_df com modelo complexo funciona")
     finally:
         os.unlink(temp_path)
 
@@ -514,59 +474,3 @@ def test_read_df_complex_model():
 # =============================================================================
 # EXECUTAR TESTES
 # =============================================================================
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("TESTES DE NORMALIZAÇÃO DE ESTRUTURAS PYTHON")
-    print("=" * 60)
-
-    print("\n--- Testes is_complex_type ---")
-    test_is_complex_type_list()
-    test_is_complex_type_dict()
-    test_is_complex_type_tuple()
-    test_is_complex_type_simple()
-    test_is_complex_type_optional()
-
-    print("\n--- Testes get_complex_fields ---")
-    test_get_complex_fields_simple_model()
-    test_get_complex_fields_with_list()
-    test_get_complex_fields_with_dict()
-    test_get_complex_fields_with_tuple()
-    test_get_complex_fields_optional()
-    test_get_complex_fields_complex_model()
-
-    print("\n--- Testes normalize_value ---")
-    test_normalize_value_list_string()
-    test_normalize_value_dict_string()
-    test_normalize_value_list_of_strings()
-    test_normalize_value_nested()
-    test_normalize_value_already_list()
-    test_normalize_value_already_dict()
-    test_normalize_value_none()
-    test_normalize_value_regular_string()
-    test_normalize_value_number()
-    test_normalize_value_invalid_json()
-    test_normalize_value_string_starting_with_bracket_not_json()
-
-    print("\n--- Testes normalize_complex_columns ---")
-    test_normalize_complex_columns_basic()
-    test_normalize_complex_columns_mixed()
-    test_normalize_complex_columns_dict()
-    test_normalize_complex_columns_nonexistent()
-
-    print("\n--- Testes de Integração ---")
-    test_integration_save_load_simulation()
-    test_integration_complex_model_fields()
-
-    print("\n--- Testes read_df ---")
-    test_read_df_csv_with_model()
-    test_read_df_csv_auto_normalize()
-    test_read_df_excel_with_model()
-    test_read_df_file_not_found()
-    test_read_df_unsupported_format()
-    test_read_df_without_normalization()
-    test_read_df_complex_model()
-
-    print("\n" + "=" * 60)
-    print("TODOS OS TESTES PASSARAM!")
-    print("=" * 60)
