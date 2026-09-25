@@ -4,9 +4,12 @@ Este módulo permite usar o claude-agent-sdk como provider alternativo ao LangCh
 fazendo chamadas LLM via créditos do Claude Code em vez de créditos de API.
 """
 
+from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 import json
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import (
     ProviderError,
@@ -16,6 +19,19 @@ from .errors import (
 )
 from .llm import LLMConfig, _parse_usage_metadata, build_prompt
 from .utils import check_dependency, parse_json
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+    from pydantic import BaseModel
+
+T = TypeVar("T")
+
+# Status da API que indicam sobrecarga (429 Too Many Requests, 529 Overloaded)
+# e o início da faixa de erro do servidor.
+_OVERLOADED_STATUSES = (429, 529)
+_SERVER_ERROR_MIN = 500
 
 
 def _build_json_system_prompt(json_schema: dict) -> str:
@@ -38,7 +54,9 @@ def _build_json_system_prompt(json_schema: dict) -> str:
     )
 
 
-async def _async_query(prompt: str, options):
+async def _async_query(
+    prompt: str, options: ClaudeAgentOptions
+) -> tuple[str, ResultMessage | None]:
     """Executa query assíncrona no claude-agent-sdk.
 
     Args:
@@ -49,7 +67,12 @@ async def _async_query(prompt: str, options):
         Tupla (response_text, result), em que ``result`` é o ``ResultMessage``
         final ou None quando o SDK não o envia.
     """
-    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
+    from claude_agent_sdk import (  # noqa: PLC0415 (extra claude-code opcional)
+        AssistantMessage,
+        ResultMessage,
+        TextBlock,
+        query,
+    )
 
     response_text = ""
     result = None
@@ -69,7 +92,7 @@ async def _async_query(prompt: str, options):
 _FINAL_RESULT_SUBTYPES = frozenset({"error_max_budget_usd", "error_max_turns"})
 
 
-def _raise_for_result_error(result) -> None:
+def _raise_for_result_error(result: object) -> None:
     """Converte um ResultMessage com is_error na exceção que o retry entende.
 
     Sem isso, o erro virava "resposta vazia", que é re-tentada. Estouro de
@@ -87,16 +110,16 @@ def _raise_for_result_error(result) -> None:
 
     if subtype in _FINAL_RESULT_SUBTYPES:
         raise ProviderError(message)
-    if status in (429, 529):
+    if status in _OVERLOADED_STATUSES:
         raise ProviderOverloadedError(message)
-    if isinstance(status, int) and status >= 500:
+    if isinstance(status, int) and status >= _SERVER_ERROR_MIN:
         raise ProviderTransientError(message)
     if isinstance(status, int):
         raise ProviderError(message)
     raise ProviderTransientError(message)
 
 
-def _run_coroutine(coro):
+def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
     """Executa a corrotina até o fim a partir de código síncrono.
 
     ``asyncio.run`` recusa rodar quando o thread atual já tem um event loop
@@ -109,10 +132,11 @@ def _run_coroutine(coro):
         return asyncio.run(coro)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(asyncio.run, coro).result()
+        # O ty não propaga o tipo do resultado por submit(asyncio.run, coro).
+        return executor.submit(asyncio.run, coro).result()  # ty: ignore[invalid-return-type]
 
 
-def _usage_from_sdk(usage, cost_usd=None) -> dict | None:
+def _usage_from_sdk(usage: dict | None, cost_usd: float | None = None) -> dict | None:
     """Converte ``ResultMessage.usage`` para o formato de tokens do core.
 
     O SDK repassa o usage da API da Anthropic, em que ``input_tokens`` exclui
@@ -128,20 +152,24 @@ def _usage_from_sdk(usage, cost_usd=None) -> dict | None:
     input_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
     output_tokens = usage.get("output_tokens") or 0
 
-    parsed = _parse_usage_metadata(
-        {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "input_token_details": {"cache_read": cache_read},
-        }
-    )
+    parsed: dict[str, float] = {
+        **_parse_usage_metadata(
+            {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "input_token_details": {"cache_read": cache_read},
+            }
+        )
+    }
     if cost_usd:
         parsed["cost_usd"] = cost_usd
     return parsed
 
 
-def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMConfig) -> dict:
+def call_claude_code(
+    text: str, pydantic_model: type[BaseModel], user_prompt: str, config: LLMConfig
+) -> dict:
     """Processa texto usando Claude Code SDK com structured output via JSON schema.
 
     Args:
@@ -155,7 +183,7 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
     """
     check_dependency("claude_agent_sdk", "claude-agent-sdk")
 
-    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 (extra claude-code opcional)
 
     # Construir prompt e schema
     prompt = build_prompt(user_prompt, text)
@@ -175,7 +203,7 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
     # usuário e de projeto tragam servidores MCP ou regras `permissions.allow`
     # que os pré-aprovem. A flag vai por `extra_args` porque o campo
     # `strict_mcp_config` não existe nas versões mais antigas aceitas do SDK.
-    options_kwargs = {
+    options_kwargs: dict[str, Any] = {
         "system_prompt": system_prompt,
         "tools": [],
         "setting_sources": [],
@@ -198,7 +226,7 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
     # estourou o orçamento também foi cobrada.
     spent = 0.0
 
-    def _call():
+    def _call() -> dict:
         nonlocal spent
         response_text, result = _run_coroutine(_async_query(prompt, options))
         spent += getattr(result, "total_cost_usd", None) or 0
@@ -219,5 +247,6 @@ def call_claude_code(text: str, pydantic_model, user_prompt: str, config: LLMCon
         return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
     except Exception as error:
         # A linha falhou, mas o custo existiu; o core o soma ao resumo.
-        error.cost_usd = spent
+        # Atributo dinâmico, lido pelo core com getattr ao somar o custo.
+        error.cost_usd = spent  # ty: ignore[unresolved-attribute]
         raise
