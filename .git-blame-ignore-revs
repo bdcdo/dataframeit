@@ -1,0 +1,6 @@
+# Commits só de formatação, que o git blame deve pular.
+# Uso local: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (o GitHub lê este arquivo sozinho).
+
+# style: aplica ruff format em src e tests
+6573f50d11e57a899b20b322f13ef35ba2b359a0
