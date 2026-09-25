@@ -64,14 +64,18 @@ jobs:
         with:
           enable-cache: true
 
+      # A instalação base não traz nada do extra codex. No extra dev, o filelock
+      # chega pelo virtualenv do pre-commit, e só o SDK e o runtime são conferidos.
       - name: Verify Codex remains optional
-        run: >-
-          uv run --python "${{ matrix.python-version }}" --extra dev python -c
-          'from importlib.metadata import distributions;
-          installed = {d.metadata["Name"].lower() for d in distributions()};
-          packages = {"filelock", "openai-codex",
-          "openai-codex-cli-bin"};
-          assert not packages & installed'
+        run: |
+          uv run --python "${{ matrix.python-version }}" python -c '
+          from importlib.metadata import distributions
+          installed = {d.metadata["Name"].lower() for d in distributions()}
+          assert not {"filelock", "openai-codex", "openai-codex-cli-bin"} & installed'
+          uv run --python "${{ matrix.python-version }}" --extra dev python -c '
+          from importlib.metadata import distributions
+          installed = {d.metadata["Name"].lower() for d in distributions()}
+          assert not {"openai-codex", "openai-codex-cli-bin"} & installed'
 
       - name: Run tests
         run: uv run --python "${{ matrix.python-version }}" --extra dev --extra search-all --extra openai pytest
