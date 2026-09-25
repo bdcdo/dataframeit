@@ -1,7 +1,12 @@
 """Interface abstrata para provedores de busca web."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
 
 
 class SearchProvider(ABC):
@@ -52,7 +57,7 @@ class SearchProvider(ABC):
         """Limite aproximado de requisições por minuto, usado no aviso de rate limit."""
 
     @abstractmethod
-    def create_tool(self, max_results: int, **kwargs) -> Any:
+    def create_tool(self, max_results: int, **kwargs: object) -> BaseTool:
         """Cria a ferramenta de busca do LangChain.
 
         Args:
@@ -64,7 +69,7 @@ class SearchProvider(ABC):
         """
 
     @abstractmethod
-    def calculate_credits(self, search_count: int, **kwargs) -> int:
+    def calculate_credits(self, search_count: int, **kwargs: object) -> int:
         """Calcula créditos/custos consumidos.
 
         Args:
@@ -101,7 +106,10 @@ def get_provider(name: str) -> SearchProvider:
         ValueError: Se o provedor não for suportado.
     """
     # Importar providers para garantir que estão registrados
-    from . import exa_provider, tavily_provider  # noqa: F401
+    from . import (  # noqa: F401, PLC0415 (registra os provedores; no topo seria import circular)
+        exa_provider,
+        tavily_provider,
+    )
 
     if name not in _PROVIDERS:
         available = list(_PROVIDERS.keys())
@@ -113,6 +121,9 @@ def get_provider(name: str) -> SearchProvider:
 def get_available_providers() -> list[str]:
     """Retorna lista de provedores de busca disponíveis."""
     # Importar providers para garantir que estão registrados
-    from . import exa_provider, tavily_provider  # noqa: F401
+    from . import (  # noqa: F401, PLC0415 (registra os provedores; no topo seria import circular)
+        exa_provider,
+        tavily_provider,
+    )
 
     return list(_PROVIDERS.keys())

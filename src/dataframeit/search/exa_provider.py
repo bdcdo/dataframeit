@@ -9,9 +9,14 @@ Recomendado para:
 - Busca semântica mais precisa
 """
 
-from typing import Any
+from __future__ import annotations
+
+from langchain_core.tools import BaseTool, StructuredTool
 
 from .base import SearchProvider, register_provider
+
+# Até este número de resultados, a Exa cobra a faixa de preço mais baixa.
+_MAX_RESULTS_FAIXA_BASICA = 25
 
 
 @register_provider
@@ -20,48 +25,56 @@ class ExaProvider(SearchProvider):
 
     @property
     def name(self) -> str:
+        """Identificador do provedor."""
         return "exa"
 
     @property
     def env_var(self) -> str:
+        """Variável de ambiente da API key."""
         return "EXA_API_KEY"
 
     @property
     def package_name(self) -> str:
+        """Módulo Python da integração LangChain."""
         return "langchain_exa"
 
     @property
     def install_name(self) -> str:
+        """Nome do pacote para pip install."""
         return "langchain-exa"
 
     @property
     def signup_url(self) -> str:
+        """Página para criar conta e obter a API key."""
         return "https://exa.ai"
 
     @property
     def friendly_name(self) -> str:
+        """Nome exibido nas mensagens de erro."""
         return "Exa Search"
 
     @property
     def free_tier(self) -> str:
+        """Plano de entrada, exibido na mensagem de API key ausente."""
         return "plano pago"
 
     @property
     def requests_per_minute(self) -> int:
+        """Limite aproximado de requisições por minuto."""
         # Plano padrão: ~5 QPS
         return 300
 
-    def create_tool(self, max_results: int, **kwargs) -> Any:
+    def create_tool(self, max_results: int, **kwargs: object) -> BaseTool:
         """Cria ferramenta ExaSearchResults.
 
         Args:
             max_results: Número de resultados por busca.
+            **kwargs: Parâmetros de outros provedores, ignorados pela Exa.
 
         Returns:
             Ferramenta LangChain que recebe só a consulta.
         """
-        from langchain_core.tools import StructuredTool
-        from langchain_exa import ExaSearchResults
+        from langchain_exa import ExaSearchResults  # noqa: PLC0415 (extra de busca opcional)
 
         # ExaSearchResults aceita num_results e text_contents_options no
         # construtor sem usá-los: são argumentos do _run, que o modelo escolhe,
@@ -86,7 +99,7 @@ class ExaProvider(SearchProvider):
             description=exa.description,
         )
 
-    def calculate_credits(self, search_count: int, max_results: int = 5, **kwargs) -> int:
+    def calculate_credits(self, search_count: int, max_results: int = 5, **kwargs: object) -> int:
         """Calcula créditos Exa consumidos.
 
         Exa cobra por busca, com preço variando pelo número de resultados:
@@ -96,10 +109,11 @@ class ExaProvider(SearchProvider):
         Args:
             search_count: Número de buscas realizadas.
             max_results: Número de resultados por busca.
+            **kwargs: Parâmetros de outros provedores, ignorados pela Exa.
 
         Returns:
             Total de créditos consumidos (1 crédito = $0.005).
         """
         # Representamos em unidades de $0.005 para facilitar comparação
-        cost_per_search = 1 if max_results <= 25 else 5
+        cost_per_search = 1 if max_results <= _MAX_RESULTS_FAIXA_BASICA else 5
         return search_count * cost_per_search
