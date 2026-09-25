@@ -816,3 +816,130 @@ class TestCondicaoForaDoModoPorCampo:
                 prompt="Analise {texto}",
             )
         call_langchain.assert_not_called()
+
+
+# =============================================================================
+# Condições pela API pública, no modo por campo
+# =============================================================================
+
+
+def _executar_por_campo(modelo, valores):
+    """Roda dataframeit por campo com call_agent falso; devolve a linha e os campos pedidos."""
+    chamadas = []
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent", side_effect=_call_agent_falso(valores, chamadas)),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["x"]}),
+            questions=modelo,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+        )
+    return resultado.iloc[0], chamadas
+
+
+class TestCondicaoPelaApi:
+    def test_condicao_callable_que_levanta_pula_o_campo(self, caplog):
+        def condicao_quebrada(dados):
+            return dados["inexistente"] == 1
+
+        class Modelo(BaseModel):
+            tipo: str
+            detalhe: str | None = Field(
+                None, json_schema_extra={"condition": condicao_quebrada, "depends_on": ["tipo"]}
+            )
+
+        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+            linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pf", "detalhe": "x"})
+
+        assert chamadas == [["tipo"]]
+        assert linha["detalhe"] is None
+        assert "Erro ao avaliar condição callable para campo 'detalhe'" in caplog.text
+
+    def test_caminho_que_atravessa_uma_lista_nao_tem_valor(self):
+        """'pedidos.nome' não se resolve numa lista: o valor é ausente e 'exists' é falso."""
+
+        class Pedido(BaseModel):
+            nome: str
+
+        class Modelo(BaseModel):
+            pedidos: list[Pedido]
+            observacao: str | None = Field(
+                None,
+                json_schema_extra={"condition": {"field": "pedidos.nome", "exists": True}},
+            )
+
+        linha, chamadas = _executar_por_campo(
+            Modelo, {"pedidos": [{"nome": "dipirona"}], "observacao": "x"}
+        )
+
+        assert chamadas == [["pedidos"]]
+        assert linha["observacao"] is None
+
+    def test_depends_on_em_texto_vale_como_lista_de_um_campo(self):
+        """Com depends_on='tipo', 'detalhe' espera 'tipo', mesmo declarado antes dele."""
+
+        class Modelo(BaseModel):
+            detalhe: str | None = Field(
+                None,
+                json_schema_extra={
+                    "condition": lambda dados: dados.get("tipo") == "pj",
+                    "depends_on": "tipo",
+                },
+            )
+            tipo: str
+
+        linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pj", "detalhe": "x"})
+
+        assert chamadas == [["tipo"], ["detalhe"]]
+        assert linha["detalhe"] == "x"
+
+    def test_depends_on_de_tipo_invalido_e_ignorado(self, caplog):
+        config = {"condition": lambda dados: True, "depends_on": 5}
+
+        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+            _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+        assert dependencias["cpf"] == []
+        assert "condition' callable sem 'depends_on'" in caplog.text
+
+    def test_condicao_sem_campo_nao_cria_dependencia_e_sempre_pula(self, caplog):
+        class Modelo(BaseModel):
+            tipo: str
+            detalhe: str | None = Field(None, json_schema_extra={"condition": {"equals": "pj"}})
+
+        _, dependencias = get_field_execution_order(
+            Modelo, {"detalhe": {"condition": {"equals": "pj"}}}
+        )
+        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+            linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pj", "detalhe": "x"})
+
+        assert dependencias["detalhe"] == []
+        assert chamadas == [["tipo"]]
+        assert linha["detalhe"] is None
+        assert "não tem 'field' definido" in caplog.text
+
+
+def test_modelo_auto_referente_e_validado_sem_laco():
+    """A validação percorre os campos aninhados e para ao reencontrar o próprio modelo."""
+
+    class No(BaseModel):
+        nome: str
+        filhos: list["No"] = []
+
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch(
+            "dataframeit.core.call_langchain",
+            return_value={"data": {"nome": "raiz", "filhos": []}, "usage": None},
+        ),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["x"]}), questions=No, prompt="{texto}", track_tokens=False
+        )
+
+    assert resultado["nome"].tolist() == ["raiz"]
