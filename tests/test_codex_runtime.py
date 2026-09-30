@@ -157,14 +157,15 @@ def test_disabled_features_exist_in_bundled_runtime(tmp_path):
     assert set(disabled) <= set(states)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="a lista revisada vem do runtime Linux; o padrão das flags no Windows não foi revisado",
-)
 def test_enabled_features_match_reviewed_list(tmp_path):
     enabled = {name for name, on in _feature_states(tmp_path).items() if on}
+    expected = set(_REVIEWED_ENABLED_FEATURES)
+    # `secret_auth_storage` é a única flag cujo padrão o runtime fixa pela
+    # plataforma: vem ligada só no Windows.
+    if sys.platform == "win32":
+        expected.add("secret_auth_storage")
 
-    assert enabled == _REVIEWED_ENABLED_FEATURES
+    assert enabled == expected
 
 
 class _RecordingProvider(BaseHTTPRequestHandler):
