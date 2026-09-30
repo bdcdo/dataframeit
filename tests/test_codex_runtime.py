@@ -202,18 +202,19 @@ class _Answer(BaseModel):
     resposta: str
 
 
-def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
-    """O request de uma linha não oferece ao modelo as ferramentas de sub-agentes.
+def _use_local_model_provider(monkeypatch, tmp_path, base_url):
+    """Aponta o provider para um endpoint de modelo local, sem conta nem rede.
 
-    O catálogo do runtime liga os sub-agentes para o `gpt-6-luna`, e só
-    `agents.enabled=false` os desliga. O provider local troca o endpoint do
-    modelo e mantém os demais overrides e a abertura do provider, e por isso
-    o teste não precisa de conta nem de rede.
+    O endpoint entra como provider do runtime ao lado dos demais overrides, e a
+    abertura do backend é a mesma do provider. O runtime manda o request pelo
+    proxy do ambiente mesmo para `127.0.0.1`, e um proxy herdado prenderia o
+    turno; por isso as variáveis de proxy saem do ambiente.
     """
-    handler = type("Handler", (_RecordingProvider,), {"bodies": []})
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port = server.server_address[1]
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
 
     source_home = tmp_path / "codex-source"
     source_home.mkdir()
@@ -221,7 +222,7 @@ def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", os.fspath(source_home))
     monkeypatch.setenv("DATAFRAMEIT_MOCK_KEY", "local")
     provider = (
-        f'{{name="mock",base_url="http://127.0.0.1:{port}/v1",wire_api="responses",'
+        f'{{name="mock",base_url="{base_url}",wire_api="responses",'
         'env_key="DATAFRAMEIT_MOCK_KEY",request_max_retries=0,stream_max_retries=0}'
     )
     monkeypatch.setattr(
@@ -229,7 +230,7 @@ def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
         "_CODEX_CONFIG_OVERRIDES",
         (*_CODEX_CONFIG_OVERRIDES, 'model_provider="mock"', f"model_providers.mock={provider}"),
     )
-    config = LLMConfig(
+    return LLMConfig(
         model="gpt-6-luna",
         provider="codex",
         api_key=None,
@@ -239,6 +240,19 @@ def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
         rate_limit_delay=0,
         model_kwargs={"effort": "low"},
     )
+
+
+def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
+    """O request de uma linha não oferece ao modelo as ferramentas de sub-agentes.
+
+    O catálogo do runtime liga os sub-agentes para o `gpt-6-luna`, e só
+    `agents.enabled=false` os desliga.
+    """
+    handler = type("Handler", (_RecordingProvider,), {"bodies": []})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
 
     try:
         with (
