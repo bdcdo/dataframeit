@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -80,8 +81,7 @@ _REVIEWED_MODEL_TOOLS = frozenset(
         # Namespace em que o runtime agrupa as ferramentas abaixo.
         "functions",
         # Roda JavaScript num isolado V8 sem sistema de arquivos, rede nem
-        # processo. Das ferramentas aninhadas, alcança só `apply_patch`, que o
-        # sandbox somente leitura recusa, e o relógio.
+        # processo. As ferramentas que ela alcança estão em `_REVIEWED_EXEC_TOOLS`.
         "exec",
         # Só retoma uma célula de `exec` que ainda está rodando.
         "wait",
@@ -91,6 +91,20 @@ _REVIEWED_MODEL_TOOLS = frozenset(
         # Devolve só o aceite, sem que a pergunta chegue a alguém; o turno segue
         # e a resposta final continua presa ao schema.
         "request_user_input_async",
+    }
+)
+
+
+# Ferramentas que o JavaScript de `exec` alcança, lidas das declarações
+# TypeScript na descrição dela. Não aparecem como ferramenta de topo, e por
+# isso `_REVIEWED_MODEL_TOOLS` não as vê. Nome novo aqui segue a mesma regra
+# de `_REVIEWED_MODEL_TOOLS`.
+_REVIEWED_EXEC_TOOLS = frozenset(
+    {
+        # Edita arquivos, e o sandbox somente leitura recusa a edição.
+        "apply_patch",
+        # Só devolve a hora atual em UTC.
+        "clock__curr_time",
     }
 )
 
@@ -223,6 +237,40 @@ def _tool_names(node, names):
     return names
 
 
+# Cada ferramenta aninhada vem num bloco `declare const tools: { nome(...`.
+_EXEC_DECLARATION = re.compile(r"declare const tools: \{\s*([A-Za-z_$][\w$]*)\(")
+
+
+def _exec_description(node):
+    """Descrição da ferramenta `exec` no request, em qualquer profundidade."""
+    if isinstance(node, dict):
+        if node.get("type") == "custom" and node.get("name") == "exec":
+            return node["description"]
+        children = node.values()
+    elif isinstance(node, list):
+        children = node
+    else:
+        return None
+    for child in children:
+        found = _exec_description(child)
+        if found is not None:
+            return found
+    return None
+
+
+def _exec_tool_names(request):
+    """Nomes das ferramentas declaradas na descrição de `exec`.
+
+    Toda declaração precisa produzir um nome: uma declaração que o padrão não
+    casa faz o teste falhar em vez de sumir da comparação.
+    """
+    description = _exec_description(request)
+    assert description is not None
+    names = _EXEC_DECLARATION.findall(description)
+    assert len(names) == description.count("declare const tools:"), description
+    return set(names)
+
+
 class _Answer(BaseModel):
     resposta: str
 
@@ -296,6 +344,11 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     request = json.loads(raw)
     assert request["model"] == "gpt-6-luna"
     assert _tool_names(request, set()) == _REVIEWED_MODEL_TOOLS
+    # Sem nenhum nome, a leitura da descrição de `exec` deixou de casar o formato
+    # do runtime, e a igualdade abaixo não pode passar vazia.
+    exec_tools = _exec_tool_names(request)
+    assert exec_tools
+    assert exec_tools == _REVIEWED_EXEC_TOOLS
     # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
     # `collaboration` não serve para essa busca, porque aparece no texto das
     # instruções.
