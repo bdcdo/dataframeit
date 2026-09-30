@@ -202,7 +202,7 @@ def from_pandas(
     """Converte DataFrame pandas de volta para o formato original.
 
     Remove automaticamente as colunas internas de controle (_dataframeit_status
-    e _error_details) se não houver erros no processamento.
+    e _error_details) se não houver erros nem linhas pendentes.
 
     Args:
         df: DataFrame pandas processado.
@@ -222,12 +222,15 @@ def from_pandas(
 
     error_col = "_error_details"
 
-    # Remover colunas de status/erro se não houver erros
+    # Remover colunas de status/erro se não houver erros nem linha pendente. A
+    # linha sem status é a que uma interrupção deixou para `resume=True`, e sem a
+    # coluna ela não se distingue das processadas.
     if status_col in df.columns:
         has_errors = (df[status_col] == "error").any()
+        has_pending = df[status_col].isna().any()
         has_error_details = error_col in df.columns and df[error_col].notna().any()
 
-        if not has_errors and not has_error_details:
+        if not has_errors and not has_pending and not has_error_details:
             cols_to_drop = [c for c in [status_col, error_col] if c in df.columns]
             df = df.drop(columns=cols_to_drop)
 

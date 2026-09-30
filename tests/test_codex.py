@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import sys
@@ -23,11 +24,13 @@ from dataframeit.codex import (
 )
 from dataframeit.errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
+    ProviderAbortError,
     ProviderConfigurationError,
     ProviderError,
     ProviderOutputError,
     ProviderOverloadedError,
     ProviderTransientError,
+    ProviderUsageLimitError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -164,50 +167,82 @@ def codex_sdk():
     return sdk, sdk_types, generated
 
 
-def make_result(
+def make_result(  # noqa: PLR0913 (um parâmetro por parte do evento simulado)
     codex_sdk,
     response: str | None = '{"sentimento": "positivo", "confianca": 0.9}',
     *,
     status=None,
     usage: bool = True,
+    error_info=None,
+    message: str = "falhou",
+    turn_id: str = "turn-1",
 ):
-    sdk, sdk_types, generated = codex_sdk
-    token_usage = generated.TokenUsageBreakdown(
-        inputTokens=100,
-        cachedInputTokens=40,
-        outputTokens=30,
-        reasoningOutputTokens=10,
-        totalTokens=130,
-    )
-    thread_usage = (
-        sdk_types.ThreadTokenUsage(last=token_usage, total=token_usage) if usage else None
-    )
-    return sdk.TurnResult(
-        id="turn-1",
-        status=status or sdk_types.TurnStatus.completed,
-        error=None,
-        started_at=1,
-        completed_at=2,
-        duration_ms=1,
-        final_response=response,
-        items=[],
-        usage=thread_usage,
-    )
+    """Eventos do stream de um turno, na ordem em que o app-server os envia.
 
-
-def make_failed_turn_read_response(codex_sdk, error_info, message):
+    Com `error_info`, o turno termina `failed` com o erro tipado que o runtime
+    manda em `turn/completed`.
+    """
     _, sdk_types, generated = codex_sdk
-    failed_turn = sdk_types.Turn(
-        id="turn-1",
-        items=[],
-        status=sdk_types.TurnStatus.failed,
-        error=sdk_types.TurnError(
-            message=message,
-            codexErrorInfo=error_info,
-        ),
+    from openai_codex.models import Notification  # noqa: PLC0415 (SDK carregado pelo fixture)
+
+    events = []
+    if response is not None:
+        item = generated.ThreadItem(
+            root=generated.AgentMessageThreadItem(
+                id="item-1",
+                text=response,
+                type="agentMessage",
+                phase=generated.MessagePhase.final_answer,
+            )
+        )
+        events.append(
+            Notification(
+                method="item/completed",
+                payload=generated.ItemCompletedNotification(
+                    completedAtMs=1, item=item, threadId="thread-1", turnId=turn_id
+                ),
+            )
+        )
+    if usage:
+        token_usage = generated.TokenUsageBreakdown(
+            inputTokens=100,
+            cachedInputTokens=40,
+            outputTokens=30,
+            reasoningOutputTokens=10,
+            totalTokens=130,
+        )
+        events.append(
+            Notification(
+                method="thread/tokenUsage/updated",
+                payload=generated.ThreadTokenUsageUpdatedNotification(
+                    threadId="thread-1",
+                    turnId=turn_id,
+                    tokenUsage=sdk_types.ThreadTokenUsage(last=token_usage, total=token_usage),
+                ),
+            )
+        )
+    if status is None:
+        status = sdk_types.TurnStatus.failed if error_info else sdk_types.TurnStatus.completed
+    error = (
+        sdk_types.TurnError(message=message, codexErrorInfo=error_info)
+        if error_info is not None
+        else None
     )
-    protocol_thread = generated.Thread.model_construct(turns=[failed_turn])
-    return sdk_types.ThreadReadResponse.model_construct(thread=protocol_thread)
+    events.append(
+        Notification(
+            method="turn/completed",
+            payload=generated.TurnCompletedNotification(
+                threadId="thread-1",
+                turn=sdk_types.Turn(id=turn_id, items=[], status=status, error=error),
+            ),
+        )
+    )
+    return events
+
+
+def as_stream(events):
+    """Gerador, como `TurnHandle.stream`, para que o backend possa fechá-lo."""
+    yield from events
 
 
 def initialized_backend(tmp_path, codex_sdk, result=None):
@@ -215,9 +250,10 @@ def initialized_backend(tmp_path, codex_sdk, result=None):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
+    events = result if result is not None else make_result(codex_sdk)
     turn = MagicMock(spec=sdk.TurnHandle)
     turn.id = "turn-1"
-    turn.run.return_value = result or make_result(codex_sdk)
+    turn.stream.side_effect = lambda: as_stream(events)
     thread = MagicMock(spec=sdk.Thread)
     thread.turn.return_value = turn
     client = MagicMock(spec=sdk.Codex)
@@ -235,9 +271,21 @@ def initialized_backend(tmp_path, codex_sdk, result=None):
     return backend, client, thread, turn
 
 
-def as_context_manager(client):
-    """Configura o mock com o mesmo contrato de contexto do SDK real."""
+def as_context_manager(client, resolved_model="gpt-5.4"):
+    """Configura o mock com o mesmo contrato de contexto do SDK real.
+
+    O cliente de protocolo responde à thread de sonda com o modelo resolvido,
+    que por padrão é o de `make_config`.
+    """
+    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        ThreadStartResponse,
+    )
+
     client.__enter__.return_value = client
+    client._client = MagicMock()
+    client._client.thread_start.return_value = ThreadStartResponse.model_construct(
+        model=resolved_model
+    )
 
     def close_without_suppressing(*_):
         client.close()
@@ -364,6 +412,61 @@ class TestStrictPydanticSchema:
         with pytest.raises(ProviderConfigurationError, match=keyword):
             _to_strict_json_schema(model.model_json_schema())
 
+    def test_anotacoes_de_json_schema_extra_sao_descartadas_com_aviso(self):
+        """Chave fora do vocabulário do JSON Schema não valida nada e não bloqueia."""
+
+        class Anotado(BaseModel):
+            q1: Literal["Sim", "Não"] = Field(
+                description="Pergunta",
+                json_schema_extra={
+                    "help_text": "ajuda",
+                    "condition": {"field": "q0", "equals": "Sim"},
+                    "target": "all",
+                },
+            )
+            q2: NestedModel = Field(description="Aninhado", json_schema_extra={"allowOther": True})
+
+        with pytest.warns(UserWarning, match="allowOther, condition, help_text, target"):
+            schema = _to_strict_json_schema(Anotado.model_json_schema())
+
+        q1 = schema["properties"]["q1"]
+        assert q1["enum"] == ["Sim", "Não"]
+        assert q1["description"] == "Pergunta"
+        assert not {"help_text", "condition", "target"} & set(q1)
+        q2 = schema["properties"]["q2"]
+        assert "allowOther" not in q2
+        assert q2["required"] == ["label"]
+
+    def test_metadados_do_vocabulario_sao_descartados_com_aviso(self):
+        class ComMetadados(BaseModel):
+            valor: str = Field(examples=["a"], deprecated=True)
+
+        with pytest.warns(UserWarning, match="deprecated, examples"):
+            schema = _to_strict_json_schema(ComMetadados.model_json_schema())
+
+        assert schema["properties"]["valor"] == {"type": "string", "title": "Valor"}
+
+    def test_schema_sem_anotacao_nao_avisa(self, recwarn):
+        _to_strict_json_schema(SampleModel.model_json_schema())
+
+        assert not [w for w in recwarn if "descartadas" in str(w.message)]
+
+    @pytest.mark.parametrize(
+        ("campo", "keyword"),
+        [
+            (Field(max_length=10), "maxLength"),
+            (Field(min_length=1), "minLength"),
+        ],
+    )
+    def test_keyword_de_validacao_nao_suportada_continua_recusada(self, campo, keyword):
+        """Descartar uma restrição afrouxaria o contrato que o modelo declara."""
+
+        class Restrito(BaseModel):
+            valor: str = campo
+
+        with pytest.raises(ProviderConfigurationError, match=keyword):
+            _to_strict_json_schema(Restrito.model_json_schema())
+
     def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
             "type": "object",
@@ -487,6 +590,7 @@ class TestBackendLifecycle:
                 assert isolated_home.parent == workspace.parent
                 assert workspace.parent.parent == source_home
                 assert launch_config.env["CODEX_SQLITE_HOME"] == str(isolated_home)
+                assert launch_config.env["HOME"] == str(isolated_home)
                 assert isolated_home != source_home
                 assert not isolated_auth.is_symlink()
                 assert Path(isolated_auth).samefile(source_auth)
@@ -530,6 +634,48 @@ class TestBackendLifecycle:
         client.close.assert_called_once_with()
         assert auth_lock_is_available(lock_path)
         assert not workspace.parent.exists()
+
+    def _open_with_resolved_model(self, codex_sdk, monkeypatch, tmp_path, resolved, **config):
+        sdk, sdk_types, generated = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex), resolved_model=resolved)
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        with (
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(**config), SampleModel, "{texto}") as backend,
+        ):
+            params = client._client.thread_start.call_args.args[0]
+            assert isinstance(params, generated.ThreadStartParams)
+            assert params.ephemeral is True
+            assert params.cwd == str(backend._workspace)
+            return backend, params, client
+
+    def test_sonda_confirma_o_modelo_pedido_sem_abrir_turno(self, codex_sdk, monkeypatch, tmp_path):
+        backend, params, client = self._open_with_resolved_model(
+            codex_sdk, monkeypatch, tmp_path, "gpt-5.4"
+        )
+
+        assert params.model == "gpt-5.4"
+        assert client._client.thread_start.call_count == 1
+        client.thread_start.assert_not_called()
+        assert backend.config.model == "gpt-5.4"
+
+    def test_modelo_resolvido_diferente_do_pedido_e_recusado(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        with pytest.raises(ProviderConfigurationError, match=r"'outro-modelo'.*'gpt-5\.4'"):
+            self._open_with_resolved_model(codex_sdk, monkeypatch, tmp_path, "outro-modelo")
+
+    def test_sem_model_avisa_qual_o_codex_resolveu(self, codex_sdk, monkeypatch, tmp_path):
+        with pytest.warns(UserWarning, match="sem model.*'modelo-padrao'"):
+            _, params, _ = self._open_with_resolved_model(
+                codex_sdk, monkeypatch, tmp_path, "modelo-padrao", model=None
+            )
+
+        assert params.model is None
 
     def test_missing_auth_fails_before_runtime_or_client(self, codex_sdk, monkeypatch, tmp_path):
         sdk, _, _ = codex_sdk
@@ -815,87 +961,80 @@ class TestCodexInvocation:
     def test_failed_turn_overload_uses_real_protocol_error(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
         backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = [RuntimeError("overloaded"), make_result(codex_sdk)]
-        thread.read.return_value = make_failed_turn_read_response(
-            codex_sdk,
-            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded),
-            "overloaded",
-        )
+        overloaded = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded)
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, error_info=overloaded, message="overloaded")),
+            as_stream(make_result(codex_sdk)),
+        ]
 
         with pytest.warns(UserWarning, match="Tentativa 1/2"):
             result = backend.invoke("texto")
 
         assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
-        thread.read.assert_called_once_with(include_turns=True)
+        thread.read.assert_not_called()
 
     def test_failed_turn_internal_server_error_retries_without_rate_limit(
         self, codex_sdk, tmp_path
     ):
         _, _, generated = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = [RuntimeError("internal failure"), make_result(codex_sdk)]
-        thread.read.return_value = make_failed_turn_read_response(
-            codex_sdk,
-            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.internal_server_error),
-            "internal failure",
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        internal = generated.CodexErrorInfo(
+            root=generated.CodexErrorInfoValue.internal_server_error
         )
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, error_info=internal, message="internal failure")),
+            as_stream(make_result(codex_sdk)),
+        ]
 
         with pytest.warns(UserWarning, match="Tentativa 1/2"):
             result = backend.invoke("texto")
 
         assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
-        thread.read.assert_called_once_with(include_turns=True)
 
     def test_failed_turn_http_429_is_overload_and_retries(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = RuntimeError("too many requests")
-        thread.read.return_value = make_failed_turn_read_response(
-            codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.HttpConnectionFailedCodexErrorInfo(
-                    httpConnectionFailed=generated.HttpConnectionFailed(httpStatusCode=429)
-                )
-            ),
-            "too many requests",
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        too_many = generated.CodexErrorInfo(
+            root=generated.HttpConnectionFailedCodexErrorInfo(
+                httpConnectionFailed=generated.HttpConnectionFailed(httpStatusCode=429)
+            )
+        )
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=too_many, message="too many requests")
         )
 
         with (
             pytest.warns(UserWarning, match="Tentativa 1/2"),
-            pytest.raises(ProviderOverloadedError),
+            pytest.raises(ProviderOverloadedError, match="too many requests"),
         ):
             backend.invoke("texto")
 
         assert client.thread_start.call_count == 2
-        assert thread.read.call_count == 2
 
     def test_failed_turn_http_401_is_definitive(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = RuntimeError("unauthorized")
-        thread.read.return_value = make_failed_turn_read_response(
-            codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.ResponseStreamConnectionFailedCodexErrorInfo(
-                    responseStreamConnectionFailed=(
-                        generated.ResponseStreamConnectionFailed(httpStatusCode=401)
-                    )
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        unauthorized = generated.CodexErrorInfo(
+            root=generated.ResponseStreamConnectionFailedCodexErrorInfo(
+                responseStreamConnectionFailed=(
+                    generated.ResponseStreamConnectionFailed(httpStatusCode=401)
                 )
-            ),
-            "unauthorized",
+            )
+        )
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=unauthorized, message="unauthorized")
         )
 
         with (
             pytest.warns(UserWarning, match="não-recuperável"),
-            pytest.raises(ProviderError) as exc_info,
+            pytest.raises(ProviderError, match="unauthorized") as exc_info,
         ):
             backend.invoke("texto")
 
         assert not isinstance(exc_info.value, ProviderTransientError)
         assert client.thread_start.call_count == 1
-        thread.read.assert_called_once_with(include_turns=True)
 
     def test_unknown_sdk_error_is_provider_error_without_retry(self, codex_sdk, tmp_path):
         backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
@@ -919,8 +1058,8 @@ class TestCodexInvocation:
                 response=('{"sentimento": "' + response + '", "confianca": 1.0}'),
             )
             turn = MagicMock(spec=sdk.TurnHandle)
-            turn.id = f"turn-{response}"
-            turn.run.return_value = result
+            turn.id = "turn-1"
+            turn.stream.side_effect = lambda events=result: as_stream(events)
             thread = MagicMock(spec=sdk.Thread)
             thread.turn.return_value = turn
             threads.append(thread)
@@ -1081,39 +1220,15 @@ class TestFalhasDoRuntime:
 
 
 class TestClassificacaoDoTurnoQueFalhou:
-    def test_sem_historico_vale_a_classificacao_do_erro_original(self, codex_sdk, tmp_path):
-        sdk, _, _ = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        busy = sdk.ServerBusyError(-32000, "server busy", {"codexErrorInfo": "server_overloaded"})
-        turn.run.side_effect = [busy, make_result(codex_sdk)]
-        thread.read.side_effect = RuntimeError("histórico indisponível")
-
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.invoke("texto")
-
-        assert result["_retry_info"]["retries"] == 1
-        assert client.thread_start.call_count == 2
-
-    @pytest.mark.parametrize("turno", ["outro", "sem_erro"])
-    def test_turno_ausente_ou_sem_erro_usa_a_classificacao_do_erro_original(
-        self, codex_sdk, tmp_path, turno
-    ):
-        _, sdk_types, generated = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = RuntimeError("falha sem detalhe")
-        registrado = sdk_types.Turn(
-            id="turn-2" if turno == "outro" else "turn-1",
-            items=[],
-            status=sdk_types.TurnStatus.failed,
-            error=None,
-        )
-        thread.read.return_value = sdk_types.ThreadReadResponse.model_construct(
-            thread=generated.Thread.model_construct(turns=[registrado])
+    def test_turno_falho_sem_detalhe_e_definitivo(self, codex_sdk, tmp_path):
+        _, sdk_types, _ = codex_sdk
+        backend, client, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, status=sdk_types.TurnStatus.failed)
         )
 
         with (
             pytest.warns(UserWarning, match="não-recuperável"),
-            pytest.raises(ProviderError, match="RuntimeError: falha sem detalhe") as exc_info,
+            pytest.raises(ProviderError, match="sem detalhe") as exc_info,
         ):
             backend.invoke("texto")
 
@@ -1123,19 +1238,18 @@ class TestClassificacaoDoTurnoQueFalhou:
     @pytest.mark.parametrize("status", [None, 503])
     def test_falha_http_sem_status_ou_do_servidor_e_transitoria(self, codex_sdk, tmp_path, status):
         _, _, generated = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = [RuntimeError("stream caiu"), make_result(codex_sdk)]
-        thread.read.return_value = make_failed_turn_read_response(
-            codex_sdk,
-            generated.CodexErrorInfo(
-                root=generated.ResponseStreamDisconnectedCodexErrorInfo(
-                    responseStreamDisconnected=generated.ResponseStreamDisconnected(
-                        httpStatusCode=status
-                    )
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        caiu = generated.CodexErrorInfo(
+            root=generated.ResponseStreamDisconnectedCodexErrorInfo(
+                responseStreamDisconnected=generated.ResponseStreamDisconnected(
+                    httpStatusCode=status
                 )
-            ),
-            "stream caiu",
+            )
         )
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, error_info=caiu, message="stream caiu")),
+            as_stream(make_result(codex_sdk)),
+        ]
 
         with pytest.warns(UserWarning, match="Tentativa 1/2"):
             result = backend.invoke("texto")
@@ -1145,19 +1259,154 @@ class TestClassificacaoDoTurnoQueFalhou:
 
     def test_codigo_de_erro_fora_dos_transitorios_e_definitivo(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
-        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk)
-        turn.run.side_effect = RuntimeError("janela de contexto")
-        thread.read.return_value = make_failed_turn_read_response(
+        janela = generated.CodexErrorInfo(
+            root=generated.CodexErrorInfoValue.context_window_exceeded
+        )
+        backend, client, _, _ = initialized_backend(
+            tmp_path,
             codex_sdk,
-            generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.context_window_exceeded),
-            "janela de contexto",
+            make_result(codex_sdk, error_info=janela, message="janela de contexto"),
         )
 
         with (
             pytest.warns(UserWarning, match="não-recuperável"),
-            pytest.raises(ProviderError) as exc_info,
+            pytest.raises(ProviderError, match="janela de contexto") as exc_info,
         ):
             backend.invoke("texto")
 
         assert not isinstance(exc_info.value, ProviderTransientError)
         assert client.thread_start.call_count == 1
+
+    def test_limite_de_uso_interrompe_sem_nova_tentativa(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        limite = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.usage_limit_exceeded)
+        backend, client, _, _ = initialized_backend(
+            tmp_path,
+            codex_sdk,
+            make_result(codex_sdk, error_info=limite, message="usage limit reached"),
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderUsageLimitError, match="usage limit reached"),
+        ):
+            backend.invoke("texto")
+
+        assert client.thread_start.call_count == 1
+
+    @pytest.mark.parametrize("onde", ["thread_start", "stream"])
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            pytest.param("transport", id="transport-closed"),
+            pytest.param(BrokenPipeError("pipe"), id="broken-pipe"),
+        ],
+    )
+    def test_app_server_encerrado_interrompe_a_execucao(self, codex_sdk, tmp_path, onde, erro):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            TransportClosedError,
+        )
+
+        if erro == "transport":
+            erro = TransportClosedError("Codex process is not running")
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        if onde == "thread_start":
+            client.thread_start.side_effect = erro
+        else:
+            turn.stream.side_effect = erro
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"),
+        ):
+            backend.invoke("texto")
+
+        assert client.thread_start.call_count == 1
+
+    def test_stream_sem_conclusao_e_transitorio(self, codex_sdk, tmp_path):
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        sem_conclusao = make_result(codex_sdk)[:-1]
+        turn.stream.side_effect = [as_stream(sem_conclusao), as_stream(make_result(codex_sdk))]
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+
+        assert result["_retry_info"]["retries"] == 1
+        assert client.thread_start.call_count == 2
+
+    def test_eventos_de_outro_turno_sao_ignorados(self, codex_sdk, tmp_path):
+        outro = make_result(codex_sdk, response='{"sentimento": "x", "confianca": 0}', turn_id="t2")
+        backend, _, _, _ = initialized_backend(
+            tmp_path, codex_sdk, outro[:-1] + make_result(codex_sdk)
+        )
+
+        result = backend.invoke("texto")
+
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        assert result["usage"]["input_tokens"] == 100
+
+    def test_reroteamento_de_modelo_interrompe_o_turno_e_falha_a_linha(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        from openai_codex.models import Notification  # noqa: PLC0415 (SDK carregado pelo fixture)
+
+        rerouted = Notification(
+            method="model/rerouted",
+            payload=generated.ModelReroutedNotification(
+                fromModel="gpt-5.4",
+                toModel="outro",
+                reason=generated.ModelRerouteReason("highRiskCyberActivity"),
+                threadId="thread-1",
+                turnId="turn-1",
+            ),
+        )
+        backend, client, _, turn = initialized_backend(
+            tmp_path, codex_sdk, [rerouted, *make_result(codex_sdk)]
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match=r"'gpt-5\.4' para 'outro'.*highRiskCyberActivity"),
+        ):
+            backend.invoke("texto")
+
+        turn.interrupt.assert_called_once_with()
+        assert client.thread_start.call_count == 1
+
+    def test_tokens_das_tentativas_que_falharam_sao_somados(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, _, _, turn = initialized_backend(tmp_path, codex_sdk)
+        backend = dataclasses.replace(backend, config=make_config(max_retries=3))
+        overloaded = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded)
+        internal = generated.CodexErrorInfo(
+            root=generated.CodexErrorInfoValue.internal_server_error
+        )
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, response=None, error_info=overloaded)),
+            as_stream(make_result(codex_sdk, response=None, error_info=internal)),
+            as_stream(make_result(codex_sdk)),
+        ]
+
+        with pytest.warns(UserWarning, match="Tentativa 2/3"):
+            result = backend.invoke("texto")
+
+        assert result["usage"] == {
+            "input_tokens": 300,
+            "cached_input_tokens": 120,
+            "output_tokens": 90,
+            "reasoning_tokens": 30,
+            "total_tokens": 390,
+        }
+
+    def test_turno_sem_uso_informado_nao_inventa_tokens(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, _, _, turn = initialized_backend(tmp_path, codex_sdk)
+        overloaded = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded)
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, error_info=overloaded, usage=False)),
+            as_stream(make_result(codex_sdk)),
+        ]
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+
+        assert result["usage"]["input_tokens"] == 100

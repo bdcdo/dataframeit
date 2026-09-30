@@ -16,6 +16,8 @@ def test_excecoes_do_topo_sao_as_de_errors():
         "ProviderRejectedOutputError",
         "ProviderConfigurationError",
         "ProviderOutputError",
+        "ProviderAbortError",
+        "ProviderUsageLimitError",
     ):
         assert nome in dataframeit.__all__
         assert getattr(dataframeit, nome) is getattr(errors, nome)
@@ -30,3 +32,6 @@ def test_hierarquia_documentada_das_excecoes():
     assert issubclass(dataframeit.ProviderConfigurationError, ValueError)
     assert issubclass(dataframeit.ProviderOutputError, ValueError)
     assert not issubclass(dataframeit.ProviderOutputError, dataframeit.ProviderError)
+    assert issubclass(dataframeit.ProviderUsageLimitError, dataframeit.ProviderAbortError)
+    assert issubclass(dataframeit.ProviderAbortError, dataframeit.ProviderError)
+    assert not issubclass(dataframeit.ProviderAbortError, dataframeit.ProviderTransientError)

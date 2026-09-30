@@ -60,6 +60,19 @@ class ProviderRejectedOutputError(ProviderTransientError, ValueError):
     """
 
 
+class ProviderAbortError(ProviderError):
+    """Falha que impede o processamento de qualquer linha seguinte.
+
+    A execução para de despachar linhas: a que recebeu o erro e as que faltam
+    ficam sem status, o checkpoint é gravado, e `resume=True` as retoma quando a
+    causa passar.
+    """
+
+
+class ProviderUsageLimitError(ProviderAbortError):
+    """Cota de uso da conta esgotada."""
+
+
 class ProviderConfigurationError(ValueError):
     """Configuração local incompatível com o contrato de um provider."""
 

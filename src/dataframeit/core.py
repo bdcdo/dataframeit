@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import importlib.util
 import json
 import numbers
+import re
 import threading
 import time
 import warnings
@@ -30,6 +33,7 @@ from .conditional import (
     get_group_execution_units,
 )
 from .errors import (
+    ProviderAbortError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -56,6 +60,7 @@ from .utils import (
     get_complex_fields,
     normalize_complex_columns,
     normalize_value,
+    read_df,
     to_pandas,
 )
 
@@ -127,6 +132,10 @@ class ProviderBackend:
 
 # Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
 _MISSING_TEXT_DETAIL = "Texto ausente"
+
+
+# Detalhe da linha já processada que uma interrupção deixou sem reprocessar.
+_INTERRUPTED_REPROCESS_DETAIL = "Reprocessamento interrompido; a linha mantém os valores anteriores"
 
 
 # Sufixo do erro de uma linha já processada cujo reprocessamento falhou.
@@ -855,6 +864,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Requer `checkpoint_path`.
         checkpoint_path: Caminho do arquivo de checkpoint. Formato inferido pela extensão
             (.csv, .xlsx, .parquet). Escrita atômica via .tmp + rename. Requer `batch_size`.
+            Ao lado dele, `<checkpoint>.dataframeit.json` guarda a assinatura da
+            execução; com `resume=True`, a mesma chamada retoma do checkpoint
+            quando a assinatura bate, e senão avisa e o sobrescreve.
             Exemplo: ``dataframeit(df, Model, PROMPT, batch_size=100, checkpoint_path="ckpt.xlsx")``.
 
     Returns:
@@ -1049,6 +1061,35 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
 
     status_col = status_column or "_dataframeit_status"
     complex_fields = get_complex_fields(questions)
+
+    # Entrada sem coluna de status é entrada nova; se o checkpoint já existe e
+    # é desta execução, ela continua dele. Quem carrega o checkpoint à mão e o
+    # passa como entrada já traz a coluna, e o arquivo não é lido de novo.
+    signature = None
+    if checkpoint is not None:
+        signature = _run_signature(
+            questions,
+            prompt,
+            provider=provider,
+            model=model if model is not None else DEFAULT_MODELS.get(provider),
+            model_kwargs=model_kwargs,
+            search_config=search_config,
+            text_column=text_column,
+            status_col=status_col,
+        )
+        # Tirado da entrada antes da releitura, que a altera.
+        checkpoint = dataclasses.replace(
+            checkpoint,
+            meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
+        )
+        if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
+            _resume_from_checkpoint(
+                df_pandas,
+                checkpoint,
+                questions,
+                text_column=text_column,
+                status_col=status_col,
+            )
 
     # Entradas vazias têm um resultado bem definido e não dependem de provider.
     if df_pandas.empty:
@@ -1262,6 +1303,30 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 checkpoint=checkpoint,
             )
 
+    if token_stats.get("abort"):
+        pending = int(df_pandas[status_col].isna().sum())
+        kept = int(df_pandas["_error_details"].eq(_INTERRUPTED_REPROCESS_DETAIL).sum())
+        summary = f"{pending} linha(s) ficaram sem status"
+        if kept:
+            summary += (
+                f", e {kept} não foram reprocessadas e mantêm os valores anteriores "
+                "(marcadas em _error_details); para elas, repita a chamada com reprocess_columns"
+            )
+        if checkpoint is not None:
+            how = "rode de novo com o mesmo checkpoint_path, ou com resume=True sobre esta saída"
+        elif conversion_info.original_type in (ORIGINAL_TYPE_PANDAS_DF, ORIGINAL_TYPE_POLARS_DF):
+            how = "rode de novo com resume=True sobre esta saída"
+        else:
+            how = (
+                "a entrada não é um DataFrame e a saída não traz o texto, então só um "
+                "checkpoint_path permite retomar"
+            )
+        warnings.warn(
+            f"Execução interrompida: {token_stats['abort']}. {summary}. Para retomar, {how}.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
         _print_token_stats(
@@ -1465,6 +1530,197 @@ _CHECKPOINT_EXT_REQUIRES = {
 }
 
 
+def _signature_path(path: str | Path) -> Path:
+    return Path(f"{path}.dataframeit.json")
+
+
+def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução responde)
+    questions: type[BaseModel],
+    prompt: str,
+    *,
+    provider: str,
+    model: str | None,
+    model_kwargs: dict | None,
+    search_config: SearchConfig | None,
+    text_column: str,
+    status_col: str,
+) -> str:
+    """Hash do que decide a resposta de cada linha: modelo, prompt, schema e busca.
+
+    Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
+    linhas dele às desta execução misturaria respostas a perguntas diferentes.
+    """
+    try:
+        schema = questions.model_json_schema()
+    except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
+        schema = repr(questions.model_fields)
+    payload = json.dumps(
+        {
+            "prompt": prompt,
+            "provider": provider,
+            "model": model,
+            "model_kwargs": _stable(model_kwargs or {}),
+            "schema": schema,
+            "search": repr(search_config),
+            "text_column": text_column,
+            "status_col": status_col,
+        },
+        sort_keys=True,
+        default=_stable_repr,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _stable(value: object) -> object:
+    """Forma que serializa igual em qualquer processo.
+
+    Chaves de dict viram texto, para ordenar dict com chaves int e str juntas, e
+    conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
+    semente de hash do processo.
+    """
+    if isinstance(value, dict):
+        return {str(key): _stable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_stable(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_stable(item) for item in value), key=_stable_repr)
+    return value
+
+
+def _stable_repr(value: object) -> str:
+    """Repr sem endereço de memória, que muda a cada processo."""
+    return re.sub(r" at 0x[0-9a-fA-F]+", "", repr(value))
+
+
+def _text_hashes(texts: pd.Series) -> list[str | None]:
+    """Hash do texto de cada linha, tirado da memória e não do arquivo.
+
+    CSV e XLSX não devolvem o texto como foi escrito ("001" volta 1, "NA" volta
+    vazio, "=x" vira fórmula); comparar o arquivo com a entrada recusaria a
+    própria entrada.
+    """
+    return [
+        None if _is_missing_text(text) else hashlib.sha256(str(text).encode()).hexdigest()[:16]
+        for text in texts
+    ]
+
+
+def _file_hash(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _write_checkpoint_signature(path: str | Path, meta: dict) -> None:
+    """Grava, ao lado do checkpoint, a assinatura, o hash dos textos e o do arquivo."""
+    target = _signature_path(path)
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps({**meta, "checkpoint": _file_hash(path)}), encoding="utf-8")
+        tmp.replace(target)
+    except OSError as error:
+        warnings.warn(
+            f"Falha ao gravar a assinatura do checkpoint em {target}: {error}. "
+            "O checkpoint é gravado, mas não será retomado automaticamente.",
+            UserWarning,
+            # usuário -> dataframeit -> _process_rows -> _try_save_checkpoint ->
+            # _save_checkpoint -> aqui; no modo paralelo, só a gravação final
+            # sai da thread do usuário, e as demais saem das do executor.
+            stacklevel=6,
+        )
+
+
+def _read_checkpoint_signature(path: str | Path) -> dict | None:
+    try:
+        meta = json.loads(_signature_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _checkpoint_mismatch(
+    df: pd.DataFrame,
+    checkpoint: _Checkpoint,
+    questions: type[BaseModel],
+    *,
+    status_col: str,
+) -> tuple[str | None, pd.DataFrame | None]:
+    """(motivo para não retomar, ou None; o checkpoint lido)."""
+    path, run = checkpoint.path, checkpoint.meta or {}
+    meta = _read_checkpoint_signature(path)
+    if meta is None:
+        return "não tem a assinatura da execução que o gravou", None
+    if meta.get("checkpoint") != _file_hash(path):
+        return "não é o arquivo que a assinatura ao lado descreve", None
+    if meta.get("signature") != run.get("signature"):
+        return (
+            (
+                "foi gravado com outra configuração (prompt, provider, modelo, model_kwargs, "
+                "schema, busca ou colunas de texto e de status)"
+            ),
+            None,
+        )
+    if meta.get("texts") != run.get("texts"):
+        return "foi gravado para outra entrada", None
+    saved = read_df(str(path), questions)
+    # O CSV nem sempre relê o que gravou (texto com retorno de carro isolado
+    # volta partido em duas linhas em algumas versões do pandas).
+    if status_col not in saved.columns or len(saved) != len(df):
+        return "não relê com a coluna de status e as linhas da entrada", None
+    return None, saved
+
+
+def _resume_from_checkpoint(
+    df: pd.DataFrame,
+    checkpoint: _Checkpoint,
+    questions: type[BaseModel],
+    *,
+    text_column: str,
+    status_col: str,
+) -> None:
+    """Traz para a entrada, in-place, o que um checkpoint desta execução já processou.
+
+    O checkpoint é retomado só quando a assinatura gravada ao lado dele é a
+    desta execução, o arquivo é o que a assinatura descreve e o texto de cada
+    linha, casada por posição, é o da entrada. Fora disso, a execução avisa e
+    começa do zero, e o arquivo é sobrescrito na primeira gravação.
+
+    Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
+    execução acrescenta e os campos do modelo, sobre o que a entrada trazia
+    neles. Na linha com sucesso é o que a execução sem interrupção daria, porque
+    ela grava a resposta por cima; na linha com erro, são as respostas anteriores
+    que um reprocessamento guardou, ou o que a entrada daquela execução trazia.
+    A entrada não tem
+    como dizer se um valor ali é correção à mão ou resposta de outra execução,
+    e quem quer manter a saída como está a passa com a coluna de status, que o
+    checkpoint não relê. As demais colunas de entrada ficam como o usuário as
+    passou, porque o CSV e o XLSX não preservam o tipo delas. As colunas se
+    casam pelo nome em texto, que é como o CSV as devolve.
+    """
+    reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
+    if reason is not None or saved is None:
+        warnings.warn(
+            f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
+            "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
+            "passe-o como entrada.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return
+
+    concluded = saved[status_col].notna().to_numpy()
+    by_name = {str(column): column for column in df.columns}
+    model_fields = set(questions.model_fields)
+    for column in saved.columns:
+        target = by_name.get(str(column))
+        if target == text_column:
+            continue
+        if target is None:
+            df[column] = saved[column].to_numpy()
+        elif target in model_fields:
+            values = df[target].to_numpy(dtype=object).copy()
+            values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
+            df[target] = values
+
+
 def _validate_checkpoint_extension(path: str | Path) -> None:
     """Valida extensão suportada e dependência opcional necessária."""
     ext = Path(path).suffix.lower()
@@ -1504,8 +1760,13 @@ def _structures_as_json(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
-    """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão."""
+def _save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None = None) -> None:
+    """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão.
+
+    Com `meta`, a assinatura é gravada depois do checkpoint, com o hash do
+    arquivo que acabou de ser escrito: se o processo morre entre as duas
+    gravações, o hash não bate e a retomada recomeça em vez de aceitar o par.
+    """
     path = Path(path)
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
@@ -1522,9 +1783,11 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path) -> None:
         )
         raise ValueError(msg)
     tmp.replace(path)
+    if meta is not None:
+        _write_checkpoint_signature(path, meta)
 
 
-def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
+def _try_save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None = None) -> bool:
     """Grava o checkpoint e devolve se deu certo; falha vira aviso.
 
     Uma falha de gravação (disco cheio, arquivo aberto no Excel, coluna que o
@@ -1533,7 +1796,7 @@ def _try_save_checkpoint(df: pd.DataFrame, path: str | Path) -> bool:
     A próxima gravação tenta de novo, com o estado completo.
     """
     try:
-        _save_checkpoint(df, path)
+        _save_checkpoint(df, path, meta)
     except Exception as error:  # noqa: BLE001 (ver a docstring)
         warnings.warn(
             f"Falha ao gravar o checkpoint em {path}: {type(error).__name__}: {error}. "
@@ -1556,6 +1819,9 @@ class _Checkpoint:
 
     path: str | Path
     batch_size: int
+    # Assinatura da execução e hash dos textos, gravados ao lado do checkpoint
+    # a cada gravação (ver _write_checkpoint_signature).
+    meta: dict | None = dataclasses.field(default=None, compare=False)
 
 
 class _SnapshotWriter:
@@ -1578,8 +1844,30 @@ class _SnapshotWriter:
         with self._lock:
             if label <= self.last_saved:
                 return
-            if _try_save_checkpoint(frame, self.checkpoint.path):
+            if _try_save_checkpoint(frame, self.checkpoint.path, self.checkpoint.meta):
                 self.last_saved = label
+
+
+def _mark_unreached(
+    df: pd.DataFrame,
+    indices: list,
+    *,
+    status_col: str,
+    reprocess_columns: Sequence[str] | None,
+) -> None:
+    """Marca as linhas que uma interrupção impediu de processar.
+
+    A linha já processada que ia ser reprocessada guarda os valores anteriores,
+    e o detalhe registra que eles não foram atualizados. As demais ficam sem
+    status, inclusive a que tinha 'error' e ia ser refeita, para que a retomada
+    as encontre.
+    """
+    for idx in indices:
+        if reprocess_columns and df.loc[idx, status_col] == "processed":
+            _set_cell(df, idx, "_error_details", _INTERRUPTED_REPROCESS_DETAIL)
+        else:
+            _set_cell(df, idx, status_col, None)
+            _set_cell(df, idx, "_error_details", None)
 
 
 def _set_cell(df: pd.DataFrame, idx: Hashable, column: str, value: object) -> None:
@@ -1821,6 +2109,15 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     token_stats=token_stats,
                 )
                 success = True
+            except ProviderAbortError as e:
+                token_stats["abort"] = f"{type(e).__name__}: {e}"
+                _mark_unreached(
+                    df,
+                    [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]],
+                    status_col=status_col,
+                    reprocess_columns=reprocess_columns,
+                )
+                break
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
                 _record_error(
                     df,
@@ -1837,16 +2134,17 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
         if (
             checkpoint
             and rows_processed_this_run % checkpoint.batch_size == 0
-            and _try_save_checkpoint(df, checkpoint.path)
+            and _try_save_checkpoint(df, checkpoint.path, checkpoint.meta)
         ):
             rows_saved = rows_processed_this_run
 
         if success and config.rate_limit_delay > 0:
             time.sleep(config.rate_limit_delay)
 
-    # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
-    if checkpoint and rows_processed_this_run > rows_saved:
-        _try_save_checkpoint(df, checkpoint.path)
+    # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+    # fora e as marcas de uma interrupção, que não contam como linha processada.
+    if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
+        _try_save_checkpoint(df, checkpoint.path, checkpoint.meta)
 
     return token_stats
 
@@ -1899,6 +2197,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     initial_workers = parallel_requests
     workers_reduced = False
     rate_limit_event = threading.Event()
+    abort_event = threading.Event()
+    recorded: set = set()
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -1956,6 +2256,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
 
+        # Linha que ainda não foi ao provider quando a execução foi interrompida
+        # é marcada no fim, com as que nem foram despachadas.
+        if abort_event.is_set():
+            return {"success": False, "idx": idx, "error": None}
+
         # Verificar se devemos pausar devido a rate limit
         if rate_limit_event.is_set():
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
@@ -1987,6 +2292,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 token_stats["requests_completed"] += 1
                 snapshot = _count_row()
 
+        except ProviderAbortError as e:
+            with lock:
+                token_stats.setdefault("abort", f"{type(e).__name__}: {e}")
+            abort_event.set()
+            return {"success": False, "idx": idx, "error": None}
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
             # Verificar se é erro de rate limit
             if is_rate_limit_error(e):
@@ -2028,7 +2338,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         # Usar abordagem iterativa para permitir ajuste dinâmico de workers
         pending_rows = list(rows_to_process)
 
-        while pending_rows:
+        while pending_rows and not abort_event.is_set():
             # Pegar batch com número atual de workers
             with lock:
                 worker_batch = min(current_workers, len(pending_rows))
@@ -2040,14 +2350,26 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
 
                 for future in as_completed(futures):
                     try:
-                        future.result()
+                        outcome = future.result()
                     except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
                         warnings.warn(f"Erro inesperado no executor: {e}", stacklevel=1)
+                    else:
+                        if outcome["success"] or outcome["error"] is not None:
+                            recorded.add(outcome["idx"])
                     pbar.update(1)
 
-    # Save final: a cauda (< batch_size) e o que uma gravação que falhou deixou de fora.
-    if writer and checkpoint_counter > writer.last_saved:
-        _try_save_checkpoint(df, writer.checkpoint.path)
+    if abort_event.is_set():
+        _mark_unreached(
+            df,
+            [idx for _, idx, _ in rows_to_process if idx not in recorded],
+            status_col=status_col,
+            reprocess_columns=reprocess_columns,
+        )
+
+    # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+    # fora e as marcas de uma interrupção, que não contam como linha processada.
+    if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
+        _try_save_checkpoint(df, writer.checkpoint.path, writer.checkpoint.meta)
 
     elapsed = time.time() - start_time
     token_stats["elapsed_seconds"] = elapsed

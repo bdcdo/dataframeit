@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,11 +16,13 @@ from pydantic.errors import PydanticUserError
 
 from .errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
+    ProviderAbortError,
     ProviderConfigurationError,
     ProviderError,
     ProviderOutputError,
     ProviderOverloadedError,
     ProviderTransientError,
+    ProviderUsageLimitError,
     retry_with_backoff,
 )
 from .llm import LLMConfig, build_prompt
@@ -27,7 +30,8 @@ from .llm import LLMConfig, build_prompt
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from openai_codex import Codex, Thread
+    from openai_codex import Codex, TurnHandle
+    from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort
 
 # Status HTTP de rate limit e início da faixa de erro do servidor.
@@ -85,11 +89,55 @@ _SUPPORTED_SCHEMA_KEYWORDS = frozenset(
         "type",
     }
 )
+# Keywords do JSON Schema 2020-12 (e as dos drafts 7 e 2019-09 que ainda circulam) que restringem o valor aceito ou mudam a resolução de referências.
+# Fora de `_SUPPORTED_SCHEMA_KEYWORDS`, elas levantam erro, porque descartá-las
+# afrouxaria o contrato do modelo. Qualquer outra chave não suportada é anotação:
+# o vocabulário de metadados (`examples`, `deprecated`...) ou chave própria de
+# quem monta o modelo via `json_schema_extra`. A anotação é descartada com
+# aviso, e a resposta continua validada pelo modelo Pydantic.
+_CONSTRAINING_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "$id",
+        "$recursiveAnchor",
+        "$recursiveRef",
+        "$schema",
+        "$vocabulary",
+        "additionalItems",
+        "allOf",
+        "contains",
+        "definitions",
+        "dependencies",
+        "dependentRequired",
+        "dependentSchemas",
+        "else",
+        "if",
+        "maxContains",
+        "maxLength",
+        "maxProperties",
+        "minContains",
+        "minLength",
+        "minProperties",
+        "not",
+        "patternProperties",
+        "prefixItems",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "uniqueItems",
+    }
+)
+# Tratadas pela conversão: `oneOf` vira `anyOf`, e `discriminator` só é aceito ao lado dele.
+_CONVERTED_SCHEMA_KEYWORDS = frozenset({"discriminator", "oneOf"})
 
 
 def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C901, PLR0915 (um passo por keyword do JSON Schema)
     """Converte o schema Pydantic v2 para structured output estrito."""
     strict_schema = copy.deepcopy(schema)
+    dropped_annotations: set[str] = set()
 
     def resolve_ref(ref: str) -> dict[str, Any]:
         if not ref.startswith("#/$defs/"):
@@ -118,6 +166,17 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
             raise ProviderConfigurationError(msg)
 
         node.pop("default", None)
+        # Antes de tudo: uma anotação ao lado de `$ref` faria o nó parecer
+        # referência com metadado, e numa definição recursiva isso é recusado.
+        annotations = (
+            set(node)
+            - _SUPPORTED_SCHEMA_KEYWORDS
+            - _CONSTRAINING_SCHEMA_KEYWORDS
+            - _CONVERTED_SCHEMA_KEYWORDS
+        )
+        for keyword in annotations:
+            dropped_annotations.add(keyword)
+            del node[keyword]
 
         if "oneOf" in node:
             variants = node.pop("oneOf")
@@ -190,6 +249,13 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
         return node
 
     strict_schema = visit(strict_schema)
+    if dropped_annotations:
+        warnings.warn(
+            "Anotações sem efeito de validação descartadas do schema enviado ao Codex: "
+            + ", ".join(sorted(dropped_annotations)),
+            UserWarning,
+            stacklevel=2,
+        )
     if strict_schema.get("type") != "object":
         msg = (
             "O structured output do Codex requer um BaseModel com campos no nível raiz; "
@@ -311,18 +377,26 @@ class CodexBackend:
 
     def invoke(self, text: str) -> dict:
         """Processa uma linha com structured output nativo do Codex."""
+        prompt = build_prompt(self._user_prompt, text)
+        # O uso soma todas as tentativas cujo turno chegou ao fim, inclusive as
+        # que falharam ou tiveram a resposta recusada, porque todas são cobradas.
+        usage_total: dict[str, int] = {}
         return retry_with_backoff(
-            lambda: self._invoke_once(text),
+            lambda: self._invoke_once(prompt, usage_total),
             self.config.max_retries,
             self.config.base_delay,
             self.config.max_delay,
         )
 
-    def _invoke_once(self, text: str) -> dict:
+    def _invoke_once(self, prompt: str, usage_total: dict[str, int]) -> dict:
         from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
-        from openai_codex.types import TurnStatus  # noqa: PLC0415 (extra codex opcional)
 
-        prompt = build_prompt(self._user_prompt, text)
+        # Função privada do SDK, fixado em versão exata no extra `codex`: é a
+        # mesma regra de resposta final que `TurnHandle.run` aplica.
+        from openai_codex._run import (  # noqa: PLC0415 (extra codex opcional)
+            _final_assistant_response_from_items,
+        )
+        from openai_codex.types import TurnStatus  # noqa: PLC0415 (extra codex opcional)
 
         try:
             thread = self._client.thread_start(
@@ -338,108 +412,194 @@ class CodexBackend:
                 effort=self._effort,
                 output_schema=self._schema,
             )
+            completed, items, usage = _collect_turn(turn)
+        except ProviderError:
+            raise
         except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
-            self._raise_classified_sdk_error(err)
+            _raise_classified_sdk_error(err)
 
-        try:
-            result = turn.run()
-        except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
-            self._raise_failed_turn_error(thread, turn.id, err)
+        for key, value in (usage or {}).items():
+            usage_total[key] = usage_total.get(key, 0) + value
 
-        if result.status != TurnStatus.completed:
-            msg = f"Turno Codex terminou com status {result.status.value!r}"
+        if completed.status == TurnStatus.failed:
+            _raise_turn_error(completed.error)
+        if completed.status != TurnStatus.completed:
+            msg = f"Turno Codex terminou com status {completed.status.value!r}"
             raise ProviderOutputError(msg)
-        if result.final_response is None or not result.final_response.strip():
+        final_response = _final_assistant_response_from_items(items)
+        if final_response is None or not final_response.strip():
             msg = "Codex retornou resposta vazia"
             raise ProviderOutputError(msg)
 
         try:
-            validated = self._pydantic_model.model_validate_json(result.final_response)
+            validated = self._pydantic_model.model_validate_json(final_response)
         except ValidationError as err:
             msg = f"Resposta do Codex não corresponde ao schema: {err}"
             raise ProviderOutputError(msg) from err
 
-        usage = None
-        if result.usage is not None:
-            total = result.usage.total
-            usage = {
-                "input_tokens": total.input_tokens,
-                "cached_input_tokens": total.cached_input_tokens,
-                "output_tokens": total.output_tokens,
-                "reasoning_tokens": total.reasoning_output_tokens,
-                "total_tokens": total.total_tokens,
-            }
+        return {"data": validated.model_dump(), "usage": dict(usage_total) or None}
 
-        return {"data": validated.model_dump(), "usage": usage}
 
-    @staticmethod
-    def _raise_failed_turn_error(thread: Thread, turn_id: str, error: Exception) -> NoReturn:
-        """Recupera o erro tipado que o SDK descarta ao levantar RuntimeError."""
-        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
-            CodexErrorInfoValue,
-            HttpConnectionFailedCodexErrorInfo,
-            ResponseStreamConnectionFailedCodexErrorInfo,
-            ResponseStreamDisconnectedCodexErrorInfo,
-            ResponseTooManyFailedAttemptsCodexErrorInfo,
-        )
+def _collect_turn(turn: TurnHandle) -> tuple[Turn, list[ThreadItem], dict[str, int] | None]:
+    """Consome o stream do turno e devolve o turno concluído, os itens e o uso.
 
-        try:
-            turns = thread.read(include_turns=True).thread.turns
-        except Exception:  # noqa: BLE001 (sem o histórico, vale a classificação do erro original)
-            CodexBackend._raise_classified_sdk_error(error)
+    Faz o que `TurnHandle.run` faz, com duas diferenças. O turno que falha volta
+    com o `codex_error_info`, que distingue sobrecarga, limite de uso e erro
+    definitivo; `run` levanta `RuntimeError` só com a mensagem, e o histórico não
+    pode ser relido depois, porque thread efêmera recusa `thread/read` com
+    `includeTurns`. E o reroteamento para outro modelo, que só aparece no stream,
+    interrompe o turno em vez de passar despercebido.
+    """
+    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
+        ItemCompletedNotification,
+        ModelReroutedNotification,
+        ThreadTokenUsageUpdatedNotification,
+        TurnCompletedNotification,
+    )
 
-        failed_turn = next((item for item in turns if item.id == turn_id), None)
-        if failed_turn is None or failed_turn.error is None:
-            CodexBackend._raise_classified_sdk_error(error)
+    completed = None
+    items: list[ThreadItem] = []
+    usage = None
+    stream = turn.stream()
+    try:
+        for event in stream:
+            payload = event.payload
+            if isinstance(payload, ModelReroutedNotification) and payload.turn_id == turn.id:
+                turn.interrupt()
+                msg = (
+                    f"O Codex trocou o modelo do turno de {payload.from_model!r} para "
+                    f"{payload.to_model!r} (motivo: {payload.reason.root})"
+                )
+                raise ProviderError(msg)
+            if isinstance(payload, ItemCompletedNotification) and payload.turn_id == turn.id:
+                items.append(payload.item)
+            elif (
+                isinstance(payload, ThreadTokenUsageUpdatedNotification)
+                and payload.turn_id == turn.id
+            ):
+                usage = payload.token_usage
+            elif isinstance(payload, TurnCompletedNotification) and payload.turn.id == turn.id:
+                completed = payload.turn
+    finally:
+        # `stream` é anotado como Iterator, mas é um gerador, e fechá-lo desfaz o
+        # registro das notificações do turno no roteador do SDK.
+        stream.close()  # ty: ignore[unresolved-attribute]
 
-        message = f"{type(error).__name__}: {error}"
-        error_info = failed_turn.error.codex_error_info
-        root = getattr(error_info, "root", None)
-        if root is CodexErrorInfoValue.server_overloaded:
-            raise ProviderOverloadedError(message) from error
+    if completed is None:
+        msg = "O stream do turno Codex terminou sem o evento de conclusão"
+        raise ProviderTransientError(msg)
 
-        transient_codes = {
-            CodexErrorInfoValue.internal_server_error,
-            CodexErrorInfoValue.thread_rollback_failed,
+    usage_dict = None
+    if usage is not None:
+        total = usage.total
+        usage_dict = {
+            "input_tokens": total.input_tokens,
+            "cached_input_tokens": total.cached_input_tokens,
+            "output_tokens": total.output_tokens,
+            "reasoning_tokens": total.reasoning_output_tokens,
+            "total_tokens": total.total_tokens,
         }
-        http_variants = (
-            (HttpConnectionFailedCodexErrorInfo, "http_connection_failed"),
-            (
-                ResponseStreamConnectionFailedCodexErrorInfo,
-                "response_stream_connection_failed",
-            ),
-            (
-                ResponseStreamDisconnectedCodexErrorInfo,
-                "response_stream_disconnected",
-            ),
-            (
-                ResponseTooManyFailedAttemptsCodexErrorInfo,
-                "response_too_many_failed_attempts",
-            ),
+    return completed, items, usage_dict
+
+
+def _raise_turn_error(error: TurnError | None) -> NoReturn:
+    """Classifica o turno que falhou pelo `codex_error_info` que o runtime enviou."""
+    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
+        CodexErrorInfoValue,
+        HttpConnectionFailedCodexErrorInfo,
+        ResponseStreamConnectionFailedCodexErrorInfo,
+        ResponseStreamDisconnectedCodexErrorInfo,
+        ResponseTooManyFailedAttemptsCodexErrorInfo,
+    )
+
+    if error is None:
+        msg = "Turno Codex falhou sem detalhe do erro"
+        raise ProviderError(msg)
+
+    message = f"Turno Codex falhou: {error.message}"
+    root = getattr(error.codex_error_info, "root", None)
+    if root is CodexErrorInfoValue.usage_limit_exceeded:
+        raise ProviderUsageLimitError(message)
+    if root is CodexErrorInfoValue.server_overloaded:
+        raise ProviderOverloadedError(message)
+
+    transient_codes = {
+        CodexErrorInfoValue.internal_server_error,
+        CodexErrorInfoValue.thread_rollback_failed,
+    }
+    http_variants = (
+        (HttpConnectionFailedCodexErrorInfo, "http_connection_failed"),
+        (
+            ResponseStreamConnectionFailedCodexErrorInfo,
+            "response_stream_connection_failed",
+        ),
+        (
+            ResponseStreamDisconnectedCodexErrorInfo,
+            "response_stream_disconnected",
+        ),
+        (
+            ResponseTooManyFailedAttemptsCodexErrorInfo,
+            "response_too_many_failed_attempts",
+        ),
+    )
+    for variant_type, payload_field in http_variants:
+        if not isinstance(root, variant_type):
+            continue
+        status = getattr(root, payload_field).http_status_code
+        if status == _HTTP_TOO_MANY_REQUESTS:
+            raise ProviderOverloadedError(message)
+        if status is None or status >= _HTTP_SERVER_ERROR_MIN:
+            raise ProviderTransientError(message)
+        raise ProviderError(message)
+
+    if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
+        raise ProviderTransientError(message)
+
+    raise ProviderError(message)
+
+
+def _raise_classified_sdk_error(error: Exception) -> NoReturn:
+    from openai_codex import is_retryable_error  # noqa: PLC0415 (extra codex opcional)
+    from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
+
+    message = f"{type(error).__name__}: {error}"
+    # Com o app-server encerrado, toda linha seguinte falharia do mesmo jeito.
+    if isinstance(error, (TransportClosedError, BrokenPipeError)):
+        msg = f"O app-server do Codex encerrou: {message}"
+        raise ProviderAbortError(msg) from error
+    if is_retryable_error(error):
+        raise ProviderOverloadedError(message) from error
+    raise ProviderError(message) from error
+
+
+def _resolve_model(client: Codex, workspace: Path, requested: str | None) -> str:
+    """Pergunta ao app-server qual modelo uma thread desta execução vai usar.
+
+    `Codex.thread_start` descarta a resposta em que o app-server informa o modelo
+    resolvido; só o cliente de protocolo, atributo privado do SDK fixado em
+    versão exata no extra `codex`, a devolve. A thread de sonda é efêmera e não
+    recebe turno, então não consome tokens. O modelo de uma thread depende só da
+    configuração do app-server e do modelo pedido, que são os mesmos das threads
+    de cada linha; a troca no meio da execução é o reroteamento, que
+    `_collect_turn` confere turno a turno.
+    """
+    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
+        ThreadStartParams,
+    )
+
+    started = client._client.thread_start(  # noqa: SLF001 (ver a docstring)
+        ThreadStartParams(cwd=os.fspath(workspace), ephemeral=True, model=requested)
+    )
+    if requested is None:
+        warnings.warn(
+            f"provider='codex' sem model: o Codex vai usar {started.model!r}",
+            UserWarning,
+            stacklevel=4,
         )
-        for variant_type, payload_field in http_variants:
-            if not isinstance(root, variant_type):
-                continue
-            status = getattr(root, payload_field).http_status_code
-            if status == _HTTP_TOO_MANY_REQUESTS:
-                raise ProviderOverloadedError(message) from error
-            if status is None or status >= _HTTP_SERVER_ERROR_MIN:
-                raise ProviderTransientError(message) from error
-            raise ProviderError(message) from error
-
-        if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
-            raise ProviderTransientError(message) from error
-
-        raise ProviderError(message) from error
-
-    @staticmethod
-    def _raise_classified_sdk_error(error: Exception) -> NoReturn:
-        from openai_codex import is_retryable_error  # noqa: PLC0415 (extra codex opcional)
-
-        message = f"{type(error).__name__}: {error}"
-        if is_retryable_error(error):
-            raise ProviderOverloadedError(message) from error
-        raise ProviderError(message) from error
+    elif started.model != requested:
+        msg = f"O Codex resolveu o modelo {started.model!r}, e não o pedido {requested!r}"
+        raise ProviderConfigurationError(msg)
+    return started.model
 
 
 @contextmanager
@@ -458,9 +618,12 @@ def open_codex_backend(
         codex_config = CodexConfig(
             cwd=os.fspath(workspace),
             config_overrides=_CODEX_CONFIG_OVERRIDES,
+            # HOME também aponta para o runtime: o app-server lê skills de
+            # ~/.agents/skills, e as do usuário entrariam na execução.
             env={
                 "CODEX_HOME": os.fspath(codex_home),
                 "CODEX_SQLITE_HOME": os.fspath(codex_home),
+                "HOME": os.fspath(codex_home),
             },
         )
         with Codex(codex_config) as client:
@@ -471,6 +634,7 @@ def open_codex_backend(
                     f"`{CODEX_FILE_AUTH_LOGIN_COMMAND}` antes de usar provider='codex'."
                 )
                 raise ProviderConfigurationError(msg)
+            _resolve_model(client, workspace, config.model)
             yield CodexBackend(
                 config=config,
                 _pydantic_model=pydantic_model,

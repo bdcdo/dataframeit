@@ -61,4 +61,4 @@ Run a sample first (`df.sample(30)`) with `track_tokens=True`. The summary at th
 
 ### A long run was interrupted
 
-Use `batch_size` and `checkpoint_path` to save progress during the run, and resume with `read_df` and `resume=True`; see [Checkpoints for Long Runs](performance.md#checkpoints-for-long-runs).
+Use `batch_size` and `checkpoint_path` to save progress during the run, and resume by running the same call again, which continues from the file; see [Checkpoints for Long Runs](performance.md#checkpoints-for-long-runs).

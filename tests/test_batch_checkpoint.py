@@ -3,6 +3,7 @@
 import importlib.util
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -40,7 +41,7 @@ def test_checkpoint_fires_on_multiples_sequential(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(
             (int((df_arg["_dataframeit_status"] == "processed").sum()), str(path_arg))
         )
@@ -72,7 +73,7 @@ def test_checkpoint_no_duplicate_final_save_sequential(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -100,7 +101,7 @@ def test_checkpoint_fires_on_multiples_parallel(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -131,7 +132,7 @@ def test_checkpoint_no_duplicate_final_save_parallel(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -374,7 +375,7 @@ def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     processadas_por_gravacao = []
     trava = threading.Lock()
 
-    def gravacao_lenta(df_arg, path_arg):
+    def gravacao_lenta(df_arg, path_arg, _meta=None):
         with trava:
             ativas[0] += 1
             max_ativas[0] = max(max_ativas[0], ativas[0])
@@ -441,7 +442,7 @@ def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
     novo = pd.DataFrame({"campo1": ["a", "b"]})
     antigo = pd.DataFrame({"campo1": ["a"]})
 
-    with patch("dataframeit.core._save_checkpoint", side_effect=lambda df, _: gravados.append(df)):
+    with patch("dataframeit.core._save_checkpoint", side_effect=lambda df, *_: gravados.append(df)):
         escritor.save(novo, 2)
         escritor.save(antigo, 1)
         escritor.save(novo, 2)
@@ -449,3 +450,272 @@ def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
     assert len(gravados) == 1
     assert gravados[0] is novo
     assert escritor.last_saved == 2
+
+
+def _crash_depois_de(n: int, total_calls: list):
+    def mock_llm(*args, **kwargs):
+        total_calls[0] += 1
+        if total_calls[0] > n:
+            msg = "simulated kill"
+            raise SystemExit(msg)
+        return {
+            "data": {"campo1": f"v{total_calls[0]}"},
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+    return mock_llm
+
+
+def _roda(df, llm, ckpt, **kwargs):
+    """Roda sobre uma cópia, como um processo novo que relê a mesma entrada.
+
+    A biblioteca escreve as colunas no DataFrame recebido; sem a cópia, a segunda
+    chamada receberia o frame já preenchido pela primeira.
+    """
+    df = df.copy()
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        return dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=2,
+            checkpoint_path=ckpt,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("ext", [".csv", ".parquet"])
+def test_retomada_rele_o_checkpoint_sem_carregar_a_mao(tmp_path, ext):
+    """O mesmo DataFrame de entrada, rodado de novo, continua de onde o arquivo parou."""
+    if ext == ".parquet":
+        pytest.importorskip("pyarrow")
+    df = pd.DataFrame({"texto": [f"linha{i}" for i in range(10)], "id": range(10)})
+    ckpt = tmp_path / f"ckpt{ext}"
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(df, _crash_depois_de(4, total_calls), ckpt)
+    salvas = int(
+        (pd.read_parquet(ckpt) if ext == ".parquet" else pd.read_csv(ckpt))["_dataframeit_status"]
+        .eq("processed")
+        .sum()
+    )
+
+    antes = total_calls[0]
+    final = _roda(df, _crash_depois_de(100, total_calls), ckpt)
+
+    assert total_calls[0] - antes == 10 - salvas
+    assert final["campo1"].tolist()[:salvas] == [f"v{i}" for i in range(1, salvas + 1)]
+    assert final["campo1"].notna().all()
+    assert final["id"].tolist() == list(range(10))
+
+
+def test_checkpoint_de_outra_entrada_avisa_e_recomeca(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(pd.DataFrame({"texto": ["a", "b", "c", "d"]}), _crash_depois_de(2, total_calls), ckpt)
+
+    for outra in (["a", "X", "c", "d"], ["a", "b", "c"]):
+        antes = total_calls[0]
+        with pytest.warns(UserWarning, match="outra entrada; esta execução começa do zero"):
+            final = _roda(pd.DataFrame({"texto": outra}), _crash_depois_de(100, total_calls), ckpt)
+        assert total_calls[0] - antes == len(outra)
+        assert final["campo1"].notna().all()
+
+
+def test_checkpoint_sem_assinatura_avisa_e_recomeca(tmp_path):
+    """Checkpoint gravado antes da assinatura existir, ou por outra ferramenta."""
+    ckpt = tmp_path / "ckpt.csv"
+    pd.DataFrame(
+        {"texto": ["a"], "campo1": ["velho"], "_dataframeit_status": ["processed"]}
+    ).to_csv(ckpt, index=False)
+    total_calls = [0]
+
+    with pytest.warns(UserWarning, match="não tem a assinatura"):
+        final = _roda(pd.DataFrame({"texto": ["a"]}), _crash_depois_de(100, total_calls), ckpt)
+
+    assert total_calls[0] == 1
+    assert final["campo1"].tolist() == ["v1"]
+
+
+def test_checkpoint_de_outro_prompt_ou_modelo_nao_e_reaproveitado(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    _roda(df, _crash_depois_de(100, [0]), ckpt)
+
+    total_calls = [0]
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=_crash_depois_de(100, total_calls)),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.warns(UserWarning, match="outra configuração"),
+    ):
+        dataframeit(
+            df.copy(),
+            questions=SimpleModel,
+            prompt="Prompt reescrito: {texto}",
+            model="outro-modelo",
+            batch_size=2,
+            checkpoint_path=ckpt,
+        )
+
+    assert total_calls[0] == 3
+
+
+def test_checkpoint_concluido_da_mesma_execucao_e_reaproveitado(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    _roda(df, _crash_depois_de(100, [0]), ckpt)
+
+    total_calls = [0]
+    final = _roda(df, _crash_depois_de(100, total_calls), ckpt)
+
+    assert total_calls[0] == 0
+    assert final["campo1"].tolist() == ["v1", "v2"]
+
+
+@pytest.mark.parametrize(
+    "textos",
+    [
+        ["001", "002", "003", "004"],
+        ["NA", "b", "c", "d"],
+        ["null", "b", "c", "d"],
+        ["1.50", "2", "3", "4"],
+    ],
+)
+def test_texto_que_o_csv_altera_nao_impede_a_retomada(tmp_path, textos):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": textos})
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(df, _crash_depois_de(2, total_calls), ckpt)
+
+    antes = total_calls[0]
+    final = _roda(df, _crash_depois_de(100, total_calls), ckpt)
+
+    assert total_calls[0] - antes == 2
+    assert final["texto"].tolist() == textos
+    assert final["campo1"].tolist()[:2] == ["v1", "v2"]
+
+
+def test_texto_com_igual_no_xlsx_nao_impede_a_retomada(tmp_path):
+    pytest.importorskip("openpyxl")
+    ckpt = tmp_path / "ckpt.xlsx"
+    df = pd.DataFrame({"texto": ["=soma", "b", "c", "d"]})
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(df, _crash_depois_de(2, total_calls), ckpt)
+
+    antes = total_calls[0]
+    _roda(df, _crash_depois_de(100, total_calls), ckpt)
+
+    assert total_calls[0] - antes == 2
+
+
+class ModeloOpcional(BaseModel):
+    campo1: str | None = None
+
+
+def test_campo_do_modelo_ja_presente_na_entrada_recebe_o_valor_do_checkpoint(tmp_path):
+    """Fluxo de preencher campo faltante: a entrada já traz a coluna, vazia."""
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / "ckpt.parquet"
+    df = pd.DataFrame({"texto": ["a", "b", "c", "d"], "campo1": [None] * 4})
+    total_calls = [0]
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=_crash_depois_de(2, total_calls)),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(SystemExit),
+    ):
+        dataframeit(df.copy(), ModeloOpcional, "{texto}", batch_size=1, checkpoint_path=ckpt)
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=_crash_depois_de(100, total_calls)),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        final = dataframeit(
+            df.copy(), ModeloOpcional, "{texto}", batch_size=1, checkpoint_path=ckpt
+        )
+
+    # As duas primeiras vêm do checkpoint; o contador segue da chamada que caiu.
+    assert final["campo1"].tolist() == ["v1", "v2", "v4", "v5"]
+
+
+def test_resume_false_ignora_o_checkpoint_existente(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(pd.DataFrame({"texto": ["a", "b", "c", "d"]}), _crash_depois_de(2, total_calls), ckpt)
+
+    antes = total_calls[0]
+    _roda(
+        pd.DataFrame({"texto": ["a", "b", "c", "d"]}),
+        _crash_depois_de(100, total_calls),
+        ckpt,
+        resume=False,
+    )
+
+    assert total_calls[0] - antes == 4
+
+
+def test_texto_ausente_casa_com_texto_ausente(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    total_calls = [0]
+    entrada = pd.DataFrame({"texto": ["a", None, "c"]})
+    with (
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
+        pytest.raises(SystemExit),
+    ):
+        _roda(entrada, _crash_depois_de(1, total_calls), ckpt)
+
+    final = _roda(entrada, _crash_depois_de(100, total_calls), ckpt)
+
+    assert final["campo1"].iloc[0] == "v1"
+
+
+def test_falha_ao_gravar_a_assinatura_vira_aviso(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    original = Path.write_text
+
+    def falha_na_assinatura(self, *args, **kwargs):
+        if self.name.endswith(".dataframeit.json.tmp"):
+            msg = "disco cheio"
+            raise OSError(msg)
+        return original(self, *args, **kwargs)
+
+    with (
+        patch.object(Path, "write_text", falha_na_assinatura),
+        pytest.warns(UserWarning, match="Falha ao gravar a assinatura.*disco cheio"),
+    ):
+        final = _roda(pd.DataFrame({"texto": ["a"]}), _crash_depois_de(100, [0]), ckpt)
+
+    assert final["campo1"].tolist() == ["v1"]
+    assert ckpt.exists()
+
+
+def test_modelo_sem_json_schema_ainda_assina_o_checkpoint(tmp_path):
+    """Sem JSON Schema, a estrutura dos campos entra na assinatura."""
+
+    class SemSchema(BaseModel):
+        campo1: str
+
+        @classmethod
+        def model_json_schema(cls, *args, **kwargs):
+            msg = "sem schema"
+            raise TypeError(msg)
+
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    for _ in range(2):
+        total_calls = [0]
+        with (
+            patch(
+                "dataframeit.core.call_langchain", side_effect=_crash_depois_de(100, total_calls)
+            ),
+            patch("dataframeit.core.validate_provider_dependencies"),
+        ):
+            dataframeit(df.copy(), SemSchema, "{texto}", batch_size=1, checkpoint_path=ckpt)
+
+    assert total_calls[0] == 0

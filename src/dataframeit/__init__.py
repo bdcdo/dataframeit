@@ -5,12 +5,14 @@ from importlib.metadata import version as _version
 
 from .core import dataframeit
 from .errors import (
+    ProviderAbortError,
     ProviderConfigurationError,
     ProviderError,
     ProviderOutputError,
     ProviderOverloadedError,
     ProviderRejectedOutputError,
     ProviderTransientError,
+    ProviderUsageLimitError,
 )
 from .utils import (
     get_complex_fields,
@@ -40,5 +42,7 @@ __all__ = [
     "ProviderRejectedOutputError",
     "ProviderConfigurationError",
     "ProviderOutputError",
+    "ProviderAbortError",
+    "ProviderUsageLimitError",
     "__version__",
 ]

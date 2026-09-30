@@ -103,9 +103,9 @@ resultado = dataframeit(
 )
 ```
 
-Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em caso
-de interrupção, recarregue o DataFrame com `read_df`, que devolve listas, dicts e
-textos com os tipos do modelo, e re-execute com `resume=True`:
+Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em caso de interrupção, rode a mesma chamada de novo, com a mesma entrada: com `resume=True`, o padrão, e o arquivo presente, a execução continua do checkpoint. A cada gravação, `<checkpoint>.dataframeit.json` é gravado ao lado dele com a assinatura da execução (prompt, provider, modelo, `model_kwargs`, schema, busca e as colunas de texto e de status), o hash do texto de cada linha e o hash do próprio checkpoint. O checkpoint só é retomado quando os três batem; com outra configuração, outra entrada ou um arquivo que não é o que a assinatura descreve, a execução avisa, começa do zero e o sobrescreve. Numa linha já concluída, com sucesso ou com erro, os campos do modelo vêm do checkpoint, sobre o que a entrada trazia neles; na linha com sucesso, é o que uma execução sem interrupção daria, porque ela grava a resposta por cima. Para manter uma saída corrigida à mão como está, passe-a com a coluna de status, e o checkpoint não é relido. A saída completa sai sem ela, e a coluna volta com `saida["_dataframeit_status"] = "processed"` (ou o nome passado em `status_column`). Com `resume=False`, o arquivo é ignorado e sobrescrito.
+
+Para inspecionar o que já foi processado, `read_df` carrega o arquivo com listas, dicts e textos nos tipos do modelo. Esse DataFrame também serve de entrada para a retomada, e aí o arquivo não é lido de novo:
 
 ```python
 from dataframeit import read_df
@@ -116,6 +116,8 @@ resultado = dataframeit(
     resume=True, batch_size=100, checkpoint_path="checkpoint.xlsx",
 )
 ```
+
+Quando o provider informa uma falha que impede qualquer linha seguinte, como a cota de uso esgotada (`ProviderUsageLimitError`) ou o runtime do `codex` encerrado (`ProviderAbortError`), a execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status. As colunas de controle ficam na saída, e rodar de novo com `resume=True` processa só as pendentes. Com `reprocess_columns`, as linhas que a interrupção deixou sem reprocessar mantêm os valores anteriores e ficam marcadas em `_error_details`.
 
 ## Tracking de Tokens
 

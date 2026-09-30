@@ -38,7 +38,7 @@ def test_falha_de_gravacao_nao_marca_a_linha_como_erro(tmp_path, parallel_reques
     """Um OSError ao gravar não reescreve como erro uma linha já processada."""
     gravacoes = []
 
-    def grava_ou_falha(df, path):
+    def grava_ou_falha(df, path, _meta=None):
         gravacoes.append(int((df["_dataframeit_status"] == "processed").sum()))
         if len(gravacoes) == 1:
             raise OSError(28, "No space left on device")
@@ -305,7 +305,7 @@ def test_campo_condicional_presente_mantem_as_restricoes():
 def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, parallel_requests):
     gravacoes = []
 
-    def grava(df, path):
+    def grava(df, path, _meta=None):
         processadas = int((df["_dataframeit_status"] == "processed").sum())
         gravacoes.append(processadas)
         if processadas == 6 and len(gravacoes) < 4:
