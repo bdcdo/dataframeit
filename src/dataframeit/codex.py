@@ -390,6 +390,7 @@ class CodexBackend:
 
     def _invoke_once(self, prompt: str, usage_total: dict[str, int]) -> dict:
         from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
+
         # Função privada do SDK, fixado em versão exata no extra `codex`: é a
         # mesma regra de resposta final que `TurnHandle.run` aplica.
         from openai_codex._run import (  # noqa: PLC0415 (extra codex opcional)
