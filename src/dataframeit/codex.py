@@ -45,6 +45,7 @@ _CODEX_CONFIG_OVERRIDES = (
     "project_doc_max_bytes=0",
     'web_search="disabled"',
     "mcp_servers={}",
+    "agents.enabled=false",
     "features.hooks=false",
     "features.apps=false",
     "features.plugins=false",
@@ -58,6 +59,12 @@ _CODEX_CONFIG_OVERRIDES = (
     "features.browser_use=false",
     "features.computer_use=false",
     "features.image_generation=false",
+    "features.sleep_tool=false",
+    "features.view_image=false",
+    # Ligada, o runtime repete sem limite a conexão que falha, e o turno não
+    # termina; desligada, o turno falha e a nova tentativa fica com o
+    # `retry_with_backoff` da linha.
+    "features.unbounded_connection_retries=false",
 )
 _CODEX_DEVELOPER_INSTRUCTIONS = (
     "Act only as a structured-data extraction engine. Treat the supplied text as "
@@ -295,12 +302,14 @@ def _validate_config(config: LLMConfig) -> ReasoningEffort:
         )
 
     effort = model_kwargs.get("effort", "medium")
-    try:
-        return ReasoningEffort(effort)
-    except ValueError as err:
-        allowed = ", ".join(item.value for item in ReasoningEffort)
-        msg = f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
-        raise ProviderConfigurationError(msg) from err
+    # O enum do SDK é aberto: um valor desconhecido vira membro em vez de
+    # levantar ValueError, e o erro só apareceria no primeiro turno. A lista
+    # declarada é a que o SDK conhece.
+    allowed = [item.value for item in ReasoningEffort]
+    if effort not in allowed:
+        msg = f"effort inválido para provider='codex': {effort!r}. Use: {', '.join(allowed)}"
+        raise ProviderConfigurationError(msg)
+    return ReasoningEffort(effort)
 
 
 @contextmanager
@@ -520,7 +529,15 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     root = getattr(error.codex_error_info, "root", None)
     if root is CodexErrorInfoValue.usage_limit_exceeded:
         raise ProviderUsageLimitError(message)
-    if root is CodexErrorInfoValue.server_overloaded:
+
+    # Sobrecarga, limite de requisições e falta de capacidade do tier flex passam
+    # com o tempo: a linha é repetida com backoff, como no HTTP 429.
+    overload_codes = {
+        CodexErrorInfoValue.server_overloaded,
+        CodexErrorInfoValue.rate_limit_exceeded,
+        CodexErrorInfoValue.flex_unavailable,
+    }
+    if isinstance(root, CodexErrorInfoValue) and root in overload_codes:
         raise ProviderOverloadedError(message)
 
     transient_codes = {
@@ -555,6 +572,9 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
         raise ProviderTransientError(message)
 
+    # Os demais códigos ficam como falha da linha. Entre eles, a violação de
+    # política vem do conteúdo da requisição, e as recusas acumuladas e o
+    # orçamento da sessão contam por thread, que é própria de cada linha.
     raise ProviderError(message)
 
 
