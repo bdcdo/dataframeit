@@ -522,7 +522,15 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     root = getattr(error.codex_error_info, "root", None)
     if root is CodexErrorInfoValue.usage_limit_exceeded:
         raise ProviderUsageLimitError(message)
-    if root is CodexErrorInfoValue.server_overloaded:
+
+    # Sobrecarga, limite de requisições e falta de capacidade do tier flex passam
+    # com o tempo: a linha é repetida com backoff, como no HTTP 429.
+    overload_codes = {
+        CodexErrorInfoValue.server_overloaded,
+        CodexErrorInfoValue.rate_limit_exceeded,
+        CodexErrorInfoValue.flex_unavailable,
+    }
+    if isinstance(root, CodexErrorInfoValue) and root in overload_codes:
         raise ProviderOverloadedError(message)
 
     transient_codes = {
@@ -557,6 +565,9 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
         raise ProviderTransientError(message)
 
+    # Os demais códigos ficam como falha da linha. Entre eles, a violação de
+    # política vem do conteúdo da requisição, e as recusas acumuladas contam por
+    # thread, que é própria de cada linha.
     raise ProviderError(message)
 
 

@@ -1013,6 +1013,41 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 2
 
+    @pytest.mark.parametrize("code", ["rate_limit_exceeded", "flex_unavailable"])
+    def test_failed_turn_rate_limit_and_flex_capacity_are_overload(self, codex_sdk, tmp_path, code):
+        _, _, generated = codex_sdk
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        info = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue[code])
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=info, message="try again later")
+        )
+
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderOverloadedError, match="try again later"),
+        ):
+            backend.invoke("texto")
+
+        assert client.thread_start.call_count == 2
+
+    @pytest.mark.parametrize("code", ["misalignment_policy_violation", "too_many_denials"])
+    def test_failed_turn_row_scoped_codes_fail_only_the_row(self, codex_sdk, tmp_path, code):
+        _, _, generated = codex_sdk
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        info = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue[code])
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=info, message="blocked")
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="blocked") as exc_info,
+        ):
+            backend.invoke("texto")
+
+        assert not isinstance(exc_info.value, (ProviderTransientError, ProviderAbortError))
+        assert client.thread_start.call_count == 1
+
     def test_failed_turn_http_401_is_definitive(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
         backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
