@@ -70,6 +70,31 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
 )
 
 
+# Ferramentas e namespaces que o request de uma linha oferece ao modelo, com
+# `_CODEX_CONFIG_OVERRIDES` aplicado. Trocar o pin do SDK muda esta lista, e o
+# nome novo só entra aqui depois de conferido o que ele alcança; se alcançar
+# arquivo, rede, processo ou outro agente, a flag que o liga vai desligada em
+# `_CODEX_CONFIG_OVERRIDES`.
+_REVIEWED_MODEL_TOOLS = frozenset(
+    {
+        # Namespace em que o runtime agrupa as ferramentas abaixo.
+        "functions",
+        # Roda JavaScript num isolado V8 sem sistema de arquivos, rede nem
+        # processo. Das ferramentas aninhadas, alcança só `apply_patch`, que o
+        # sandbox somente leitura recusa, e o relógio.
+        "exec",
+        # Só retoma uma célula de `exec` que ainda está rodando.
+        "wait",
+        # O runtime recusa a chamada fora do modo Plan, e a thread do provider
+        # roda no modo padrão.
+        "request_user_input",
+        # Devolve só o aceite, sem que a pergunta chegue a alguém; o turno segue
+        # e a resposta final continua presa ao schema.
+        "request_user_input_async",
+    }
+)
+
+
 def _isolated_config(tmp_path):
     workspace = tmp_path / "workspace"
     codex_home = tmp_path / "codex-home"
@@ -242,8 +267,8 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url):
     )
 
 
-def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
-    """O request de uma linha não oferece ao modelo as ferramentas de sub-agentes.
+def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
+    """O request de uma linha oferece ao modelo só as ferramentas revisadas.
 
     O catálogo do runtime liga os sub-agentes para o `gpt-6-luna`, e só
     `agents.enabled=false` os desliga.
@@ -270,7 +295,8 @@ def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
     assert encoding is None
     request = json.loads(raw)
     assert request["model"] == "gpt-6-luna"
-    names = _tool_names(request, set())
-    assert names
-    assert "collaboration" not in names
-    assert "spawn_agent" not in names
+    assert _tool_names(request, set()) == _REVIEWED_MODEL_TOOLS
+    # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
+    # `collaboration` não serve para essa busca, porque aparece no texto das
+    # instruções.
+    assert b"spawn_agent" not in raw
