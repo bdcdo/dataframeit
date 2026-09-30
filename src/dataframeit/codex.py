@@ -45,6 +45,7 @@ _CODEX_CONFIG_OVERRIDES = (
     "project_doc_max_bytes=0",
     'web_search="disabled"',
     "mcp_servers={}",
+    "agents.enabled=false",
     "features.hooks=false",
     "features.apps=false",
     "features.plugins=false",

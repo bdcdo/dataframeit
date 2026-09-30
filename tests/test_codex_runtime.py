@@ -1,13 +1,20 @@
 """Integração local com o runtime empacotado pelo SDK Codex."""
 
+import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
+from dataframeit import codex as codex_provider
 from dataframeit.codex import _CODEX_CONFIG_OVERRIDES
+from dataframeit.errors import ProviderError
+from dataframeit.llm import LLMConfig
 
 openai_codex = pytest.importorskip("openai_codex")
 
@@ -158,3 +165,97 @@ def test_enabled_features_match_reviewed_list(tmp_path):
     enabled = {name for name, on in _feature_states(tmp_path).items() if on}
 
     assert enabled == _REVIEWED_ENABLED_FEATURES
+
+
+class _RecordingProvider(BaseHTTPRequestHandler):
+    """Provider de modelo local: guarda cada corpo recebido e recusa o turno."""
+
+    bodies: list[tuple[str | None, bytes]]
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", 0))
+        self.bodies.append((self.headers.get("content-encoding"), self.rfile.read(length)))
+        self.send_response(400)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"error":{"message":"mock","type":"invalid_request_error"}}')
+
+    def log_message(self, *args):
+        pass
+
+
+def _tool_names(node, names):
+    """Nomes de toda ferramenta e namespace no request, em qualquer profundidade."""
+    if isinstance(node, dict):
+        if node.get("type") in {"namespace", "function", "custom"} and "name" in node:
+            names.add(node["name"])
+        for value in node.values():
+            _tool_names(value, names)
+    elif isinstance(node, list):
+        for value in node:
+            _tool_names(value, names)
+    return names
+
+
+class _Answer(BaseModel):
+    resposta: str
+
+
+def test_request_to_model_has_no_subagent_tools(tmp_path, monkeypatch):
+    """O request de uma linha não oferece ao modelo as ferramentas de sub-agentes.
+
+    O catálogo do runtime liga os sub-agentes para o `gpt-6-luna`, e só
+    `agents.enabled=false` os desliga. O provider local troca o endpoint do
+    modelo e mantém os demais overrides e a abertura do provider, e por isso
+    o teste não precisa de conta nem de rede.
+    """
+    handler = type("Handler", (_RecordingProvider,), {"bodies": []})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    source_home = tmp_path / "codex-source"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text("{}")
+    monkeypatch.setenv("CODEX_HOME", os.fspath(source_home))
+    monkeypatch.setenv("DATAFRAMEIT_MOCK_KEY", "local")
+    provider = (
+        f'{{name="mock",base_url="http://127.0.0.1:{port}/v1",wire_api="responses",'
+        'env_key="DATAFRAMEIT_MOCK_KEY",request_max_retries=0,stream_max_retries=0}'
+    )
+    monkeypatch.setattr(
+        codex_provider,
+        "_CODEX_CONFIG_OVERRIDES",
+        (*_CODEX_CONFIG_OVERRIDES, 'model_provider="mock"', f"model_providers.mock={provider}"),
+    )
+    config = LLMConfig(
+        model="gpt-6-luna",
+        provider="codex",
+        api_key=None,
+        max_retries=1,
+        base_delay=0,
+        max_delay=0,
+        rate_limit_delay=0,
+        model_kwargs={"effort": "low"},
+    )
+
+    try:
+        with (
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="mock"),
+        ):
+            backend.invoke("oi")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert handler.bodies
+    encoding, raw = handler.bodies[0]
+    assert encoding is None
+    request = json.loads(raw)
+    assert request["model"] == "gpt-6-luna"
+    names = _tool_names(request, set())
+    assert names
+    assert "collaboration" not in names
+    assert "spawn_agent" not in names
