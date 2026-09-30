@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,11 +86,54 @@ _SUPPORTED_SCHEMA_KEYWORDS = frozenset(
         "type",
     }
 )
+# Keywords do JSON Schema 2020-12 (e as do draft 7 que o Pydantic ainda pode
+# emitir) que restringem o valor aceito ou mudam a resolução de referências.
+# Fora de `_SUPPORTED_SCHEMA_KEYWORDS`, elas levantam erro, porque descartá-las
+# afrouxaria o contrato do modelo. Qualquer outra chave não suportada é anotação:
+# o vocabulário de metadados (`examples`, `deprecated`...) ou chave própria de
+# quem monta o modelo via `json_schema_extra`. A anotação é descartada com
+# aviso, e a resposta continua validada pelo modelo Pydantic.
+_CONSTRAINING_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "$id",
+        "$schema",
+        "$vocabulary",
+        "additionalItems",
+        "allOf",
+        "contains",
+        "definitions",
+        "dependencies",
+        "dependentRequired",
+        "dependentSchemas",
+        "else",
+        "if",
+        "maxContains",
+        "maxLength",
+        "maxProperties",
+        "minContains",
+        "minLength",
+        "minProperties",
+        "not",
+        "patternProperties",
+        "prefixItems",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "uniqueItems",
+    }
+)
+# Tratadas pela conversão: `oneOf` vira `anyOf`, e `discriminator` só é aceito ao lado dele.
+_CONVERTED_SCHEMA_KEYWORDS = frozenset({"discriminator", "oneOf"})
 
 
 def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C901, PLR0915 (um passo por keyword do JSON Schema)
     """Converte o schema Pydantic v2 para structured output estrito."""
     strict_schema = copy.deepcopy(schema)
+    dropped_annotations: set[str] = set()
 
     def resolve_ref(ref: str) -> dict[str, Any]:
         if not ref.startswith("#/$defs/"):
@@ -118,6 +162,17 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
             raise ProviderConfigurationError(msg)
 
         node.pop("default", None)
+        # Antes de tudo: uma anotação ao lado de `$ref` faria o nó parecer
+        # referência com metadado, e numa definição recursiva isso é recusado.
+        annotations = (
+            set(node)
+            - _SUPPORTED_SCHEMA_KEYWORDS
+            - _CONSTRAINING_SCHEMA_KEYWORDS
+            - _CONVERTED_SCHEMA_KEYWORDS
+        )
+        for keyword in annotations:
+            dropped_annotations.add(keyword)
+            del node[keyword]
 
         if "oneOf" in node:
             variants = node.pop("oneOf")
@@ -190,6 +245,13 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
         return node
 
     strict_schema = visit(strict_schema)
+    if dropped_annotations:
+        warnings.warn(
+            "Anotações sem efeito de validação descartadas do schema enviado ao Codex: "
+            + ", ".join(sorted(dropped_annotations)),
+            UserWarning,
+            stacklevel=2,
+        )
     if strict_schema.get("type") != "object":
         msg = (
             "O structured output do Codex requer um BaseModel com campos no nível raiz; "

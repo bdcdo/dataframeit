@@ -364,6 +364,61 @@ class TestStrictPydanticSchema:
         with pytest.raises(ProviderConfigurationError, match=keyword):
             _to_strict_json_schema(model.model_json_schema())
 
+    def test_anotacoes_de_json_schema_extra_sao_descartadas_com_aviso(self):
+        """Chave fora do vocabulário do JSON Schema não valida nada e não bloqueia."""
+
+        class Anotado(BaseModel):
+            q1: Literal["Sim", "Não"] = Field(
+                description="Pergunta",
+                json_schema_extra={
+                    "help_text": "ajuda",
+                    "condition": {"field": "q0", "equals": "Sim"},
+                    "target": "all",
+                },
+            )
+            q2: NestedModel = Field(description="Aninhado", json_schema_extra={"allowOther": True})
+
+        with pytest.warns(UserWarning, match="allowOther, condition, help_text, target"):
+            schema = _to_strict_json_schema(Anotado.model_json_schema())
+
+        q1 = schema["properties"]["q1"]
+        assert q1["enum"] == ["Sim", "Não"]
+        assert q1["description"] == "Pergunta"
+        assert not {"help_text", "condition", "target"} & set(q1)
+        q2 = schema["properties"]["q2"]
+        assert "allowOther" not in q2
+        assert q2["required"] == ["label"]
+
+    def test_metadados_do_vocabulario_sao_descartados_com_aviso(self):
+        class ComMetadados(BaseModel):
+            valor: str = Field(examples=["a"], deprecated=True)
+
+        with pytest.warns(UserWarning, match="deprecated, examples"):
+            schema = _to_strict_json_schema(ComMetadados.model_json_schema())
+
+        assert schema["properties"]["valor"] == {"type": "string", "title": "Valor"}
+
+    def test_schema_sem_anotacao_nao_avisa(self, recwarn):
+        _to_strict_json_schema(SampleModel.model_json_schema())
+
+        assert not [w for w in recwarn if "descartadas" in str(w.message)]
+
+    @pytest.mark.parametrize(
+        ("campo", "keyword"),
+        [
+            (Field(max_length=10), "maxLength"),
+            (Field(min_length=1), "minLength"),
+        ],
+    )
+    def test_keyword_de_validacao_nao_suportada_continua_recusada(self, campo, keyword):
+        """Descartar uma restrição afrouxaria o contrato que o modelo declara."""
+
+        class Restrito(BaseModel):
+            valor: str = campo
+
+        with pytest.raises(ProviderConfigurationError, match=keyword):
+            _to_strict_json_schema(Restrito.model_json_schema())
+
     def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
             "type": "object",
