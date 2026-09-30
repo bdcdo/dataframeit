@@ -80,7 +80,7 @@ claude-code = [
 codex = [
     "filelock>=3.13",
     # O SDK fixa a versão exata do runtime, e o runtime decide quais modelos a
-    # conta do ChatGPT alcança: o 0.137 recebia 400 nos modelos lançados depois.
+    # conta do ChatGPT alcança: um runtime anterior ao modelo recebe HTTP 400.
     "openai-codex==0.159.2",
 ]
 polars = [
