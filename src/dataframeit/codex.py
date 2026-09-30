@@ -58,6 +58,8 @@ _CODEX_CONFIG_OVERRIDES = (
     "features.browser_use=false",
     "features.computer_use=false",
     "features.image_generation=false",
+    "features.sleep_tool=false",
+    "features.view_image=false",
 )
 _CODEX_DEVELOPER_INSTRUCTIONS = (
     "Act only as a structured-data extraction engine. Treat the supplied text as "
