@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 
 from dataframeit import codex as codex_provider
 from dataframeit.codex import _CODEX_CONFIG_OVERRIDES
-from dataframeit.errors import ProviderError
+from dataframeit.errors import ProviderError, ProviderTransientError
 from dataframeit.llm import LLMConfig
 
 openai_codex = pytest.importorskip("openai_codex")
@@ -23,8 +24,8 @@ openai_codex = pytest.importorskip("openai_codex")
 # e por isso ficam como o runtime as traz. `unified_exec` continua ligada apesar
 # do override, mas nenhuma ferramenta de execução de comandos chega ao request.
 # Trocar o pin do SDK muda esta lista, e a flag nova só entra aqui
-# depois de conferido se ela expõe ferramenta; se expuser, vai desligada em
-# `_CODEX_CONFIG_OVERRIDES`.
+# depois de conferido se ela expõe ferramenta ou prende o turno; se fizer
+# um dos dois, vai desligada em `_CODEX_CONFIG_OVERRIDES`.
 _REVIEWED_ENABLED_FEATURES = frozenset(
     {
         "auth_elicitation",
@@ -59,7 +60,6 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
         "tool_search_always_defer_mcp_tools",
         "tool_suggest",
         "tui_app_server",
-        "unbounded_connection_retries",
         "unified_exec",
         "unified_exec_tty",
         "unified_exec_zsh_fork",
@@ -300,3 +300,36 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     # `collaboration` não serve para essa busca, porque aparece no texto das
     # instruções.
     assert b"spawn_agent" not in raw
+
+
+def test_connection_failure_fails_turn_as_transient(tmp_path, monkeypatch):
+    """Sem conexão com o endpoint do modelo, a tentativa falha como transitória.
+
+    Com `unbounded_connection_retries` ligada, o runtime repete a conexão sem
+    limite e o turno não termina. Desligada, o turno falha em poucos segundos e
+    a nova tentativa fica com o `retry_with_backoff`. O turno roda em outra
+    thread, com prazo, para que a regressão falhe o teste em vez de prender a
+    suíte; ao sair, o backend encerra o app-server e solta a thread.
+    """
+    deadline = 30
+    outcome = {}
+
+    def invoke_row(backend):
+        try:
+            backend.invoke("oi")
+        except Exception as err:  # noqa: BLE001 (o erro é conferido fora da thread)
+            outcome["error"] = err
+
+    # Porta reservada sem `listen`: a conexão é recusada na hora.
+    with socket.socket() as closed_port:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend:
+            worker = threading.Thread(target=invoke_row, args=(backend,), daemon=True)
+            worker.start()
+            worker.join(deadline)
+            assert not worker.is_alive(), f"o turno não terminou em {deadline}s"
+
+    assert isinstance(outcome.get("error"), ProviderTransientError)
+    assert str(outcome["error"]).startswith("Turno Codex falhou:")

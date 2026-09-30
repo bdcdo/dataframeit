@@ -61,6 +61,10 @@ _CODEX_CONFIG_OVERRIDES = (
     "features.image_generation=false",
     "features.sleep_tool=false",
     "features.view_image=false",
+    # Ligada, o runtime repete sem limite a conexão que falha, e o turno não
+    # termina; desligada, o turno falha e a nova tentativa fica com o
+    # `retry_with_backoff` da linha.
+    "features.unbounded_connection_retries=false",
 )
 _CODEX_DEVELOPER_INSTRUCTIONS = (
     "Act only as a structured-data extraction engine. Treat the supplied text as "
