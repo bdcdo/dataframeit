@@ -103,9 +103,9 @@ resultado = dataframeit(
 )
 ```
 
-Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em caso
-de interrupção, recarregue o DataFrame com `read_df`, que devolve listas, dicts e
-textos com os tipos do modelo, e re-execute com `resume=True`:
+Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em caso de interrupção, rode a mesma chamada de novo, com a mesma entrada: com `resume=True`, o padrão, e o arquivo presente, a execução continua do checkpoint. As linhas se casam por posição, e o texto de cada uma confere que o arquivo é desta entrada; um checkpoint de outra entrada levanta `ValueError`. Com `resume=False`, o arquivo é ignorado e sobrescrito.
+
+Para inspecionar o que já foi processado, `read_df` carrega o arquivo com listas, dicts e textos nos tipos do modelo. Esse DataFrame também serve de entrada para a retomada, e aí o arquivo não é lido de novo:
 
 ```python
 from dataframeit import read_df
@@ -116,6 +116,8 @@ resultado = dataframeit(
     resume=True, batch_size=100, checkpoint_path="checkpoint.xlsx",
 )
 ```
+
+Quando o provider informa uma falha que impede qualquer linha seguinte, como a cota de uso esgotada (`ProviderUsageLimitError`) ou o runtime do `codex` encerrado (`ProviderAbortError`), a execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status. As colunas de controle ficam na saída, e rodar de novo com `resume=True` processa só as pendentes.
 
 ## Tracking de Tokens
 

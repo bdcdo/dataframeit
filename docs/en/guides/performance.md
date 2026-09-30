@@ -101,7 +101,9 @@ result = dataframeit(
 )
 ```
 
-The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). If execution is interrupted, reload the DataFrame with `read_df`, which returns lists, dicts and text with the model's types, and re-run with `resume=True`:
+The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. Rows are matched by position, and each row's text confirms that the file belongs to this input; a checkpoint from another input raises `ValueError`. With `resume=False`, the file is ignored and overwritten.
+
+To inspect what has already been processed, `read_df` loads the file with lists, dicts and text in the model's types. That DataFrame also works as input for resuming, and then the file is not read again:
 
 ```python
 from dataframeit import read_df
@@ -112,6 +114,8 @@ result = dataframeit(
     resume=True, batch_size=100, checkpoint_path="checkpoint.xlsx",
 )
 ```
+
+When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output, and running again with `resume=True` processes only the pending rows.
 
 ## Token Tracking
 

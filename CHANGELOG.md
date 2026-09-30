@@ -10,15 +10,22 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Adicionado
 
 - As exceções `ProviderError`, `ProviderTransientError`, `ProviderOverloadedError`, `ProviderRejectedOutputError`, `ProviderConfigurationError` e `ProviderOutputError` e o `__version__` passam a ser exportados por `dataframeit`.
+- `ProviderAbortError` e a subclasse `ProviderUsageLimitError`, também exportadas, marcam a falha que impede qualquer linha seguinte. A execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status; a linha que recebeu o erro e as que faltam ficam pendentes para `resume=True`, e as colunas de controle ficam na saída enquanto houver linha pendente.
+- Com `resume=True` e `checkpoint_path` existente, uma entrada sem coluna de status continua do checkpoint, sem carregá-lo à mão. As linhas se casam por posição e o texto de cada uma confere que o arquivo é desta entrada; checkpoint de outra entrada levanta `ValueError`.
+- No provider `codex`, uma thread sem turno confere na abertura que o runtime resolveu o `model` pedido, e a divergência levanta `ProviderConfigurationError` antes da primeira linha; sem `model`, um aviso diz qual será usado. Um turno reroteado para outro modelo é interrompido e a linha falha.
 
 ### Alterado
 
 - Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha quando a resposta os traz, o que inclui a OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
 - A docstring de `dataframeit()` e a mensagem de rate limit descrevem `rate_limit_delay` como a pausa de cada worker depois de cada linha processada com sucesso, com teto de `parallel_requests * 60 / rate_limit_delay` linhas por minuto.
+- No provider `codex`, chaves do schema que não restringem o valor, como anotações próprias em `json_schema_extra` e os metadados `examples` e `deprecated`, são descartadas com aviso em vez de recusadas; keywords de validação fora do subconjunto do Structured Outputs continuam recusadas.
+- No provider `codex`, o app-server roda com `HOME` no diretório isolado da execução, e as skills do usuário, como as de `~/.agents/skills`, deixam de ser carregadas.
 
 ### Corrigido
 
 - No provider `codex`, um modelo recursivo com metadado ao lado da referência (como `filho: "No" = Field(description=...)`) levanta o erro de schema recursivo com metadados; antes, levantava o de tipo `Any` não suportado, que apontava para outro problema.
+- No provider `codex`, o turno que falha é classificado pelo erro tipado que chega no stream. A leitura do histórico com `includeTurns`, que thread efêmera recusa, fazia sobrecarga, HTTP 429 e 5xx virarem erro definitivo, sem nova tentativa nem redução de workers. A cota de uso esgotada levanta `ProviderUsageLimitError`, e o app-server encerrado levanta `ProviderAbortError`; os dois interrompem a execução em vez de falhar cada linha restante.
+- No provider `codex`, os tokens das tentativas que falharam são somados ao uso da linha, como nos providers do LangChain.
 
 ## [0.10.0] - 2026-09-24
 

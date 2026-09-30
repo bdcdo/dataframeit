@@ -61,4 +61,4 @@ Rode primeiro uma amostra (`df.sample(30)`) com `track_tokens=True`. O resumo ao
 
 ### Uma execução longa foi interrompida
 
-Use `batch_size` e `checkpoint_path` para gravar o progresso durante a execução, e retome com `read_df` e `resume=True`; ver [Checkpoints em Execuções Longas](performance.md#checkpoints-em-execucoes-longas).
+Use `batch_size` e `checkpoint_path` para gravar o progresso durante a execução, e retome rodando a mesma chamada de novo, que continua do arquivo; ver [Checkpoints em Execuções Longas](performance.md#checkpoints-em-execucoes-longas).
