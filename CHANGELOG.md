@@ -15,6 +15,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- O extra `codex` passa a exigir `openai-codex==0.159.2`, que traz o runtime 0.159.2. Com o runtime 0.137, que o SDK anterior fixava, a conta do ChatGPT recebia HTTP 400 nos modelos lançados depois dele, como o `gpt-6-luna`, embora o catálogo da conta os anunciasse. O `effort` é conferido contra os valores que o SDK declara, agora com `max` e `ultra`, porque o enum do SDK novo aceita qualquer texto.
+
 - Nos providers do LangChain, a tentativa seguinte a uma resposta recusada pela validação do modelo Pydantic, inclusive por validadores próprios, leva ao modelo a resposta e os erros por campo, com pedido de correção; antes, repetia o mesmo prompt. A recusa levanta `ProviderRejectedOutputError`, transitória por classe, e deixa de ser lida como erro HTTP quando o texto analisado tem números como 404. Os tokens das tentativas recusadas são somados ao uso da linha quando a resposta os traz, o que inclui a OpenAI, pela resposta HTTP anexada ao erro do SDK (#144).
 - A docstring de `dataframeit()` e a mensagem de rate limit descrevem `rate_limit_delay` como a pausa de cada worker depois de cada linha processada com sucesso, com teto de `parallel_requests * 60 / rate_limit_delay` linhas por minuto.
 - No provider `codex`, chaves do schema que não restringem o valor, como anotações próprias em `json_schema_extra` e os metadados `examples` e `deprecated`, são descartadas com aviso em vez de recusadas; keywords de validação fora do subconjunto do Structured Outputs continuam recusadas.

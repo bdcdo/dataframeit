@@ -295,12 +295,14 @@ def _validate_config(config: LLMConfig) -> ReasoningEffort:
         )
 
     effort = model_kwargs.get("effort", "medium")
-    try:
-        return ReasoningEffort(effort)
-    except ValueError as err:
-        allowed = ", ".join(item.value for item in ReasoningEffort)
-        msg = f"effort inválido para provider='codex': {effort!r}. Use: {allowed}"
-        raise ProviderConfigurationError(msg) from err
+    # O enum do SDK é aberto: um valor desconhecido vira membro em vez de
+    # levantar ValueError, e o erro só apareceria no primeiro turno. A lista
+    # declarada é a que o SDK conhece.
+    allowed = [item.value for item in ReasoningEffort]
+    if effort not in allowed:
+        msg = f"effort inválido para provider='codex': {effort!r}. Use: {', '.join(allowed)}"
+        raise ProviderConfigurationError(msg)
+    return ReasoningEffort(effort)
 
 
 @contextmanager

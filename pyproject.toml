@@ -79,9 +79,9 @@ claude-code = [
 ]
 codex = [
     "filelock>=3.13",
-    "openai-codex==0.1.0b3",
-    # The SDK pins the exact runtime; this lower bound exposes its pre-release marker to uv.
-    "openai-codex-cli-bin>=0.137.0a4",
+    # O SDK fixa a versão exata do runtime, e o runtime decide quais modelos a
+    # conta do ChatGPT alcança: o 0.137 recebia 400 nos modelos lançados depois.
+    "openai-codex==0.159.2",
 ]
 polars = [
     "polars>=0.20",
@@ -230,7 +230,7 @@ optional_dependencies_dev_groups = ["dev", "docs"]
 # Dependências que o código não importa pelo nome: as integrações LangChain de
 # cada provider são carregadas por importlib (errors.validate_provider_dependencies
 # e init_chat_model), pyarrow e openpyxl são usados pelo pandas ao ler e gravar
-# parquet e xlsx, e openai-codex-cli-bin traz o executável do runtime do Codex.
+# parquet e xlsx.
 DEP002 = [
     "langchain-google-genai",
     "langchain-openai",
@@ -238,7 +238,6 @@ DEP002 = [
     "langchain-groq",
     "pyarrow",
     "openpyxl",
-    "openai-codex-cli-bin",
 ]
 
 [tool.pytest.ini_options]
