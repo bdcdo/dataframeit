@@ -427,3 +427,48 @@ def test_conjunto_em_model_kwargs_assina_em_ordem_fixa():
         )
 
     assert assinatura({"fim", "alfa", "zeta"}) == assinatura(["alfa", "fim", "zeta"])
+    assert assinatura({1, "1", "a"}) == assinatura({"a", "1", 1})
+
+
+def test_linha_com_erro_no_checkpoint_tambem_vem_dele(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"], "campo1": ["m1", "m2", "m3"]})
+
+    def falha_em_b(texto, *args, **kwargs):
+        if texto.endswith("b"):
+            msg = "resposta ruim"
+            raise ValueError(msg)
+        return {"data": {"campo1": f"llm-{texto[-1]}"}, "usage": None}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _roda(df, falha_em_b, batch_size=1, checkpoint_path=ckpt, max_retries=1, base_delay=0)
+    corrigida = df.copy()
+    corrigida.loc[1, "campo1"] = "à mão"
+
+    chamadas, llm = _llm(100, SystemExit())
+    final = _roda(corrigida, llm, batch_size=1, checkpoint_path=ckpt)
+
+    assert len(chamadas) == 0
+    assert final["campo1"].tolist() == ["llm-a", "m2", "llm-c"]
+
+
+@pytest.mark.parametrize("status_column", [None, "meu_status"])
+def test_saida_com_a_coluna_de_status_devolvida_mantem_a_correcao(tmp_path, status_column):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    saida = _roda(
+        df,
+        _llm(100, SystemExit())[1],
+        batch_size=1,
+        checkpoint_path=ckpt,
+        status_column=status_column,
+    )
+    saida.loc[1, "campo1"] = "corrigido"
+    saida[status_column or "_dataframeit_status"] = "processed"
+
+    chamadas, llm = _llm(100, SystemExit())
+    final = _roda(saida, llm, batch_size=1, checkpoint_path=ckpt, status_column=status_column)
+
+    assert len(chamadas) == 0
+    assert final["campo1"].tolist() == ["v1", "corrigido", "v3"]

@@ -1686,8 +1686,9 @@ def _resume_from_checkpoint(
     Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
     execução acrescenta e os campos do modelo, sobre o que a entrada trazia
     neles. Na linha com sucesso é o que a execução sem interrupção daria, porque
-    ela grava a resposta por cima; na linha com erro de um reprocessamento, são
-    as respostas anteriores que ela guardou. A entrada não tem
+    ela grava a resposta por cima; na linha com erro, são as respostas anteriores
+    que um reprocessamento guardou, ou o que a entrada daquela execução trazia.
+    A entrada não tem
     como dizer se um valor ali é correção à mão ou resposta de outra execução,
     e quem quer manter a saída como está a passa com a coluna de status, que o
     checkpoint não relê. As demais colunas de entrada ficam como o usuário as
