@@ -2,6 +2,7 @@
 
 import contextlib
 import warnings
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -9,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
+from dataframeit.core import _field_hashes
 
 
 class Modelo(BaseModel):
@@ -174,3 +176,160 @@ def test_valor_que_a_entrada_ja_traz_prevalece_sobre_o_checkpoint(tmp_path):
 
     assert len(chamadas) == 0
     assert final["campo1"].tolist() == ["corrigido à mão", "v2"]
+
+
+class Dois(BaseModel):
+    campo1: str | None = None
+    campo2: str | None = None
+
+
+def _llm_dois(limite, erro):
+    chamadas = []
+
+    def llm(*args, **kwargs):
+        chamadas.append(1)
+        if len(chamadas) > limite:
+            raise erro
+        n = len(chamadas)
+        return {"data": {"campo1": f"llm{n}", "campo2": f"llm{n}"}, "usage": None}
+
+    return chamadas, llm
+
+
+@pytest.mark.parametrize("reprocessar", [None, ["campo1", "campo2"]])
+def test_retomada_da_o_mesmo_resultado_que_a_execucao_sem_interrupcao(tmp_path, reprocessar):
+    """Valor que a entrada já trazia antes da execução não vence a resposta paga."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"], "campo1": ["humano", None]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _roda(
+            df,
+            _llm_dois(1, ProviderUsageLimitError("limite"))[1],
+            modelo=Dois,
+            batch_size=10,
+            checkpoint_path=ckpt,
+            reprocess_columns=reprocessar,
+        )
+        final = _roda(
+            df,
+            _llm_dois(100, SystemExit())[1],
+            modelo=Dois,
+            batch_size=10,
+            checkpoint_path=ckpt,
+            reprocess_columns=reprocessar,
+        )
+
+    assert final.loc[0, "campo1"] == "llm1"
+    assert final.loc[0, "campo2"] == "llm1"
+
+
+def test_correcao_que_apaga_valor_prevalece(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    saida = _roda(
+        df, _llm_dois(100, SystemExit())[1], modelo=Dois, batch_size=10, checkpoint_path=ckpt
+    )
+    corrigida = saida.drop(columns=[c for c in saida.columns if c.startswith("_")], errors="ignore")
+    corrigida.loc[0, "campo2"] = None
+
+    chamadas, llm = _llm_dois(100, SystemExit())
+    final = _roda(corrigida, llm, modelo=Dois, batch_size=10, checkpoint_path=ckpt)
+
+    assert len(chamadas) == 0
+    assert final.loc[0, "campo2"] is None or pd.isna(final.loc[0, "campo2"])
+    assert final.loc[1, "campo2"] == "llm2"
+
+
+def test_coluna_de_rotulo_nao_textual_nao_ganha_duplicata(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"], 0: [10, 20]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df, _llm(1, ProviderUsageLimitError("limite"))[1], batch_size=10, checkpoint_path=ckpt
+        )
+
+    final = _roda(df, _llm(100, SystemExit())[1], batch_size=10, checkpoint_path=ckpt)
+
+    assert 0 in final.columns
+    assert "0" not in final.columns
+
+
+def test_objeto_com_endereco_de_memoria_em_model_kwargs_ainda_retoma(tmp_path):
+    class Callback:
+        pass
+
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _llm(1, ProviderUsageLimitError("limite"))[1],
+            batch_size=10,
+            checkpoint_path=ckpt,
+            model_kwargs={"callbacks": [Callback()]},
+        )
+
+    chamadas, llm = _llm(100, SystemExit())
+    _roda(df, llm, batch_size=10, checkpoint_path=ckpt, model_kwargs={"callbacks": [Callback()]})
+
+    assert len(chamadas) == 1
+
+
+def test_checkpoint_que_nao_rele_com_as_linhas_da_entrada_recomeca(tmp_path, monkeypatch):
+    """O CSV nem sempre relê o que gravou; a retomada não casa linhas deslocadas."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df, _llm(1, ProviderUsageLimitError("limite"))[1], batch_size=10, checkpoint_path=ckpt
+        )
+    original = read_df
+    monkeypatch.setattr(
+        "dataframeit.core.read_df",
+        lambda *a, **k: pd.concat([original(*a, **k)] * 2, ignore_index=True),
+    )
+
+    chamadas, llm = _llm(100, SystemExit())
+    with pytest.warns(UserWarning, match="não relê com a coluna de status e as linhas"):
+        _roda(df, llm, batch_size=10, checkpoint_path=ckpt)
+
+    assert len(chamadas) == 3
+
+
+def test_aviso_de_falha_da_assinatura_aponta_para_quem_chamou(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    original = Path.write_text
+
+    def falha(self, *args, **kwargs):
+        if self.name.endswith(".dataframeit.json.tmp"):
+            msg = "disco cheio"
+            raise OSError(msg)
+        return original(self, *args, **kwargs)
+
+    with patch.object(Path, "write_text", falha), warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always")
+        _roda(
+            pd.DataFrame({"texto": ["a"]}),
+            _llm(100, SystemExit())[1],
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
+
+    assinatura = [a for a in avisos if "assinatura do checkpoint" in str(a.message)]
+    assert assinatura
+    assert all(not a.filename.endswith("core.py") for a in assinatura)
+
+
+def test_hash_dos_campos_da_entrada_distingue_lista_de_ausencia():
+    class ComLista(BaseModel):
+        tags: list[str] | None = None
+
+    com_lista = pd.DataFrame({"texto": ["a", "b"], "tags": [["x"], None]})
+    vazia = pd.DataFrame({"texto": ["a", "b"], "tags": [[], None]})
+
+    hashes = _field_hashes(com_lista, ComLista)
+
+    assert hashes[0] != hashes[1]
+    assert _field_hashes(vazia, ComLista)[0] != hashes[1]
+    assert hashes == _field_hashes(com_lista.copy(), ComLista)
