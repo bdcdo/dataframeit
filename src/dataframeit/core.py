@@ -30,6 +30,7 @@ from .conditional import (
     get_group_execution_units,
 )
 from .errors import (
+    ProviderAbortError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -1262,6 +1263,15 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 checkpoint=checkpoint,
             )
 
+    if token_stats.get("abort"):
+        pending = int(df_pandas[status_col].isna().sum())
+        warnings.warn(
+            f"Execução interrompida: {token_stats['abort']}. {pending} linha(s) ficaram "
+            "sem status; rode de novo com resume=True para processá-las.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
         _print_token_stats(
@@ -1821,6 +1831,11 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     token_stats=token_stats,
                 )
                 success = True
+            except ProviderAbortError as e:
+                # A linha fica sem status, como as que faltam: nenhuma delas
+                # foi respondida, e resume=True as retoma.
+                token_stats["abort"] = f"{type(e).__name__}: {e}"
+                break
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
                 _record_error(
                     df,
@@ -1899,6 +1914,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     initial_workers = parallel_requests
     workers_reduced = False
     rate_limit_event = threading.Event()
+    abort_event = threading.Event()
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -1956,6 +1972,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
 
+        # Linha que ainda não foi ao provider quando a execução foi interrompida
+        # fica pendente, sem status.
+        if abort_event.is_set():
+            return {"success": False, "idx": idx, "error": None}
+
         # Verificar se devemos pausar devido a rate limit
         if rate_limit_event.is_set():
             time.sleep(2.0)  # Pausa breve quando rate limit detectado
@@ -1987,6 +2008,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 token_stats["requests_completed"] += 1
                 snapshot = _count_row()
 
+        except ProviderAbortError as e:
+            with lock:
+                token_stats.setdefault("abort", f"{type(e).__name__}: {e}")
+            abort_event.set()
+            return {"success": False, "idx": idx, "error": None}
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
             # Verificar se é erro de rate limit
             if is_rate_limit_error(e):
@@ -2028,7 +2054,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         # Usar abordagem iterativa para permitir ajuste dinâmico de workers
         pending_rows = list(rows_to_process)
 
-        while pending_rows:
+        while pending_rows and not abort_event.is_set():
             # Pegar batch com número atual de workers
             with lock:
                 worker_batch = min(current_workers, len(pending_rows))

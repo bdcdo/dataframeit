@@ -235,9 +235,19 @@ def initialized_backend(tmp_path, codex_sdk, result=None):
     return backend, client, thread, turn
 
 
-def as_context_manager(client):
-    """Configura o mock com o mesmo contrato de contexto do SDK real."""
+def as_context_manager(client, resolved_model="gpt-5.4"):
+    """Configura o mock com o mesmo contrato de contexto do SDK real.
+
+    O cliente de protocolo responde à thread de sonda com o modelo resolvido,
+    que por padrão é o de `make_config`.
+    """
+    from openai_codex.generated.v2_all import ThreadStartResponse  # noqa: PLC0415 (SDK carregado pelo fixture)
+
     client.__enter__.return_value = client
+    client._client = MagicMock()
+    client._client.thread_start.return_value = ThreadStartResponse.model_construct(
+        model=resolved_model
+    )
 
     def close_without_suppressing(*_):
         client.close()
@@ -585,6 +595,48 @@ class TestBackendLifecycle:
         client.close.assert_called_once_with()
         assert auth_lock_is_available(lock_path)
         assert not workspace.parent.exists()
+
+    def _open_with_resolved_model(self, codex_sdk, monkeypatch, tmp_path, resolved, **config):
+        sdk, sdk_types, generated = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex), resolved_model=resolved)
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        with (
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(**config), SampleModel, "{texto}") as backend,
+        ):
+            params = client._client.thread_start.call_args.args[0]
+            assert isinstance(params, generated.ThreadStartParams)
+            assert params.ephemeral is True
+            assert params.cwd == str(backend._workspace)
+            return backend, params, client
+
+    def test_sonda_confirma_o_modelo_pedido_sem_abrir_turno(self, codex_sdk, monkeypatch, tmp_path):
+        backend, params, client = self._open_with_resolved_model(
+            codex_sdk, monkeypatch, tmp_path, "gpt-5.4"
+        )
+
+        assert params.model == "gpt-5.4"
+        assert client._client.thread_start.call_count == 1
+        client.thread_start.assert_not_called()
+        assert backend.config.model == "gpt-5.4"
+
+    def test_modelo_resolvido_diferente_do_pedido_e_recusado(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        with pytest.raises(ProviderConfigurationError, match="'outro-modelo'.*'gpt-5.4'"):
+            self._open_with_resolved_model(codex_sdk, monkeypatch, tmp_path, "outro-modelo")
+
+    def test_sem_model_avisa_qual_o_codex_resolveu(self, codex_sdk, monkeypatch, tmp_path):
+        with pytest.warns(UserWarning, match="sem model.*'modelo-padrao'"):
+            _, params, _ = self._open_with_resolved_model(
+                codex_sdk, monkeypatch, tmp_path, "modelo-padrao", model=None
+            )
+
+        assert params.model is None
 
     def test_missing_auth_fails_before_runtime_or_client(self, codex_sdk, monkeypatch, tmp_path):
         sdk, _, _ = codex_sdk
