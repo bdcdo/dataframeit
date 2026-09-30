@@ -101,7 +101,7 @@ result = dataframeit(
 )
 ```
 
-The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. Next to it, `<checkpoint>.dataframeit.json` stores the run's signature (prompt, provider, model, `model_kwargs`, schema, and search) and a hash of each row's text. The checkpoint is resumed only when both match; with another configuration or another input, the run warns, starts over, and overwrites it. With `resume=False`, the file is ignored and overwritten.
+The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. On every save, `<checkpoint>.dataframeit.json` is written next to it with the run's signature (prompt, provider, model, `model_kwargs`, schema, search, and the text and status columns), a hash of each row's text, and a hash of the checkpoint itself. The checkpoint is resumed only when all three match; with another configuration, another input, or a file that is not the one the signature describes, the run warns, starts over, and overwrites it. In a row already concluded, a value the input already has in a model field prevails over the checkpoint's. With `resume=False`, the file is ignored and overwritten.
 
 To inspect what has already been processed, `read_df` loads the file with lists, dicts and text in the model's types. That DataFrame also works as input for resuming, and then the file is not read again:
 

@@ -370,9 +370,9 @@ def test_texto_ausente_conta_para_o_checkpoint(tmp_path, parallel_requests):
     gravacoes = []
     original = core._try_save_checkpoint
 
-    def registra(df, path):
+    def registra(df, path, meta=None):
         gravacoes.append(len(df))
-        return original(df, path)
+        return original(df, path, meta)
 
     with (
         patch("dataframeit.core._try_save_checkpoint", side_effect=registra),

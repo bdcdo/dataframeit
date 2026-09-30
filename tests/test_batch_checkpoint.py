@@ -41,7 +41,7 @@ def test_checkpoint_fires_on_multiples_sequential(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(
             (int((df_arg["_dataframeit_status"] == "processed").sum()), str(path_arg))
         )
@@ -73,7 +73,7 @@ def test_checkpoint_no_duplicate_final_save_sequential(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -101,7 +101,7 @@ def test_checkpoint_fires_on_multiples_parallel(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -132,7 +132,7 @@ def test_checkpoint_no_duplicate_final_save_parallel(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg):
+    def spy(df_arg, path_arg, _meta=None):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -375,7 +375,7 @@ def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     processadas_por_gravacao = []
     trava = threading.Lock()
 
-    def gravacao_lenta(df_arg, path_arg):
+    def gravacao_lenta(df_arg, path_arg, _meta=None):
         with trava:
             ativas[0] += 1
             max_ativas[0] = max(max_ativas[0], ativas[0])
@@ -442,7 +442,7 @@ def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
     novo = pd.DataFrame({"campo1": ["a", "b"]})
     antigo = pd.DataFrame({"campo1": ["a"]})
 
-    with patch("dataframeit.core._save_checkpoint", side_effect=lambda df, _: gravados.append(df)):
+    with patch("dataframeit.core._save_checkpoint", side_effect=lambda df, *_: gravados.append(df)):
         escritor.save(novo, 2)
         escritor.save(antigo, 1)
         escritor.save(novo, 2)
@@ -550,7 +550,7 @@ def test_checkpoint_de_outro_prompt_ou_modelo_nao_e_reaproveitado(tmp_path):
     with (
         patch("dataframeit.core.call_langchain", side_effect=_crash_depois_de(100, total_calls)),
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.warns(UserWarning, match="outro prompt, modelo, schema ou busca"),
+        pytest.warns(UserWarning, match="outra configuração"),
     ):
         dataframeit(
             df.copy(),
