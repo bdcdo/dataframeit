@@ -1,10 +1,14 @@
 """Retomada automática pelo checkpoint: só o arquivo desta execução é retomado."""
 
 import contextlib
+import json
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel
@@ -42,7 +46,12 @@ def _roda(df, llm, prompt="{texto}", modelo=Modelo, **kwargs):
         patch("dataframeit.core.call_langchain", side_effect=llm),
         patch("dataframeit.core.validate_provider_dependencies"),
     ):
-        return dataframeit(df.copy(), questions=modelo, prompt=prompt, **kwargs)
+        return dataframeit(
+            df.clone() if hasattr(df, "clone") else df.copy(),
+            questions=modelo,
+            prompt=prompt,
+            **kwargs,
+        )
 
 
 @pytest.mark.parametrize("interrupcao", [KeyboardInterrupt(), ProviderUsageLimitError("limite")])
@@ -224,21 +233,20 @@ def test_retomada_da_o_mesmo_resultado_que_a_execucao_sem_interrupcao(tmp_path, 
     assert final.loc[0, "campo2"] == "llm1"
 
 
-def test_correcao_que_apaga_valor_prevalece(tmp_path):
+def test_celula_esvaziada_na_saida_volta_com_o_valor_do_checkpoint(tmp_path):
+    """A célula vazia não se distingue da entrada original, que também não a trazia."""
     ckpt = tmp_path / "ckpt.csv"
     df = pd.DataFrame({"texto": ["a", "b"]})
     saida = _roda(
         df, _llm_dois(100, SystemExit())[1], modelo=Dois, batch_size=10, checkpoint_path=ckpt
     )
-    corrigida = saida.drop(columns=[c for c in saida.columns if c.startswith("_")], errors="ignore")
-    corrigida.loc[0, "campo2"] = None
+    saida.loc[0, "campo2"] = None
 
     chamadas, llm = _llm_dois(100, SystemExit())
-    final = _roda(corrigida, llm, modelo=Dois, batch_size=10, checkpoint_path=ckpt)
+    final = _roda(saida, llm, modelo=Dois, batch_size=10, checkpoint_path=ckpt)
 
     assert len(chamadas) == 0
-    assert final.loc[0, "campo2"] is None or pd.isna(final.loc[0, "campo2"])
-    assert final.loc[1, "campo2"] == "llm2"
+    assert final["campo2"].tolist() == ["llm1", "llm2"]
 
 
 def test_coluna_de_rotulo_nao_textual_nao_ganha_duplicata(tmp_path):
@@ -333,3 +341,191 @@ def test_hash_dos_campos_da_entrada_distingue_lista_de_ausencia():
     assert hashes[0] != hashes[1]
     assert _field_hashes(vazia, ComLista)[0] != hashes[1]
     assert hashes == _field_hashes(com_lista.copy(), ComLista)
+
+
+class ComLista(BaseModel):
+    tags: list[str] | None = None
+
+
+def _llm_lista(limite, erro):
+    chamadas = []
+
+    def llm(*args, **kwargs):
+        chamadas.append(1)
+        if len(chamadas) > limite:
+            raise erro
+        return {"data": {"tags": [f"t{len(chamadas)}", "u"]}, "usage": None}
+
+    return chamadas, llm
+
+
+def test_campo_lista_em_array_do_numpy_nao_derruba_a_execucao(tmp_path):
+    """O parquet relido e o polars entregam campo lista como array do numpy."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "tags": [np.array(["x", "y"], dtype=object), np.array([np.int64(1)], dtype=object)],
+        }
+    )
+
+    chamadas, llm = _llm_lista(100, SystemExit())
+    final = _roda(
+        df, llm, modelo=ComLista, batch_size=10, checkpoint_path=ckpt, reprocess_columns=["tags"]
+    )
+
+    assert len(chamadas) == 2
+    assert list(final.loc[0, "tags"]) == ["t1", "u"]
+    como_lista = pd.DataFrame({"texto": ["a", "b"], "tags": [["x", "y"], [1]]})
+    assert _field_hashes(df, ComLista) == _field_hashes(como_lista, ComLista)
+
+
+def test_saida_polars_com_campo_lista_retoma_pelo_mesmo_checkpoint(tmp_path):
+    pl = pytest.importorskip("polars")
+    ckpt = tmp_path / "ckpt.parquet"
+    pytest.importorskip("pyarrow")
+    df = pl.DataFrame({"texto": ["a", "b", "c"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(
+            df,
+            _llm_lista(1, ProviderUsageLimitError("limite"))[1],
+            modelo=ComLista,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    chamadas, llm = _llm_lista(100, SystemExit())
+    final = _roda(saida, llm, modelo=ComLista, batch_size=1, checkpoint_path=ckpt)
+
+    assert len(chamadas) == 2
+    assert final["tags"].to_list() == [["t1", "u"], ["t1", "u"], ["t2", "u"]]
+
+
+def _retomada_manual_e_depois_a_entrada_original(tmp_path, modelo):
+    """Execução interrompida, retomada à mão pela saída e morta, e a entrada original de novo."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"], "campo1": [None, None, None]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(
+            df,
+            _llm(1, ProviderUsageLimitError("limite"), prefixo="llm")[1],
+            modelo=modelo,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+    _, segunda = _llm(1, SystemExit(), prefixo="llm")
+    with pytest.raises(SystemExit):
+        # A segunda execução começa a contar do zero: a linha 1 recebe "llm1".
+        _roda(saida, segunda, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+
+    chamadas, llm = _llm(100, SystemExit(), prefixo="nova")
+    return chamadas, _roda(df, llm, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+
+
+@pytest.mark.parametrize("modelo", [Modelo, ModeloOpcional])
+def test_entrada_original_depois_de_retomada_manual_guarda_as_respostas_pagas(tmp_path, modelo):
+    chamadas, final = _retomada_manual_e_depois_a_entrada_original(tmp_path, modelo)
+
+    assert len(chamadas) == 1
+    assert final["campo1"].tolist() == ["llm1", "llm1", "nova1"]
+
+
+def test_retomada_manual_com_outra_configuracao_grava_a_propria_entrada(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"], "campo1": [None, None]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(
+            df,
+            _llm(1, ProviderUsageLimitError("limite"))[1],
+            modelo=ModeloOpcional,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    _roda(
+        saida,
+        _llm(100, SystemExit())[1],
+        prompt="outro {texto}",
+        modelo=ModeloOpcional,
+        batch_size=1,
+        checkpoint_path=ckpt,
+    )
+
+    gravado = json.loads(Path(f"{ckpt}.dataframeit.json").read_text(encoding="utf-8"))
+    assert gravado["inputs"] == _field_hashes(saida, ModeloOpcional)
+
+
+def test_correcao_de_um_campo_guarda_a_resposta_paga_do_outro(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"], "campo1": ["humano", None], "campo2": [None, None]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _llm_dois(1, ProviderUsageLimitError("limite"))[1],
+            modelo=Dois,
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
+    corrigida = df.copy()
+    corrigida.loc[0, "campo1"] = "humano revisado"
+
+    chamadas, llm = _llm_dois(100, SystemExit())
+    final = _roda(corrigida, llm, modelo=Dois, batch_size=10, checkpoint_path=ckpt)
+
+    assert len(chamadas) == 1
+    assert final.loc[0, "campo1"] == "humano revisado"
+    assert final.loc[0, "campo2"] == "llm1"
+
+
+_HASH_DE_CONJUNTO = """
+import json
+import pandas as pd
+from pydantic import BaseModel
+from dataframeit.core import _field_hashes
+
+class M(BaseModel):
+    c: object = None
+
+valores = [{"alfa", "beta", "gama", "delta"}, frozenset({"alfa", "beta", "gama", "delta"})]
+df = pd.DataFrame({"texto": ["a", "b"], "c": pd.Series(valores, dtype=object)})
+print(json.dumps(_field_hashes(df, M)))
+"""
+
+
+def test_hash_de_conjunto_nao_depende_da_semente_do_processo():
+    saidas = {
+        subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
+            [sys.executable, "-c", _HASH_DE_CONJUNTO],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"PYTHONHASHSEED": semente, "PATH": ""},
+        ).stdout
+        for semente in ("1", "2", "3", "4")
+    }
+
+    assert len(saidas) == 1
+    conjunto = pd.DataFrame({"texto": ["a"], "tags": pd.Series([{"b", "a"}], dtype=object)})
+    lista = pd.DataFrame({"texto": ["a"], "tags": [["a", "b"]]})
+    assert _field_hashes(conjunto, ComLista) == _field_hashes(lista, ComLista)
+
+
+def test_dict_com_chaves_int_e_str_num_campo_nao_derruba_a_execucao(tmp_path):
+    class ComDict(BaseModel):
+        mapa: dict | None = None
+
+    df = pd.DataFrame({"texto": ["a"], "mapa": pd.Series([{1: "x", "b": "y"}], dtype=object)})
+
+    def llm(*args, **kwargs):
+        return {"data": {"mapa": {"k": "v"}}, "usage": None}
+
+    final = _roda(
+        df,
+        llm,
+        modelo=ComDict,
+        batch_size=10,
+        checkpoint_path=tmp_path / "c.csv",
+        reprocess_columns=["mapa"],
+    )
+
+    assert final.loc[0, "mapa"] == {"k": "v"}
