@@ -1,9 +1,6 @@
 """Retomada automática pelo checkpoint: só o arquivo desta execução é retomado."""
 
 import contextlib
-import json
-import subprocess
-import sys
 import warnings
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +11,6 @@ import pytest
 from pydantic import BaseModel
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
-from dataframeit.core import _field_hashes
 
 
 class Modelo(BaseModel):
@@ -170,8 +166,8 @@ def test_marca_de_reprocessamento_interrompido_chega_ao_checkpoint(tmp_path, par
     assert final.loc[final["campo1"].str.startswith("velho"), "_error_details"].notna().all()
 
 
-def test_valor_que_a_entrada_ja_traz_prevalece_sobre_o_checkpoint(tmp_path):
-    """Correção à mão numa saída concluída não é desfeita pela retomada."""
+def test_linha_concluida_vem_do_checkpoint_mesmo_com_valor_na_entrada(tmp_path):
+    """Como na execução sem interrupção, que grava a resposta por cima da entrada."""
     ckpt = tmp_path / "ckpt.csv"
     df = pd.DataFrame({"texto": ["a", "b"], "campo1": [None, None], "campo2": [None, None]})
     saida = _roda(
@@ -184,7 +180,7 @@ def test_valor_que_a_entrada_ja_traz_prevalece_sobre_o_checkpoint(tmp_path):
     final = _roda(corrigida, llm, modelo=ModeloOpcional, batch_size=1, checkpoint_path=ckpt)
 
     assert len(chamadas) == 0
-    assert final["campo1"].tolist() == ["corrigido à mão", "v2"]
+    assert final["campo1"].tolist() == ["v1", "v2"]
 
 
 class Dois(BaseModel):
@@ -329,20 +325,6 @@ def test_aviso_de_falha_da_assinatura_aponta_para_quem_chamou(tmp_path):
     assert all(not a.filename.endswith("core.py") for a in assinatura)
 
 
-def test_hash_dos_campos_da_entrada_distingue_lista_de_ausencia():
-    class ComLista(BaseModel):
-        tags: list[str] | None = None
-
-    com_lista = pd.DataFrame({"texto": ["a", "b"], "tags": [["x"], None]})
-    vazia = pd.DataFrame({"texto": ["a", "b"], "tags": [[], None]})
-
-    hashes = _field_hashes(com_lista, ComLista)
-
-    assert hashes[0] != hashes[1]
-    assert _field_hashes(vazia, ComLista)[0] != hashes[1]
-    assert hashes == _field_hashes(com_lista.copy(), ComLista)
-
-
 class ComLista(BaseModel):
     tags: list[str] | None = None
 
@@ -376,8 +358,6 @@ def test_campo_lista_em_array_do_numpy_nao_derruba_a_execucao(tmp_path):
 
     assert len(chamadas) == 2
     assert list(final.loc[0, "tags"]) == ["t1", "u"]
-    como_lista = pd.DataFrame({"texto": ["a", "b"], "tags": [["x", "y"], [1]]})
-    assert _field_hashes(df, ComLista) == _field_hashes(como_lista, ComLista)
 
 
 def test_saida_polars_com_campo_lista_retoma_pelo_mesmo_checkpoint(tmp_path):
@@ -428,104 +408,3 @@ def test_entrada_original_depois_de_retomada_manual_guarda_as_respostas_pagas(tm
 
     assert len(chamadas) == 1
     assert final["campo1"].tolist() == ["llm1", "llm1", "nova1"]
-
-
-def test_retomada_manual_com_outra_configuracao_grava_a_propria_entrada(tmp_path):
-    ckpt = tmp_path / "ckpt.csv"
-    df = pd.DataFrame({"texto": ["a", "b"], "campo1": [None, None]})
-    with pytest.warns(UserWarning, match="interrompida"):
-        saida = _roda(
-            df,
-            _llm(1, ProviderUsageLimitError("limite"))[1],
-            modelo=ModeloOpcional,
-            batch_size=1,
-            checkpoint_path=ckpt,
-        )
-
-    _roda(
-        saida,
-        _llm(100, SystemExit())[1],
-        prompt="outro {texto}",
-        modelo=ModeloOpcional,
-        batch_size=1,
-        checkpoint_path=ckpt,
-    )
-
-    gravado = json.loads(Path(f"{ckpt}.dataframeit.json").read_text(encoding="utf-8"))
-    assert gravado["inputs"] == _field_hashes(saida, ModeloOpcional)
-
-
-def test_correcao_de_um_campo_guarda_a_resposta_paga_do_outro(tmp_path):
-    ckpt = tmp_path / "ckpt.csv"
-    df = pd.DataFrame({"texto": ["a", "b"], "campo1": ["humano", None], "campo2": [None, None]})
-    with pytest.warns(UserWarning, match="interrompida"):
-        _roda(
-            df,
-            _llm_dois(1, ProviderUsageLimitError("limite"))[1],
-            modelo=Dois,
-            batch_size=10,
-            checkpoint_path=ckpt,
-        )
-    corrigida = df.copy()
-    corrigida.loc[0, "campo1"] = "humano revisado"
-
-    chamadas, llm = _llm_dois(100, SystemExit())
-    final = _roda(corrigida, llm, modelo=Dois, batch_size=10, checkpoint_path=ckpt)
-
-    assert len(chamadas) == 1
-    assert final.loc[0, "campo1"] == "humano revisado"
-    assert final.loc[0, "campo2"] == "llm1"
-
-
-_HASH_DE_CONJUNTO = """
-import json
-import pandas as pd
-from pydantic import BaseModel
-from dataframeit.core import _field_hashes
-
-class M(BaseModel):
-    c: object = None
-
-valores = [{"alfa", "beta", "gama", "delta"}, frozenset({"alfa", "beta", "gama", "delta"})]
-df = pd.DataFrame({"texto": ["a", "b"], "c": pd.Series(valores, dtype=object)})
-print(json.dumps(_field_hashes(df, M)))
-"""
-
-
-def test_hash_de_conjunto_nao_depende_da_semente_do_processo():
-    saidas = {
-        subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
-            [sys.executable, "-c", _HASH_DE_CONJUNTO],
-            capture_output=True,
-            text=True,
-            check=True,
-            env={"PYTHONHASHSEED": semente, "PATH": ""},
-        ).stdout
-        for semente in ("1", "2", "3", "4")
-    }
-
-    assert len(saidas) == 1
-    conjunto = pd.DataFrame({"texto": ["a"], "tags": pd.Series([{"b", "a"}], dtype=object)})
-    lista = pd.DataFrame({"texto": ["a"], "tags": [["a", "b"]]})
-    assert _field_hashes(conjunto, ComLista) == _field_hashes(lista, ComLista)
-
-
-def test_dict_com_chaves_int_e_str_num_campo_nao_derruba_a_execucao(tmp_path):
-    class ComDict(BaseModel):
-        mapa: dict | None = None
-
-    df = pd.DataFrame({"texto": ["a"], "mapa": pd.Series([{1: "x", "b": "y"}], dtype=object)})
-
-    def llm(*args, **kwargs):
-        return {"data": {"mapa": {"k": "v"}}, "usage": None}
-
-    final = _roda(
-        df,
-        llm,
-        modelo=ComDict,
-        batch_size=10,
-        checkpoint_path=tmp_path / "c.csv",
-        reprocess_columns=["mapa"],
-    )
-
-    assert final.loc[0, "mapa"] == {"k": "v"}

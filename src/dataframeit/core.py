@@ -1064,8 +1064,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
 
     # Entrada sem coluna de status é entrada nova; se o checkpoint já existe e
     # é desta execução, ela continua dele. Quem carrega o checkpoint à mão e o
-    # passa como entrada já traz a coluna: o arquivo não é lido de novo, e os
-    # valores de entrada gravados continuam os da execução original.
+    # passa como entrada já traz a coluna, e o arquivo não é lido de novo.
     signature = None
     if checkpoint is not None:
         signature = _run_signature(
@@ -1079,15 +1078,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             status_col=status_col,
         )
         # Tirado da entrada antes da releitura, que a altera.
-        meta = {
-            "signature": signature,
-            "texts": _text_hashes(df_pandas[text_column]),
-            "inputs": _field_hashes(df_pandas, questions),
-        }
-        checkpoint = dataclasses.replace(checkpoint, meta=meta)
-        if resume and status_col in df_pandas.columns:
-            meta["inputs"] = _inherited_inputs(checkpoint.path, meta) or meta["inputs"]
-        elif resume and Path(checkpoint.path).exists():
+        checkpoint = dataclasses.replace(
+            checkpoint,
+            meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
+        )
+        if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
             _resume_from_checkpoint(
                 df_pandas,
                 checkpoint,
@@ -1577,58 +1572,17 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
 
 
 def _stable(value: object) -> object:
-    """Forma do valor que serializa igual em qualquer processo.
-
-    Chaves de dict viram texto, para ordenar dict com chaves int e str juntas;
-    array e escalar do numpy viram lista e número Python (o polars entrega
-    campo lista como array, e o repr do escalar muda entre versões do numpy);
-    conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
-    semente de hash do processo.
-    """
+    """Chaves de dict como texto, para ordenar dict com chaves int e str juntas."""
     if isinstance(value, dict):
         return {str(key): _stable(item) for key, item in value.items()}
-    if hasattr(value, "tolist"):
-        value = value.tolist()  # ty: ignore[call-non-callable]
     if isinstance(value, (list, tuple)):
         return [_stable(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        return sorted((_stable(item) for item in value), key=_canonical_json)
     return value
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(_stable(value), sort_keys=True, default=_stable_repr)
 
 
 def _stable_repr(value: object) -> str:
     """Repr sem endereço de memória, que muda a cada processo."""
     return re.sub(r" at 0x[0-9a-fA-F]+", "", repr(value))
-
-
-def _is_missing_cell(value: object) -> bool:
-    """None, NaN, NA ou NaT; lista, array e dict de campo estruturado nunca são ausência."""
-    return bool(is_scalar(value) and pd.isna(value))
-
-
-def _field_hashes(df: pd.DataFrame, questions: type[BaseModel]) -> list[dict[str, str]]:
-    """Hash, por linha, de cada campo do modelo que a entrada traz com valor.
-
-    Na retomada, a célula cuja entrada mudou desde a execução que gravou o
-    checkpoint foi corrigida à mão depois dela, e a correção prevalece; nas
-    demais, o que a execução respondeu prevalece sobre o que a entrada trazia.
-    Célula vazia e coluna ausente ficam de fora do dict e se equivalem: as duas
-    dizem que a entrada não trouxe valor, e a entrada nova do caso comum (sem
-    coluna de campo nenhuma) grava só dicts vazios.
-    """
-    columns = {name: df[name].tolist() for name in questions.model_fields if name in df.columns}
-    return [
-        {
-            name: hashlib.sha256(_canonical_json(values[position]).encode()).hexdigest()[:16]
-            for name, values in columns.items()
-            if not _is_missing_cell(values[position])
-        }
-        for position in range(len(df))
-    ]
 
 
 def _text_hashes(texts: pd.Series) -> list[str | None]:
@@ -1675,40 +1629,20 @@ def _read_checkpoint_signature(path: str | Path) -> dict | None:
     return meta if isinstance(meta, dict) else None
 
 
-def _inherited_inputs(path: str | Path, run: dict) -> list | None:
-    """Os valores de entrada gravados pela execução original, quando esta a retoma à mão.
-
-    Quem passa a saída de uma execução interrompida como entrada traz nos campos
-    do modelo o que a execução respondeu, e não o que o usuário forneceu. Gravar
-    o hash dela como `inputs` faria a execução seguinte, rodada com a entrada
-    original e o mesmo checkpoint, tomar as respostas pagas por correção à mão e
-    descartá-las. Herdar vale quando a assinatura gravada é desta execução e da
-    mesma entrada de textos.
-    """
-    meta = _read_checkpoint_signature(path)
-    if (
-        meta is None
-        or meta.get("signature") != run["signature"]
-        or meta.get("texts") != run["texts"]
-    ):
-        return None
-    return meta.get("inputs")
-
-
 def _checkpoint_mismatch(
     df: pd.DataFrame,
     checkpoint: _Checkpoint,
     questions: type[BaseModel],
     *,
     status_col: str,
-) -> tuple[str | None, pd.DataFrame | None, dict | None]:
-    """(motivo para não retomar, ou None; o checkpoint lido; a assinatura gravada)."""
+) -> tuple[str | None, pd.DataFrame | None]:
+    """(motivo para não retomar, ou None; o checkpoint lido)."""
     path, run = checkpoint.path, checkpoint.meta or {}
     meta = _read_checkpoint_signature(path)
     if meta is None:
-        return "não tem a assinatura da execução que o gravou", None, None
+        return "não tem a assinatura da execução que o gravou", None
     if meta.get("checkpoint") != _file_hash(path):
-        return "não é o arquivo que a assinatura ao lado descreve", None, None
+        return "não é o arquivo que a assinatura ao lado descreve", None
     if meta.get("signature") != run.get("signature"):
         return (
             (
@@ -1716,23 +1650,15 @@ def _checkpoint_mismatch(
                 "schema, busca ou colunas de texto e de status)"
             ),
             None,
-            None,
         )
     if meta.get("texts") != run.get("texts"):
-        return "foi gravado para outra entrada", None, None
+        return "foi gravado para outra entrada", None
     saved = read_df(str(path), questions)
     # O CSV nem sempre relê o que gravou (texto com retorno de carro isolado
     # volta partido em duas linhas em algumas versões do pandas).
-    inputs = meta.get("inputs")
-    if (
-        status_col not in saved.columns
-        or len(saved) != len(df)
-        or not isinstance(inputs, list)
-        or len(inputs) != len(df)
-        or not all(isinstance(row, dict) for row in inputs)
-    ):
-        return "não relê com a coluna de status e as linhas da entrada", None, None
-    return None, saved, meta
+    if status_col not in saved.columns or len(saved) != len(df):
+        return "não relê com a coluna de status e as linhas da entrada", None
+    return None, saved
 
 
 def _resume_from_checkpoint(
@@ -1751,15 +1677,16 @@ def _resume_from_checkpoint(
     começa do zero, e o arquivo é sobrescrito na primeira gravação.
 
     Das linhas já concluídas vêm as colunas que a execução acrescenta e os campos
-    do modelo, salvo na célula cujo valor na entrada mudou desde a execução
-    original: foi corrigida à mão, e a entrada prevalece. Célula esvaziada não
-    se distingue da entrada original sem valor, e recebe o do checkpoint.
-    As demais colunas de entrada ficam como o usuário as passou, porque o CSV e o
-    XLSX não preservam o tipo delas. As colunas se casam pelo nome em texto, que é
-    como o CSV as devolve.
+    do modelo, sobre o que a entrada trazia neles: é o que a execução sem
+    interrupção daria, porque ela grava a resposta por cima. A entrada não tem
+    como dizer se um valor ali é correção à mão ou resposta de outra execução,
+    e quem quer manter a saída como está a passa com a coluna de status, que o
+    checkpoint não relê. As demais colunas de entrada ficam como o usuário as
+    passou, porque o CSV e o XLSX não preservam o tipo delas. As colunas se
+    casam pelo nome em texto, que é como o CSV as devolve.
     """
-    reason, saved, meta = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
-    if reason is not None or saved is None or meta is None:
+    reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
+    if reason is not None or saved is None:
         warnings.warn(
             f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
             "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
@@ -1769,7 +1696,6 @@ def _resume_from_checkpoint(
         )
         return
 
-    pairs = list(zip(meta["inputs"], (checkpoint.meta or {}).get("inputs") or [], strict=True))
     concluded = saved[status_col].notna().to_numpy()
     by_name = {str(column): column for column in df.columns}
     model_fields = set(questions.model_fields)
@@ -1780,10 +1706,8 @@ def _resume_from_checkpoint(
         if target is None:
             df[column] = saved[column].to_numpy()
         elif target in model_fields:
-            unchanged = [stored.get(target) == now.get(target) for stored, now in pairs]
-            take = concluded & pd.Series(unchanged, dtype=bool).to_numpy()
             values = df[target].to_numpy(dtype=object).copy()
-            values[take] = saved[column].to_numpy(dtype=object)[take]
+            values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
             df[target] = values
 
 
