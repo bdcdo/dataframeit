@@ -569,8 +569,8 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
         raise ProviderTransientError(message)
 
     # Os demais códigos ficam como falha da linha. Entre eles, a violação de
-    # política vem do conteúdo da requisição, e as recusas acumuladas contam por
-    # thread, que é própria de cada linha.
+    # política vem do conteúdo da requisição, e as recusas acumuladas e o
+    # orçamento da sessão contam por thread, que é própria de cada linha.
     raise ProviderError(message)
 
 

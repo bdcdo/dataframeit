@@ -1049,7 +1049,9 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 2
 
-    @pytest.mark.parametrize("code", ["misalignment_policy_violation", "too_many_denials"])
+    @pytest.mark.parametrize(
+        "code", ["misalignment_policy_violation", "too_many_denials", "session_budget_exceeded"]
+    )
     def test_failed_turn_row_scoped_codes_fail_only_the_row(self, codex_sdk, tmp_path, code):
         _, _, generated = codex_sdk
         backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
