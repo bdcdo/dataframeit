@@ -1572,11 +1572,18 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
 
 
 def _stable(value: object) -> object:
-    """Chaves de dict como texto, para ordenar dict com chaves int e str juntas."""
+    """Forma que serializa igual em qualquer processo.
+
+    Chaves de dict viram texto, para ordenar dict com chaves int e str juntas, e
+    conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
+    semente de hash do processo.
+    """
     if isinstance(value, dict):
         return {str(key): _stable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_stable(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_stable(item) for item in value), key=_stable_repr)
     return value
 
 
@@ -1676,9 +1683,11 @@ def _resume_from_checkpoint(
     linha, casada por posição, é o da entrada. Fora disso, a execução avisa e
     começa do zero, e o arquivo é sobrescrito na primeira gravação.
 
-    Das linhas já concluídas vêm as colunas que a execução acrescenta e os campos
-    do modelo, sobre o que a entrada trazia neles: é o que a execução sem
-    interrupção daria, porque ela grava a resposta por cima. A entrada não tem
+    Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
+    execução acrescenta e os campos do modelo, sobre o que a entrada trazia
+    neles. Na linha com sucesso é o que a execução sem interrupção daria, porque
+    ela grava a resposta por cima; na linha com erro de um reprocessamento, são
+    as respostas anteriores que ela guardou. A entrada não tem
     como dizer se um valor ali é correção à mão ou resposta de outra execução,
     e quem quer manter a saída como está a passa com a coluna de status, que o
     checkpoint não relê. As demais colunas de entrada ficam como o usuário as

@@ -11,6 +11,7 @@ import pytest
 from pydantic import BaseModel
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
+from dataframeit.core import _run_signature
 
 
 class Modelo(BaseModel):
@@ -230,7 +231,7 @@ def test_retomada_da_o_mesmo_resultado_que_a_execucao_sem_interrupcao(tmp_path, 
 
 
 def test_celula_esvaziada_na_saida_volta_com_o_valor_do_checkpoint(tmp_path):
-    """A célula vazia não se distingue da entrada original, que também não a trazia."""
+    """Sem coluna de status, a saída é entrada nova, e a linha concluída vem do checkpoint."""
     ckpt = tmp_path / "ckpt.csv"
     df = pd.DataFrame({"texto": ["a", "b"]})
     saida = _roda(
@@ -408,3 +409,21 @@ def test_entrada_original_depois_de_retomada_manual_guarda_as_respostas_pagas(tm
 
     assert len(chamadas) == 1
     assert final["campo1"].tolist() == ["llm1", "llm1", "nova1"]
+
+
+def test_conjunto_em_model_kwargs_assina_em_ordem_fixa():
+    """A ordem de iteração de um set muda com a semente de hash do processo."""
+
+    def assinatura(stop):
+        return _run_signature(
+            Modelo,
+            "{texto}",
+            provider="openai",
+            model="m",
+            model_kwargs={"stop": stop},
+            search_config=None,
+            text_column="texto",
+            status_col="_dataframeit_status",
+        )
+
+    assert assinatura({"fim", "alfa", "zeta"}) == assinatura(["alfa", "fim", "zeta"])
