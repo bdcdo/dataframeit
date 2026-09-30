@@ -449,3 +449,117 @@ def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
     assert len(gravados) == 1
     assert gravados[0] is novo
     assert escritor.last_saved == 2
+
+
+def _crash_depois_de(n: int, total_calls: list):
+    def mock_llm(*args, **kwargs):
+        total_calls[0] += 1
+        if total_calls[0] > n:
+            msg = "simulated kill"
+            raise SystemExit(msg)
+        return {
+            "data": {"campo1": f"v{total_calls[0]}"},
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+    return mock_llm
+
+
+def _roda(df, llm, ckpt, **kwargs):
+    """Roda sobre uma cópia, como um processo novo que relê a mesma entrada.
+
+    A biblioteca escreve as colunas no DataFrame recebido; sem a cópia, a segunda
+    chamada receberia o frame já preenchido pela primeira.
+    """
+    df = df.copy()
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        return dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="Teste {texto}",
+            batch_size=2,
+            checkpoint_path=ckpt,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("ext", [".csv", ".parquet"])
+def test_retomada_rele_o_checkpoint_sem_carregar_a_mao(tmp_path, ext):
+    """O mesmo DataFrame de entrada, rodado de novo, continua de onde o arquivo parou."""
+    if ext == ".parquet":
+        pytest.importorskip("pyarrow")
+    df = pd.DataFrame({"texto": [f"linha{i}" for i in range(10)], "id": range(10)})
+    ckpt = tmp_path / f"ckpt{ext}"
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(df, _crash_depois_de(4, total_calls), ckpt)
+    salvas = int(
+        (pd.read_parquet(ckpt) if ext == ".parquet" else pd.read_csv(ckpt))["_dataframeit_status"]
+        .eq("processed")
+        .sum()
+    )
+
+    antes = total_calls[0]
+    final = _roda(df, _crash_depois_de(100, total_calls), ckpt)
+
+    assert total_calls[0] - antes == 10 - salvas
+    assert final["campo1"].tolist()[:salvas] == [f"v{i}" for i in range(1, salvas + 1)]
+    assert final["campo1"].notna().all()
+    assert final["id"].tolist() == list(range(10))
+
+
+def test_checkpoint_de_outra_entrada_e_recusado(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(pd.DataFrame({"texto": ["a", "b", "c", "d"]}), _crash_depois_de(2, total_calls), ckpt)
+
+    with pytest.raises(ValueError, match=r"não corresponde.*texto da linha 1"):
+        _roda(
+            pd.DataFrame({"texto": ["a", "X", "c", "d"]}), _crash_depois_de(100, total_calls), ckpt
+        )
+    with pytest.raises(ValueError, match=r"não corresponde.*4 linhas, e a entrada 3"):
+        _roda(pd.DataFrame({"texto": ["a", "b", "c"]}), _crash_depois_de(100, total_calls), ckpt)
+
+
+def test_arquivo_sem_coluna_de_status_nao_e_checkpoint(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    pd.DataFrame({"texto": ["a"]}).to_csv(ckpt, index=False)
+
+    with pytest.raises(ValueError, match=r"não corresponde.*coluna"):
+        _roda(pd.DataFrame({"texto": ["a"]}), _crash_depois_de(100, [0]), ckpt)
+
+
+def test_resume_false_ignora_o_checkpoint_existente(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    total_calls = [0]
+    with pytest.raises(SystemExit):
+        _roda(pd.DataFrame({"texto": ["a", "b", "c", "d"]}), _crash_depois_de(2, total_calls), ckpt)
+
+    antes = total_calls[0]
+    _roda(
+        pd.DataFrame({"texto": ["a", "b", "c", "d"]}),
+        _crash_depois_de(100, total_calls),
+        ckpt,
+        resume=False,
+    )
+
+    assert total_calls[0] - antes == 4
+
+
+def test_texto_ausente_casa_com_texto_ausente(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    total_calls = [0]
+    entrada = pd.DataFrame({"texto": ["a", None, "c"]})
+    with (
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
+        pytest.raises(SystemExit),
+    ):
+        _roda(entrada, _crash_depois_de(1, total_calls), ckpt)
+
+    final = _roda(entrada, _crash_depois_de(100, total_calls), ckpt)
+
+    assert final["campo1"].iloc[0] == "v1"

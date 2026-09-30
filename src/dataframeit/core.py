@@ -57,6 +57,7 @@ from .utils import (
     get_complex_fields,
     normalize_complex_columns,
     normalize_value,
+    read_df,
     to_pandas,
 )
 
@@ -1051,6 +1052,17 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     status_col = status_column or "_dataframeit_status"
     complex_fields = get_complex_fields(questions)
 
+    # Entrada sem coluna de status é entrada nova; se o checkpoint já existe, a
+    # execução continua dele. Quem carrega o checkpoint à mão e o passa como
+    # entrada já traz a coluna, e o arquivo não é lido de novo.
+    if (
+        checkpoint is not None
+        and resume
+        and status_col not in df_pandas.columns
+        and Path(checkpoint.path).exists()
+    ):
+        _resume_from_checkpoint(df_pandas, checkpoint.path, questions, text_column, status_col)
+
     # Entradas vazias têm um resultado bem definido e não dependem de provider.
     if df_pandas.empty:
         _setup_columns(
@@ -1473,6 +1485,47 @@ _CHECKPOINT_EXT_REQUIRES = {
     ".xlsx": ("openpyxl", "openpyxl"),
     ".parquet": ("pyarrow", "pyarrow"),
 }
+
+
+def _resume_from_checkpoint(
+    df: pd.DataFrame,
+    path: str | Path,
+    questions: type[BaseModel],
+    text_column: str,
+    status_col: str,
+) -> None:
+    """Traz para a entrada, in-place, o que um checkpoint anterior já processou.
+
+    O checkpoint é gravado sem o índice, e as linhas se casam por posição; o texto
+    de cada linha confere que o arquivo é desta entrada. Só as colunas que a
+    execução acrescenta vêm do arquivo. As de entrada ficam como o usuário as
+    passou, porque o CSV e o XLSX não preservam o tipo delas.
+    """
+    saved = read_df(str(path), questions)
+    reason = None
+    if status_col not in saved.columns or text_column not in saved.columns:
+        reason = f"o arquivo não tem a coluna '{status_col}' ou '{text_column}'"
+    elif len(saved) != len(df):
+        reason = f"o arquivo tem {len(saved)} linhas, e a entrada {len(df)}"
+    else:
+        for position, (current, stored) in enumerate(
+            zip(df[text_column], saved[text_column], strict=True)
+        ):
+            if _is_missing_text(current) and _is_missing_text(stored):
+                continue
+            if _is_missing_text(current) or _is_missing_text(stored) or str(current) != str(stored):
+                reason = f"o texto da linha {position} difere"
+                break
+    if reason is not None:
+        msg = (
+            f"O checkpoint em {path} não corresponde a esta entrada: {reason}. "
+            "Apague o arquivo ou passe resume=False para começar do zero."
+        )
+        raise ValueError(msg)
+
+    for column in saved.columns:
+        if column not in df.columns:
+            df[column] = saved[column].to_numpy()
 
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
