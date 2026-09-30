@@ -64,7 +64,7 @@ def make_config(
     search_config: SearchConfig | None = None,
 ) -> LLMConfig:
     return LLMConfig(
-        model="gpt-5.4",
+        model="gpt-6-luna",
         provider=provider,
         api_key=None,
         max_retries=1,
@@ -115,7 +115,7 @@ def test_codex_backend_is_created_once_for_all_rows(monkeypatch, parallel_reques
         questions=ResultModel,
         prompt="Extract: {texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         parallel_requests=parallel_requests,
         track_tokens=False,
     )
@@ -145,7 +145,7 @@ def test_resume_only_invokes_backend_for_pending_rows(monkeypatch):
         questions=ResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -166,7 +166,7 @@ def test_empty_dataframe_adds_result_columns_without_provider(monkeypatch):
         questions=ResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
     )
 
     dependencies.assert_not_called()
@@ -203,7 +203,7 @@ def test_completed_checkpoint_rejects_new_model_field_without_reprocessing(monke
             questions=ExpandedResultModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-6-luna",
             resume=True,
             track_tokens=False,
         )
@@ -234,7 +234,7 @@ def test_completed_checkpoint_rejects_required_null_field_without_mutation(monke
             questions=ExpandedResultModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-6-luna",
             resume=True,
             track_tokens=False,
         )
@@ -263,7 +263,7 @@ def test_completed_checkpoint_accepts_optional_null_field_without_provider(monke
         questions=OptionalExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -292,7 +292,7 @@ def test_completed_checkpoint_fills_absent_model_default_without_provider(monkey
         questions=DefaultExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -321,7 +321,7 @@ def test_completed_checkpoint_fills_default_factory_using_validated_data(monkeyp
         questions=DerivedDefaultExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -351,7 +351,7 @@ def test_completed_checkpoint_accepts_canonical_name_with_validation_alias(monke
         questions=AliasedExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -381,7 +381,7 @@ def test_completed_checkpoint_fills_defaults_by_position_with_duplicate_index(mo
         questions=DerivedDefaultExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -411,7 +411,7 @@ def test_completed_compatible_checkpoint_normalizes_without_provider(monkeypatch
         questions=ExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         track_tokens=False,
     )
@@ -442,7 +442,7 @@ def test_partial_checkpoint_rejects_new_model_field_without_reprocessing(monkeyp
             questions=ExpandedResultModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-6-luna",
             resume=True,
             track_tokens=False,
         )
@@ -478,7 +478,7 @@ def test_reprocessing_new_field_updates_processed_and_pending_rows(monkeypatch):
         questions=ExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         reprocess_columns=["new_value"],
         track_tokens=False,
@@ -515,7 +515,7 @@ def test_reprocessing_covers_required_null_field(monkeypatch):
         questions=ExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         reprocess_columns=["new_value"],
         track_tokens=False,
@@ -556,7 +556,7 @@ def test_reprocessing_null_field_also_fills_absent_default(monkeypatch):
         questions=RequiredAndDefaultExpandedResultModel,
         prompt="{texto}",
         provider="codex",
-        model="gpt-5.4",
+        model="gpt-6-luna",
         resume=True,
         reprocess_columns=["new_value"],
         track_tokens=False,
@@ -587,7 +587,7 @@ def test_reprocessing_must_cover_every_new_model_field(monkeypatch):
             questions=TwiceExpandedResultModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-6-luna",
             reprocess_columns=["first_new_value"],
             track_tokens=False,
         )
@@ -648,7 +648,7 @@ def test_codex_preflight_failure_does_not_mutate_dataframe(monkeypatch):
             questions=ResultModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-6-luna",
         )
 
     pd.testing.assert_frame_equal(data, original)
@@ -739,7 +739,7 @@ def test_malformed_backend_result_is_recorded_as_row_error(monkeypatch, parallel
             questions=ResultModel,
             prompt="{texto}",
             provider="codex",
-            model="gpt-5.4",
+            model="gpt-6-luna",
             parallel_requests=parallel_requests,
             track_tokens=False,
         )

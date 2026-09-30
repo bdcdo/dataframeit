@@ -38,6 +38,13 @@ from dataframeit.errors import (
 )
 from dataframeit.llm import LLMConfig
 
+try:
+    from openai_codex.types import ReasoningEffort as SdkReasoningEffort
+except ImportError:  # sem o extra codex, os casos gerados pelo enum ficam vazios
+    SdkReasoningEffort = None
+
+DECLARED_EFFORTS = list(SdkReasoningEffort) if SdkReasoningEffort is not None else []
+
 
 class SampleModel(BaseModel):
     sentimento: str
@@ -114,7 +121,7 @@ class RecursiveModel(BaseModel):
 
 def make_config(**overrides) -> LLMConfig:
     values = {
-        "model": "gpt-5.4",
+        "model": "gpt-6-luna",
         "provider": "codex",
         "api_key": None,
         "max_retries": 2,
@@ -271,7 +278,7 @@ def initialized_backend(tmp_path, codex_sdk, result=None):
     return backend, client, thread, turn
 
 
-def as_context_manager(client, resolved_model="gpt-5.4"):
+def as_context_manager(client, resolved_model="gpt-6-luna"):
     """Configura o mock com o mesmo contrato de contexto do SDK real.
 
     O cliente de protocolo responde à thread de sonda com o modelo resolvido,
@@ -528,12 +535,22 @@ class TestBackendConfiguration:
 
         assert effort is sdk_types.ReasoningEffort.medium
 
-    def test_effort_is_the_only_supported_model_kwarg(self, codex_sdk):
+    @pytest.mark.parametrize("member", DECLARED_EFFORTS, ids=lambda member: member.value)
+    @pytest.mark.parametrize("as_text", [True, False], ids=["texto", "membro"])
+    def test_every_declared_effort_is_accepted(self, codex_sdk, member, as_text):
+        value = member.value if as_text else member
+
+        effort = _validate_config(make_config(model_kwargs={"effort": value}))
+
+        assert effort is member
+
+    def test_effort_member_created_by_open_enum_is_rejected(self, codex_sdk):
         _, sdk_types, _ = codex_sdk
+        bogus = sdk_types.ReasoningEffort("bogus")
+        assert bogus.value not in {member.value for member in sdk_types.ReasoningEffort}
 
-        effort = _validate_config(make_config(model_kwargs={"effort": "high"}))
-
-        assert effort is sdk_types.ReasoningEffort.high
+        with pytest.raises(ProviderConfigurationError, match="effort inválido"):
+            _validate_config(make_config(model_kwargs={"effort": bogus}))
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
@@ -542,6 +559,8 @@ class TestBackendConfiguration:
             ({"model_kwargs": {"temperature": 0}}, "temperature"),
             ({"model_kwargs": {"codex_bin": "/some/codex"}}, "codex_bin"),
             ({"model_kwargs": {"effort": "maximum"}}, "effort inválido"),
+            ({"model_kwargs": {"effort": "LOW"}}, "effort inválido"),
+            ({"model_kwargs": {"effort": None}}, "effort inválido"),
         ],
     )
     def test_invalid_config_fails_before_client_start(self, codex_sdk, overrides, message):
@@ -655,18 +674,18 @@ class TestBackendLifecycle:
 
     def test_sonda_confirma_o_modelo_pedido_sem_abrir_turno(self, codex_sdk, monkeypatch, tmp_path):
         backend, params, client = self._open_with_resolved_model(
-            codex_sdk, monkeypatch, tmp_path, "gpt-5.4"
+            codex_sdk, monkeypatch, tmp_path, "gpt-6-luna"
         )
 
-        assert params.model == "gpt-5.4"
+        assert params.model == "gpt-6-luna"
         assert client._client.thread_start.call_count == 1
         client.thread_start.assert_not_called()
-        assert backend.config.model == "gpt-5.4"
+        assert backend.config.model == "gpt-6-luna"
 
     def test_modelo_resolvido_diferente_do_pedido_e_recusado(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        with pytest.raises(ProviderConfigurationError, match=r"'outro-modelo'.*'gpt-5\.4'"):
+        with pytest.raises(ProviderConfigurationError, match=r"'outro-modelo'.*'gpt-6-luna'"):
             self._open_with_resolved_model(codex_sdk, monkeypatch, tmp_path, "outro-modelo")
 
     def test_sem_model_avisa_qual_o_codex_resolveu(self, codex_sdk, monkeypatch, tmp_path):
@@ -870,7 +889,7 @@ class TestCodexInvocation:
         assert start_kwargs["approval_mode"] is sdk.ApprovalMode.deny_all
         assert start_kwargs["cwd"] == str(backend._workspace)
         assert start_kwargs["ephemeral"] is True
-        assert start_kwargs["model"] == "gpt-5.4"
+        assert start_kwargs["model"] == "gpt-6-luna"
         assert start_kwargs["sandbox"] is sdk.Sandbox.read_only
         assert "untrusted data" in start_kwargs["developer_instructions"]
         turn_args = thread.turn.call_args
@@ -1387,7 +1406,7 @@ class TestClassificacaoDoTurnoQueFalhou:
         rerouted = Notification(
             method="model/rerouted",
             payload=generated.ModelReroutedNotification(
-                fromModel="gpt-5.4",
+                fromModel="gpt-6-luna",
                 toModel="outro",
                 reason=generated.ModelRerouteReason("highRiskCyberActivity"),
                 threadId="thread-1",
@@ -1400,7 +1419,7 @@ class TestClassificacaoDoTurnoQueFalhou:
 
         with (
             pytest.warns(UserWarning, match="não-recuperável"),
-            pytest.raises(ProviderError, match=r"'gpt-5\.4' para 'outro'.*highRiskCyberActivity"),
+            pytest.raises(ProviderError, match=r"'gpt-6-luna' para 'outro'.*highRiskCyberActivity"),
         ):
             backend.invoke("texto")
 
