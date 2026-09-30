@@ -88,3 +88,71 @@ def test_interrupcao_grava_o_checkpoint(tmp_path, paralelo):
     gravado = pd.read_csv(ckpt)
     assert (gravado["_dataframeit_status"] == "processed").sum() >= 1
     assert gravado["_dataframeit_status"].isna().sum() >= 6 - paralelo
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_interrupcao_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_antigo(paralelo):
+    df = pd.DataFrame(
+        {
+            "texto": [f"t{i}" for i in range(6)],
+            "campo1": ["antigo"] * 6,
+            "_dataframeit_status": ["processed"] * 6,
+        }
+    )
+    _, llm = _llm_que_esgota(2, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(
+        UserWarning, match=r"0 linha\(s\) ficaram sem status, e \d+ não foram reprocessadas"
+    ):
+        saida = _roda(df, llm, reprocess_columns=["campo1"], parallel_requests=paralelo)
+
+    detalhes = saida["_error_details"]
+    antigas = saida["campo1"].eq("antigo")
+    assert (saida["_dataframeit_status"] == "processed").all()
+    assert antigas.sum() >= 1
+    assert detalhes[antigas].str.startswith("Reprocessamento interrompido").all()
+    assert detalhes[~antigas].isna().all()
+
+
+def test_linha_com_erro_que_ia_ser_refeita_volta_a_ficar_pendente():
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "_dataframeit_status": ["error", "error", "error"],
+            "_error_details": ["x", "x", "x"],
+        }
+    )
+    _, llm = _llm_que_esgota(1, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(UserWarning, match=r"2 linha\(s\) ficaram sem status"):
+        saida = _roda(df, llm, resume=False)
+
+    assert saida["_dataframeit_status"].tolist()[0] == "processed"
+    assert saida["_dataframeit_status"].isna().tolist()[1:] == [True, True]
+    assert saida["_error_details"].isna().tolist()[1:] == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("entrada", "trecho"),
+    [
+        (lambda: ["a", "b", "c"], "só um checkpoint_path permite retomar"),
+        (lambda: pd.DataFrame({"texto": ["a", "b", "c"]}), "resume=True sobre esta saída"),
+    ],
+)
+def test_aviso_diz_como_retomar_conforme_a_entrada(entrada, trecho):
+    _, llm = _llm_que_esgota(1, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(UserWarning, match=trecho):
+        _roda(entrada(), llm)
+
+
+def test_aviso_com_checkpoint_manda_usar_o_mesmo_arquivo(tmp_path):
+    _, llm = _llm_que_esgota(1, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(UserWarning, match="mesmo checkpoint_path"):
+        _roda(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            llm,
+            batch_size=5,
+            checkpoint_path=tmp_path / "c.csv",
+        )

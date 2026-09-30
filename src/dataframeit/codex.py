@@ -89,8 +89,7 @@ _SUPPORTED_SCHEMA_KEYWORDS = frozenset(
         "type",
     }
 )
-# Keywords do JSON Schema 2020-12 (e as do draft 7 que o Pydantic ainda pode
-# emitir) que restringem o valor aceito ou mudam a resolução de referências.
+# Keywords do JSON Schema 2020-12 (e as dos drafts 7 e 2019-09 que ainda circulam) que restringem o valor aceito ou mudam a resolução de referências.
 # Fora de `_SUPPORTED_SCHEMA_KEYWORDS`, elas levantam erro, porque descartá-las
 # afrouxaria o contrato do modelo. Qualquer outra chave não suportada é anotação:
 # o vocabulário de metadados (`examples`, `deprecated`...) ou chave própria de
@@ -102,6 +101,8 @@ _CONSTRAINING_SCHEMA_KEYWORDS = frozenset(
         "$dynamicAnchor",
         "$dynamicRef",
         "$id",
+        "$recursiveAnchor",
+        "$recursiveRef",
         "$schema",
         "$vocabulary",
         "additionalItems",
@@ -389,6 +390,8 @@ class CodexBackend:
 
     def _invoke_once(self, prompt: str, usage_total: dict[str, int]) -> dict:
         from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
+        # Função privada do SDK, fixado em versão exata no extra `codex`: é a
+        # mesma regra de resposta final que `TurnHandle.run` aplica.
         from openai_codex._run import (  # noqa: PLC0415 (extra codex opcional)
             _final_assistant_response_from_items,
         )
