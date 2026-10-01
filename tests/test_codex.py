@@ -1669,7 +1669,7 @@ class TestConfiguracaoDoPrazo:
     def test_prazo_padrao_e_de_600_segundos(self):
         assert _turn_timeout(make_config()) == 600
 
-    @pytest.mark.parametrize("valor", [1, 0.5, 3600])
+    @pytest.mark.parametrize("valor", [1, 0.5, 3600, threading.TIMEOUT_MAX])
     def test_prazo_positivo_e_aceito(self, valor):
         assert _turn_timeout(make_config(model_kwargs={"timeout": valor})) == valor
 
@@ -1678,8 +1678,8 @@ class TestConfiguracaoDoPrazo:
 
     @pytest.mark.parametrize(
         "valor",
-        [0, -1, "10", True, float("inf"), float("nan")],
-        ids=["zero", "negativo", "texto", "bool", "infinito", "nan"],
+        [0, -1, "10", True, float("inf"), float("nan"), threading.TIMEOUT_MAX + 1, 10**400],
+        ids=["zero", "negativo", "texto", "bool", "infinito", "nan", "acima-do-teto", "gigante"],
     )
     def test_prazo_invalido_e_recusado(self, valor):
         with pytest.raises(ProviderConfigurationError, match="timeout inválido"):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import math
 import os
 import tempfile
 import threading
@@ -322,12 +321,14 @@ def _turn_timeout(config: LLMConfig) -> float | None:
     timeout = (config.model_kwargs or {}).get("timeout", _DEFAULT_TURN_TIMEOUT)
     if timeout is None:
         return None
-    # bool é subclasse de int, e `True` viraria um prazo de um segundo.
+    # bool é subclasse de int, e `True` viraria um prazo de um segundo. A
+    # comparação recusa `nan` e `inf` sem converter o número: acima de
+    # `TIMEOUT_MAX`, o `threading.Timer` morreria na própria thread, e o turno
+    # ficaria sem prazo em silêncio.
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
-        or timeout <= 0
+        or not 0 < timeout <= threading.TIMEOUT_MAX
     ):
         msg = (
             f"timeout inválido para provider='codex': {timeout!r}. "
@@ -413,8 +414,8 @@ class CodexBackend:
     def invoke(self, text: str) -> dict:
         """Processa uma linha com structured output nativo do Codex."""
         prompt = build_prompt(self._user_prompt, text)
-        # O uso soma todas as tentativas cujo turno chegou ao fim, inclusive as
-        # que falharam ou tiveram a resposta recusada, porque todas são cobradas.
+        # O uso soma todas as tentativas, inclusive as que falharam, estouraram
+        # o prazo ou tiveram a resposta recusada, porque todas são cobradas.
         usage_total: dict[str, int] = {}
         return retry_with_backoff(
             lambda: self._invoke_once(prompt, usage_total),
