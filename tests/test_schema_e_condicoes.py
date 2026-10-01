@@ -20,8 +20,7 @@ from dataframeit import dataframeit
 from dataframeit.agent import (
     _build_field_prompt,
     _llm_field,
-    call_agent_per_field,
-    call_agent_per_group,
+    field_extractor,
 )
 from dataframeit.conditional import (
     _collect_configured_fields,
@@ -108,7 +107,7 @@ class TestSchemaSemChavesDaBiblioteca:
         schemas = []
         falso = _call_agent_que_gera_schema(_VALORES_MULTA, schemas)
         with patch("dataframeit.agent.call_agent", side_effect=falso):
-            resultado = call_agent_per_field("texto", ModeloMulta, "Analise {texto}", _config())
+            resultado = field_extractor(ModeloMulta, "Analise {texto}", _config())("texto")
 
         assert resultado["data"] == _VALORES_MULTA
         assert len(schemas) == 2
@@ -133,7 +132,7 @@ class TestSchemaSemChavesDaBiblioteca:
         config = _config(groups={"multa": SearchGroupConfig(fields=["valor_multa", "orgao"])})
         falso = _call_agent_que_gera_schema(valores, schemas)
         with patch("dataframeit.agent.call_agent", side_effect=falso):
-            resultado = call_agent_per_group("texto", ModeloGrupo, "Analise {texto}", config)
+            resultado = field_extractor(ModeloGrupo, "Analise {texto}", config)("texto")
 
         assert resultado["data"] == valores
         assert all(not _chaves_da_biblioteca_no_schema(s) for s in schemas)
@@ -388,7 +387,7 @@ class TestTextoNoPrompt:
         )
         falso = _call_agent_que_gera_schema({"a": "1", "b": "2"}, [], prompts)
         with patch("dataframeit.agent.call_agent", side_effect=falso):
-            call_agent_per_group("TEXTO-DA-LINHA", Modelo, "Analise {texto}", config)
+            field_extractor(Modelo, "Analise {texto}", config)("TEXTO-DA-LINHA")
 
         assert build_prompt(prompts[0], "TEXTO-DA-LINHA").count("TEXTO-DA-LINHA") == 1
 
@@ -513,7 +512,7 @@ def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
     config = _config(groups={"g": SearchGroupConfig(fields=["tem_multa", "orgao"])})
     falso = _call_agent_que_gera_schema(valores, schemas)
     with patch("dataframeit.agent.call_agent", side_effect=falso):
-        resultado = call_agent_per_group("texto", Modelo, "Analise {texto}", config)
+        resultado = field_extractor(Modelo, "Analise {texto}", config)("texto")
 
     assert resultado["data"] == valores
     assert all(not _chaves_da_biblioteca_no_schema(s) for s in schemas)
@@ -545,7 +544,7 @@ def test_item_de_lista_e_busca_aninhada_mandam_o_campo_limpo():
         return {"data": {c: respostas.get(c) for c in model.model_fields}, "usage": {}}
 
     with patch("dataframeit.agent.call_agent", side_effect=falso):
-        call_agent_per_field("t", Modelo, "Analise {texto}", _config())
+        field_extractor(Modelo, "Analise {texto}", _config())("t")
 
     item = next(s for n, s in schemas_por_modelo.items() if n.startswith("ItemSearch"))
     aninhado = next(s for n, s in schemas_por_modelo.items() if n.startswith("NestedSearch"))
@@ -569,13 +568,8 @@ def test_reprocess_columns_nao_repete_busca_aninhada_de_campo_nao_pedido():
         return {"data": dict.fromkeys(model.model_fields, "v"), "usage": {}}
 
     with patch("dataframeit.agent.call_agent", side_effect=falso):
-        call_agent_per_field(
-            "t",
-            Modelo,
-            "Analise {texto}",
-            _config(),
-            only_fields={"nome"},
-            known={"interno": {"valor": "antigo"}},
+        field_extractor(Modelo, "Analise {texto}", _config())(
+            "t", only_fields={"nome"}, known={"interno": {"valor": "antigo"}}
         )
 
     assert not any(nome.startswith("NestedSearch") for nome in modelos)
@@ -630,7 +624,7 @@ def test_lista_com_referencia_adiantada_no_modo_por_campo():
         return {"data": {c: respostas.get(c) for c in model.model_fields}, "usage": {}}
 
     with patch("dataframeit.agent.call_agent", side_effect=falso):
-        resultado = call_agent_per_field("t", Modelo, "Analise {texto}", _config())
+        resultado = field_extractor(Modelo, "Analise {texto}", _config())("t")
 
     assert any(nome.startswith("ItemSearch") for nome in modelos)
     assert resultado["data"]["itens"][0]["status"] == "ok"

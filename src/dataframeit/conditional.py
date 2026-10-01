@@ -28,8 +28,9 @@ _FIELD_CONFIG_KEYS = (
     "max_search_calls",
 )
 
-# Chaves de execução condicional em json_schema_extra. Só call_agent_per_field
-# e call_agent_per_group as aplicam, e só nos campos de primeiro nível.
+# Chaves de execução condicional em json_schema_extra. Só a extração com busca
+# por campo ou por grupo (agent.field_extractor) as aplica, e só nos campos de
+# primeiro nível.
 _CONDITIONAL_KEYS = ("condition", "depends_on")
 
 # Operadores de comparação de uma condição em dict, na ordem em que são

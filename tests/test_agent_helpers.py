@@ -14,8 +14,7 @@ from dataframeit.agent import (
     _extract_usage,
     _set_nested_value,
     _with_search_overrides,
-    call_agent_per_field,
-    call_agent_per_group,
+    field_extractor,
 )
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
@@ -194,7 +193,7 @@ class TestRepasseDosOverrides:
 
         falso, chamadas = self._registrar({"itens": [{"nome": "a"}], "status": "ok"})
         with patch("dataframeit.agent.call_agent", side_effect=falso):
-            call_agent_per_field("t", Modelo, "Analise {texto}", _make_config())
+            field_extractor(Modelo, "Analise {texto}", _make_config())("t")
 
         assert (8, "advanced") in [
             (m, d) for nome, m, d in chamadas if nome.startswith("ItemSearch")
@@ -212,7 +211,7 @@ class TestRepasseDosOverrides:
 
         falso, chamadas = self._registrar({"valor": "v", "interno": None})
         with patch("dataframeit.agent.call_agent", side_effect=falso):
-            call_agent_per_field("t", Modelo, "Analise {texto}", _make_config())
+            field_extractor(Modelo, "Analise {texto}", _make_config())("t")
 
         assert [(m, d) for nome, m, d in chamadas if nome.startswith("NestedSearch")] == [
             (7, "advanced")
@@ -234,7 +233,7 @@ class TestRepasseDosOverrides:
         }
         falso, chamadas = self._registrar({"a": "1", "b": "2", "c": "3"})
         with patch("dataframeit.agent.call_agent", side_effect=falso):
-            call_agent_per_group("t", Modelo, "Analise {texto}", cfg)
+            field_extractor(Modelo, "Analise {texto}", cfg)("t")
 
         por_modelo = {nome: (m, d) for nome, m, d in chamadas}
         assert por_modelo["Modelo_group_g"] == (9, "advanced")

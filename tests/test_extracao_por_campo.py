@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel, Field
 
-from dataframeit.agent import call_agent_per_field, call_agent_per_group
+from dataframeit.agent import field_extractor
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 PROMPT = "Analise {texto}"
@@ -27,9 +27,7 @@ def _config(grupos=None, provider="tavily"):
 
 
 def _extrair(modelo, config, texto="t", save_trace=None, **kwargs):
-    if config.search_config.groups:
-        return call_agent_per_group(texto, modelo, PROMPT, config, save_trace, **kwargs)
-    return call_agent_per_field(texto, modelo, PROMPT, config, save_trace, **kwargs)
+    return field_extractor(modelo, PROMPT, config, save_trace)(texto, **kwargs)
 
 
 class _Agente:
@@ -95,8 +93,9 @@ RESPOSTAS = {
 # =============================================================================
 
 
-def test_usage_traz_o_provedor_de_busca():
-    resultado = _rodar(_Agente({"a": "1"}), Completo, _config(provider="exa"))
+@pytest.mark.parametrize("grupos", [None, {"g": SearchGroupConfig(fields=["a"])}])
+def test_usage_traz_o_provedor_de_busca(grupos):
+    resultado = _rodar(_Agente({"a": "1"}), Completo, _config(grupos, provider="exa"))
     assert resultado["usage"]["search_provider"] == "exa"
 
 
@@ -226,7 +225,39 @@ def test_campo_pulado_fica_none_e_os_seguintes_rodam(grupos, caplog):
     assert resultado["data"]["pulado"] is None
     assert resultado["data"]["depois"] == "d"
     assert "ComCondicao_pulado" not in agente.nomes
-    assert "Campo 'pulado' pulado (condição não satisfeita)" in caplog.messages
+    assert caplog.messages.count("Campo 'pulado' pulado (condição não satisfeita)") == 1
+
+
+class DependeDoSeguinte(BaseModel):
+    b: Optional[str] = Field(None, json_schema_extra={"condition": {"field": "c", "equals": "sim"}})
+    c: Optional[str] = None
+
+
+@pytest.mark.parametrize("grupos", [None, {"g": SearchGroupConfig(fields=["c"])}])
+def test_dados_saem_na_ordem_do_modelo_e_as_chamadas_na_das_dependencias(grupos):
+    agente = _Agente({"b": "x", "c": "sim"})
+
+    resultado = _rodar(agente, DependeDoSeguinte, _config(grupos))
+
+    assert list(resultado["data"]) == ["b", "c"]
+    assert agente.nomes[-1] == "DependeDoSeguinte_b"
+
+
+class ListaCondicionada(BaseModel):
+    a: Optional[str] = None
+    itens: list[Item] = Field([], json_schema_extra={"condition": {"field": "a", "equals": "sim"}})
+
+
+@pytest.mark.parametrize(("a", "buscas_por_item"), [("sim", 1), ("nao", 0)])
+def test_lista_anulada_depois_da_resposta_do_grupo_nao_e_enriquecida(a, buscas_por_item):
+    agente = _Agente({"a": a, "itens": [{"nome": "x"}], "preco": "R$ 10"})
+
+    resultado = _rodar(
+        agente, ListaCondicionada, _config({"g": SearchGroupConfig(fields=["a", "itens"])})
+    )
+
+    assert agente.nomes.count("ItemSearch_0_preco") == buscas_por_item
+    assert (resultado["data"]["itens"] is None) is (buscas_por_item == 0)
 
 
 class Sub(BaseModel):

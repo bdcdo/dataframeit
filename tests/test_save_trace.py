@@ -264,7 +264,7 @@ def test_save_trace_per_field_creates_multiple_columns():
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
-        patch("dataframeit.agent.call_agent_per_field", return_value=mock_result),
+        patch("dataframeit.agent.field_extractor", return_value=lambda *_, **__: mock_result),
     ):
         result = dataframeit(
             df,
