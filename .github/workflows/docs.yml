@@ -45,7 +45,7 @@ jobs:
         run: cp site/sitemap.xml site/en/sitemap.xml
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./site
 
