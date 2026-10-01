@@ -814,7 +814,9 @@ def test_resolve_forward_refs_devolve_annotated_sem_referencia_intacto():
     class Dono(BaseModel):
         a: int
 
-    anotado = typing.Annotated[list[int], "Dono"]
+    # Metadado sem hash fica fora do cache do typing: remontar a anotação
+    # daria um objeto novo, e a identidade prova que nada foi remontado.
+    anotado = typing.Annotated[list[int], {"rotulo": ["Dono"]}]
 
     assert resolve_forward_refs(anotado, Dono) is anotado
 
@@ -864,3 +866,17 @@ def test_configuracao_dentro_de_annotated_aninhado_e_recusada(extra, erro):
             use_search=True,
             search_per_field=True,
         )
+
+
+# O dono é declarado antes da folha e nunca é validado: a anotação guarda a
+# referência crua, em qualquer versão do Python e do Pydantic.
+class DonoDeFolhaTardia(BaseModel):
+    folhas: typing.List["FolhaTardia"] = []  # noqa: UP006 (typing.List guarda a referência como ForwardRef)
+
+
+class FolhaTardia(BaseModel):
+    valor: Optional[str] = None
+
+
+def test_walk_fields_resolve_a_referencia_pelo_modelo_dono():
+    assert [path for path, *_ in _walk_fields(DonoDeFolhaTardia)] == ["folhas", "folhas.valor"]
