@@ -1,0 +1,34 @@
+# O Dependabot roda no GitHub e abre os PRs de atualização sozinho.
+#
+# cooldown: só propõe versão publicada há pelo menos 7 dias, o que dá tempo
+# para um pacote malicioso ser detectado e retirado antes de chegar ao lock.
+#
+# Os hooks de .pre-commit-config.yaml são todos locais e chamam as ferramentas
+# pelo uv, então a entrada uv já cobre as versões que eles rodam.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    # O dataframeit é biblioteca: subir o piso de uma dependência exclui quem
+    # usa a versão anterior. Com increase-if-necessary a faixa do pyproject.toml
+    # só muda quando não admite a versão nova (caso dos pins exatos do extra
+    # dev); nos demais casos muda só o uv.lock.
+    versioning-strategy: "increase-if-necessary"
+    groups:
+      # minor e patch num PR só; major vem separado.
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
