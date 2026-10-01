@@ -5,6 +5,7 @@ import sys
 import types
 import warnings
 from dataclasses import replace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -172,7 +173,7 @@ class _ResultMessageFalso:
 def sdk_falso(monkeypatch):
     """Instala um `claude_agent_sdk` falso e devolve o estado compartilhado."""
 
-    estado = {
+    estado: dict[str, Any] = {
         "opcoes": [],
         "mensagens_do_sdk": [
             _AssistantMessageFalso(
@@ -191,11 +192,13 @@ def sdk_falso(monkeypatch):
             yield mensagem
 
     modulo = types.ModuleType("claude_agent_sdk")
-    modulo.ClaudeAgentOptions = _OpcoesFalsas
-    modulo.query = query_falsa
-    modulo.AssistantMessage = _AssistantMessageFalso
-    modulo.ResultMessage = _ResultMessageFalso
-    modulo.TextBlock = _TextBlockFalso
+    modulo.__dict__.update(
+        ClaudeAgentOptions=_OpcoesFalsas,
+        query=query_falsa,
+        AssistantMessage=_AssistantMessageFalso,
+        ResultMessage=_ResultMessageFalso,
+        TextBlock=_TextBlockFalso,
+    )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", modulo)
     return estado
 
@@ -439,7 +442,8 @@ def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
     ]
     with pytest.raises(ProviderError) as erro:
         _chamar()
-    assert erro.value.cost_usd == pytest.approx(0.5)
+    # cost_usd é anexado à exceção pelo provider, fora da classe.
+    assert erro.value.cost_usd == pytest.approx(0.5)  # ty: ignore[unresolved-attribute]
 
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
@@ -448,7 +452,8 @@ def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
     def call_claude_code(text, *args, **kwargs):
         if text.endswith("falha"):
             erro = ProviderError("orçamento estourado")
-            erro.cost_usd = 0.5
+            # cost_usd é anexado à exceção pelo provider, fora da classe.
+            erro.cost_usd = 0.5  # ty: ignore[unresolved-attribute]
             raise erro
         return {
             "data": {"sentimento": "positivo", "confianca": 0.9},

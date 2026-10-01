@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
+from pydantic.json_schema import JsonDict
 
 from dataframeit import dataframeit
 from dataframeit.agent import call_agent_per_group
@@ -266,7 +267,8 @@ class TestGetFieldExecutionOrder:
             cpf: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
             cnpj: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pj"}})
             validacao: str = Field(
-                json_schema_extra={
+                # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+                json_schema_extra={  # ty: ignore[invalid-argument-type]
                     "depends_on": ["cpf", "cnpj"],
                     "condition": lambda data: bool(data.get("cpf") or data.get("cnpj")),
                 }
@@ -424,7 +426,8 @@ class TestGetFieldExecutionOrder:
 
         class M(BaseModel):
             a: str
-            b: str = Field(json_schema_extra={"condition": lambda data: bool(data.get("a"))})
+            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+            b: str = Field(json_schema_extra={"condition": lambda data: bool(data.get("a"))})  # ty: ignore[invalid-argument-type]
 
         configs = {
             "a": {},
@@ -439,7 +442,8 @@ class TestGetFieldExecutionOrder:
 
         class M(BaseModel):
             a: str
-            b: str = Field(json_schema_extra={"condition": lambda data: bool(data.get("a"))})
+            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+            b: str = Field(json_schema_extra={"condition": lambda data: bool(data.get("a"))})  # ty: ignore[invalid-argument-type]
 
         configs = {
             "a": {},
@@ -457,7 +461,8 @@ class TestGetFieldExecutionOrder:
         class M(BaseModel):
             a: str
             b: str = Field(
-                json_schema_extra={
+                # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+                json_schema_extra={  # ty: ignore[invalid-argument-type]
                     "depends_on": ["a"],
                     "condition": lambda data: bool(data.get("a")),
                 }
@@ -596,8 +601,8 @@ class TestIntegrationScenarios:
 # =============================================================================
 
 
-_CONDICAO_PF = {"condition": {"field": "tipo", "equals": "pf"}}
-_CONDICAO_PJ = {"condition": {"field": "tipo", "equals": "pj"}}
+_CONDICAO_PF: JsonDict = {"condition": {"field": "tipo", "equals": "pf"}}
+_CONDICAO_PJ: JsonDict = {"condition": {"field": "tipo", "equals": "pj"}}
 
 
 class ModeloPessoaCondicional(BaseModel):
@@ -849,7 +854,8 @@ class TestCondicaoPelaApi:
 
         class Modelo(BaseModel):
             tipo: str
-            detalhe: str | None = Field(
+            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
                 None, json_schema_extra={"condition": condicao_quebrada, "depends_on": ["tipo"]}
             )
 
@@ -884,7 +890,8 @@ class TestCondicaoPelaApi:
         """Com depends_on='tipo', 'detalhe' espera 'tipo', mesmo declarado antes dele."""
 
         class Modelo(BaseModel):
-            detalhe: str | None = Field(
+            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
                 None,
                 json_schema_extra={
                     "condition": lambda dados: dados.get("tipo") == "pj",

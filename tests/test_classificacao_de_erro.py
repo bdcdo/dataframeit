@@ -153,10 +153,14 @@ def test_429_isolado_na_mensagem_continua_rate_limit():
 
 
 def test_classes_do_provider_mantem_precedencia_sobre_status():
-    transitorio = ProviderTransientError("falha")
-    transitorio.status_code = 400
-    definitivo = ProviderError("falha")
-    definitivo.status_code = 503
+    class TransitorioCom400(ProviderTransientError):
+        status_code = 400
+
+    class DefinitivoCom503(ProviderError):
+        status_code = 503
+
+    transitorio = TransitorioCom400("falha")
+    definitivo = DefinitivoCom503("falha")
 
     assert is_recoverable_error(transitorio) is True
     assert is_recoverable_error(definitivo) is False

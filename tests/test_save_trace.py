@@ -50,7 +50,8 @@ def test_save_trace_invalid_value():
         with pytest.raises(
             ValueError, match="save_trace deve ser True, 'full' ou 'minimal'"
         ) as exc_info:
-            dataframeit(
+            # Valor fora do tipo de propósito: o teste confere a recusa em tempo de execução.
+            dataframeit(  # ty: ignore[no-matching-overload]
                 df,
                 questions=SimpleModel,
                 prompt="Teste {texto}",

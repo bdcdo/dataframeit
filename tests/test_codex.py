@@ -123,7 +123,7 @@ class RecursiveModel(BaseModel):
 
 
 def make_config(**overrides) -> LLMConfig:
-    values = {
+    values: dict[str, Any] = {
         "model": "gpt-6-luna",
         "provider": "codex",
         "api_key": None,

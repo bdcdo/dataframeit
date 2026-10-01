@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -453,9 +454,10 @@ class TestCorpoDoSdk:
     def test_corpo_estranho_nao_troca_a_recusa(self):
 
         for corpo in ({"choices": [None]}, {"choices": []}, [1, 2], {"output": [None]}):
+            # Dublês: _sdk_rejected_response só lê error.response.json().
             erro = SimpleNamespace(response=SimpleNamespace(json=lambda corpo=corpo: corpo))
-            assert _sdk_rejected_response(erro) == ("", None)
-        assert _sdk_rejected_response(SimpleNamespace()) == ("", None)
+            assert _sdk_rejected_response(cast("ValidationError", erro)) == ("", None)
+        assert _sdk_rejected_response(cast("ValidationError", SimpleNamespace())) == ("", None)
 
     def test_total_ausente_soma_entrada_e_saida(self):
 
@@ -465,6 +467,7 @@ class TestCorpoDoSdk:
                 "usage": {"prompt_tokens": 7, "completion_tokens": 3},
             }
         )
+        assert uso is not None
         assert uso["total_tokens"] == 10
 
     def test_corpo_sem_contagem_de_tokens_nao_tem_uso(self):

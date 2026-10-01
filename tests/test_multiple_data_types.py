@@ -280,6 +280,7 @@ def test_dict_com_chaves_tupla_mantem_indice_simples():
     df["resumo"] = ["resumo a", "resumo b"]
     resultado = from_pandas(df, info)
 
+    assert isinstance(resultado, pd.DataFrame)
     assert not isinstance(resultado.index, pd.MultiIndex)
     assert list(resultado.index) == [("sp", 2020), ("rj", 2021)]
 
@@ -292,6 +293,8 @@ def test_sem_polars_a_entrada_pandas_continua_funcionando(monkeypatch):
     """
     monkeypatch.setitem(sys.modules, "polars", None)
     spec = importlib.util.find_spec("dataframeit.utils")
+    assert spec is not None
+    assert spec.loader is not None
     copia = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(copia)
 

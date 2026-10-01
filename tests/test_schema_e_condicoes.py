@@ -75,7 +75,8 @@ def _chaves_da_biblioteca_no_schema(schema) -> set:
 
 class ModeloMulta(BaseModel):
     tem_multa: bool
-    valor_multa: Optional[float] = Field(
+    # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+    valor_multa: Optional[float] = Field(  # ty: ignore[no-matching-overload]
         default=None,
         json_schema_extra={
             "condition": lambda dados: dados.get("tem_multa") is True,
@@ -117,7 +118,8 @@ class TestSchemaSemChavesDaBiblioteca:
 
         class ModeloGrupo(BaseModel):
             tem_multa: bool
-            valor_multa: Optional[float] = Field(
+            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+            valor_multa: Optional[float] = Field(  # ty: ignore[no-matching-overload]
                 default=None,
                 json_schema_extra={
                     "condition": lambda dados: dados.get("tem_multa") is True,
@@ -497,7 +499,8 @@ def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
     class Modelo(BaseModel):
         tem_multa: bool
         orgao: Optional[str] = None
-        valor_multa: Optional[float] = Field(
+        # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
+        valor_multa: Optional[float] = Field(  # ty: ignore[no-matching-overload]
             default=None,
             json_schema_extra={
                 "condition": lambda dados: dados.get("tem_multa") is True,

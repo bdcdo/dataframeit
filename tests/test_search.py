@@ -1724,6 +1724,7 @@ def test_column_ordering_in_from_pandas():
     conversion_info = ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF)
     result = from_pandas(df, conversion_info)
 
+    assert isinstance(result, pd.DataFrame)
     cols = result.columns.tolist()
 
     # Ordem esperada: texto, regulatory, nome, tipo, _trace_*, _search_*, _*_tokens
