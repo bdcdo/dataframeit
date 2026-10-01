@@ -1205,6 +1205,98 @@ def test_call_agent_per_group_traces():
     assert "fabricante" in result["traces"]  # Trace do campo isolado
 
 
+class _ItemComPreco(BaseModel):
+    nome: str
+    preco: Optional[str] = Field(None, json_schema_extra={"prompt": "Busque o preço de {texto}"})
+
+
+class _InternoComValor(BaseModel):
+    valor: Optional[str] = Field(None, json_schema_extra={"prompt": "Busque o valor de {texto}"})
+
+
+class _ModeloComAninhados(BaseModel):
+    a: Optional[str] = None
+    interno: Optional[_InternoComValor] = None
+    itens: list[_ItemComPreco] = []
+
+
+def _config_por_grupo(grupos):
+    return LLMConfig(
+        model="test",
+        provider="test",
+        api_key=None,
+        max_retries=1,
+        base_delay=0.0,
+        max_delay=0.0,
+        rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, per_field=True, groups=grupos),
+    )
+
+
+def _agente_que_registra(chamadas):
+    respostas = {
+        "a": "1",
+        "interno": {"valor": None},
+        "itens": [{"nome": "x"}, {"nome": "y"}],
+        "valor": "v",
+        "preco": "R$ 10",
+    }
+
+    def falso(text, model, prompt, config, save_trace=None):
+        chamadas.append((model.__name__, prompt))
+        return {"data": {c: respostas.get(c) for c in model.model_fields}, "usage": {}}
+
+    return falso
+
+
+def test_call_agent_per_group_busca_aninhada_em_campo_isolado():
+    """Campo fora de grupo tem a busca aninhada e o enriquecimento por item do modo por campo."""
+    chamadas = []
+    config = _config_por_grupo({"g": SearchGroupConfig(fields=["a"])})
+
+    with patch("dataframeit.agent.call_agent", side_effect=_agente_que_registra(chamadas)):
+        result = call_agent_per_group("t", _ModeloComAninhados, "Analise {texto}", config)
+
+    nomes = [nome for nome, _ in chamadas]
+    assert nomes == [
+        "NestedSearch_interno_valor",
+        "_ModeloComAninhados_group_g",
+        "_ModeloComAninhados_interno",
+        "_ModeloComAninhados_itens",
+        "ItemSearch_0_preco",
+        "ItemSearch_1_preco",
+    ]
+    prompt_interno = dict(chamadas)["_ModeloComAninhados_interno"]
+    assert "- interno.valor: v" in prompt_interno
+    assert result["data"]["itens"] == [
+        {"nome": "x", "preco": "R$ 10"},
+        {"nome": "y", "preco": "R$ 10"},
+    ]
+
+
+def test_call_agent_per_group_busca_aninhada_em_campo_agrupado():
+    """Campo agrupado leva o contexto aninhado ao prompt do grupo e enriquece os itens depois."""
+    chamadas = []
+    config = _config_por_grupo({"g": SearchGroupConfig(fields=["a", "interno", "itens"])})
+
+    with patch("dataframeit.agent.call_agent", side_effect=_agente_que_registra(chamadas)):
+        result = call_agent_per_group("t", _ModeloComAninhados, "Analise {texto}", config)
+
+    nomes = [nome for nome, _ in chamadas]
+    assert nomes == [
+        "NestedSearch_interno_valor",
+        "_ModeloComAninhados_group_g",
+        "ItemSearch_0_preco",
+        "ItemSearch_1_preco",
+    ]
+    prompt_grupo = dict(chamadas)["_ModeloComAninhados_group_g"]
+    assert "- interno.valor: v" in prompt_grupo
+    assert result["data"]["itens"] == [
+        {"nome": "x", "preco": "R$ 10"},
+        {"nome": "y", "preco": "R$ 10"},
+    ]
+
+
 def test_search_groups_setup_columns():
     """Verifica que _setup_columns cria colunas corretas para grupos."""
 
