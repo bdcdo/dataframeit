@@ -383,8 +383,7 @@ def _provider_backend(
         from .agent import (  # noqa: PLC0415 (ver _provider_backend)
             build_search_agent,
             call_agent,
-            call_agent_per_field,
-            call_agent_per_group,
+            field_extractor,
         )
 
         if not search_config.per_field:
@@ -404,24 +403,8 @@ def _provider_backend(
             )
             return
 
-        search_call = call_agent_per_group if search_config.groups else call_agent_per_field
-
-        def invoke_partial(text: str, only_fields: set, known: dict) -> dict:
-            return search_call(
-                text,
-                pydantic_model,
-                user_prompt,
-                config,
-                trace_mode,
-                only_fields=only_fields,
-                known=known,
-            )
-
-        yield ProviderBackend(
-            label="langchain",
-            invoke=lambda text: search_call(text, pydantic_model, user_prompt, config, trace_mode),
-            invoke_partial=invoke_partial,
-        )
+        extract = field_extractor(pydantic_model, user_prompt, config, trace_mode)
+        yield ProviderBackend(label="langchain", invoke=extract, invoke_partial=extract)
         return
 
     if config.provider == "codex":

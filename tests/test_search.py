@@ -22,8 +22,7 @@ from dataframeit.agent import (
     _get_field_config,
     _get_list_fields_with_nested_search,
     call_agent,
-    call_agent_per_field,
-    call_agent_per_group,
+    field_extractor,
 )
 from dataframeit.core import (
     _has_field_config,
@@ -504,12 +503,12 @@ def test_extract_usage_with_debug_logging(caplog):
 
 
 # =============================================================================
-# Testes de call_agent_per_field
+# Testes do modo por campo
 # =============================================================================
 
 
-def test_call_agent_per_field_iterates_fields():
-    """Verifica que call_agent_per_field itera por cada campo."""
+def test_modo_por_campo_iterates_fields():
+    """Verifica que o modo por campo itera por cada campo."""
 
     # Contar quantas vezes call_agent é chamado
     call_count = 0
@@ -545,11 +544,8 @@ def test_call_agent_per_field_iterates_fields():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_field(
-            "Paracetamol",
-            MedicamentoInfo,
-            "Pesquise sobre o medicamento {texto}",
-            config,
+        result = field_extractor(MedicamentoInfo, "Pesquise sobre o medicamento {texto}", config)(
+            "Paracetamol"
         )
 
     # MedicamentoInfo tem 2 campos
@@ -560,8 +556,8 @@ def test_call_agent_per_field_iterates_fields():
     assert "indicacao" in result["data"]
 
 
-def test_call_agent_per_field_sums_usage():
-    """Verifica que call_agent_per_field soma usage de todas as chamadas."""
+def test_modo_por_campo_sums_usage():
+    """Verifica que o modo por campo soma usage de todas as chamadas."""
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
         field_name = next(iter(model.model_fields.keys()))
@@ -591,12 +587,7 @@ def test_call_agent_per_field_sums_usage():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_field(
-            "Paracetamol",
-            MedicamentoInfo,
-            "Pesquise sobre {texto}",
-            config,
-        )
+        result = field_extractor(MedicamentoInfo, "Pesquise sobre {texto}", config)("Paracetamol")
 
     # MedicamentoInfo tem 2 campos, então soma 2x
     assert result["usage"]["input_tokens"] == 200
@@ -766,8 +757,8 @@ def test_field_config_with_per_field_no_error():
     assert _has_field_config(ModelWithConfig) is True
 
 
-def test_call_agent_per_field_uses_custom_prompt():
-    """Testa que call_agent_per_field usa prompt customizado."""
+def test_modo_por_campo_uses_custom_prompt():
+    """Testa que o modo por campo usa prompt customizado."""
 
     class ModelWithCustomPrompt(BaseModel):
         campo_custom: str = Field(
@@ -803,15 +794,15 @@ def test_call_agent_per_field_uses_custom_prompt():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        call_agent_per_field("Aspirina", ModelWithCustomPrompt, "Prompt base {texto}", config)
+        field_extractor(ModelWithCustomPrompt, "Prompt base {texto}", config)("Aspirina")
 
     assert len(captured_prompts) == 1
     assert "Busque em fonte específica: {texto}" in captured_prompts[0]
     assert "Prompt base" not in captured_prompts[0]
 
 
-def test_call_agent_per_field_uses_config_override():
-    """Testa que call_agent_per_field usa search_depth override."""
+def test_modo_por_campo_uses_config_override():
+    """Testa que o modo por campo usa search_depth override."""
 
     class ModelWithSearchOverride(BaseModel):
         campo: str = Field(json_schema_extra={"search_depth": "advanced"})
@@ -844,7 +835,7 @@ def test_call_agent_per_field_uses_config_override():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        call_agent_per_field("teste", ModelWithSearchOverride, "Prompt {texto}", config)
+        field_extractor(ModelWithSearchOverride, "Prompt {texto}", config)("teste")
 
     assert len(captured_configs) == 1
     # Deve usar advanced (override), não basic (original)
@@ -999,8 +990,8 @@ def test_search_groups_valid_config():
     assert result["regulatory"].search_depth == "advanced"
 
 
-def test_call_agent_per_group_basic():
-    """Verifica que call_agent_per_group funciona com grupos."""
+def test_modo_por_grupo_basic():
+    """Verifica que o modo por grupo funciona com grupos."""
 
     # Rastrear chamadas
     call_count = 0
@@ -1039,12 +1030,7 @@ def test_call_agent_per_group_basic():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_group(
-            "Medicamento X",
-            RegulatoryModel,
-            "Pesquise sobre {texto}",
-            config,
-        )
+        result = field_extractor(RegulatoryModel, "Pesquise sobre {texto}", config)("Medicamento X")
 
     # Deve fazer 3 chamadas: 1 para grupo (2 campos) + 2 para campos isolados
     assert call_count == 3
@@ -1056,8 +1042,8 @@ def test_call_agent_per_group_basic():
     assert "fabricante" in result["data"]
 
 
-def test_call_agent_per_group_sums_usage():
-    """Verifica que call_agent_per_group soma usage de todas as chamadas."""
+def test_modo_por_grupo_sums_usage():
+    """Verifica que o modo por grupo soma usage de todas as chamadas."""
 
     def mock_call_agent(text, model, prompt, config, save_trace=None):
         fields = list(model.model_fields.keys())
@@ -1091,12 +1077,7 @@ def test_call_agent_per_group_sums_usage():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_group(
-            "Medicamento X",
-            RegulatoryModel,
-            "Pesquise sobre {texto}",
-            config,
-        )
+        result = field_extractor(RegulatoryModel, "Pesquise sobre {texto}", config)("Medicamento X")
 
     # 3 chamadas (1 grupo + 2 isolados), 100 tokens cada
     assert result["usage"]["input_tokens"] == 300
@@ -1108,8 +1089,8 @@ def test_call_agent_per_group_sums_usage():
     assert result["usage"]["search_count"] == 3
 
 
-def test_call_agent_per_group_uses_custom_prompt():
-    """Verifica que call_agent_per_group usa prompt customizado do grupo."""
+def test_modo_por_grupo_uses_custom_prompt():
+    """Verifica que o modo por grupo usa prompt customizado do grupo."""
 
     captured_prompts = []
 
@@ -1149,13 +1130,13 @@ def test_call_agent_per_group_uses_custom_prompt():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        call_agent_per_group("Aspirina", RegulatoryModel, "Prompt base {texto}", config)
+        field_extractor(RegulatoryModel, "Prompt base {texto}", config)("Aspirina")
 
     # Primeira chamada deve ser do grupo com prompt customizado
     assert any("ANVISA/CONITEC" in p for p in captured_prompts)
 
 
-def test_call_agent_per_group_traces():
+def test_modo_por_grupo_traces():
     """Verifica que traces são coletados por grupo e por campo isolado."""
 
     call_counter = [0]
@@ -1194,8 +1175,8 @@ def test_call_agent_per_group_traces():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_group(
-            "Medicamento X", RegulatoryModel, "Pesquise sobre {texto}", config, save_trace="full"
+        result = field_extractor(RegulatoryModel, "Pesquise sobre {texto}", config, "full")(
+            "Medicamento X"
         )
 
     # Deve ter traces para grupo + campos isolados
@@ -1203,6 +1184,98 @@ def test_call_agent_per_group_traces():
     assert "regulatory" in result["traces"]  # Trace do grupo
     assert "nome" in result["traces"]  # Trace do campo isolado
     assert "fabricante" in result["traces"]  # Trace do campo isolado
+
+
+class _ItemComPreco(BaseModel):
+    nome: str
+    preco: Optional[str] = Field(None, json_schema_extra={"prompt": "Busque o preço de {texto}"})
+
+
+class _InternoComValor(BaseModel):
+    valor: Optional[str] = Field(None, json_schema_extra={"prompt": "Busque o valor de {texto}"})
+
+
+class _ModeloComAninhados(BaseModel):
+    a: Optional[str] = None
+    interno: Optional[_InternoComValor] = None
+    itens: list[_ItemComPreco] = []
+
+
+def _config_por_grupo(grupos):
+    return LLMConfig(
+        model="test",
+        provider="test",
+        api_key=None,
+        max_retries=1,
+        base_delay=0.0,
+        max_delay=0.0,
+        rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, per_field=True, groups=grupos),
+    )
+
+
+def _agente_que_registra(chamadas):
+    respostas = {
+        "a": "1",
+        "interno": {"valor": None},
+        "itens": [{"nome": "x"}, {"nome": "y"}],
+        "valor": "v",
+        "preco": "R$ 10",
+    }
+
+    def falso(text, model, prompt, config, save_trace=None):
+        chamadas.append((model.__name__, prompt))
+        return {"data": {c: respostas.get(c) for c in model.model_fields}, "usage": {}}
+
+    return falso
+
+
+def test_modo_por_grupo_busca_aninhada_em_campo_isolado():
+    """Campo fora de grupo tem a busca aninhada e o enriquecimento por item do modo por campo."""
+    chamadas = []
+    config = _config_por_grupo({"g": SearchGroupConfig(fields=["a"])})
+
+    with patch("dataframeit.agent.call_agent", side_effect=_agente_que_registra(chamadas)):
+        result = field_extractor(_ModeloComAninhados, "Analise {texto}", config)("t")
+
+    nomes = [nome for nome, _ in chamadas]
+    assert nomes == [
+        "NestedSearch_interno_valor",
+        "_ModeloComAninhados_group_g",
+        "_ModeloComAninhados_interno",
+        "_ModeloComAninhados_itens",
+        "ItemSearch_0_preco",
+        "ItemSearch_1_preco",
+    ]
+    prompt_interno = dict(chamadas)["_ModeloComAninhados_interno"]
+    assert "- interno.valor: v" in prompt_interno
+    assert result["data"]["itens"] == [
+        {"nome": "x", "preco": "R$ 10"},
+        {"nome": "y", "preco": "R$ 10"},
+    ]
+
+
+def test_modo_por_grupo_busca_aninhada_em_campo_agrupado():
+    """Campo agrupado leva o contexto aninhado ao prompt do grupo e enriquece os itens depois."""
+    chamadas = []
+    config = _config_por_grupo({"g": SearchGroupConfig(fields=["a", "interno", "itens"])})
+
+    with patch("dataframeit.agent.call_agent", side_effect=_agente_que_registra(chamadas)):
+        result = field_extractor(_ModeloComAninhados, "Analise {texto}", config)("t")
+
+    nomes = [nome for nome, _ in chamadas]
+    assert nomes == [
+        "NestedSearch_interno_valor",
+        "_ModeloComAninhados_group_g",
+        "ItemSearch_0_preco",
+        "ItemSearch_1_preco",
+    ]
+    prompt_grupo = dict(chamadas)["_ModeloComAninhados_group_g"]
+    assert "- interno.valor: v" in prompt_grupo
+    assert result["data"]["itens"] == [
+        {"nome": "x", "preco": "R$ 10"},
+        {"nome": "y", "preco": "R$ 10"},
+    ]
 
 
 def test_search_groups_setup_columns():
@@ -1430,8 +1503,8 @@ def test_collect_configured_fields_no_infinite_recursion():
     assert "valor" in paths
 
 
-def test_call_agent_per_field_nested_search():
-    """Testa integração de call_agent_per_field com busca em campos aninhados.
+def test_modo_por_campo_nested_search():
+    """Testa integração do modo por campo com busca em campos aninhados.
 
     Com a nova arquitetura de duas fases:
     1. Primeiro extrai a lista de pedidos
@@ -1490,12 +1563,7 @@ def test_call_agent_per_field_nested_search():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_field(
-            "Medicamento X",
-            AnaliseSentencaSaude,
-            "Analise {texto}",
-            config,
-        )
+        result = field_extractor(AnaliseSentencaSaude, "Analise {texto}", config)("Medicamento X")
 
     # Deve ter chamado agente para:
     # 1. Campo pedidos (extração da lista)
@@ -1514,7 +1582,7 @@ def test_call_agent_per_field_nested_search():
     assert len(pedidos) == 2
 
 
-def test_call_agent_per_field_nested_context_in_prompt():
+def test_modo_por_campo_nested_context_in_prompt():
     """Verifica que contexto de busca aninhada é incluído no prompt."""
 
     captured_prompts = []
@@ -1547,7 +1615,7 @@ def test_call_agent_per_field_nested_context_in_prompt():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        call_agent_per_field("Medicamento X", AnaliseSentencaSaude, "Analise {texto}", config)
+        field_extractor(AnaliseSentencaSaude, "Analise {texto}", config)("Medicamento X")
 
     # Procurar prompt do campo 'pedidos' que deve ter contexto aninhado
     prompts_pedidos = [p for p in captured_prompts if "pedidos" in p.lower()]
@@ -1557,7 +1625,7 @@ def test_call_agent_per_field_nested_context_in_prompt():
     assert pedidos_prompt is not None or len(prompts_pedidos) > 0
 
 
-def test_call_agent_per_field_sums_nested_usage():
+def test_modo_por_campo_sums_nested_usage():
     """Verifica que usage de buscas aninhadas é somado."""
 
     call_count = [0]
@@ -1590,12 +1658,7 @@ def test_call_agent_per_field_sums_nested_usage():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_field(
-            "Medicamento X",
-            AnaliseSentencaSaude,
-            "Analise {texto}",
-            config,
-        )
+        result = field_extractor(AnaliseSentencaSaude, "Analise {texto}", config)("Medicamento X")
 
     # Usage deve ser a soma de todas as chamadas
     expected_calls = call_count[0]
@@ -1924,11 +1987,8 @@ def test_issue_84_search_count_per_item():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        result = call_agent_per_field(
-            "O paciente solicita Ozempic, Aspirina e Metformina.",
-            AnaliseSentencaSaude,
-            "Analise {texto}",
-            config,
+        result = field_extractor(AnaliseSentencaSaude, "Analise {texto}", config)(
+            "O paciente solicita Ozempic, Aspirina e Metformina."
         )
 
     # VERIFICAÇÃO CRÍTICA da Issue #84:

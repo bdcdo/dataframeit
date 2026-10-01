@@ -684,40 +684,49 @@ def test_claude_backend_invokes_selected_provider(monkeypatch):
     selected_call.assert_called_once_with("row", ResultModel, "{texto}", config)
 
 
-@pytest.mark.parametrize(
-    ("per_field", "groups", "selected_name"),
-    [
-        (False, None, "call_agent"),
-        (True, None, "call_agent_per_field"),
-        (
-            True,
-            {"main": SearchGroupConfig(fields=["value"])},
-            "call_agent_per_group",
-        ),
-    ],
-)
-def test_search_backend_invokes_selected_mode(monkeypatch, per_field, groups, selected_name):
+def test_search_backend_without_per_field_invokes_call_agent(monkeypatch):
     agent_module = importlib.import_module("dataframeit.agent")
-    calls = {
-        name: Mock(return_value={"data": {"value": name}})
-        for name in ("call_agent", "call_agent_per_field", "call_agent_per_group")
-    }
-    for name, call in calls.items():
-        monkeypatch.setattr(agent_module, name, call)
+    call_agent = Mock(return_value={"data": {"value": "agent"}})
+    field_extractor = Mock()
+    monkeypatch.setattr(agent_module, "call_agent", call_agent)
+    monkeypatch.setattr(agent_module, "field_extractor", field_extractor)
 
-    search_config = SearchConfig(enabled=True, per_field=per_field, groups=groups)
-    config = make_config(provider="google_genai", search_config=search_config)
+    config = make_config(provider="google_genai", search_config=SearchConfig(enabled=True))
     with core._provider_backend(config, ResultModel, "{texto}", "minimal") as backend:
         first = backend.invoke("one")
         second = backend.invoke("two")
 
     assert backend.label == "langchain"
-    assert first["data"]["value"] == selected_name
-    assert second["data"]["value"] == selected_name
-    assert calls[selected_name].call_count == 2
-    for name, call in calls.items():
-        if name != selected_name:
-            call.assert_not_called()
+    assert backend.invoke_partial is None
+    assert first["data"]["value"] == second["data"]["value"] == "agent"
+    assert call_agent.call_count == 2
+    field_extractor.assert_not_called()
+
+
+@pytest.mark.parametrize("groups", [None, {"main": SearchGroupConfig(fields=["value"])}])
+def test_search_backend_per_field_builds_the_extractor_once(monkeypatch, groups):
+    agent_module = importlib.import_module("dataframeit.agent")
+    extract = Mock(return_value={"data": {"value": "extractor"}})
+    field_extractor = Mock(return_value=extract)
+    call_agent = Mock()
+    monkeypatch.setattr(agent_module, "field_extractor", field_extractor)
+    monkeypatch.setattr(agent_module, "call_agent", call_agent)
+
+    search_config = SearchConfig(enabled=True, per_field=True, groups=groups)
+    config = make_config(provider="google_genai", search_config=search_config)
+    with core._provider_backend(config, ResultModel, "{texto}", "minimal") as backend:
+        assert backend.invoke_partial is not None
+        first = backend.invoke("one")
+        second = backend.invoke_partial("two", {"value"}, {"value": "old"})
+
+    assert backend.label == "langchain"
+    assert first["data"]["value"] == second["data"]["value"] == "extractor"
+    field_extractor.assert_called_once()
+    model, prompt, built_config, trace_mode = field_extractor.call_args.args
+    assert (model, prompt, trace_mode) == (ResultModel, "{texto}", "minimal")
+    assert built_config.search_config is search_config
+    assert extract.call_args_list == [(("one",),), (("two", {"value"}, {"value": "old"}),)]
+    call_agent.assert_not_called()
 
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, create_model
@@ -28,6 +28,7 @@ from .errors import retry_with_backoff
 from .llm import (
     LLMConfig,
     SearchConfig,
+    SearchGroupConfig,
     _BuildOnce,
     _parse_usage_metadata,
     build_prompt,
@@ -570,380 +571,278 @@ def _run_nested_searches(
     return search_context, total_usage, traces
 
 
-def call_agent_per_field(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (um passo por fase da extração)
-    text: str,
-    pydantic_model: type[BaseModel],
-    user_prompt: str,
-    config: LLMConfig,
-    save_trace: str | None = None,
-    only_fields: set | None = None,
-    known: dict | None = None,
-) -> dict:
-    """Processa cada campo do modelo Pydantic com agente separado.
+@dataclass(frozen=True)
+class _Unit:
+    """Uma chamada ao agente na extração: um grupo de search_groups ou um campo fora de grupo.
 
-    Útil quando o modelo tem muitos campos e um único contexto ficaria
-    sobrecarregado com informações de múltiplas buscas.
-
-    Suporta execução condicional via `condition` no json_schema_extra dos
-    campos. A ordem de processamento é derivada automaticamente do campo
-    referenciado em `condition` (quando dict). Para `condition` callable,
-    declare explicitamente os campos lidos via `depends_on`.
-
-    Suporta campos aninhados em List[Model], Optional[Model], etc.
-    Para campos List[Model] com configuração de busca interna:
-    1. Primeiro extrai a lista básica (estrutura)
-    2. Depois enriquece cada item com buscas específicas por item
-
-    Args:
-        text: Texto a ser processado.
-        pydantic_model: Modelo Pydantic completo.
-        user_prompt: Template do prompt do usuário.
-        config: Configuração do LLM.
-        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
-        only_fields: Campos de primeiro nível a extrair (reprocess_columns). Os
-            demais não são pedidos ao agente e voltam com o valor de `known`,
-            que também alimenta as condições dos campos pedidos.
-        known: Valores já gravados na linha para os campos fora de `only_fields`.
-
-    Returns:
-        Dicionário com 'data' (todos os campos combinados), 'usage' (soma
-        de todos os tokens e créditos) e 'traces' (dict por campo, se habilitado).
-
-    Raises:
-        ValueError: Se há dependências circulares ou inválidas.
+    `key` é o nome do grupo ou do campo, e vira a chave do trace da chamada.
     """
-    combined_data = {}
-    search_provider = config.search_config.provider if config.search_config else None
-    total_usage = _empty_usage()
-    traces = {} if save_trace else None
 
-    # Identificar campos List[Model] com configuração de busca interna
-    list_fields_with_search = _get_list_fields_with_nested_search(pydantic_model)
-    list_field_names = set(list_fields_with_search.keys())
+    key: str
+    fields: tuple[str, ...]
+    group: SearchGroupConfig | None
 
-    # Coletar campos configurados aninhados que NÃO estão em List[Model]
-    # (campos em List[Model] serão processados por item após a extração da lista)
-    all_configured_fields = _collect_configured_fields(pydantic_model)
-    nested_configured_fields = [
-        f
-        for f in all_configured_fields
-        if "." in f[0]
-        and not any(f[0].startswith(lf + ".") for lf in list_field_names)
-        and (only_fields is None or f[0].split(".")[0] in only_fields)
+
+@dataclass
+class _Row:
+    """O que a extração de uma linha acumula entre as chamadas ao agente."""
+
+    text: str
+    only_fields: set | None
+    known: dict
+    traces: dict | None
+    data: dict = field(default_factory=dict)
+    usage: dict = field(default_factory=_empty_usage)
+    nested_context: dict = field(default_factory=dict)
+
+    def wants(self, field_name: str) -> bool:
+        return self.only_fields is None or field_name in self.only_fields
+
+    def add_usage(self, usage: dict) -> None:
+        for key in _USAGE_COUNTERS:
+            self.usage[key] += usage.get(key, 0)
+
+    def add_trace(self, key: str, trace: object) -> None:
+        # traces é None quando save_trace está desligado, e aí nenhuma
+        # chamada devolve trace.
+        if self.traces is not None and trace:
+            self.traces[key] = trace
+
+    def add_result(self, result: dict, key: str) -> None:
+        self.add_usage(result.get("usage") or {})
+        self.add_trace(key, result.get("trace"))
+
+
+def _nested_context_note(nested_context: dict, field_names: list[str]) -> str:
+    """Resultado das buscas aninhadas dos campos pedidos, para o fim do prompt."""
+    lines = [
+        f"- {path}: {value}"
+        for path, value in nested_context.items()
+        if path.split(".")[0] in field_names
     ]
+    if not lines:
+        return ""
+    return "\n\nContexto de buscas realizadas para campos aninhados:\n" + "\n".join(lines)
 
-    # Executar buscas para campos aninhados configurados (não em listas)
-    nested_context = {}
-    if nested_configured_fields:
-        nested_context, nested_usage, nested_traces = _run_nested_searches(
-            text, nested_configured_fields, config, save_trace
-        )
 
-        # Somar usage das buscas aninhadas
-        for key in total_usage:
-            total_usage[key] += nested_usage.get(key, 0)
+@dataclass(frozen=True)
+class _FieldExtractor:
+    """Extração com busca por campo ou por grupo, montada uma vez por execução.
 
-        # Coletar traces aninhados
-        if traces is not None and nested_traces:
-            for path, trace in nested_traces.items():
-                traces[path] = trace
+    O que depende só do modelo e da config (ordem de execução, unidades,
+    campos aninhados com busca) é calculado na montagem. O estado de cada
+    linha fica em _Row, e a instância pode ser compartilhada entre threads.
+    """
 
-    # Extrair configurações de todos os campos
-    field_configs = {}
-    for field_name, field_info in pydantic_model.model_fields.items():
-        extra = field_info.json_schema_extra
-        field_configs[field_name] = _get_field_config(extra) if isinstance(extra, dict) else {}
+    pydantic_model: type[BaseModel]
+    user_prompt: str
+    config: LLMConfig
+    save_trace: str | None
+    field_configs: dict[str, dict]
+    execution_order: list[str]
+    dependencies: dict[str, list[str]]
+    units: tuple[_Unit, ...]
+    list_fields: dict
+    nested_fields: tuple
 
-    # Determinar ordem de execução baseada em dependências. Dependência
-    # inexistente ou circular já foi recusada pelo core antes da primeira linha.
-    execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
+    def __call__(
+        self, text: str, only_fields: set | None = None, known: dict | None = None
+    ) -> dict:
+        row = _Row(text, only_fields, known or {}, traces={} if self.save_trace else None)
+        self._search_nested_fields(row)
+        for unit in self.units:
+            self._run_unit(row, unit)
 
-    logger.debug("Ordem de execução de campos: %s", execution_order)
-    if any(dependencies.values()):
-        logger.debug("Mapa de dependências: %s", dependencies)
-
-    # Processar campos na ordem determinada
-    for field_name in execution_order:
-        field_info = pydantic_model.model_fields[field_name]
-        field_config = field_configs[field_name]
-
-        if only_fields is not None and field_name not in only_fields:
-            combined_data[field_name] = (known or {}).get(field_name)
-            continue
-
-        # Verificar se o campo deve ser pulado (condição não satisfeita)
-        if should_skip_field(field_name, field_config, combined_data):
-            logger.info("Campo '%s' pulado (condição não satisfeita)", field_name)
-            combined_data[field_name] = None
-            continue
-
-        # Criar modelo temporário com apenas este campo
-        single_field_model = _query_model(
-            f"{pydantic_model.__name__}_{field_name}",
-            {field_name: _llm_field_spec(field_info, pydantic_model)},
-        )
-
-        # Construir prompt para este campo
-        field_prompt = _build_field_prompt(
-            user_prompt, field_name, field_info.description, field_config
-        )
-
-        # Adicionar contexto de buscas aninhadas ao prompt se houver
-        relevant_context = {
-            path: value
-            for path, value in nested_context.items()
-            if path.startswith(f"{field_name}.")
+        response = {
+            "data": {name: row.data.get(name) for name in self.pydantic_model.model_fields},
+            "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
-        if relevant_context:
-            context_str = "\n".join(
-                f"- {path}: {value}" for path, value in relevant_context.items()
-            )
-            field_prompt += (
-                f"\n\nContexto de buscas realizadas para campos aninhados:\n{context_str}"
-            )
+        if self.save_trace:
+            response["traces"] = row.traces
+        return response
 
-        # Criar config com overrides do campo (se houver)
-        effective_config = _with_field_overrides(config, field_config)
+    def _search_nested_fields(self, row: _Row) -> None:
+        """Busca os campos aninhados com configuração própria antes das unidades.
 
-        # Chamar agente para este campo
-        result = call_agent(text, single_field_model, field_prompt, effective_config, save_trace)
+        Campo dentro de List[Model] fica de fora: ele só existe depois que a
+        lista é extraída, e é buscado item a item em _enrich_items.
+        """
+        nested_fields = [path for path in self.nested_fields if row.wants(path[0].split(".")[0])]
+        if not nested_fields:
+            return
+        context, usage, traces = _run_nested_searches(
+            row.text, nested_fields, self.config, self.save_trace
+        )
+        row.nested_context = context
+        row.add_usage(usage)
+        for path, trace in (traces or {}).items():
+            row.add_trace(path, trace)
 
-        # Obter resultado do campo
-        field_value = result["data"].get(field_name)
+    def _run_unit(self, row: _Row, unit: _Unit) -> None:
+        requested = [name for name in unit.fields if row.wants(name)]
+        for name in unit.fields:
+            if name not in requested:
+                row.data[name] = row.known.get(name)
 
-        # FASE 2: Se é um campo List[Model] com busca interna, enriquecer cada item
-        if field_name in list_fields_with_search and field_value:
-            list_config = list_fields_with_search[field_name]
-            inner_model = list_config["inner_model"]
-            search_fields = list_config["search_fields"]
+        active, post_call = self._active_fields(row, requested)
+        if not active:
+            return
 
-            logger.debug(
-                "Enriquecendo %s itens de '%s' com buscas",
-                len(field_value) if isinstance(field_value, list) else 0,
-                field_name,
-            )
+        if unit.group is None:
+            model, prompt, config = self._field_request(unit.key)
+        else:
+            model, prompt, config = self._group_request(unit.key, unit.group, active)
+        prompt += _nested_context_note(row.nested_context, active)
 
-            enriched_items, enrich_usage, enrich_traces = _enrich_list_items_with_search(
-                field_value, inner_model, search_fields, text, config, save_trace
-            )
+        result = call_agent(row.text, model, prompt, config, self.save_trace)
+        for name in active:
+            row.data[name] = result["data"].get(name)
+        # Em ordem de dependência, para que um campo anulado aqui também anule
+        # quem depende dele na mesma chamada.
+        for name in post_call:
+            if should_skip_field(name, self.field_configs[name], row.data):
+                row.data[name] = None
+        for name in active:
+            self._enrich_items(row, name)
+        row.add_result(result, unit.key)
 
-            # Atualizar o valor do campo com itens enriquecidos
-            field_value = enriched_items
+    def _active_fields(self, row: _Row, requested: list[str]) -> tuple[list[str], list[str]]:
+        """Campos pedidos ao agente e, entre eles, os de condição avaliada depois da resposta.
 
-            # Somar usage das buscas de enriquecimento
-            for key in enrich_usage:
-                total_usage[key] += enrich_usage.get(key, 0)
+        A condição que depende só de campos de outras unidades já pode ser
+        avaliada, e o campo pulado nem vai ao agente. A que depende de outro
+        campo da mesma chamada só pode ser avaliada com a resposta.
+        """
+        active, post_call = [], set()
+        for name in requested:
+            if any(dep.split(".")[0] in requested for dep in self.dependencies[name]):
+                active.append(name)
+                post_call.add(name)
+            elif should_skip_field(name, self.field_configs[name], row.data):
+                row.data[name] = None
+            else:
+                active.append(name)
+        return active, [name for name in self.execution_order if name in post_call]
 
-            # Coletar traces de enriquecimento
-            if traces is not None and enrich_traces:
-                traces[f"{field_name}_items"] = enrich_traces
+    def _field_request(self, field_name: str) -> tuple[type[BaseModel], str, LLMConfig]:
+        field_info = self.pydantic_model.model_fields[field_name]
+        field_config = self.field_configs[field_name]
+        model = _query_model(
+            f"{self.pydantic_model.__name__}_{field_name}",
+            {field_name: _llm_field_spec(field_info, self.pydantic_model)},
+        )
+        prompt = _build_field_prompt(
+            self.user_prompt, field_name, field_info.description, field_config
+        )
+        return model, prompt, _with_field_overrides(self.config, field_config)
 
-        # Combinar resultado
-        combined_data[field_name] = field_value
+    def _group_request(
+        self, group_name: str, group: SearchGroupConfig, active: list[str]
+    ) -> tuple[type[BaseModel], str, LLMConfig]:
+        # O modelo e o prompt do grupo seguem a ordem de search_groups; a ordem
+        # de dependência só importa para as condições avaliadas depois da resposta.
+        model = _query_model(
+            f"{self.pydantic_model.__name__}_group_{group_name}",
+            {
+                name: _llm_field_spec(self.pydantic_model.model_fields[name], self.pydantic_model)
+                for name in active
+            },
+        )
+        if group.prompt:
+            # {query} é sinônimo de {texto} no prompt de grupo
+            prompt = _with_text_placeholder(group.prompt.replace("{query}", "{texto}"))
+        else:
+            prompt = f"{self.user_prompt}\n\nResponda os campos: {', '.join(active)}"
+        config = _with_search_overrides(
+            self.config, group.search_depth, group.max_results, group.max_search_calls
+        )
+        return model, prompt, config
 
-        # Somar usage de todas as chamadas (exceto campos não numéricos)
-        if result.get("usage"):
-            for key in total_usage:
-                total_usage[key] += result["usage"].get(key, 0)
+    def _enrich_items(self, row: _Row, field_name: str) -> None:
+        """Busca, item a item, os campos configurados de um List[Model] já extraído."""
+        spec = self.list_fields.get(field_name)
+        items = row.data[field_name]
+        if spec is None or not items:
+            return
+        enriched, usage, traces = _enrich_list_items_with_search(
+            items,
+            spec["inner_model"],
+            spec["search_fields"],
+            row.text,
+            self.config,
+            self.save_trace,
+        )
+        row.data[field_name] = enriched
+        row.add_usage(usage)
+        row.add_trace(f"{field_name}_items", traces)
 
-        # Coletar trace por campo
-        if traces is not None and result.get("trace"):
-            traces[field_name] = result["trace"]
 
-    # Adicionar search_provider ao usage
-    total_usage["search_provider"] = search_provider
-
-    response = {"data": combined_data, "usage": total_usage}
-    if save_trace:
-        response["traces"] = traces
-
-    return response
-
-
-def call_agent_per_group(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (grupos e campos isolados num só laço)
-    text: str,
+def field_extractor(
     pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
     save_trace: str | None = None,
-    only_fields: set | None = None,
-    known: dict | None = None,
-) -> dict:
-    """Processa campos agrupados com agente compartilhado e campos isolados individualmente.
+) -> _FieldExtractor:
+    """Monta a extração com busca dos modos por campo e por grupo.
 
-    Campos em grupos compartilham a mesma busca, reduzindo chamadas de API.
-    Campos fora de grupos são processados individualmente como em call_agent_per_field.
+    Cada grupo de `search_groups` vira uma chamada ao agente com os campos do
+    grupo, e cada campo fora de grupo, uma chamada só dele. Sem grupos, é o
+    modo por campo. As chamadas seguem a ordem exigida pelas dependências de
+    `condition`, e entre unidades independentes, a ordem do modelo. Campo com
+    condição falsa fica None e não é pedido ao agente; se a condição depende
+    de outro campo da mesma chamada, ele é anulado depois da resposta.
 
-    `condition` no json_schema_extra é aplicada como em call_agent_per_field:
-    campo com condição falsa fica None e não é pedido ao agente. Grupos e
-    campos isolados rodam na ordem exigida pelas dependências entre eles. A
-    condição que depende de outro campo do mesmo grupo só pode ser avaliada
-    com a resposta do grupo, e o campo é anulado depois da chamada.
+    Campos de modelos aninhados com configuração de busca própria são buscados
+    antes, e o resultado entra no prompt da chamada que extrai o campo de
+    primeiro nível. Os de um List[Model] são buscados item a item depois que
+    a lista é extraída.
 
-    Args:
-        text: Texto a ser processado.
-        pydantic_model: Modelo Pydantic completo.
-        user_prompt: Template do prompt do usuário.
-        config: Configuração do LLM incluindo search_config.groups.
-        save_trace: Modo de trace ("full", "minimal") ou None para desabilitar.
-        only_fields: Campos a extrair; ver call_agent_per_field.
-        known: Valores já gravados para os campos fora de `only_fields`.
-
-    Returns:
-        Dicionário com 'data' (todos os campos combinados), 'usage' (soma de
-        todos os tokens e créditos), e 'traces' (dict por grupo/campo, se habilitado).
+    A extração devolvida recebe `(text, only_fields=None, known=None)`.
+    `only_fields` são os campos de primeiro nível a extrair (reprocess_columns);
+    os demais voltam com o valor de `known`, que também alimenta as condições.
+    Ela devolve 'data' (todos os campos, na ordem do modelo), 'usage' (soma
+    das chamadas, com 'search_provider') e, com save_trace, 'traces', um por
+    grupo, campo, caminho aninhado e lista enriquecida ('{campo}_items').
 
     Raises:
         ValueError: Se há dependências inválidas ou circulares, inclusive entre
             um grupo e campos de fora dele.
     """
-    combined_data = {}
-    total_usage = _empty_usage()
-    traces = {} if save_trace else None
-
-    groups = _search_config(config).groups or {}
-
-    field_configs = {}
-    for field_name, field_info in pydantic_model.model_fields.items():
-        extra = field_info.json_schema_extra
-        field_configs[field_name] = _get_field_config(extra) if isinstance(extra, dict) else {}
-
+    field_configs = {
+        name: _get_field_config(info.json_schema_extra)
+        if isinstance(info.json_schema_extra, dict)
+        else {}
+        for name, info in pydantic_model.model_fields.items()
+    }
     execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
-
+    groups = _search_config(config).groups or {}
     units, _, unit_dependencies = get_group_execution_units(pydantic_model, groups, dependencies)
 
-    for unit_key in topological_sort(unit_dependencies):
-        _, name, group_config = units[int(unit_key)]
+    ordered_units = []
+    for key in topological_sort(unit_dependencies):
+        _, name, group = units[int(key)]
+        fields = tuple(group.fields) if group is not None else (name,)
+        ordered_units.append(_Unit(key=name, fields=fields, group=group))
 
-        if group_config is not None:
-            group_name = name
-            # O modelo e o prompt do grupo seguem a ordem de search_groups; a
-            # ordem de dependência só importa para as condições avaliadas
-            # depois da resposta.
-            # Condições que dependem só de campos de fora do grupo já podem ser avaliadas.
-            requested = [f for f in group_config.fields if only_fields is None or f in only_fields]
-            for field_name in group_config.fields:
-                if field_name not in requested:
-                    combined_data[field_name] = (known or {}).get(field_name)
+    list_fields = _get_list_fields_with_nested_search(pydantic_model)
+    nested_fields = tuple(
+        configured
+        for configured in _collect_configured_fields(pydantic_model)
+        if "." in configured[0] and configured[0].split(".")[0] not in list_fields
+    )
 
-            active_fields = []
-            post_call_set = set()
-            for field_name in requested:
-                # Só uma dependência pedida na mesma chamada fica sem valor antes dela
-                deps_in_group = [
-                    dep for dep in dependencies[field_name] if dep.split(".")[0] in requested
-                ]
-                if deps_in_group:
-                    active_fields.append(field_name)
-                    post_call_set.add(field_name)
-                elif should_skip_field(field_name, field_configs[field_name], combined_data):
-                    combined_data[field_name] = None
-                else:
-                    active_fields.append(field_name)
-
-            if not active_fields:
-                continue
-
-            post_call_fields = [f for f in execution_order if f in post_call_set]
-
-            # Criar modelo com os campos ativos do grupo
-            group_field_infos = {
-                field_name: _llm_field_spec(pydantic_model.model_fields[field_name], pydantic_model)
-                for field_name in active_fields
-            }
-            group_model = _query_model(
-                f"{pydantic_model.__name__}_group_{group_name}", group_field_infos
-            )
-
-            # Construir prompt do grupo
-            if group_config.prompt:
-                # {query} é sinônimo de {texto} no prompt de grupo
-                group_prompt = _with_text_placeholder(
-                    group_config.prompt.replace("{query}", "{texto}")
-                )
-            else:
-                # Prompt padrão com instruções sobre os campos do grupo
-                field_list = ", ".join(active_fields)
-                group_prompt = f"{user_prompt}\n\nResponda os campos: {field_list}"
-
-            # Criar config com overrides do grupo (se houver)
-            effective_config = _with_search_overrides(
-                config,
-                group_config.search_depth,
-                group_config.max_results,
-                group_config.max_search_calls,
-            )
-
-            # Chamar agente para o grupo
-            result = call_agent(text, group_model, group_prompt, effective_config, save_trace)
-
-            # Combinar resultados
-            for field_name in active_fields:
-                combined_data[field_name] = result["data"].get(field_name)
-
-            # Em ordem de dependência, para que um campo anulado aqui também
-            # anule quem depende dele no mesmo grupo.
-            for field_name in post_call_fields:
-                if should_skip_field(field_name, field_configs[field_name], combined_data):
-                    combined_data[field_name] = None
-
-            trace_key = group_name
-        else:
-            field_name = name
-            field_info = pydantic_model.model_fields[field_name]
-            field_config = field_configs[field_name]
-
-            if only_fields is not None and field_name not in only_fields:
-                combined_data[field_name] = (known or {}).get(field_name)
-                continue
-
-            if should_skip_field(field_name, field_config, combined_data):
-                combined_data[field_name] = None
-                continue
-
-            # Criar modelo temporário com apenas este campo
-            single_field_model = _query_model(
-                f"{pydantic_model.__name__}_{field_name}",
-                {field_name: _llm_field_spec(field_info, pydantic_model)},
-            )
-
-            # Construir prompt para este campo
-            field_prompt = _build_field_prompt(
-                user_prompt, field_name, field_info.description, field_config
-            )
-
-            # Criar config com overrides do campo (se houver)
-            effective_config = _with_field_overrides(config, field_config)
-
-            # Chamar agente para este campo
-            result = call_agent(
-                text, single_field_model, field_prompt, effective_config, save_trace
-            )
-
-            # Combinar resultado
-            combined_data[field_name] = result["data"].get(field_name)
-
-            trace_key = field_name
-
-        # Somar usage
-        if result.get("usage"):
-            for key in total_usage:
-                total_usage[key] += result["usage"].get(key, 0)
-
-        # Coletar trace por grupo ou campo isolado
-        if traces is not None and result.get("trace"):
-            traces[trace_key] = result["trace"]
-
-    # Manter a ordem de campos do modelo
-    ordered_data = {
-        field_name: combined_data.get(field_name) for field_name in pydantic_model.model_fields
-    }
-
-    response = {"data": ordered_data, "usage": total_usage}
-    if save_trace:
-        response["traces"] = traces
-
-    return response
+    return _FieldExtractor(
+        pydantic_model=pydantic_model,
+        user_prompt=user_prompt,
+        config=config,
+        save_trace=save_trace,
+        field_configs=field_configs,
+        execution_order=execution_order,
+        dependencies=dependencies,
+        units=tuple(ordered_units),
+        list_fields=list_fields,
+        nested_fields=nested_fields,
+    )
 
 
 # Início do texto que o ToolCallLimitMiddleware grava na ToolMessage de uma

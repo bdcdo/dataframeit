@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from pydantic.json_schema import JsonDict
 
 from dataframeit import dataframeit
-from dataframeit.agent import call_agent_per_group
+from dataframeit.agent import field_extractor
 from dataframeit.conditional import (
     check_dependencies_exist,
     detect_circular_dependencies,
@@ -645,7 +645,7 @@ def _call_agent_falso(valores, chamadas):
 
 
 class TestCondicaoNoModoPorGrupo:
-    """call_agent_per_group aplica `condition` como o caminho por campo."""
+    """O modo por grupo aplica `condition` como o caminho por campo."""
 
     def test_grupo_com_condicao_falsa_nao_e_chamado(self):
 
@@ -656,9 +656,7 @@ class TestCondicaoNoModoPorGrupo:
         with patch(
             "dataframeit.agent.call_agent", side_effect=_call_agent_falso(valores, chamadas)
         ):
-            resultado = call_agent_per_group(
-                "texto", ModeloPessoaCondicional, "Analise {texto}", config
-            )
+            resultado = field_extractor(ModeloPessoaCondicional, "Analise {texto}", config)("texto")
 
         assert resultado["data"] == {
             "tipo": "pf",
@@ -680,9 +678,7 @@ class TestCondicaoNoModoPorGrupo:
         with patch(
             "dataframeit.agent.call_agent", side_effect=_call_agent_falso(valores, chamadas)
         ):
-            resultado = call_agent_per_group(
-                "texto", ModeloPessoaCondicional, "Analise {texto}", config
-            )
+            resultado = field_extractor(ModeloPessoaCondicional, "Analise {texto}", config)("texto")
 
         assert ["cnpj"] in chamadas
         assert not any("cpf" in campos for campos in chamadas)
@@ -700,9 +696,7 @@ class TestCondicaoNoModoPorGrupo:
         with patch(
             "dataframeit.agent.call_agent", side_effect=_call_agent_falso(valores, chamadas)
         ):
-            resultado = call_agent_per_group(
-                "texto", ModeloPessoaCondicional, "Analise {texto}", config
-            )
+            resultado = field_extractor(ModeloPessoaCondicional, "Analise {texto}", config)("texto")
 
         assert resultado["data"]["tipo"] == "pj"
         assert resultado["data"]["cpf"] is None
@@ -725,7 +719,7 @@ class TestCondicaoNoModoPorGrupo:
             patch("dataframeit.agent.call_agent") as call_agent,
             pytest.raises(ValueError, match="grupo 'g'"),
         ):
-            call_agent_per_group("texto", ModeloCiclico, "Analise {texto}", config)
+            field_extractor(ModeloCiclico, "Analise {texto}", config)("texto")
         call_agent.assert_not_called()
 
     def test_grupo_segue_a_ordem_de_search_groups(self):
@@ -737,7 +731,7 @@ class TestCondicaoNoModoPorGrupo:
         with patch(
             "dataframeit.agent.call_agent", side_effect=_call_agent_falso(valores, chamadas)
         ):
-            call_agent_per_group("texto", ModeloPessoaCondicional, "Analise {texto}", config)
+            field_extractor(ModeloPessoaCondicional, "Analise {texto}", config)("texto")
 
         assert ["razao_social", "cnpj"] in chamadas
 
