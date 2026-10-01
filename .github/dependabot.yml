@@ -16,8 +16,9 @@ updates:
       default-days: 7
     # O dataframeit é biblioteca: subir o piso de uma dependência exclui quem
     # usa a versão anterior. Com increase-if-necessary a faixa do pyproject.toml
-    # só muda quando não admite a versão nova (caso dos pins exatos do extra
-    # dev); nos demais casos muda só o uv.lock.
+    # só muda quando não admite a versão nova: pin exato do extra dev ou teto
+    # (<) ultrapassado. O uv.lock não é versionado e o CI resolve a versão mais
+    # nova a cada run, então faixa que já admite a versão nova não gera PR.
     versioning-strategy: "increase-if-necessary"
     groups:
       # minor e patch num PR só; major vem separado.
