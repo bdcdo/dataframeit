@@ -772,8 +772,13 @@ def test_configuracao_em_modelo_declarado_depois_do_dono_e_detectada():
         )
 
 
-def test_resolve_forward_refs_deixa_annotated_como_esta():
-    """Annotated não é remontado: a anotação volta intacta, sem quebrar a varredura."""
+# =============================================================================
+# Referência adiantada dentro de Annotated aninhado
+# =============================================================================
+
+
+def test_resolve_forward_refs_remonta_annotated_com_os_metadados():
+    """O tipo interno é resolvido e os metadados voltam como estavam."""
 
     class Folha(BaseModel):
         x: int
@@ -781,6 +786,97 @@ def test_resolve_forward_refs_deixa_annotated_como_esta():
     class Dono(BaseModel):
         a: int
 
-    anotado = typing.Annotated[list["Folha"], "metadado"]
+    descricao = Field(description="d")
+    anotado = typing.Annotated[list["Folha"], descricao, "metadado"]
+
+    resolvido = resolve_forward_refs(anotado, Dono)
+
+    assert resolvido == typing.Annotated[list[Folha], descricao, "metadado"]
+    assert resolvido.__metadata__[0] is descricao
+
+
+def test_resolve_forward_refs_nao_resolve_metadado_em_texto():
+    """Metadado em texto com o nome de um modelo continua texto."""
+
+    class Folha(BaseModel):
+        x: int
+
+    class Dono(BaseModel):
+        a: int
+
+    resolvido = resolve_forward_refs(typing.Annotated[list["Folha"], "Folha"], Dono)
+
+    assert resolvido.__metadata__ == ("Folha",)
+
+
+def test_resolve_forward_refs_devolve_annotated_sem_referencia_intacto():
+
+    class Dono(BaseModel):
+        a: int
+
+    # Metadado sem hash fica fora do cache do typing: remontar a anotação
+    # daria um objeto novo, e a identidade prova que nada foi remontado.
+    anotado = typing.Annotated[list[int], {"rotulo": ["Dono"]}]
 
     assert resolve_forward_refs(anotado, Dono) is anotado
+
+
+class FolhaAnotada(BaseModel):
+    valor: Optional[str] = Field(None, json_schema_extra={"prompt_append": "y"})
+
+
+class DonoDeFolhaAnotada(BaseModel):
+    itens: list[typing.Annotated[list["FolhaAnotada"], Field(description="grupo")]] = []
+
+
+def test_configuracao_dentro_de_annotated_aninhado_e_detectada():
+    assert [path for path, *_ in _collect_configured_fields(DonoDeFolhaAnotada)] == ["itens.valor"]
+    assert {path: depth for path, _, depth in _walk_fields(DonoDeFolhaAnotada)} == {
+        "itens": 0,
+        "itens.valor": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("extra", "erro"),
+    [
+        ({"prompt_append": "y"}, "lista que está dentro de outra lista"),
+        (
+            {"condition": {"field": "x", "exists": True}},
+            "só são aplicados a campos de primeiro nível",
+        ),
+    ],
+)
+def test_configuracao_dentro_de_annotated_aninhado_e_recusada(extra, erro):
+    """As recusas da validação alcançam o modelo dentro do Annotated."""
+
+    class Folha(BaseModel):
+        x: Optional[str] = None
+        valor: Optional[str] = Field(None, json_schema_extra=extra)
+
+    class Dono(BaseModel):
+        itens: list[typing.Annotated[list["Folha"], "grupo"]] = []
+
+    provider, busca = _patches_de_execucao()
+    with provider, busca, pytest.raises(ValueError, match=erro):
+        dataframeit(
+            pd.DataFrame({"texto": ["x"]}),
+            questions=Dono,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+        )
+
+
+# O dono é declarado antes da folha e nunca é validado: a anotação guarda a
+# referência crua, em qualquer versão do Python e do Pydantic.
+class DonoDeFolhaTardia(BaseModel):
+    folhas: typing.List["FolhaTardia"] = []  # noqa: UP006 (typing.List guarda a referência como ForwardRef)
+
+
+class FolhaTardia(BaseModel):
+    valor: Optional[str] = None
+
+
+def test_walk_fields_resolve_a_referencia_pelo_modelo_dono():
+    assert [path for path, *_ in _walk_fields(DonoDeFolhaTardia)] == ["folhas", "folhas.valor"]

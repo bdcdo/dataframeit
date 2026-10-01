@@ -655,6 +655,13 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
     # Em Literal os argumentos são valores, e uma string ali nunca é referência.
     if origin is None or origin is typing.Literal or not args:
         return annotation
+    # Em Annotated só o primeiro argumento é tipo; os metadados (Field, texto)
+    # voltam intactos, e um texto com o nome de um modelo não vira a classe.
+    if origin is typing.Annotated:
+        inner = resolve_forward_refs(args[0], owner)
+        if inner is args[0]:
+            return annotation
+        return typing.Annotated[(inner, *annotation.__metadata__)]
 
     resolved = tuple(resolve_forward_refs(arg, owner) for arg in args)
     if resolved == args:
@@ -663,8 +670,6 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
         return functools.reduce(operator.or_, resolved)
     if origin is typing.Union:
         return typing.Union[resolved]  # noqa: UP007 (preserva a forma typing.Union)
-    if origin is typing.Annotated:
-        return annotation
     if isinstance(annotation, types.GenericAlias):
         return types.GenericAlias(origin, resolved)
     return annotation.copy_with(resolved)

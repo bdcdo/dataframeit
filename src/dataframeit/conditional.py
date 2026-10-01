@@ -375,6 +375,27 @@ def topological_sort(dependencies: dict[str, list[str]]) -> list[str]:
     return result
 
 
+def _declared_depends_on(field_name: str, depends_on: object) -> list[str]:
+    """Lista dos nomes declarados em `depends_on`: um nome, ou lista ou tupla de nomes.
+
+    Raises:
+        ValueError: Para qualquer outra forma, inclusive item que não seja
+            texto. Um set não tem ordem, e um gerador se esgota na primeira
+            leitura; aceitá-los em silêncio perderia a dependência declarada.
+    """
+    if depends_on is None:
+        return []
+    if isinstance(depends_on, str):
+        return [depends_on]
+    if isinstance(depends_on, (list, tuple)) and all(isinstance(dep, str) for dep in depends_on):
+        return list(depends_on)
+    msg = (
+        f"Campo '{field_name}' tem 'depends_on' {depends_on!r}: use o nome de um campo "
+        "em texto, ou uma lista ou tupla de nomes"
+    )
+    raise ValueError(msg)
+
+
 def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
     """Resolve as dependências de um campo a partir de sua configuração.
 
@@ -382,13 +403,11 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
     1. Sem `condition`, `depends_on` é ignorado (com warning) — sem condition, ordem não afeta o resultado.
     2. Com `condition` dict, a dep do campo raiz de `condition['field']` é unida ao `depends_on` explícito.
     3. Com `condition` callable sem `depends_on`, retorna lista vazia (com warning).
-    """
-    explicit = config.get("depends_on") or []
-    if isinstance(explicit, str):
-        explicit = [explicit]
-    elif not isinstance(explicit, list):
-        explicit = []
 
+    Raises:
+        ValueError: Se `depends_on` tem forma não aceita (ver _declared_depends_on).
+    """
+    explicit = _declared_depends_on(field_name, config.get("depends_on"))
     condition = config.get("condition")
 
     if condition is None:

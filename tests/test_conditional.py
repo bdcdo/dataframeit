@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import subprocess
 import sys
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from dataframeit.conditional import (
     detect_circular_dependencies,
     evaluate_condition,
     get_field_execution_order,
+    get_group_execution_units,
     get_nested_value,
     should_skip_field,
     topological_sort,
@@ -236,8 +238,14 @@ class TestDependencies:
     def test_topological_sort_with_cycle_raises(self):
         """Testa que ordenação topológica levanta erro com ciclo."""
         deps = {"a": ["b"], "b": ["c"], "c": ["a"]}
-        with pytest.raises(ValueError, match="Dependências circulares"):
+        mensagem = "Dependências circulares detectadas: a -> b -> c -> a"
+        with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
             topological_sort(deps)
+
+    def test_ciclo_que_nao_comeca_no_primeiro_campo_sai_sem_o_prefixo(self):
+        """O ciclo começa no campo reencontrado, e não no início do caminho."""
+        deps = {"a": ["b"], "b": ["c"], "c": ["b"]}
+        assert detect_circular_dependencies(deps) == ["b", "c", "b"]
 
 
 class TestGetFieldExecutionOrder:
@@ -899,14 +907,80 @@ class TestCondicaoPelaApi:
         assert chamadas == [["tipo"], ["detalhe"]]
         assert linha["detalhe"] == "x"
 
-    def test_depends_on_de_tipo_invalido_e_ignorado(self, caplog):
-        config = {"condition": lambda dados: True, "depends_on": 5}
+    def test_depends_on_em_tupla_vale_como_lista(self, caplog):
+        """A tupla de nomes ordena o campo e não dispara o aviso de depends_on ausente."""
+
+        class Modelo(BaseModel):
+            # Tupla em depends_on e condição callable são formas aceitas; o pydantic tipa
+            # json_schema_extra como JSON (#171).
+            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
+                None,
+                json_schema_extra={
+                    "condition": lambda dados: dados.get("tipo") == "pj",
+                    "depends_on": ("tipo",),
+                },
+            )
+            tipo: str
 
         with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
-            _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+            linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pj", "detalhe": "x"})
+
+        assert chamadas == [["tipo"], ["detalhe"]]
+        assert linha["detalhe"] == "x"
+        assert "depends_on" not in caplog.text
+
+    def test_depends_on_em_tupla_se_une_a_condicao_em_dict(self):
+        config = {"condition": {"field": "tipo", "equals": "pf"}, "depends_on": ("cnpj",)}
+
+        _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+        assert dependencias["cpf"] == ["cnpj", "tipo"]
+
+    def test_depends_on_em_tupla_sem_condicao_avisa_que_e_ignorado(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+            _, dependencias = get_field_execution_order(
+                ModeloPessoaCondicional, {"cpf": {"depends_on": ("tipo",)}}
+            )
 
         assert dependencias["cpf"] == []
-        assert "condition' callable sem 'depends_on'" in caplog.text
+        assert "Campo 'cpf' tem 'depends_on' mas não tem 'condition'" in caplog.text
+
+    @pytest.mark.parametrize("depends_on", [5, {"tipo"}, {"tipo": 1}, ["tipo", 1], ("tipo", None)])
+    def test_depends_on_de_forma_nao_aceita_levanta_erro(self, depends_on):
+        config = {"condition": lambda dados: True, "depends_on": depends_on}
+
+        with pytest.raises(ValueError, match=r"Campo 'cpf'.*'depends_on'.*lista ou tupla"):
+            get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+    def test_depends_on_em_texto_vazio_e_campo_inexistente(self):
+        config = {"condition": lambda dados: True, "depends_on": ""}
+
+        with pytest.raises(ValueError, match=r"Campo 'cpf' depende de campos inexistentes: \[''\]"):
+            get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+    def test_depends_on_de_forma_nao_aceita_falha_antes_de_processar(self):
+        class Modelo(BaseModel):
+            tipo: str
+            # O set em depends_on é a forma recusada que o teste exercita; o pydantic tipa
+            # json_schema_extra como JSON (#171).
+            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
+                None, json_schema_extra={"condition": lambda dados: True, "depends_on": {"tipo"}}
+            )
+
+        with (
+            patch("dataframeit.core.validate_provider_dependencies"),
+            patch("dataframeit.core.validate_search_dependencies"),
+            patch("dataframeit.agent.call_agent") as call_agent,
+            pytest.raises(ValueError, match="Campo 'detalhe'"),
+        ):
+            dataframeit(
+                pd.DataFrame({"texto": ["x"]}),
+                questions=Modelo,
+                prompt="Analise {texto}",
+                use_search=True,
+                search_per_field=True,
+            )
+        call_agent.assert_not_called()
 
     def test_condicao_sem_campo_nao_cria_dependencia_e_sempre_pula(self, caplog):
         class Modelo(BaseModel):
@@ -944,3 +1018,134 @@ def test_modelo_auto_referente_e_validado_sem_laco():
         )
 
     assert resultado["nome"].tolist() == ["raiz"]
+
+
+# =============================================================================
+# Mensagens de log e unidades de execução por grupo
+# =============================================================================
+
+
+def _mensagens(caplog):
+    return [
+        (registro.levelname, registro.getMessage())
+        for registro in caplog.records
+        if registro.name == "dataframeit.conditional"
+    ]
+
+
+def _falha(_dados):
+    msg = "boom"
+    raise RuntimeError(msg)
+
+
+@pytest.mark.parametrize(
+    ("condicao", "mensagem"),
+    [
+        (_falha, "Erro ao avaliar condição callable para campo 'x': boom"),
+        ({"equals": 1}, "Condição para campo 'x' não tem 'field' definido"),
+        (
+            {"field": "tipo"},
+            (
+                "Condição para campo 'x' não tem operador válido "
+                "(equals, not_equals, in, not_in, exists)"
+            ),
+        ),
+        ("tipo", "Condição para campo 'x' tem tipo inválido: <class 'str'>"),
+    ],
+)
+def test_condicao_invalida_avisa_com_a_mensagem_exata(caplog, condicao, mensagem):
+    with caplog.at_level(logging.DEBUG, logger="dataframeit.conditional"):
+        assert evaluate_condition(condicao, {"tipo": "pf"}, "x") is False
+
+    assert _mensagens(caplog) == [("WARNING", mensagem)]
+
+
+@pytest.mark.parametrize(
+    ("condicao", "mensagem"),
+    [
+        ({"field": "tipo", "equals": "pf"}, "Campo 'x': tipo=pf == pf -> True"),
+        ({"field": "tipo", "exists": True}, "Campo 'x': tipo exists=True == True -> True"),
+    ],
+)
+def test_condicao_avaliada_registra_a_comparacao_em_debug(caplog, condicao, mensagem):
+    with caplog.at_level(logging.DEBUG, logger="dataframeit.conditional"):
+        assert evaluate_condition(condicao, {"tipo": "pf"}, "x") is True
+
+    assert _mensagens(caplog) == [("DEBUG", mensagem)]
+
+
+@pytest.mark.parametrize(("tipo", "pulado"), [("pj", True), ("pf", False)])
+def test_campo_pulado_registra_em_info_so_quando_pula(caplog, tipo, pulado):
+    config = {"condition": {"field": "tipo", "equals": "pf"}}
+
+    with caplog.at_level(logging.INFO, logger="dataframeit.conditional"):
+        assert should_skip_field("x", config, {"tipo": tipo}) is pulado
+
+    esperado = [("INFO", "Campo 'x' pulado (condição não satisfeita)")] if pulado else []
+    assert _mensagens(caplog) == esperado
+
+
+@pytest.mark.parametrize(
+    ("config", "mensagem"),
+    [
+        (
+            {"depends_on": ["tipo"]},
+            (
+                "Campo 'cpf' tem 'depends_on' mas não tem 'condition': depends_on será "
+                "ignorado (sem condition, ordem não afeta o resultado)."
+            ),
+        ),
+        (
+            {"condition": lambda dados: True},
+            (
+                "Campo 'cpf' tem 'condition' callable sem 'depends_on': a ordem de execução "
+                "não é garantida. Declare 'depends_on' com os campos lidos pela função."
+            ),
+        ),
+    ],
+)
+def test_depends_on_ignorado_ou_ausente_avisa_com_a_mensagem_exata(caplog, config, mensagem):
+    with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+        get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+    assert _mensagens(caplog) == [("WARNING", mensagem)]
+
+
+def test_depends_on_de_forma_nao_aceita_tem_a_mensagem_exata():
+    config = {"condition": lambda dados: True, "depends_on": 5}
+
+    mensagem = (
+        "Campo 'cpf' tem 'depends_on' 5: use o nome de um campo em texto, "
+        "ou uma lista ou tupla de nomes"
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+        get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+
+class _Endereco(BaseModel):
+    cidade: str
+
+
+class _ModeloComGrupo(BaseModel):
+    endereco: _Endereco
+    tipo: str
+    taxa: str | None = None
+
+
+def test_unidade_por_grupo_depende_do_campo_raiz_de_um_caminho_aninhado():
+    grupos = {"g": SearchGroupConfig(fields=["tipo", "taxa"])}
+
+    _, unidade_do_campo, dependencias = get_group_execution_units(
+        _ModeloComGrupo, grupos, {"endereco": [], "tipo": [], "taxa": ["endereco.cidade"]}
+    )
+
+    assert dependencias[unidade_do_campo["taxa"]] == [unidade_do_campo["endereco"]]
+
+
+def test_ciclo_entre_grupo_e_campo_nomeia_cada_unidade():
+    grupos = {"g": SearchGroupConfig(fields=["tipo", "taxa"])}
+    dependencias = {"endereco": ["taxa"], "tipo": [], "taxa": ["endereco"]}
+
+    mensagem = "Dependências circulares entre grupos e campos: grupo 'g' -> 'endereco' -> grupo 'g'"
+    with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+        get_group_execution_units(_ModeloComGrupo, grupos, dependencias)

@@ -134,7 +134,8 @@ def _get_field_config(extra: dict) -> dict:
         Dicionário com configurações extraídas (prompt, prompt_append,
         search_depth, max_results, depends_on, condition). `depends_on`
         é normalmente derivado automaticamente de `condition` (quando
-        dict) — só precisa ser declarado para `condition` callable.
+        dict) — só precisa ser declarado para `condition` callable; as
+        formas aceitas estão em `conditional._declared_depends_on`.
     """
     return {
         "prompt": extra.get("prompt") or extra.get("prompt_replace"),
