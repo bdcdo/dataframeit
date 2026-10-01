@@ -8,9 +8,11 @@ import dataframeit
 
 def test_version_acompanha_o_pyproject():
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    versao_declarada = re.search(
+    encontrada = re.search(
         r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE
-    ).group(1)
+    )
+    assert encontrada is not None
+    versao_declarada = encontrada.group(1)
     assert dataframeit.__version__ == versao_declarada
 
 

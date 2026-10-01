@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import pandas as pd
 from pandas.api.types import is_scalar
@@ -745,6 +745,77 @@ def _validate_search_groups(  # noqa: C901 (uma checagem por regra de search_gro
 def _has_field_config(pydantic_model: type[BaseModel]) -> bool:
     """Verifica se algum campo, inclusive aninhado, tem configuração per-field."""
     return bool(_collect_configured_fields(pydantic_model))
+
+
+# Os overloads ligam o tipo da entrada ao da saída. O de pandas vem primeiro:
+# sem polars instalado, PolarsDataFrame não resolve e casaria com qualquer
+# entrada se fosse o primeiro.
+@overload
+def dataframeit(
+    data: pd.DataFrame | pd.Series | list | dict,
+    questions: type[BaseModel] | None = None,
+    prompt: str | None = None,
+    perguntas: type[BaseModel] | None = None,  # Deprecated: use 'questions'
+    resume: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    reprocess_columns: str | list[str] | tuple[str, ...] | None = None,
+    model: str | None = None,
+    provider: str = "openai",
+    status_column: str | None = None,
+    text_column: str | None = None,
+    api_key: str | None = None,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    rate_limit_delay: float = 0.0,
+    track_tokens: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    model_kwargs: dict[str, Any] | None = None,
+    parallel_requests: int = 1,
+    # Parâmetros de busca web
+    use_search: bool = False,  # noqa: FBT001, FBT002 (posicional na API pública)
+    search_provider: str = "tavily",
+    search_per_field: bool = False,  # noqa: FBT001, FBT002 (posicional na API pública)
+    max_results: int = 5,
+    search_depth: str = "basic",
+    max_search_calls: int = 10,
+    search_groups: dict[str, dict] | None = None,
+    save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
+    batch_size: int | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> pd.DataFrame: ...
+
+
+@overload
+def dataframeit(
+    data: PolarsDataFrame | PolarsSeries,
+    questions: type[BaseModel] | None = None,
+    prompt: str | None = None,
+    perguntas: type[BaseModel] | None = None,  # Deprecated: use 'questions'
+    resume: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    reprocess_columns: str | list[str] | tuple[str, ...] | None = None,
+    model: str | None = None,
+    provider: str = "openai",
+    status_column: str | None = None,
+    text_column: str | None = None,
+    api_key: str | None = None,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    rate_limit_delay: float = 0.0,
+    track_tokens: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    model_kwargs: dict[str, Any] | None = None,
+    parallel_requests: int = 1,
+    # Parâmetros de busca web
+    use_search: bool = False,  # noqa: FBT001, FBT002 (posicional na API pública)
+    search_provider: str = "tavily",
+    search_per_field: bool = False,  # noqa: FBT001, FBT002 (posicional na API pública)
+    max_results: int = 5,
+    search_depth: str = "basic",
+    max_search_calls: int = 10,
+    search_groups: dict[str, dict] | None = None,
+    save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
+    batch_size: int | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> PolarsDataFrame: ...
 
 
 def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)

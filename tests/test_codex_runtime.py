@@ -220,7 +220,7 @@ class _RecordingProvider(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"error":{"message":"mock","type":"invalid_request_error"}}')
 
-    def log_message(self, *args):
+    def log_message(self, format, *args):  # noqa: A002 (nome do parâmetro da classe base)
         pass
 
 

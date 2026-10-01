@@ -160,6 +160,8 @@ def test_sem_hierarquia_de_erros_do_langchain_core_classifica_pelo_status(monkey
     for nome in ("ModelError", "ModelRateLimitError"):
         monkeypatch.delattr(exceptions, nome, raising=False)
     spec = importlib.util.find_spec("dataframeit.errors")
+    assert spec is not None
+    assert spec.loader is not None
     copia = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(copia)
 

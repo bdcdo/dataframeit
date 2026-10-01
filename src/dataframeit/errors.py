@@ -272,7 +272,7 @@ def _get_missing_package_message(
 """.strip()
 
 
-def validate_provider_dependencies(provider: str) -> None:
+def validate_provider_dependencies(provider: str | None) -> None:
     """Valida se as dependências do provider estão instaladas ANTES de iniciar.
 
     Args:

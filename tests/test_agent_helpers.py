@@ -1,7 +1,7 @@
 """Testes para helpers internos de dataframeit.agent (sem chamadas a LLM/rede)."""
 
 from types import SimpleNamespace
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, cast
 from unittest.mock import MagicMock, patch
 
 from pydantic import BaseModel, Field
@@ -18,6 +18,9 @@ from dataframeit.agent import (
     call_agent_per_group,
 )
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+
+if TYPE_CHECKING:
+    from dataframeit.search.base import SearchProvider
 
 
 def _make_config(**overrides):
@@ -113,6 +116,7 @@ class TestWithSearchOverrides:
         cfg = _make_config()
         result = _with_search_overrides(cfg, search_depth="advanced")
         assert result is not cfg
+        assert result.search_config is not None
         assert result.search_config.search_depth == "advanced"
         # max_results preservado
         assert result.search_config.max_results == 5
@@ -121,6 +125,7 @@ class TestWithSearchOverrides:
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, max_results=20)
+        assert result.search_config is not None
         assert result.search_config.max_results == 20
         assert result.search_config.search_depth == "basic"
 
@@ -128,6 +133,7 @@ class TestWithSearchOverrides:
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, search_depth="advanced", max_results=10)
+        assert result.search_config is not None
         assert result.search_config.search_depth == "advanced"
         assert result.search_config.max_results == 10
 
@@ -136,6 +142,7 @@ class TestWithSearchOverrides:
 
         cfg = _make_config()
         result = _with_search_overrides(cfg, max_results=0)
+        assert result.search_config is not None
         assert result.search_config.max_results == 0
 
     def test_nao_muta_config_original(self):
@@ -596,7 +603,8 @@ class TestExtractTrace:
 
     def test_provider_preenche_search_provider(self):
 
-        provider = SimpleNamespace(name="exa")
+        # Dublê: _extract_trace só lê o nome do provider.
+        provider = cast("SearchProvider", SimpleNamespace(name="exa"))
         trace = _extract_trace({"messages": []}, "m", 0.0, "full", provider=provider)
         assert trace["search_provider"] == "exa"
 

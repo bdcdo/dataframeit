@@ -15,6 +15,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- `dataframeit()` declara o tipo de retorno pelo tipo da entrada: DataFrame ou Series do polars devolve DataFrame do polars, e DataFrame ou Series do pandas, `list` e `dict` devolvem DataFrame do pandas. Antes, o retorno era a união dos dois, e o checker de tipos recusava `resultado["coluna"].tolist()` (#155).
 - O extra `codex` passa a exigir `openai-codex==0.159.2`, que traz o runtime 0.159.2. Com o runtime 0.137, que o SDK anterior fixava, a conta do ChatGPT recebia HTTP 400 nos modelos lançados depois dele, como o `gpt-6-luna`, embora o catálogo da conta os anunciasse. O `effort` é conferido contra os valores que o SDK declara, agora com `max` e `ultra`, porque o enum do SDK novo aceita qualquer texto.
 - No provider `codex`, os códigos de erro `rateLimitExceeded` e `flexUnavailable` do runtime levantam `ProviderOverloadedError`, e a linha é repetida como no HTTP 429.
 - No provider `codex`, as flags `sleep_tool` e `view_image` do runtime ficam desligadas, e as ferramentas de pausa e de leitura de imagem local deixam de ser oferecidas ao modelo.
