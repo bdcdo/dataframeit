@@ -355,6 +355,7 @@ def test_checkpoint_textual_serializa_array_e_enum_como_json(tmp_path):
     df = pd.DataFrame(
         {
             "tags": [np.array(["x", "y"], dtype=object)],
+            "numeros": [[np.int64(5), np.bool_(True)]],
             "interno": [{"itens": np.array(["a"], dtype=object), "cor": Cor.AZUL}],
         }
     )
@@ -362,6 +363,7 @@ def test_checkpoint_textual_serializa_array_e_enum_como_json(tmp_path):
 
     relido = pd.read_csv(ckpt)
     assert relido["tags"][0] == '["x", "y"]'
+    assert relido["numeros"][0] == "[5, true]"
     assert relido["interno"][0] == '{"itens": ["a"], "cor": "azul"}'
 
 

@@ -370,12 +370,17 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
 
 
 def _same_json(left: object, right: object) -> bool:
-    """Se os dois valores dão o mesmo JSON, como o checkpoint os gravaria."""
+    """Se os dois valores dão o mesmo texto JSON, como o checkpoint os gravaria.
+
+    Compara o texto, e não os valores relidos, porque 1, 1.0 e True são iguais
+    em Python e diferentes no JSON. As chaves ficam na ordem em que vieram: a
+    validação preserva a do relido, e ordenar poria a chave int 10 antes de 2
+    de um lado e depois do outro. Estrutura funda demais para o JSON conta
+    como diferente, e o valor fica como foi relido.
+    """
     try:
-        return json.loads(json.dumps(left, default=_json_default)) == json.loads(
-            json.dumps(right, default=_json_default)
-        )
-    except (TypeError, ValueError):
+        return json.dumps(left, default=_json_default) == json.dumps(right, default=_json_default)
+    except (TypeError, ValueError, RecursionError):
         return False
 
 
@@ -1843,15 +1848,16 @@ def _array_as_list(value: object) -> object:
 
 
 def _json_default(value: object) -> object:
-    """O que json.dumps não serializa: array vira lista, Enum o valor, o resto texto.
+    """O que json.dumps não serializa: numpy pelo tolist, Enum pelo valor, o resto texto.
 
-    O Enum vai pelo valor porque é o que a validação do campo aceita de volta;
-    o texto dele ("Cor.AZUL") não valida.
+    O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
+    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
+    a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
     """
     if isinstance(value, Enum):
         return value.value
-    as_list = _array_as_list(value)
-    return str(value) if as_list is value else as_list
+    tolist = getattr(value, "tolist", None)
+    return tolist() if callable(tolist) else str(value)
 
 
 def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:

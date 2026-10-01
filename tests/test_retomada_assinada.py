@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
-from dataframeit.core import _run_signature
+from dataframeit.core import _run_signature, _same_json
 from dataframeit.utils import get_complex_fields
 
 
@@ -621,7 +621,7 @@ class ComChaveInt(BaseModel):
 _TIPADOS = {
     ComData: ("quando", lambda texto: {texto: datetime.date(2024, 1, 2)}),
     ComTupla: ("par", lambda texto: (1, texto)),
-    ComChaveInt: ("mapa", lambda texto: {1: texto}),
+    ComChaveInt: ("mapa", lambda texto: {1: texto, 10: texto, 2: texto}),
 }
 
 
@@ -853,3 +853,40 @@ def test_campo_excluido_e_ausente_nao_derruba_a_retomada():
     saida = _roda(df, _llm(0, SystemExit())[1], modelo=ComOculto)
 
     assert list(saida["tags"]) == [["x"]]
+
+
+class AlternaNumero(BaseModel):
+    """O validador troca int por float e float por int a cada passada."""
+
+    n: list[int | float]
+
+    @field_validator("n")
+    @classmethod
+    def alterna(cls, valor):
+        return [float(item) if isinstance(item, int) else int(item) for item in valor]
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_volta_ao_tipo_distingue_int_de_float(tmp_path, formato):
+    """1 e 1.0 são o mesmo valor em Python, mas não o mesmo JSON."""
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a"]})
+
+    def llm(text, *args, **kwargs):
+        return {"data": AlternaNumero(n=[1]).model_dump(), "usage": None}
+
+    direta = _roda(df, llm, modelo=AlternaNumero, batch_size=1, checkpoint_path=ckpt)
+    retomada = _roda(
+        df, _llm(0, SystemExit())[1], modelo=AlternaNumero, batch_size=1, checkpoint_path=ckpt
+    )
+
+    assert [type(item) for item in retomada["n"][0]] == [type(item) for item in direta["n"][0]]
+
+
+def test_estrutura_funda_demais_para_o_json_fica_como_relida():
+    profunda: list = []
+    for _ in range(100_000):
+        profunda = [profunda]
+
+    assert _same_json(profunda, profunda) is False
