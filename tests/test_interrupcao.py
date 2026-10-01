@@ -1,5 +1,6 @@
 """Falha que impede as linhas seguintes interrompe a execução sem gastá-las."""
 
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pandas as pd
@@ -156,3 +157,52 @@ def test_aviso_com_checkpoint_manda_usar_o_mesmo_arquivo(tmp_path):
             batch_size=5,
             checkpoint_path=tmp_path / "c.csv",
         )
+
+
+def test_falha_ao_despachar_a_linha_interrompe_e_grava_o_checkpoint(tmp_path):
+    df = pd.DataFrame({"texto": [f"linha{i}" for i in range(6)]})
+    ckpt = tmp_path / "ckpt.csv"
+    _, llm = _llm_que_esgota(100, ProviderAbortError("nunca"))
+    submit = ThreadPoolExecutor.submit
+    despachos = []
+
+    def submit_que_esgota(self, *args, **kwargs):
+        despachos.append(1)
+        if len(despachos) > 2:
+            msg = "can't start new thread"
+            raise RuntimeError(msg)
+        return submit(self, *args, **kwargs)
+
+    with (
+        patch.object(ThreadPoolExecutor, "submit", submit_que_esgota),
+        pytest.warns(
+            UserWarning,
+            match=r"interrompida: RuntimeError: can't start new thread\. 4 linha\(s\) ficaram sem status",
+        ),
+    ):
+        saida = _roda(df, llm, parallel_requests=2, batch_size=100, checkpoint_path=ckpt)
+
+    assert saida["_dataframeit_status"].tolist()[:2] == ["processed", "processed"]
+    assert saida["_dataframeit_status"].isna().tolist()[2:] == [True] * 4
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].tolist()[:2] == ["processed", "processed"]
+    assert gravado["_dataframeit_status"].isna().sum() == 4
+
+
+class _InterrupcaoIlegivel(ProviderAbortError):
+    def __str__(self):
+        msg = "sem texto"
+        raise RuntimeError(msg)
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_interrupcao_com_texto_ilegivel_ainda_interrompe(paralelo):
+    df = pd.DataFrame({"texto": [f"linha{i}" for i in range(4)]})
+    _, llm = _llm_que_esgota(0, _InterrupcaoIlegivel())
+
+    with pytest.warns(
+        UserWarning, match=r"interrompida: _InterrupcaoIlegivel: _InterrupcaoIlegivel\(\)\. 4 linha"
+    ):
+        saida = _roda(df, llm, parallel_requests=paralelo)
+
+    assert saida["_dataframeit_status"].isna().all()

@@ -346,7 +346,8 @@ class _ErroIlegivel(Exception):
         raise RuntimeError(msg)
 
 
-def test_falha_ao_registrar_o_erro_nao_interrompe_as_outras_linhas():
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_falha_ao_registrar_o_erro_marca_a_linha_e_segue(paralelo):
     def llm(text, *args, **kwargs):
         if text == "b":
             raise _ErroIlegivel
@@ -355,7 +356,84 @@ def test_falha_ao_registrar_o_erro_nao_interrompe_as_outras_linhas():
     with (
         patch("dataframeit.core.call_langchain", side_effect=llm),
         patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.warns(UserWarning, match="Erro inesperado no executor: sem texto"),
+        pytest.warns(UserWarning, match="Falha ao processar linha 1"),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=paralelo,
+            track_tokens=False,
+        )
+
+    assert resultado["_dataframeit_status"].tolist() == ["processed", "error", "processed"]
+    assert resultado["campo1"].tolist()[0::2] == ["a", "c"]
+    assert resultado["_error_details"].iloc[1] == (
+        "[Falha ao registrar o erro] _ErroIlegivel: _ErroIlegivel()"
+    )
+
+
+def test_falha_fora_do_tratamento_da_linha_marca_a_linha_no_paralelo():
+    def gravacao_que_falha(*args, **kwargs):
+        msg = "gravação"
+        raise RuntimeError(msg)
+
+    with (
+        patch(
+            "dataframeit.core.call_langchain",
+            side_effect=lambda text, *a, **k: {"data": {"campo1": text, "campo2": text}},
+        ),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core._record_missing_text", side_effect=gravacao_que_falha),
+        pytest.warns(UserWarning, match="Falha ao processar linha 1"),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", None, "c"]}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=2,
+            track_tokens=False,
+        )
+
+    assert resultado["_dataframeit_status"].tolist() == ["processed", "error", "processed"]
+    assert resultado["_error_details"].iloc[1] == (
+        "[Falha ao registrar o erro] RuntimeError: gravação"
+    )
+
+
+def test_texto_do_erro_sem_str_nem_repr_fica_so_com_o_tipo():
+    class _ErroMudo(_ErroIlegivel):
+        def __repr__(self):
+            msg = "sem repr"
+            raise RuntimeError(msg)
+
+    assert core._error_text(_ErroIlegivel()) == "_ErroIlegivel: _ErroIlegivel()"
+    assert core._error_text(_ErroMudo()) == "_ErroMudo"
+
+
+def test_falha_ao_gravar_o_snapshot_nao_regrava_a_linha_ja_registrada(tmp_path):
+    rotulos = []
+    salvar = core._SnapshotWriter.save
+
+    def save_que_falha_uma_vez(self, frame, label):
+        rotulos.append(label)
+        if len(rotulos) == 1:
+            msg = "gravação do snapshot"
+            raise RuntimeError(msg)
+        salvar(self, frame, label)
+
+    with (
+        patch(
+            "dataframeit.core.call_langchain",
+            side_effect=lambda text, *a, **k: {"data": {"campo1": text, "campo2": text}},
+        ),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch.object(core._SnapshotWriter, "save", save_que_falha_uma_vez),
+        pytest.warns(
+            UserWarning,
+            match=r"Erro inesperado no executor depois de registrar a linha \d, que mantém o status "
+            r"gravado: RuntimeError: gravação",
+        ),
     ):
         resultado = dataframeit(
             pd.DataFrame({"texto": ["a", "b", "c"]}),
@@ -363,8 +441,45 @@ def test_falha_ao_registrar_o_erro_nao_interrompe_as_outras_linhas():
             prompt="{texto}",
             parallel_requests=2,
             track_tokens=False,
+            batch_size=1,
+            checkpoint_path=tmp_path / "c.csv",
         )
 
-    # A linha 'b' fica sem status nem valor, pendente para a próxima execução.
-    assert resultado["campo1"].tolist()[0::2] == ["a", "c"]
-    assert pd.isna(resultado["campo1"].iloc[1])
+    assert resultado["campo1"].tolist() == ["a", "b", "c"]
+    assert "_dataframeit_status" not in resultado.columns
+    assert sorted(rotulos) == [1, 2, 3]
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_falha_ao_registrar_o_erro_no_reprocessamento_avisa_que_manteve_os_valores(paralelo):
+    def llm(text, *args, **kwargs):
+        if text == "b":
+            raise _ErroIlegivel
+        return {"data": {"campo1": text}, "usage": None}
+
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo1": ["antigo", "antigo"],
+            "campo2": ["x", "x"],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.warns(UserWarning, match="Falha ao processar linha 1"),
+    ):
+        resultado = dataframeit(
+            df,
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=paralelo,
+            track_tokens=False,
+            reprocess_columns=["campo1"],
+        )
+
+    assert resultado["campo1"].tolist() == ["a", "antigo"]
+    assert resultado["_error_details"].iloc[1] == (
+        "[Falha ao registrar o erro] _ErroIlegivel: _ErroIlegivel()" + core._KEPT_VALUES_NOTE
+    )

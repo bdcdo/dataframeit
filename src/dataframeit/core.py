@@ -2058,6 +2058,68 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     return error_msg
 
 
+def _error_text(error: BaseException) -> str:
+    """Tipo e texto da exceção, mesmo quando o `__str__` dela levanta.
+
+    O repr padrão de uma exceção vem de `args` e não passa pelo `__str__`; se
+    também ele levantar, fica só o tipo.
+    """
+    name = type(error).__name__
+    try:
+        text = str(error)
+    except Exception:  # noqa: BLE001 (o texto de exceção alheia pode levantar qualquer coisa)
+        try:
+            text = repr(error)
+        except Exception:  # noqa: BLE001 (idem)
+            return name
+    return f"{name}: {text}"
+
+
+def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_error)
+    df: pd.DataFrame,
+    idx: Hashable,
+    error: Exception,
+    *,
+    status_col: str,
+    config: LLMConfig,
+    row_already_processed: bool,
+    reprocess_columns: Sequence[str] | None,
+    token_stats: dict,
+) -> str:
+    """Grava a falha da linha por _record_error e, se o registro falhar, pelo mínimo.
+
+    Sem isto, uma falha ao montar a mensagem (exceção com `__str__` quebrado,
+    por exemplo) deixaria a linha sem status, o que a apaga da saída, ou
+    derrubaria a execução inteira no modo sequencial. O mínimo usa só o tipo
+    e o texto da exceção original.
+    """
+    try:
+        return _record_error(
+            df,
+            idx,
+            error,
+            status_col=status_col,
+            config=config,
+            row_already_processed=row_already_processed,
+            reprocess_columns=reprocess_columns,
+            token_stats=token_stats,
+        )
+    except Exception:  # noqa: BLE001 (ver a docstring)
+        kept = _KEPT_VALUES_NOTE if row_already_processed and reprocess_columns else ""
+        return _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
+
+
+def _record_unrecorded_error(
+    df: pd.DataFrame, idx: Hashable, error: BaseException, *, status_col: str, note: str = ""
+) -> str:
+    """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
+    error_msg = _error_text(error)
+    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
+    _set_cell(df, idx, status_col, "error")
+    _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
+    return error_msg
+
+
 def _progress_description(
     config: LLMConfig,
     backend: ProviderBackend,
@@ -2176,7 +2238,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                 )
                 success = True
             except ProviderAbortError as e:
-                token_stats["abort"] = f"{type(e).__name__}: {e}"
+                token_stats["abort"] = _error_text(e)
                 _mark_unreached(
                     df,
                     [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]],
@@ -2185,7 +2247,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                 )
                 break
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
-                _record_error(
+                _record_error_safely(
                     df,
                     idx,
                     e,
@@ -2265,6 +2327,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     rate_limit_event = threading.Event()
     abort_event = threading.Event()
     recorded: set = set()
+    # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
+    # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
+    counted: set = set()
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -2276,9 +2341,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         if snapshot is not None:
             snapshot()
 
-    def _count_row() -> Callable[[], None] | None:
+    def _count_row(idx: Hashable) -> Callable[[], None] | None:
         """Conta a linha; na hora do checkpoint, copia o DataFrame. Chamar sob `lock`."""
         nonlocal checkpoint_counter
+        counted.add(idx)
         checkpoint_counter += 1
         if writer and checkpoint_counter % writer.checkpoint.batch_size == 0:
             # Copia sob lock, serializa fora, para não bloquear threads na I/O.
@@ -2318,7 +2384,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     row_already_processed=row_already_processed,
                     reprocess_columns=reprocess_columns,
                 )
-                snapshot = _count_row()
+                snapshot = _count_row(idx)
             _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
 
@@ -2356,16 +2422,21 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     token_stats=token_stats,
                 )
                 token_stats["requests_completed"] += 1
-                snapshot = _count_row()
+                snapshot = _count_row(idx)
 
         except ProviderAbortError as e:
             with lock:
-                token_stats.setdefault("abort", f"{type(e).__name__}: {e}")
+                token_stats.setdefault("abort", _error_text(e))
             abort_event.set()
             return {"success": False, "idx": idx, "error": None}
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
-            # Verificar se é erro de rate limit
-            if is_rate_limit_error(e):
+            # A classificação lê o texto da exceção; se ele não puder ser montado,
+            # a linha segue para o registro, que tem o próprio recurso.
+            try:
+                rate_limited = is_rate_limit_error(e)
+            except Exception:  # noqa: BLE001 (ver o comentário acima)
+                rate_limited = False
+            if rate_limited:
                 with lock:
                     if current_workers > 1:
                         old_workers = current_workers
@@ -2380,7 +2451,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         threading.Timer(5.0, rate_limit_event.clear).start()
 
             with lock:
-                error_msg = _record_error(
+                error_msg = _record_error_safely(
                     df,
                     idx,
                     e,
@@ -2390,7 +2461,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     reprocess_columns=reprocess_columns,
                     token_stats=token_stats,
                 )
-                snapshot = _count_row()
+                snapshot = _count_row(idx)
             _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": error_msg}
 
@@ -2412,13 +2483,38 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             pending_rows = pending_rows[worker_batch:]
 
             with ThreadPoolExecutor(max_workers=worker_batch) as executor:
-                futures = {executor.submit(process_single_row, row): row for row in batch}
+                futures = {}
+                for row in batch:
+                    # A linha que não foi despachada nunca rodou: falhar ao
+                    # despachar interrompe a execução e a deixa sem status, para
+                    # a retomada. Como 'error', o resume=True a preservaria.
+                    try:
+                        futures[executor.submit(process_single_row, row)] = row
+                    except Exception as e:  # noqa: BLE001, PERF203 (ver o comentário acima)
+                        with lock:
+                            token_stats.setdefault("abort", _error_text(e))
+                        abort_event.set()
+                        break
 
                 for future in as_completed(futures):
                     try:
                         outcome = future.result()
                     except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
-                        warnings.warn(f"Erro inesperado no executor: {e}", stacklevel=1)
+                        # Escapou do tratamento da própria linha; sem isto ela
+                        # ficaria sem status e sumiria da saída.
+                        _i, idx, _row = futures[future]
+                        if idx in counted:
+                            warnings.warn(
+                                f"Erro inesperado no executor depois de registrar a linha "
+                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                                stacklevel=1,
+                            )
+                        else:
+                            with lock:
+                                _record_unrecorded_error(df, idx, e, status_col=status_col)
+                                snapshot = _count_row(idx)
+                            _save_snapshot(snapshot)
+                        recorded.add(idx)
                     else:
                         if outcome["success"] or outcome["error"] is not None:
                             recorded.add(outcome["idx"])
