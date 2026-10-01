@@ -65,7 +65,7 @@ def dataframeit(
 | `model` | str \| None | `None` | LLM model name; `None` uses the provider's default model, listed in [Providers](../guides/providers.md) |
 | `provider` | str | `'openai'` | Provider identifier; `claude_code` and `codex` use the official SDKs instead of LangChain (see [Providers](../guides/providers.md)) |
 | `api_key` | str | `None` | API key (uses env var if None); not accepted with `provider='codex'` and ignored with `provider='claude_code'` |
-| `model_kwargs` | dict | `None` | Extra parameters; with `claude_code`, only `max_turns`, `max_budget_usd` and `effort` are read and the rest is ignored; with `codex`, only `effort` is accepted |
+| `model_kwargs` | dict | `None` | Extra parameters; with `claude_code`, only `max_turns`, `max_budget_usd` and `effort` are read and the rest is ignored; with `codex`, only `effort` and `timeout` are accepted |
 
 #### Resilience
 

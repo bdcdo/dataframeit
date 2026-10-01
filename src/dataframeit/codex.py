@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import math
 import os
 import tempfile
+import threading
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,14 +35,16 @@ if TYPE_CHECKING:
 
     from openai_codex import Codex, TurnHandle
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
-    from openai_codex.types import ReasoningEffort
+    from openai_codex.types import ReasoningEffort, ThreadTokenUsage
 
 # Status HTTP de rate limit e início da faixa de erro do servidor.
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR_MIN = 500
 
-_ALLOWED_MODEL_KWARGS = frozenset({"effort"})
+_ALLOWED_MODEL_KWARGS = frozenset({"effort", "timeout"})
 _AUTH_LOCK_SUFFIX = ".dataframeit.lock"
+# Prazo de cada tentativa, em segundos, quando model_kwargs não traz `timeout`.
+_DEFAULT_TURN_TIMEOUT = 600
 _CODEX_CONFIG_OVERRIDES = (
     'cli_auth_credentials_store="file"',
     "project_doc_max_bytes=0",
@@ -312,6 +317,26 @@ def _validate_config(config: LLMConfig) -> ReasoningEffort:
     return ReasoningEffort(effort)
 
 
+def _turn_timeout(config: LLMConfig) -> float | None:
+    """Prazo de cada tentativa da linha, em segundos; `None` desliga o prazo."""
+    timeout = (config.model_kwargs or {}).get("timeout", _DEFAULT_TURN_TIMEOUT)
+    if timeout is None:
+        return None
+    # bool é subclasse de int, e `True` viraria um prazo de um segundo.
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        msg = (
+            f"timeout inválido para provider='codex': {timeout!r}. "
+            "Use um número de segundos maior que zero, ou None para não ter prazo."
+        )
+        raise ProviderConfigurationError(msg)
+    return timeout
+
+
 @contextmanager
 def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
     """Mantém lock, credencial e diretórios isolados pelo tempo da execução."""
@@ -383,6 +408,7 @@ class CodexBackend:
     _effort: ReasoningEffort
     _client: Codex
     _workspace: Path
+    _turn_timeout: float | None
 
     def invoke(self, text: str) -> dict:
         """Processa uma linha com structured output nativo do Codex."""
@@ -421,14 +447,11 @@ class CodexBackend:
                 effort=self._effort,
                 output_schema=self._schema,
             )
-            completed, items, usage = _collect_turn(turn)
+            completed, items = _collect_turn(turn, self._turn_timeout, usage_total)
         except ProviderError:
             raise
         except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
             _raise_classified_sdk_error(err)
-
-        for key, value in (usage or {}).items():
-            usage_total[key] = usage_total.get(key, 0) + value
 
         if completed.status == TurnStatus.failed:
             _raise_turn_error(completed.error)
@@ -449,16 +472,77 @@ class CodexBackend:
         return {"data": validated.model_dump(), "usage": dict(usage_total) or None}
 
 
-def _collect_turn(turn: TurnHandle) -> tuple[Turn, list[ThreadItem], dict[str, int] | None]:
-    """Consome o stream do turno e devolve o turno concluído, os itens e o uso.
+def _interrupt_quietly(turn: TurnHandle) -> None:
+    """Pede a interrupção do turno; quem chama já está fora da thread da linha.
 
-    Faz o que `TurnHandle.run` faz, com duas diferenças. O turno que falha volta
+    `interrupt` é um pedido ao app-server sem prazo, e se o app-server travou,
+    só a thread que o fez fica presa. A falha do pedido não muda o destino da
+    tentativa, que já falhou por outro motivo.
+    """
+    with contextlib.suppress(Exception):
+        turn.interrupt()
+
+
+@contextmanager
+def _turn_deadline(turn: TurnHandle, timeout: float | None) -> Iterator[threading.Event]:
+    """Arma o prazo do turno e devolve o evento que diz se ele estourou.
+
+    No estouro, a assinatura do turno é fechada, o que acorda o `next()` do
+    stream com `TransportClosedError` na thread da linha. A assinatura é atributo
+    privado do SDK, fixado em versão exata no extra `codex`. O `interrupt` vem
+    depois, na thread do relógio.
+    """
+    expired = threading.Event()
+    if timeout is None:
+        yield expired
+        return
+
+    def expire() -> None:
+        expired.set()
+        turn._subscription.close()  # noqa: SLF001 (ver a docstring)
+        _interrupt_quietly(turn)
+
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield expired
+    finally:
+        timer.cancel()
+
+
+def _add_usage(usage: ThreadTokenUsage | None, usage_total: dict[str, int]) -> None:
+    if usage is None:
+        return
+    total = usage.total
+    for key, value in (
+        ("input_tokens", total.input_tokens),
+        ("cached_input_tokens", total.cached_input_tokens),
+        ("output_tokens", total.output_tokens),
+        ("reasoning_tokens", total.reasoning_output_tokens),
+        ("total_tokens", total.total_tokens),
+    ):
+        usage_total[key] = usage_total.get(key, 0) + value
+
+
+def _collect_turn(
+    turn: TurnHandle, timeout: float | None, usage_total: dict[str, int]
+) -> tuple[Turn, list[ThreadItem]]:
+    """Consome o stream do turno e devolve o turno concluído e os itens.
+
+    Faz o que `TurnHandle.run` faz, com três diferenças. O turno que falha volta
     com o `codex_error_info`, que distingue sobrecarga, limite de uso e erro
     definitivo; `run` levanta `RuntimeError` só com a mensagem, e o histórico não
     pode ser relido depois, porque thread efêmera recusa `thread/read` com
-    `includeTurns`. E o reroteamento para outro modelo, que só aparece no stream,
-    interrompe o turno em vez de passar despercebido.
+    `includeTurns`. O reroteamento para outro modelo, que só aparece no stream,
+    interrompe o turno em vez de passar despercebido. E o turno tem prazo: a
+    espera do SDK por evento não tem timeout, e um turno que não termina
+    prenderia a execução inteira.
+
+    O uso informado entra em `usage_total` em toda saída, inclusive no estouro
+    do prazo e no stream sem conclusão, porque o turno é cobrado mesmo assim.
     """
+    from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
     from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
         ItemCompletedNotification,
         ModelReroutedNotification,
@@ -470,45 +554,43 @@ def _collect_turn(turn: TurnHandle) -> tuple[Turn, list[ThreadItem], dict[str, i
     items: list[ThreadItem] = []
     usage = None
     stream = turn.stream()
-    try:
-        for event in stream:
-            payload = event.payload
-            if isinstance(payload, ModelReroutedNotification) and payload.turn_id == turn.id:
-                turn.interrupt()
-                msg = (
-                    f"O Codex trocou o modelo do turno de {payload.from_model!r} para "
-                    f"{payload.to_model!r} (motivo: {payload.reason.root})"
-                )
-                raise ProviderError(msg)
-            if isinstance(payload, ItemCompletedNotification) and payload.turn_id == turn.id:
-                items.append(payload.item)
-            elif (
-                isinstance(payload, ThreadTokenUsageUpdatedNotification)
-                and payload.turn_id == turn.id
-            ):
-                usage = payload.token_usage
-            elif isinstance(payload, TurnCompletedNotification) and payload.turn.id == turn.id:
-                completed = payload.turn
-    finally:
-        # `stream` é anotado como Iterator, mas é um gerador, e fechá-lo desfaz o
-        # registro das notificações do turno no roteador do SDK.
-        stream.close()  # ty: ignore[unresolved-attribute]
+    with _turn_deadline(turn, timeout) as expired:
+        try:
+            for event in stream:
+                payload = event.payload
+                if isinstance(payload, ModelReroutedNotification) and payload.turn_id == turn.id:
+                    threading.Thread(target=_interrupt_quietly, args=(turn,), daemon=True).start()
+                    msg = (
+                        f"O Codex trocou o modelo do turno de {payload.from_model!r} para "
+                        f"{payload.to_model!r} (motivo: {payload.reason.root})"
+                    )
+                    raise ProviderError(msg)
+                if isinstance(payload, ItemCompletedNotification) and payload.turn_id == turn.id:
+                    items.append(payload.item)
+                elif (
+                    isinstance(payload, ThreadTokenUsageUpdatedNotification)
+                    and payload.turn_id == turn.id
+                ):
+                    usage = payload.token_usage
+                elif isinstance(payload, TurnCompletedNotification) and payload.turn.id == turn.id:
+                    completed = payload.turn
+        except TransportClosedError as err:
+            # Sem o estouro, o transporte fechou de fato, e a classificação do
+            # `_invoke_once` interrompe a execução.
+            if not expired.is_set():
+                raise
+            msg = f"O turno Codex não terminou no prazo de {timeout} s"
+            raise ProviderTransientError(msg) from err
+        finally:
+            # `stream` é anotado como Iterator, mas é um gerador, e fechá-lo desfaz o
+            # registro das notificações do turno no roteador do SDK.
+            stream.close()  # ty: ignore[unresolved-attribute]
+            _add_usage(usage, usage_total)
 
     if completed is None:
         msg = "O stream do turno Codex terminou sem o evento de conclusão"
         raise ProviderTransientError(msg)
-
-    usage_dict = None
-    if usage is not None:
-        total = usage.total
-        usage_dict = {
-            "input_tokens": total.input_tokens,
-            "cached_input_tokens": total.cached_input_tokens,
-            "output_tokens": total.output_tokens,
-            "reasoning_tokens": total.reasoning_output_tokens,
-            "total_tokens": total.total_tokens,
-        }
-    return completed, items, usage_dict
+    return completed, items
 
 
 def _raise_turn_error(error: TurnError | None) -> NoReturn:
@@ -633,6 +715,7 @@ def open_codex_backend(
 
     schema = _build_schema(pydantic_model)
     effort = _validate_config(config)
+    turn_timeout = _turn_timeout(config)
 
     with _isolated_runtime() as (workspace, codex_home):
         codex_config = CodexConfig(
@@ -663,4 +746,5 @@ def open_codex_backend(
                 _effort=effort,
                 _client=client,
                 _workspace=workspace,
+                _turn_timeout=turn_timeout,
             )

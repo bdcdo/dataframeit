@@ -1534,6 +1534,12 @@ def _signature_path(path: str | Path) -> Path:
     return Path(f"{path}.dataframeit.json")
 
 
+# Chaves de model_kwargs que não mudam a resposta da linha. O prazo do turno
+# fica de fora porque o caso típico de mudá-lo é retomar uma execução que
+# travou, e com ele na assinatura o checkpoint seria recusado.
+_UNSIGNED_MODEL_KWARGS = frozenset({"timeout"})
+
+
 def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução responde)
     questions: type[BaseModel],
     prompt: str,
@@ -1559,7 +1565,13 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
             "prompt": prompt,
             "provider": provider,
             "model": model,
-            "model_kwargs": _stable(model_kwargs or {}),
+            "model_kwargs": _stable(
+                {
+                    key: value
+                    for key, value in (model_kwargs or {}).items()
+                    if key not in _UNSIGNED_MODEL_KWARGS
+                }
+            ),
             "schema": schema,
             "search": repr(search_config),
             "text_column": text_column,

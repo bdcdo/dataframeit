@@ -430,6 +430,27 @@ def test_conjunto_em_model_kwargs_assina_em_ordem_fixa():
     assert assinatura({1, "1", "a"}) == assinatura({"a", "1", 1})
 
 
+def test_prazo_em_model_kwargs_nao_entra_na_assinatura():
+    """Trocar o prazo do turno não muda a resposta, e não pode impedir a retomada."""
+
+    def assinatura(model_kwargs):
+        return _run_signature(
+            Modelo,
+            "{texto}",
+            provider="codex",
+            model="m",
+            model_kwargs=model_kwargs,
+            search_config=None,
+            text_column="texto",
+            status_col="_dataframeit_status",
+        )
+
+    base = assinatura({"effort": "low"})
+    assert assinatura({"effort": "low", "timeout": 30}) == base
+    assert assinatura({"effort": "low", "timeout": None}) == base
+    assert assinatura({"effort": "high", "timeout": 30}) != base
+
+
 def test_linha_com_erro_no_checkpoint_tambem_vem_dele(tmp_path):
     ckpt = tmp_path / "ckpt.csv"
     df = pd.DataFrame({"texto": ["a", "b", "c"], "campo1": ["m1", "m2", "m3"]})
