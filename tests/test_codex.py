@@ -1702,7 +1702,7 @@ class TestMensagensEAtrasos:
             pytest.warns(UserWarning, match="Tentativa 1/2"),
             pytest.raises(
                 ProviderTransientError,
-                match="^O stream do turno Codex terminou sem o evento de conclusão$",
+                match=r"^O stream do turno Codex terminou sem o evento de conclusão$",
             ),
         ):
             backend.invoke("texto")
@@ -1713,8 +1713,8 @@ class TestMensagensEAtrasos:
         )
 
         with (
-            pytest.warns(UserWarning),
-            pytest.raises(ProviderOutputError, match="^Codex retornou resposta vazia$"),
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderOutputError, match=r"^Codex retornou resposta vazia$"),
         ):
             backend.invoke("texto")
 
@@ -1762,11 +1762,9 @@ class TestMensagensEAtrasos:
         thread.turn.side_effect = [travado, normal]
         escapadas = []
 
-        with (
-            patch.object(threading, "excepthook", escapadas.append),
-            pytest.warns(UserWarning, match="Tentativa 1/2"),
-        ):
-            backend.invoke("texto")
+        with patch.object(threading, "excepthook", escapadas.append):
+            with pytest.warns(UserWarning, match="Tentativa 1/2"):
+                backend.invoke("texto")
             assert tentou.wait(5)
             for relogio in threading.enumerate():
                 if isinstance(relogio, threading.Timer):
@@ -1793,7 +1791,7 @@ class TestMensagensEAtrasos:
         turn.interrupt.side_effect = liberar.wait
 
         try:
-            with pytest.warns(UserWarning), pytest.raises(ProviderError):
+            with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderError):
                 backend.invoke("texto")
             presas = [t for t in threading.enumerate() if "_interrupt_quietly" in t.name]
             assert presas
