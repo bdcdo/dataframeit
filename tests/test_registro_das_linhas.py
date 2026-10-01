@@ -176,7 +176,38 @@ def test_resumo_do_paralelo_conta_requisicoes_e_tempo(capsys):
     assert "WORKERS REDUZIDOS" not in saida
 
 
-def test_barra_do_paralelo_mostra_total_e_reprocessamento(capsys):
+class _Barra:
+    """Registra o rótulo, o total e os avanços da barra de progresso."""
+
+    criadas: list
+
+    def __init__(self, iterable=None, total=None, desc=None):
+        self.iterable, self.total, self.desc, self.n = iterable, total, desc, 0
+        _Barra.criadas.append(self)
+
+    def __iter__(self):
+        for item in self.iterable or ():
+            self.n += 1
+            yield item
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def update(self, passos):
+        self.n += passos
+
+
+def _barra(monkeypatch):
+    _Barra.criadas = []
+    monkeypatch.setattr(core, "tqdm", _Barra)
+    return _Barra.criadas
+
+
+def test_barra_do_paralelo_mostra_total_e_reprocessamento(monkeypatch):
+    barras = _barra(monkeypatch)
     df = pd.DataFrame(
         {
             "texto": ["a", "b", "c"],
@@ -187,10 +218,9 @@ def test_barra_do_paralelo_mostra_total_e_reprocessamento(capsys):
     )
     _roda(df, _llm(), parallel_requests=2, reprocess_columns=["campo1"], track_tokens=False)
 
-    barra = capsys.readouterr().err
-    assert "(reprocessando: campo1)" in barra
-    assert "3/3" in barra
-    assert "6/3" not in barra
+    [barra] = barras
+    assert barra.desc == "Processando [pandas+langchain] [2 workers] (reprocessando: campo1)"
+    assert (barra.total, barra.n) == (3, 3)
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
@@ -346,8 +376,9 @@ def test_erro_sem_texto_legivel_nao_conta_como_rate_limit(capsys):
 # Modo sequencial
 
 
-def test_barra_do_sequencial_mostra_ritmo_reprocessamento_e_total(monkeypatch, capsys):
+def test_barra_do_sequencial_mostra_ritmo_reprocessamento_e_total(monkeypatch):
     monkeypatch.setattr(core.time, "sleep", lambda _: None)
+    barras = _barra(monkeypatch)
     df = pd.DataFrame(
         {
             "texto": ["a", "b", "c"],
@@ -358,9 +389,9 @@ def test_barra_do_sequencial_mostra_ritmo_reprocessamento_e_total(monkeypatch, c
     )
     _roda(df, _llm(), rate_limit_delay=1.0, reprocess_columns=["campo1"], track_tokens=False)
 
-    barra = capsys.readouterr().err
-    assert "Processando [pandas+langchain] [~60 req/min] (reprocessando: campo1): " in barra
-    assert "3/3" in barra
+    [barra] = barras
+    assert barra.desc == "Processando [pandas+langchain] [~60 req/min] (reprocessando: campo1)"
+    assert (barra.total, barra.n) == (3, 3)
 
 
 @pytest.mark.parametrize(("pausa", "esperadas"), [(1.0, [1.0]), (0, [])])
