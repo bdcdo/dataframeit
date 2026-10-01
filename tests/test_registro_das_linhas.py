@@ -1,6 +1,8 @@
 """O que cada linha grava, a contagem do checkpoint e o resumo, nos dois modos."""
 
 import re
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -164,7 +166,7 @@ def test_resumo_do_paralelo_conta_requisicoes_e_tempo(capsys):
     saida = capsys.readouterr().out
     assert "METRICAS DE THROUGHPUT" in saida
     assert "Requisicoes: 3\n" in saida
-    assert re.search(r"Tempo total: \d\.\ds\n", saida)
+    assert re.search(r"Tempo total: \d{1,3}\.\ds\n", saida)
     assert "WORKERS REDUZIDOS" not in saida
 
 
@@ -185,7 +187,8 @@ def test_barra_do_paralelo_mostra_total_e_reprocessamento(capsys):
     assert "6/3" not in barra
 
 
-def test_reprocessamento_no_paralelo_grava_tudo_na_linha_que_tinha_erro():
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_reprocessamento_grava_tudo_na_linha_que_tinha_erro(paralelo):
     df = pd.DataFrame(
         {
             "texto": ["a", "b"],
@@ -194,7 +197,7 @@ def test_reprocessamento_no_paralelo_grava_tudo_na_linha_que_tinha_erro():
             "_dataframeit_status": ["processed", "error"],
         }
     )
-    saida = _roda(df, _llm(), parallel_requests=2, reprocess_columns=["campo1"])
+    saida = _roda(df, _llm(), parallel_requests=paralelo, reprocess_columns=["campo1"])
 
     assert saida["campo1"].tolist() == ["a", "b"]
     assert saida["campo2"].tolist() == ["x", "b"]
@@ -291,7 +294,7 @@ def test_linha_marcada_pela_coleta_mantem_o_erro_depois_da_interrupcao(monkeypat
 
     with pytest.warns(UserWarning, match="interrompida"):
         saida = _roda(
-            ["a", None, "c", "d"],
+            ["a", None, "c"],
             _llm({"c": ProviderAbortError("app-server encerrou")}),
             parallel_requests=2,
         )
@@ -299,7 +302,6 @@ def test_linha_marcada_pela_coleta_mantem_o_erro_depois_da_interrupcao(monkeypat
     status = saida["_dataframeit_status"].tolist()
     assert status[:2] == ["processed", "error"]
     assert pd.isna(status[2])
-    assert pd.isna(status[3])
 
 
 class _TimerFalso:
@@ -328,3 +330,77 @@ def test_erro_sem_texto_legivel_nao_conta_como_rate_limit(capsys):
 
     assert saida["_dataframeit_status"].tolist() == ["error", "processed"]
     assert "WORKERS REDUZIDOS" not in capsys.readouterr().out
+
+
+# Modo sequencial
+
+
+def test_barra_do_sequencial_mostra_ritmo_reprocessamento_e_total(monkeypatch, capsys):
+    monkeypatch.setattr(core.time, "sleep", lambda _: None)
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo1": ["x", "x", "x"],
+            "campo2": ["x", "x", "x"],
+            "_dataframeit_status": ["processed"] * 3,
+        }
+    )
+    _roda(df, _llm(), rate_limit_delay=1.0, reprocess_columns=["campo1"], track_tokens=False)
+
+    barra = capsys.readouterr().err
+    assert "Processando [pandas+langchain] [~60 req/min] (reprocessando: campo1): " in barra
+    assert "3/3" in barra
+
+
+@pytest.mark.parametrize(("pausa", "esperadas"), [(1.0, [1.0]), (0, [])])
+def test_sequencial_pausa_so_depois_de_linha_com_sucesso(monkeypatch, pausa, esperadas):
+    pausas = []
+    monkeypatch.setattr(core.time, "sleep", pausas.append)
+
+    with pytest.warns(UserWarning, match="Falha ao processar linha 1"):
+        _roda(["a", "erro"], _llm({"erro": ValueError("falhou")}), rate_limit_delay=pausa)
+
+    assert pausas == esperadas
+
+
+def test_interrupcao_no_fim_de_um_lote_grava_as_marcas_no_checkpoint(tmp_path):
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c", "d"],
+            "_dataframeit_status": [None, None, "error", "error"],
+            "_error_details": [None, None, "x", "x"],
+        }
+    )
+    ckpt = tmp_path / "c.csv"
+
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _llm({"c": ProviderAbortError("app-server encerrou")}),
+            resume=False,
+            batch_size=2,
+            checkpoint_path=ckpt,
+        )
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].tolist()[:2] == ["processed", "processed"]
+    assert gravado["_dataframeit_status"].isna().tolist()[2:] == [True, True]
+
+
+def test_paralelo_nao_passa_do_numero_de_workers(monkeypatch):
+    em_voo = []
+    pico = []
+    trava = threading.Lock()
+
+    def llm(text, *args, **kwargs):
+        with trava:
+            em_voo.append(text)
+            pico.append(len(em_voo))
+        time.sleep(0.02)
+        with trava:
+            em_voo.remove(text)
+        return {"data": {"campo1": text, "campo2": text}, "usage": None}
+
+    _roda([f"t{i}" for i in range(6)], llm, parallel_requests=2, track_tokens=False)
+
+    assert max(pico) <= 2

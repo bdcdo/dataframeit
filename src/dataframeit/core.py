@@ -2505,7 +2505,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         _i, idx, _row = futures[future]
                         if idx in counted:
                             warnings.warn(
-                                f"Erro inesperado no executor: {_error_text(e)}", stacklevel=1
+                                f"Erro inesperado no executor depois de registrar a linha "
+                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                                stacklevel=1,
                             )
                         else:
                             with lock:

@@ -429,7 +429,11 @@ def test_falha_ao_gravar_o_snapshot_nao_regrava_a_linha_ja_registrada(tmp_path):
         ),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch.object(core._SnapshotWriter, "save", save_que_falha_uma_vez),
-        pytest.warns(UserWarning, match="Erro inesperado no executor: RuntimeError: gravação"),
+        pytest.warns(
+            UserWarning,
+            match=r"Erro inesperado no executor depois de registrar a linha \d, que mantém o status "
+            r"gravado: RuntimeError: gravação",
+        ),
     ):
         resultado = dataframeit(
             pd.DataFrame({"texto": ["a", "b", "c"]}),
