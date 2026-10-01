@@ -373,10 +373,12 @@ def _same_json(left: object, right: object) -> bool:
     """Se os dois valores dão o mesmo texto JSON, como o checkpoint os gravaria.
 
     Compara o texto, e não os valores relidos, porque 1, 1.0 e True são iguais
-    em Python e diferentes no JSON. As chaves ficam na ordem em que vieram: a
-    validação preserva a do relido, e ordenar poria a chave int 10 antes de 2
-    de um lado e depois do outro. Estrutura funda demais para o JSON conta
-    como diferente, e o valor fica como foi relido.
+    em Python e diferentes no JSON. As chaves ficam na ordem em que vieram,
+    porque ordenar poria a chave int 10 antes de 2 de um lado e depois do
+    outro. A validação preserva a ordem de um dict; um submodelo sai na ordem
+    de declaração, que é a do checkpoint que o dataframeit gravou, e o que
+    chega em outra ordem, montado fora dele, fica como veio. Estrutura funda
+    demais para o JSON também conta como diferente.
     """
     try:
         return json.dumps(left, default=_json_default) == json.dumps(right, default=_json_default)
