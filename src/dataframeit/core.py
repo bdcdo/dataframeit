@@ -2105,17 +2105,18 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
             token_stats=token_stats,
         )
     except Exception:  # noqa: BLE001 (ver a docstring)
-        return _record_unrecorded_error(df, idx, error, status_col=status_col)
+        kept = _KEPT_VALUES_NOTE if row_already_processed and reprocess_columns else ""
+        return _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
 
 
 def _record_unrecorded_error(
-    df: pd.DataFrame, idx: Hashable, error: BaseException, *, status_col: str
+    df: pd.DataFrame, idx: Hashable, error: BaseException, *, status_col: str, note: str = ""
 ) -> str:
     """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
     error_msg = _error_text(error)
     warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
     _set_cell(df, idx, status_col, "error")
-    _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}")
+    _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
     return error_msg
 
 
@@ -2326,6 +2327,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     rate_limit_event = threading.Event()
     abort_event = threading.Event()
     recorded: set = set()
+    # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
+    # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
+    counted: set = set()
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -2337,9 +2341,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         if snapshot is not None:
             snapshot()
 
-    def _count_row() -> Callable[[], None] | None:
+    def _count_row(idx: Hashable) -> Callable[[], None] | None:
         """Conta a linha; na hora do checkpoint, copia o DataFrame. Chamar sob `lock`."""
         nonlocal checkpoint_counter
+        counted.add(idx)
         checkpoint_counter += 1
         if writer and checkpoint_counter % writer.checkpoint.batch_size == 0:
             # Copia sob lock, serializa fora, para não bloquear threads na I/O.
@@ -2379,7 +2384,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     row_already_processed=row_already_processed,
                     reprocess_columns=reprocess_columns,
                 )
-                snapshot = _count_row()
+                snapshot = _count_row(idx)
             _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
 
@@ -2417,7 +2422,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     token_stats=token_stats,
                 )
                 token_stats["requests_completed"] += 1
-                snapshot = _count_row()
+                snapshot = _count_row(idx)
 
         except ProviderAbortError as e:
             with lock:
@@ -2456,7 +2461,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     reprocess_columns=reprocess_columns,
                     token_stats=token_stats,
                 )
-                snapshot = _count_row()
+                snapshot = _count_row(idx)
             _save_snapshot(snapshot)
             return {"success": False, "idx": idx, "error": error_msg}
 
@@ -2498,10 +2503,15 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         # Escapou do tratamento da própria linha; sem isto ela
                         # ficaria sem status e sumiria da saída.
                         _i, idx, _row = futures[future]
-                        with lock:
-                            _record_unrecorded_error(df, idx, e, status_col=status_col)
-                            snapshot = _count_row()
-                        _save_snapshot(snapshot)
+                        if idx in counted:
+                            warnings.warn(
+                                f"Erro inesperado no executor: {_error_text(e)}", stacklevel=1
+                            )
+                        else:
+                            with lock:
+                                _record_unrecorded_error(df, idx, e, status_col=status_col)
+                                snapshot = _count_row(idx)
+                            _save_snapshot(snapshot)
                         recorded.add(idx)
                     else:
                         if outcome["success"] or outcome["error"] is not None:
