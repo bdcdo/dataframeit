@@ -911,7 +911,9 @@ class TestCondicaoPelaApi:
         """A tupla de nomes ordena o campo e não dispara o aviso de depends_on ausente."""
 
         class Modelo(BaseModel):
-            detalhe: str | None = Field(
+            # Tupla em depends_on e condição callable são formas aceitas; o pydantic tipa
+            # json_schema_extra como JSON (#171).
+            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
                 None,
                 json_schema_extra={
                     "condition": lambda dados: dados.get("tipo") == "pj",
@@ -959,7 +961,9 @@ class TestCondicaoPelaApi:
     def test_depends_on_de_forma_nao_aceita_falha_antes_de_processar(self):
         class Modelo(BaseModel):
             tipo: str
-            detalhe: str | None = Field(
+            # O set em depends_on é a forma recusada que o teste exercita; o pydantic tipa
+            # json_schema_extra como JSON (#171).
+            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
                 None, json_schema_extra={"condition": lambda dados: True, "depends_on": {"tipo"}}
             )
 
