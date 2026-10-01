@@ -942,6 +942,12 @@ class TestCondicaoPelaApi:
         with pytest.raises(ValueError, match=r"Campo 'cpf'.*'depends_on'.*lista ou tupla"):
             get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
 
+    def test_depends_on_em_texto_vazio_e_campo_inexistente(self):
+        config = {"condition": lambda dados: True, "depends_on": ""}
+
+        with pytest.raises(ValueError, match=r"Campo 'cpf' depende de campos inexistentes: \[''\]"):
+            get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
     def test_depends_on_de_forma_nao_aceita_falha_antes_de_processar(self):
         class Modelo(BaseModel):
             tipo: str
