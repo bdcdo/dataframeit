@@ -1412,7 +1412,7 @@ class TestClassificacaoDoTurnoQueFalhou:
         sem_conclusao = make_result(codex_sdk)[:-1]
         turn.stream.side_effect = [as_stream(sem_conclusao), as_stream(make_result(codex_sdk))]
 
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+        with pytest.warns(UserWarning, match=r"Tentativa 1/2 falhou \(ProviderTransientError\)"):
             result = backend.invoke("texto")
 
         assert result["_retry_info"]["retries"] == 1
@@ -1691,3 +1691,112 @@ class TestConfiguracaoDoPrazo:
         effort = _validate_config(make_config(model_kwargs={"timeout": 30, "effort": "low"}))
 
         assert effort is sdk_types.ReasoningEffort.low
+
+
+class TestMensagensEAtrasos:
+    def test_stream_sem_conclusao_em_todas_as_tentativas_diz_o_motivo(self, codex_sdk, tmp_path):
+        backend, _, _, turn = initialized_backend(tmp_path, codex_sdk)
+        turn.stream.side_effect = lambda: as_stream(make_result(codex_sdk)[:-1])
+
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(
+                ProviderTransientError,
+                match="^O stream do turno Codex terminou sem o evento de conclusão$",
+            ),
+        ):
+            backend.invoke("texto")
+
+    def test_resposta_vazia_diz_o_motivo(self, codex_sdk, tmp_path):
+        backend, _, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response="  ")
+        )
+
+        with (
+            pytest.warns(UserWarning),
+            pytest.raises(ProviderOutputError, match="^Codex retornou resposta vazia$"),
+        ):
+            backend.invoke("texto")
+
+    def test_prazo_invalido_diz_o_que_aceitar(self):
+        with pytest.raises(
+            ProviderConfigurationError,
+            match=r"Use um número de segundos maior que zero, ou None para não ter prazo\.$",
+        ):
+            _turn_timeout(make_config(model_kwargs={"timeout": 0}))
+
+    def test_atraso_entre_tentativas_segue_base_e_teto_da_configuracao(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, _, _, turn = initialized_backend(tmp_path, codex_sdk)
+        backend = dataclasses.replace(
+            backend, config=make_config(max_retries=3, base_delay=4, max_delay=5)
+        )
+        overloaded = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded)
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, response=None, error_info=overloaded)),
+            as_stream(make_result(codex_sdk, response=None, error_info=overloaded)),
+            as_stream(make_result(codex_sdk)),
+        ]
+
+        with (
+            patch("dataframeit.errors.time.sleep") as sleep,
+            pytest.warns(UserWarning, match="Tentativa 2/3"),
+        ):
+            backend.invoke("texto")
+
+        primeiro, segundo = (chamada.args[0] for chamada in sleep.call_args_list)
+        assert 4 <= primeiro <= 4.4
+        assert 5 <= segundo <= 5.5
+
+    def test_falha_do_interrupt_nao_escapa_da_thread(self, codex_sdk, tmp_path):
+        backend, _, thread, normal = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        travado, protocol_client = stuck_turn(codex_sdk)
+        tentou = threading.Event()
+
+        def interrupt_que_falha(*_):
+            tentou.set()
+            msg = "app-server recusou"
+            raise RuntimeError(msg)
+
+        protocol_client.turn_interrupt.side_effect = interrupt_que_falha
+        thread.turn.side_effect = [travado, normal]
+        escapadas = []
+
+        with (
+            patch.object(threading, "excepthook", escapadas.append),
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+        ):
+            backend.invoke("texto")
+            assert tentou.wait(5)
+            for relogio in threading.enumerate():
+                if isinstance(relogio, threading.Timer):
+                    relogio.join(5)
+
+        assert escapadas == []
+
+    def test_thread_do_interrupt_do_reroteamento_e_daemon(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        from openai_codex.models import Notification  # noqa: PLC0415 (SDK carregado pelo fixture)
+
+        rerouted = Notification(
+            method="model/rerouted",
+            payload=generated.ModelReroutedNotification(
+                fromModel="gpt-6-luna",
+                toModel="outro",
+                reason=generated.ModelRerouteReason("highRiskCyberActivity"),
+                threadId="thread-1",
+                turnId="turn-1",
+            ),
+        )
+        backend, _, _, turn = initialized_backend(tmp_path, codex_sdk, [rerouted])
+        liberar = threading.Event()
+        turn.interrupt.side_effect = liberar.wait
+
+        try:
+            with pytest.warns(UserWarning), pytest.raises(ProviderError):
+                backend.invoke("texto")
+            presas = [t for t in threading.enumerate() if "_interrupt_quietly" in t.name]
+            assert presas
+            assert all(t.daemon for t in presas)
+        finally:
+            liberar.set()
