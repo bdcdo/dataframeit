@@ -11,14 +11,16 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
     cooldown:
       default-days: 7
     # O dataframeit é biblioteca: subir o piso de uma dependência exclui quem
     # usa a versão anterior. Com increase-if-necessary a faixa do pyproject.toml
-    # só muda quando não admite a versão nova: pin exato do extra dev ou teto
-    # (<) ultrapassado. O uv.lock não é versionado e o CI resolve a versão mais
-    # nova a cada run, então faixa que já admite a versão nova não gera PR.
+    # só muda quando não admite a versão nova: pin exato (ty no extra dev,
+    # openai-codex no extra codex) ou teto (<) ultrapassado. O uv.lock não é
+    # versionado e o CI resolve a versão mais nova a cada run, então faixa que
+    # já admite a versão nova não gera PR. O PR do openai-codex troca o runtime
+    # que decide quais modelos a conta alcança, e pede teste com a conta antes
+    # do merge.
     versioning-strategy: "increase-if-necessary"
     groups:
       # minor e patch num PR só; major vem separado.
