@@ -715,6 +715,7 @@ def test_search_backend_per_field_builds_the_extractor_once(monkeypatch, groups)
     search_config = SearchConfig(enabled=True, per_field=True, groups=groups)
     config = make_config(provider="google_genai", search_config=search_config)
     with core._provider_backend(config, ResultModel, "{texto}", "minimal") as backend:
+        assert backend.invoke_partial is not None
         first = backend.invoke("one")
         second = backend.invoke_partial("two", {"value"}, {"value": "old"})
 
