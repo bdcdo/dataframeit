@@ -899,14 +899,70 @@ class TestCondicaoPelaApi:
         assert chamadas == [["tipo"], ["detalhe"]]
         assert linha["detalhe"] == "x"
 
-    def test_depends_on_de_tipo_invalido_e_ignorado(self, caplog):
-        config = {"condition": lambda dados: True, "depends_on": 5}
+    def test_depends_on_em_tupla_vale_como_lista(self, caplog):
+        """A tupla de nomes ordena o campo e não dispara o aviso de depends_on ausente."""
+
+        class Modelo(BaseModel):
+            detalhe: str | None = Field(
+                None,
+                json_schema_extra={
+                    "condition": lambda dados: dados.get("tipo") == "pj",
+                    "depends_on": ("tipo",),
+                },
+            )
+            tipo: str
 
         with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
-            _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+            linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pj", "detalhe": "x"})
+
+        assert chamadas == [["tipo"], ["detalhe"]]
+        assert linha["detalhe"] == "x"
+        assert "depends_on" not in caplog.text
+
+    def test_depends_on_em_tupla_se_une_a_condicao_em_dict(self):
+        config = {"condition": {"field": "tipo", "equals": "pf"}, "depends_on": ("cnpj",)}
+
+        _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+        assert dependencias["cpf"] == ["cnpj", "tipo"]
+
+    def test_depends_on_em_tupla_sem_condicao_avisa_que_e_ignorado(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+            _, dependencias = get_field_execution_order(
+                ModeloPessoaCondicional, {"cpf": {"depends_on": ("tipo",)}}
+            )
 
         assert dependencias["cpf"] == []
-        assert "condition' callable sem 'depends_on'" in caplog.text
+        assert "Campo 'cpf' tem 'depends_on' mas não tem 'condition'" in caplog.text
+
+    @pytest.mark.parametrize("depends_on", [5, {"tipo"}, {"tipo": 1}, ["tipo", 1], ("tipo", None)])
+    def test_depends_on_de_forma_nao_aceita_levanta_erro(self, depends_on):
+        config = {"condition": lambda dados: True, "depends_on": depends_on}
+
+        with pytest.raises(ValueError, match=r"Campo 'cpf'.*'depends_on'.*lista ou tupla"):
+            get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
+
+    def test_depends_on_de_forma_nao_aceita_falha_antes_de_processar(self):
+        class Modelo(BaseModel):
+            tipo: str
+            detalhe: str | None = Field(
+                None, json_schema_extra={"condition": lambda dados: True, "depends_on": {"tipo"}}
+            )
+
+        with (
+            patch("dataframeit.core.validate_provider_dependencies"),
+            patch("dataframeit.core.validate_search_dependencies"),
+            patch("dataframeit.agent.call_agent") as call_agent,
+            pytest.raises(ValueError, match="Campo 'detalhe'"),
+        ):
+            dataframeit(
+                pd.DataFrame({"texto": ["x"]}),
+                questions=Modelo,
+                prompt="Analise {texto}",
+                use_search=True,
+                search_per_field=True,
+            )
+        call_agent.assert_not_called()
 
     def test_condicao_sem_campo_nao_cria_dependencia_e_sempre_pula(self, caplog):
         class Modelo(BaseModel):
