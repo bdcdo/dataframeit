@@ -356,3 +356,20 @@ def test_trace_do_grupo_e_o_da_chamada():
     )
 
     assert resultado["traces"] == {"g": {"modelo": "ComDescricao_group_g"}}
+
+
+class CadeiaNoGrupo(BaseModel):
+    a: Optional[str] = None
+    b: Optional[str] = Field(None, json_schema_extra={"condition": {"field": "a", "equals": "sim"}})
+    c: Optional[str] = Field(None, json_schema_extra={"condition": {"field": "b", "exists": True}})
+
+
+def test_campo_anulado_depois_da_resposta_anula_quem_depende_dele_no_grupo():
+    """As condições pós-resposta seguem a ordem de dependência, e não a do grupo."""
+    agente = _Agente({"a": "nao", "b": "B", "c": "C"})
+
+    resultado = _rodar(
+        agente, CadeiaNoGrupo, _config({"g": SearchGroupConfig(fields=["c", "b", "a"])})
+    )
+
+    assert resultado["data"] == {"a": "nao", "b": None, "c": None}
