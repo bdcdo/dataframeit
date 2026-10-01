@@ -49,6 +49,10 @@ def _roda(textos, llm, **kwargs):
         return dataframeit(df, questions=Modelo, prompt="{texto}", **kwargs)
 
 
+class _ErroComCusto(Exception):
+    cost_usd: float = 0
+
+
 def _config(provider="openai"):
     return SimpleNamespace(max_retries=3, provider=provider)
 
@@ -74,8 +78,8 @@ def _gravacoes(monkeypatch, falhar=False):
 
 @pytest.mark.parametrize(("custo", "esperado"), [(None, 0), (0, 0), (0.25, 0.25)])
 def test_custo_do_erro_entra_no_resumo_so_quando_informado(custo, esperado):
-    erro = ValueError("falhou")
-    if custo is not None:
+    erro = _ErroComCusto("falhou") if custo is not None else ValueError("falhou")
+    if isinstance(erro, _ErroComCusto):
         erro.cost_usd = custo
     estatisticas = core._empty_token_stats()
     df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
@@ -154,7 +158,9 @@ def test_primeiro_snapshot_e_gravado_com_a_assinatura(tmp_path):
 
     assert writer.last_saved == 1
     assert caminho.exists()
-    assert core._read_checkpoint_signature(caminho)["versao"] == "x"
+    assinatura = core._read_checkpoint_signature(caminho)
+    assert assinatura is not None
+    assert assinatura["versao"] == "x"
 
 
 # Modo paralelo
@@ -205,10 +211,14 @@ def test_reprocessamento_grava_tudo_na_linha_que_tinha_erro(paralelo):
 
 def test_paralelo_pede_so_os_campos_reprocessados_e_grava_o_trace_por_campo():
     chamadas = {}
+    modos = []
 
-    def por_campo(text, *args, only_fields=None, known=None):
-        # args: modelo, prompt, config e trace_mode, nessa ordem.
-        chamadas[text] = (args[3], only_fields)
+    def fabrica(modelo, prompt, config, trace_mode):
+        modos.append(trace_mode)
+        return por_campo
+
+    def por_campo(text, only_fields=None, known=None):
+        chamadas[text] = only_fields
         return {
             "data": {"campo1": text, "campo2": text},
             "usage": None,
@@ -224,7 +234,7 @@ def test_paralelo_pede_so_os_campos_reprocessados_e_grava_o_trace_por_campo():
         }
     )
     with (
-        patch("dataframeit.agent.call_agent_per_field", side_effect=por_campo),
+        patch("dataframeit.agent.field_extractor", side_effect=fabrica),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
     ):
@@ -240,7 +250,8 @@ def test_paralelo_pede_so_os_campos_reprocessados_e_grava_o_trace_por_campo():
             track_tokens=False,
         )
 
-    assert chamadas == {"a": ("full", {"campo1"}), "b": ("full", None)}
+    assert modos == ["full"]
+    assert chamadas == {"a": {"campo1"}, "b": None}
     assert saida["_trace_campo1"].tolist() == ['{"t": "a"}', '{"t": "b"}']
 
 
