@@ -215,7 +215,7 @@ ignore-variadic-names = true
 runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 
 [tool.ty.src]
-include = ["src"]
+include = ["src", "tests"]
 
 [tool.vulture]
 paths = ["src"]
