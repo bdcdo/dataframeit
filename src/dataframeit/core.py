@@ -346,36 +346,37 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     values_to_fill[(position, field_name)] = default
             continue
 
+        # Campo com exclude=True não sai no dump, e não há o que completar nele.
         validated_data = validated.model_dump(by_alias=False)
-        for field_name in missing_values:
+        for field_name in missing_values & validated_data.keys():
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
         # O JSON do checkpoint não guarda data, tupla nem chave de dict que não
-        # seja texto. O model_dump da linha validada é o que a execução gravou,
-        # e volta para as estruturas; a linha inteira dá aos validadores o
-        # contexto dos outros campos. Um validador que muda o valor a cada
-        # passada o mudaria de novo, e por isso a volta só vale quando validar
-        # o resultado não muda mais nada.
-        restored = {
-            field_name: validated_data[field_name]
-            for field_name in complex_fields
-            if field_name in projected and field_name not in missing_values
-        }
-        if restored and _validation_is_stable(model_skipping(skipped), projected, restored):
-            for field_name, value in restored.items():
-                values_to_fill[(position, field_name)] = value
+        # seja texto. O model_dump da linha validada traz esses tipos de volta,
+        # com o contexto da linha inteira para os validadores. Ele só substitui
+        # o valor relido quando diz o mesmo em JSON: a volta muda o tipo, nunca
+        # o conteúdo. Um validador que muda o valor de novo, ou um submodelo que
+        # grava pelo alias, deixa o valor como foi relido.
+        for field_name in complex_fields:
+            if (
+                field_name in projected
+                and field_name in validated_data
+                and _same_json(validated_data[field_name], projected[field_name])
+            ):
+                values_to_fill[(position, field_name)] = validated_data[field_name]
 
     ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
 
 
-def _validation_is_stable(model: type[BaseModel], row: dict, restored: dict) -> bool:
-    """Se validar a linha com os valores devolvidos os deixa como estão."""
+def _same_json(left: object, right: object) -> bool:
+    """Se os dois valores dão o mesmo JSON, como o checkpoint os gravaria."""
     try:
-        again = model.model_validate({**row, **restored}).model_dump(by_alias=False)
-    except ValidationError:
+        return json.loads(json.dumps(left, default=_json_default)) == json.loads(
+            json.dumps(right, default=_json_default)
+        )
+    except (TypeError, ValueError):
         return False
-    return all(again[field_name] == value for field_name, value in restored.items())
 
 
 def _apply_processed_values(

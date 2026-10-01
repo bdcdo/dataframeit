@@ -10,7 +10,14 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import _run_signature
@@ -722,7 +729,32 @@ class DatasEmTexto(BaseModel):
         return [str(item) for item in valor]
 
 
+class NomePorAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True, validate_by_name=True)
+    nome: str = Field(alias="Nome")
+
+
+class SubmodeloPorAlias(BaseModel):
+    """A execução grava o submodelo pelo alias, que o model_dump de fora não reescreve."""
+
+    subs: list[NomePorAlias]
+
+
+class Convergente(BaseModel):
+    """O validador muda "b" para "c" e deixa "c" como está: estável, mas não idempotente."""
+
+    n: list[str]
+
+    @field_validator("n")
+    @classmethod
+    def avanca(cls, valor):
+        proximo = {"a": "b", "b": "c"}
+        return [proximo.get(item, item) for item in valor]
+
+
 _POR_EXECUCAO = {
+    SubmodeloPorAlias: lambda texto: {"subs": [{"Nome": texto}]},
+    Convergente: lambda texto: {"n": ["a"]},
     CoresComoTexto: lambda texto: {"cores": [Cor.AZUL]},
     CoresComoEnum: lambda texto: {"cores": [Cor.AZUL]},
     ComValidador: lambda texto: {"interno": {"n": [texto]}},
@@ -773,3 +805,51 @@ def test_retomadas_seguidas_devolvem_o_que_a_execucao_gravou(tmp_path, modelo, f
     # Campo escalar fora do JSON, como a data `inicio`, volta do CSV como texto.
     for campo in get_complex_fields(modelo):
         assert list(final[campo]) == list(direta[campo])
+
+
+def test_campo_excluido_do_dump_nao_derruba_a_retomada(tmp_path):
+    """Campo com exclude=True não sai no model_dump da linha validada."""
+
+    class ComOculto(BaseModel):
+        tags: list[str]
+        oculto: list[str] = Field(default_factory=list, exclude=True)
+
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "tags": [["x"]],
+            "oculto": [["y"]],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+    saida = _roda(df, _llm(0, SystemExit())[1], modelo=ComOculto)
+
+    assert list(saida["tags"]) == [["x"]]
+    assert list(saida["oculto"]) == [["y"]]
+
+
+def test_valor_que_o_json_nao_compara_fica_como_relido():
+    """Chave Enum não vira JSON, e a volta ao tipo não tem com o que comparar."""
+
+    class PorCor(BaseModel):
+        contagem: dict[Cor, int]
+
+    df = pd.DataFrame(
+        {"texto": ["a"], "contagem": [{"azul": 1}], "_dataframeit_status": ["processed"]}
+    )
+    saida = _roda(df, _llm(0, SystemExit())[1], modelo=PorCor)
+
+    assert list(saida["contagem"]) == [{"azul": 1}]
+
+
+def test_campo_excluido_e_ausente_nao_derruba_a_retomada():
+    """Sem a coluna, o campo excluído do dump não tem valor a completar."""
+
+    class ComOculto(BaseModel):
+        tags: list[str]
+        oculto: list[str] = Field(default_factory=list, exclude=True)
+
+    df = pd.DataFrame({"texto": ["a"], "tags": [["x"]], "_dataframeit_status": ["processed"]})
+    saida = _roda(df, _llm(0, SystemExit())[1], modelo=ComOculto)
+
+    assert list(saida["tags"]) == [["x"]]
