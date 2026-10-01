@@ -317,7 +317,7 @@ def _validate_config(config: LLMConfig) -> ReasoningEffort:
 
 
 def _turn_timeout(config: LLMConfig) -> float | None:
-    """Prazo de cada tentativa da linha, em segundos; `None` desliga o prazo."""
+    """Prazo, em segundos, da espera pelos eventos do turno; `None` desliga o prazo."""
     timeout = (config.model_kwargs or {}).get("timeout", _DEFAULT_TURN_TIMEOUT)
     if timeout is None:
         return None
