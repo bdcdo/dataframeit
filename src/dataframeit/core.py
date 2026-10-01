@@ -14,6 +14,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
@@ -65,7 +66,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterator, Sequence
+    from collections.abc import Callable, Collection, Hashable, Iterator, Sequence
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -345,12 +346,36 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     values_to_fill[(position, field_name)] = default
             continue
 
-        validated_data = validated.model_dump()
+        validated_data = validated.model_dump(by_alias=False)
         for field_name in missing_values:
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
+        # O JSON do checkpoint não guarda data, tupla nem chave de dict que não
+        # seja texto. O model_dump da linha validada é o que a execução gravou,
+        # e volta para as estruturas; a linha inteira dá aos validadores o
+        # contexto dos outros campos. Um validador que muda o valor a cada
+        # passada o mudaria de novo, e por isso a volta só vale quando validar
+        # o resultado não muda mais nada.
+        restored = {
+            field_name: validated_data[field_name]
+            for field_name in complex_fields
+            if field_name in projected and field_name not in missing_values
+        }
+        if restored and _validation_is_stable(model_skipping(skipped), projected, restored):
+            for field_name, value in restored.items():
+                values_to_fill[(position, field_name)] = value
+
     ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
+
+
+def _validation_is_stable(model: type[BaseModel], row: dict, restored: dict) -> bool:
+    """Se validar a linha com os valores devolvidos os deixa como estão."""
+    try:
+        again = model.model_validate({**row, **restored}).model_dump(by_alias=False)
+    except ValidationError:
+        return False
+    return all(again[field_name] == value for field_name, value in restored.items())
 
 
 def _apply_processed_values(
@@ -1135,6 +1160,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         checkpoint = dataclasses.replace(
             checkpoint,
             meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
+            structures=frozenset(complex_fields),
         )
         if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
             _resume_from_checkpoint(
@@ -1807,31 +1833,71 @@ def _validate_checkpoint_extension(path: str | Path) -> None:
             raise ImportError(msg)
 
 
-def _structures_as_json(df: pd.DataFrame) -> pd.DataFrame:
-    """Cópia com listas, dicts e tuplas serializados como JSON.
+def _array_as_list(value: object) -> object:
+    """Array do numpy como lista; qualquer outro valor como está."""
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist) and not is_scalar(value):
+        return tolist()
+    return value
+
+
+def _json_default(value: object) -> object:
+    """O que json.dumps não serializa: array vira lista, Enum o valor, o resto texto.
+
+    O Enum vai pelo valor porque é o que a validação do campo aceita de volta;
+    o texto dele ("Cor.AZUL") não valida.
+    """
+    if isinstance(value, Enum):
+        return value.value
+    as_list = _array_as_list(value)
+    return str(value) if as_list is value else as_list
+
+
+def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
+    """Cópia com listas, dicts, tuplas e arrays do numpy serializados como JSON.
 
     CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
-    de volta. JSON é o que read_df e a retomada normalizam.
+    de volta, e o de um array ("['a' 'b']") o literal_eval lê como ['ab']. O
+    parquet gravaria uma coluna de dicts como struct, com as chaves de todas as
+    linhas em cada uma. JSON é o que read_df e a retomada normalizam.
+
+    O array chega quando a entrada é uma saída polars ou um parquet relido, que
+    entregam o campo lista assim, inclusive dentro do dict de um modelo
+    aninhado, e divide a coluna com as listas das linhas novas; serializar um
+    sem o outro deixaria a coluna mista, que o parquet recusa.
+
+    Com `columns`, só essas colunas são serializadas; sem, todas as de objeto.
     """
 
     def to_json(value: object) -> object:
+        value = _array_as_list(value)
         if isinstance(value, (list, dict, tuple)):
-            return json.dumps(value, ensure_ascii=False, default=str)
+            return json.dumps(value, ensure_ascii=False, default=_json_default)
         return value
 
     out = df.copy()
     for col in out.columns:
-        if out[col].dtype == object:
+        if out[col].dtype == object and (columns is None or col in columns):
             out[col] = out[col].map(to_json)
     return out
 
 
-def _save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None = None) -> None:
+def _save_checkpoint(
+    df: pd.DataFrame,
+    path: str | Path,
+    meta: dict | None = None,
+    structures: Collection[str] | None = None,
+) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão.
 
     Com `meta`, a assinatura é gravada depois do checkpoint, com o hash do
     arquivo que acabou de ser escrito: se o processo morre entre as duas
     gravações, o hash não bate e a retomada recomeça em vez de aceitar o par.
+
+    `structures` são os campos de estrutura do modelo. O parquet serializa só
+    eles, que a retomada devolve aos tipos declarados, e grava as
+    demais colunas como vieram; CSV e XLSX serializam toda coluna de objeto,
+    porque gravariam o repr de qualquer estrutura.
     """
     path = Path(path)
     ext = path.suffix.lower()
@@ -1841,7 +1907,7 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None = Non
     elif ext == ".xlsx":
         _structures_as_json(df).to_excel(tmp, index=False)
     elif ext == ".parquet":
-        df.to_parquet(tmp, index=False)
+        _structures_as_json(df, structures).to_parquet(tmp, index=False)
     else:
         msg = (
             f"Extensão {ext} não suportada para checkpoint. "
@@ -1853,7 +1919,7 @@ def _save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None = Non
         _write_checkpoint_signature(path, meta)
 
 
-def _try_save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None = None) -> bool:
+def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
     """Grava o checkpoint e devolve se deu certo; falha vira aviso.
 
     Uma falha de gravação (disco cheio, arquivo aberto no Excel, coluna que o
@@ -1862,10 +1928,10 @@ def _try_save_checkpoint(df: pd.DataFrame, path: str | Path, meta: dict | None =
     A próxima gravação tenta de novo, com o estado completo.
     """
     try:
-        _save_checkpoint(df, path, meta)
+        _save_checkpoint(df, checkpoint.path, checkpoint.meta, checkpoint.structures)
     except Exception as error:  # noqa: BLE001 (ver a docstring)
         warnings.warn(
-            f"Falha ao gravar o checkpoint em {path}: {type(error).__name__}: {error}. "
+            f"Falha ao gravar o checkpoint em {checkpoint.path}: {type(error).__name__}: {error}. "
             "O processamento continua, e a próxima gravação tenta de novo.",
             # usuário -> dataframeit -> _process_rows -> aqui; no modo paralelo
             # o aviso sai de uma thread do executor e não tem quadro do usuário.
@@ -1888,6 +1954,9 @@ class _Checkpoint:
     # Assinatura da execução e hash dos textos, gravados ao lado do checkpoint
     # a cada gravação (ver _write_checkpoint_signature).
     meta: dict | None = dataclasses.field(default=None, compare=False)
+    # Campos de estrutura do modelo, que o parquet grava como JSON
+    # (ver _save_checkpoint); sem eles, toda coluna de objeto.
+    structures: frozenset[str] | None = dataclasses.field(default=None, compare=False)
 
 
 class _SnapshotWriter:
@@ -1910,7 +1979,7 @@ class _SnapshotWriter:
         with self._lock:
             if label <= self.last_saved:
                 return
-            if _try_save_checkpoint(frame, self.checkpoint.path, self.checkpoint.meta):
+            if _try_save_checkpoint(frame, self.checkpoint):
                 self.last_saved = label
 
 
@@ -2262,7 +2331,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
         if (
             checkpoint
             and rows_processed_this_run % checkpoint.batch_size == 0
-            and _try_save_checkpoint(df, checkpoint.path, checkpoint.meta)
+            and _try_save_checkpoint(df, checkpoint)
         ):
             rows_saved = rows_processed_this_run
 
@@ -2272,7 +2341,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
     # fora e as marcas de uma interrupção, que não contam como linha processada.
     if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
-        _try_save_checkpoint(df, checkpoint.path, checkpoint.meta)
+        _try_save_checkpoint(df, checkpoint)
 
     return token_stats
 
@@ -2531,7 +2600,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
     # fora e as marcas de uma interrupção, que não contam como linha processada.
     if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
-        _try_save_checkpoint(df, writer.checkpoint.path, writer.checkpoint.meta)
+        _try_save_checkpoint(df, writer.checkpoint)
 
     elapsed = time.time() - start_time
     token_stats["elapsed_seconds"] = elapsed
