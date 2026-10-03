@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast
 from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError
 
-from .errors import ProviderRejectedOutputError, retry_with_backoff
+from .errors import (
+    MAX_REJECTED_RULES,
+    ProviderRejectedOutputError,
+    retry_with_backoff,
+    validation_error_summary,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -370,7 +375,6 @@ def _raw_payload(raw_message: object) -> tuple[dict | None, str]:
 
 # Tetos do pedido de correção: ele volta ao modelo a cada recusa, e um esquema
 # grande pode gerar dezenas de erros com trechos longos.
-_MAX_ERRORS = 20
 _MAX_INPUT_CHARS = 300
 _MAX_ERROR_TEXT = 2000
 
@@ -395,7 +399,7 @@ def _validation_error_of(
 def _format_validation_error(error: ValidationError) -> str:
     """Uma linha por erro, com o caminho do campo e o valor recusado."""
     lines = []
-    for detail in error.errors()[:_MAX_ERRORS]:
+    for detail in error.errors()[:MAX_REJECTED_RULES]:
         location = ".".join(str(part) for part in detail.get("loc", ())) or "(resposta inteira)"
         value = json.dumps(detail.get("input"), ensure_ascii=False, default=str)
         if len(value) > _MAX_INPUT_CHARS:
@@ -423,11 +427,7 @@ def _request_correction(
     validation_error = _validation_error_of(error, pydantic_model, payload)
     if validation_error is not None:
         detail = _format_validation_error(validation_error)
-        rules = [
-            f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: {item.get('msg', '')}"
-            for item in validation_error.errors()[:_MAX_ERRORS]
-        ]
-        summary = f"{validation_error.error_count()} erro(s): {'; '.join(rules)}"
+        summary = validation_error_summary(validation_error)
     elif error is not None:
         detail = str(error)[:_MAX_ERROR_TEXT]
         summary = f"resposta fora do esquema ({type(error).__name__})"

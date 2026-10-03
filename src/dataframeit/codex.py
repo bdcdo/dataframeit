@@ -29,6 +29,7 @@ from .errors import (
     ProviderTransientError,
     ProviderUsageLimitError,
     retry_with_backoff,
+    validation_error_summary,
 )
 from .llm import LLMConfig, build_prompt
 
@@ -697,7 +698,7 @@ class CodexBackend:
         try:
             validated = self._pydantic_model.model_validate_json(final_response)
         except ValidationError as err:
-            msg = f"Resposta do Codex não corresponde ao schema: {err}"
+            msg = f"Resposta do Codex não corresponde ao schema: {validation_error_summary(err)}"
             raise ProviderOutputError(msg) from err
 
         return {"data": validated.model_dump(), "usage": dict(usage_total) or None}
