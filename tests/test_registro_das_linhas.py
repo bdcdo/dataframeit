@@ -1,8 +1,10 @@
 """O que cada linha grava, a contagem do checkpoint e o resumo, nos dois modos."""
 
+import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -125,13 +127,13 @@ def test_nota_de_valores_mantidos_so_na_linha_processada_sob_reprocessamento(
     assert not df.loc[0, "_error_details"].endswith(core._KEPT_VALUES_NOTE)
 
 
-def test_erro_da_linha_mostra_a_mensagem_amigavel_do_provider(capsys):
+def test_erro_da_linha_avisa_com_a_mensagem_amigavel_do_provider(capsys):
     erro = Exception("401 Unauthorized: invalid api key")
     esperada = get_friendly_error_message(erro, "openai")
     assert esperada != get_friendly_error_message(erro, None)
     df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
 
-    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
+    with pytest.warns(UserWarning, match="Falha ao processar linha 0") as avisos:
         core._record_error(
             df,
             0,
@@ -143,7 +145,8 @@ def test_erro_da_linha_mostra_a_mensagem_amigavel_do_provider(capsys):
             token_stats=core._empty_token_stats(),
         )
 
-    assert capsys.readouterr().out == f"\n{esperada}\n\n"
+    assert str(avisos[0].message) == f"Falha ao processar linha 0.\n{esperada}"
+    assert capsys.readouterr().out == ""
     assert df.loc[0, "_error_details"].endswith("Exception: 401 Unauthorized: invalid api key")
 
 
@@ -166,14 +169,99 @@ def test_primeiro_snapshot_e_gravado_com_a_assinatura(tmp_path):
 # Modo paralelo
 
 
-def test_resumo_do_paralelo_conta_requisicoes_e_tempo(capsys):
-    _roda(["a", "b", "c"], _llm(), parallel_requests=2)
+def test_resumo_do_paralelo_conta_requisicoes_e_tempo(caplog):
+    with caplog.at_level(logging.INFO, logger="dataframeit.stats"):
+        _roda(["a", "b", "c"], _llm(), parallel_requests=2)
 
-    saida = capsys.readouterr().out
+    saida = caplog.text
     assert "METRICAS DE THROUGHPUT" in saida
     assert "Requisicoes: 3\n" in saida
     assert re.search(r"Tempo total: \d{1,3}\.\ds\n", saida)
-    assert "WORKERS REDUZIDOS" not in saida
+
+
+@contextmanager
+def _sem_handler_no_root():
+    """Tira os handlers do root, como num script sem logging configurado.
+
+    Devolve-os antes do fim da fase de chamada, em que o pytest remove os dele.
+    """
+    raiz = logging.getLogger()
+    handlers = raiz.handlers[:]
+    for handler in handlers:
+        raiz.removeHandler(handler)
+    try:
+        yield
+    finally:
+        for handler in handlers:
+            raiz.addHandler(handler)
+
+
+def test_resumo_sai_em_stderr_sem_logging_configurado(capsys):
+    with _sem_handler_no_root():
+        saida = _roda(["a"], _llm())
+
+    capturado = capsys.readouterr()
+    assert capturado.out == ""
+    assert capturado.err.count("ESTATISTICAS DE USO") == 1
+    assert saida["_input_tokens"].tolist() == [1]
+
+
+def test_resumo_sai_uma_vez_pelo_logging_configurado(capsys, caplog):
+    with caplog.at_level(logging.INFO, logger="dataframeit.stats"):
+        _roda(["a"], _llm())
+
+    assert [r.name for r in caplog.records if "ESTATISTICAS" in r.getMessage()] == [
+        "dataframeit.stats"
+    ]
+    assert "ESTATISTICAS" not in capsys.readouterr().err
+
+
+def test_nivel_warning_silencia_o_resumo_e_mantem_as_colunas(capsys):
+    stats = logging.getLogger("dataframeit.stats")
+    stats.setLevel(logging.WARNING)
+    try:
+        with _sem_handler_no_root():
+            saida = _roda(["a"], _llm())
+    finally:
+        stats.setLevel(logging.INFO)
+
+    capturado = capsys.readouterr()
+    assert capturado.out == ""
+    assert "ESTATISTICAS" not in capturado.err
+    assert saida["_output_tokens"].tolist() == [1]
+
+
+class _Coletor(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.registros = []
+
+    def emit(self, record):
+        self.registros.append(record)
+
+
+def test_resumo_sai_uma_vez_por_handler_no_logger_do_pacote(capsys):
+    handler = _Coletor()
+    pacote = logging.getLogger("dataframeit")
+    pacote.addHandler(handler)
+    try:
+        with _sem_handler_no_root():
+            _roda(["a"], _llm())
+    finally:
+        pacote.removeHandler(handler)
+
+    assert ["ESTATISTICAS" in r.getMessage() for r in handler.registros] == [True]
+    assert "ESTATISTICAS" not in capsys.readouterr().err
+
+
+def test_handler_de_reserva_e_instalado_uma_vez():
+    logger = logging.getLogger("dataframeit.teste_reserva")
+    try:
+        core._install_fallback_handler(logger)
+        core._install_fallback_handler(logger)
+        assert len(logger.handlers) == 1
+    finally:
+        logger.handlers.clear()
 
 
 class _Barra:
@@ -358,19 +446,28 @@ def test_rate_limit_reduz_os_workers_pela_metade(monkeypatch, capsys):
     monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
     textos = [f"t{i}" for i in range(8)]
 
-    with pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2"):
+    with pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2") as avisos:
         saida = _roda(textos, _llm({"t0": ProviderOverloadedError("429")}), parallel_requests=4)
 
-    assert "Workers finais:   2\n" in capsys.readouterr().out
+    final = [a for a in avisos if "reduzidos por rate limit" in str(a.message)]
+    assert [str(a.message) for a in final] == [
+        (
+            "Workers reduzidos por rate limit: de 4 para 2. Considere usar "
+            "parallel_requests=2 para evitar rate limits."
+        )
+    ]
+    # O aviso aponta a chamada de dataframeit, e não o interior da lib.
+    assert final[0].filename == __file__
+    assert capsys.readouterr().out == ""
     assert saida["_error_details"].iloc[0].endswith("ProviderOverloadedError: 429")
 
 
-def test_erro_sem_texto_legivel_nao_conta_como_rate_limit(capsys):
-    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
+def test_erro_sem_texto_legivel_nao_conta_como_rate_limit():
+    with pytest.warns(UserWarning, match="Falha ao processar linha 0") as avisos:
         saida = _roda(["a", "b"], _llm({"a": _ErroIlegivel()}), parallel_requests=2)
 
     assert saida["_dataframeit_status"].tolist() == ["error", "processed"]
-    assert "WORKERS REDUZIDOS" not in capsys.readouterr().out
+    assert not [a for a in avisos if "workers" in str(a.message).lower()]
 
 
 # Modo sequencial

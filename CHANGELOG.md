@@ -16,6 +16,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- O resumo de uso do fim da execução deixa de sair por `print` no stdout e passa ao logger `dataframeit.stats`, em nível INFO. Sem logging configurado, ele sai em stderr; `logging.getLogger("dataframeit.stats").setLevel(logging.WARNING)` o silencia e mantém as colunas de tokens. O aviso de workers reduzidos por rate limit vira `UserWarning`, e a mensagem amigável do provider passa a fazer parte do aviso de falha da linha, ambos filtráveis por `warnings` e `pytest -W` (#181).
 - `dataframeit()` declara o tipo de retorno pelo tipo da entrada: DataFrame ou Series do polars devolve DataFrame do polars, e DataFrame ou Series do pandas, `list` e `dict` devolvem DataFrame do pandas. Antes, o retorno era a união dos dois, e o checker de tipos recusava `resultado["coluna"].tolist()` (#155).
 - O piso do pydantic sobe para 2.12. Na 2.11, uma `default_factory` que lê outro campo é chamada com os dados validados vazios quando esse campo falhou, e a retomada levantava o `KeyError` dela em vez do erro de campo incompatível (#154).
 - O extra `codex` passa a exigir `openai-codex==0.159.2`, que traz o runtime 0.159.2. Com o runtime 0.137, que o SDK anterior fixava, a conta do ChatGPT recebia HTTP 400 nos modelos lançados depois dele, como o `gpt-6-luna`, embora o catálogo da conta os anunciasse. O `effort` é conferido contra os valores que o SDK declara, agora com `max` e `ultra`, porque o enum do SDK novo aceita qualquer texto.
