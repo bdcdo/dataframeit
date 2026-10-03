@@ -522,14 +522,20 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
             encoding="utf-8",
             cwd=workspace,
             env={**os.environ, **env},
+            stdin=subprocess.DEVNULL,
             check=True,
             timeout=_CATALOG_TIMEOUT,
         )
         catalog = json.loads(listing.stdout)
         for model in catalog["models"]:
             model.update(_CATALOG_TOOL_FIELDS)
+        path = workspace.parent / "model-catalog.json"
+        path.write_text(json.dumps(catalog), encoding="utf-8")
     except subprocess.CalledProcessError as err:
-        msg = f"Não foi possível ler o catálogo de modelos do Codex: {err.stderr.strip()}"
+        msg = (
+            "Não foi possível ler o catálogo de modelos do Codex "
+            f"(código {err.returncode}): {err.stderr.strip()}"
+        )
         raise ProviderConfigurationError(msg) from err
     except (
         OSError,
@@ -541,9 +547,6 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
     ) as err:
         msg = f"Não foi possível ler o catálogo de modelos do Codex: {err}"
         raise ProviderConfigurationError(msg) from err
-
-    path = workspace.parent / "model-catalog.json"
-    path.write_text(json.dumps(catalog), encoding="utf-8")
     return path
 
 
@@ -916,10 +919,12 @@ def open_codex_backend(
         codex_config = CodexConfig(
             cwd=os.fspath(workspace),
             # O caminho vai como string JSON, que também é string TOML válida,
-            # inclusive com as barras invertidas de um caminho do Windows.
+            # inclusive com as barras invertidas de um caminho do Windows. Sem
+            # `ensure_ascii=False`, um caractere fora do BMP viraria um par
+            # substituto `\ud83d\ude00`, que o TOML recusa.
             config_overrides=(
                 *_CODEX_CONFIG_OVERRIDES,
-                f"model_catalog_json={json.dumps(os.fspath(catalog))}",
+                f"model_catalog_json={json.dumps(os.fspath(catalog), ensure_ascii=False)}",
             ),
             env=env,
         )

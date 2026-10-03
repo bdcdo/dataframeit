@@ -24,6 +24,7 @@ from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
+    _CATALOG_TOOL_FIELDS,
     CodexBackend,
     _build_schema,
     _to_strict_json_schema,
@@ -819,7 +820,9 @@ class TestBackendLifecycle:
             models = json.loads(catalog_path.read_text(encoding="utf-8"))["models"]
 
         assert models
-        assert all(model["tool_mode"] is None for model in models)
+        for model in models:
+            for field, value in _CATALOG_TOOL_FIELDS.items():
+                assert model[field] == value
         assert not catalog_path.exists()
 
     @pytest.mark.parametrize(
@@ -850,6 +853,41 @@ class TestBackendLifecycle:
 
         codex.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("run", "message"),
+        [
+            ({"side_effect": subprocess.TimeoutExpired(["codex"], 60)}, "timed out"),
+            ({"side_effect": FileNotFoundError("codex ausente")}, "codex ausente"),
+            (
+                {
+                    "return_value": subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout='{"models": []}', stderr=""
+                    )
+                },
+                "disco cheio",
+            ),
+        ],
+    )
+    def test_falha_ao_obter_ou_gravar_o_catalogo_falha_antes_do_app_server(
+        self, codex_sdk, monkeypatch, tmp_path, run, message
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+        with (
+            patch("dataframeit.codex.subprocess.run", **run),
+            patch.object(Path, "write_text", side_effect=OSError("disco cheio")),
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        codex.assert_not_called()
+
     def test_falha_do_runtime_ao_ler_o_catalogo_traz_o_stderr(
         self, codex_sdk, monkeypatch, tmp_path
     ):
@@ -864,7 +902,8 @@ class TestBackendLifecycle:
             patch("dataframeit.codex.subprocess.run", side_effect=failure),
             patch.object(sdk, "Codex") as codex,
             pytest.raises(
-                ProviderConfigurationError, match=r"catálogo de modelos do Codex: sem rede$"
+                ProviderConfigurationError,
+                match=r"catálogo de modelos do Codex \(código 1\): sem rede$",
             ),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):

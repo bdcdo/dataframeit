@@ -234,24 +234,29 @@ class _RecordingProvider(BaseHTTPRequestHandler):
         pass
 
 
-def _tool_names(node, names):
-    """Nomes de toda ferramenta e namespace no request, em qualquer profundidade."""
+def _offered_tools(node, offered):
+    """Toda entrada de toda lista `tools` do request, em qualquer profundidade.
+
+    Cada entrada conta pelo nome ou, sem nome, pelo tipo, para que uma
+    ferramenta de tipo novo, como `tool_search` ou `web_search`, também entre na
+    comparação. Os namespaces entram ao lado das ferramentas que agrupam.
+    """
     if isinstance(node, dict):
-        if node.get("type") in {"namespace", "function", "custom"} and "name" in node:
-            names.add(node["name"])
+        for entry in node.get("tools") or ():
+            offered.add(entry.get("name") or entry.get("type"))
         for value in node.values():
-            _tool_names(value, names)
+            _offered_tools(value, offered)
     elif isinstance(node, list):
         for value in node:
-            _tool_names(value, names)
-    return names
+            _offered_tools(value, offered)
+    return offered
 
 
 class _Answer(BaseModel):
     resposta: str
 
 
-def _use_local_model_provider(monkeypatch, tmp_path, base_url):
+def _use_local_model_provider(monkeypatch, tmp_path, base_url, model="gpt-6-luna"):
     """Aponta o provider para um endpoint de modelo local, sem conta nem rede.
 
     O endpoint entra como provider do runtime ao lado dos demais overrides, e a
@@ -265,7 +270,9 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     monkeypatch.setenv("no_proxy", "127.0.0.1")
 
-    source_home = tmp_path / "codex-source"
+    # Acento e caractere fora do BMP no caminho exercitam a citação do
+    # `model_catalog_json` que o provider passa ao app-server.
+    source_home = tmp_path / "códex 😀"
     source_home.mkdir()
     (source_home / "auth.json").write_text("{}")
     monkeypatch.setenv("CODEX_HOME", os.fspath(source_home))
@@ -280,7 +287,7 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url):
         (*_CODEX_CONFIG_OVERRIDES, 'model_provider="mock"', f"model_providers.mock={provider}"),
     )
     return LLMConfig(
-        model="gpt-6-luna",
+        model=model,
         provider="codex",
         api_key=None,
         max_retries=1,
@@ -291,40 +298,66 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url):
     )
 
 
+def _bundled_model_slugs(tmp_path):
+    from codex_cli_bin import bundled_codex_path  # noqa: PLC0415 (extra codex opcional)
+
+    home = tmp_path / "catalog-home"
+    home.mkdir()
+    listing = subprocess.run(  # noqa: S603 (binário empacotado, argumentos fixos)
+        [os.fspath(bundled_codex_path()), "debug", "models", "--bundled"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "CODEX_HOME": os.fspath(home), "HOME": os.fspath(home)},
+        check=True,
+        timeout=60,
+    )
+    return [model["slug"] for model in json.loads(listing.stdout)["models"]]
+
+
 def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     """O request de uma linha oferece ao modelo só as ferramentas revisadas.
 
-    O catálogo do runtime liga o code mode e os sub-agentes para o
-    `gpt-6-luna`; o catálogo de `_write_model_catalog` desliga o primeiro, e
-    `agents.enabled=false`, os segundos.
+    Vale para todo modelo do catálogo embutido, porque cada um traz os próprios
+    campos de ferramentas. O catálogo liga o code mode e os sub-agentes para
+    modelos como o `gpt-6-luna`; o catálogo de `_write_model_catalog` desliga o
+    primeiro, e `agents.enabled=false`, os segundos.
     """
-    handler = type("Handler", (_RecordingProvider,), {"bodies": []})
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port = server.server_address[1]
-    config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+    slugs = _bundled_model_slugs(tmp_path)
+    assert slugs
+    for slug in slugs:
+        run_path = tmp_path / slug
+        run_path.mkdir()
+        handler = type("Handler", (_RecordingProvider,), {"bodies": []})
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        config = _use_local_model_provider(
+            monkeypatch, run_path, f"http://127.0.0.1:{port}/v1", model=slug
+        )
 
-    try:
-        with (
-            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
-            pytest.warns(UserWarning, match="não-recuperável"),
-            pytest.raises(ProviderError, match="mock"),
-        ):
-            backend.invoke("oi")
-    finally:
-        server.shutdown()
-        server.server_close()
+        try:
+            with (
+                codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
+                pytest.warns(UserWarning, match="não-recuperável"),
+                pytest.raises(ProviderError, match="mock"),
+            ):
+                backend.invoke("oi")
+        finally:
+            server.shutdown()
+            server.server_close()
+            monkeypatch.undo()
 
-    assert handler.bodies
-    encoding, raw = handler.bodies[0]
-    assert encoding is None
-    request = json.loads(raw)
-    assert request["model"] == "gpt-6-luna"
-    assert _tool_names(request, set()) == _REVIEWED_MODEL_TOOLS
-    # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
-    # `collaboration` não serve para essa busca, porque aparece no texto das
-    # instruções.
-    assert b"spawn_agent" not in raw
+        assert handler.bodies, slug
+        encoding, raw = handler.bodies[0]
+        assert encoding is None
+        request = json.loads(raw)
+        assert request["model"] == slug
+        assert _offered_tools(request, set()) == _REVIEWED_MODEL_TOOLS, slug
+        # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
+        # `collaboration` não serve para essa busca, porque aparece no texto das
+        # instruções.
+        assert b"spawn_agent" not in raw, slug
 
 
 def test_connection_failure_fails_turn_as_transient(tmp_path, monkeypatch):
