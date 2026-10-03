@@ -11,11 +11,15 @@ import concurrent.futures
 import json
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from pydantic import ValidationError
+
 from .errors import (
     ProviderError,
     ProviderOverloadedError,
+    ProviderRejectedOutputError,
     ProviderTransientError,
     retry_with_backoff,
+    validation_error_summary,
 )
 from .llm import LLMConfig, _parse_usage_metadata, build_prompt
 from .utils import parse_json
@@ -234,9 +238,18 @@ def call_claude_code(
             msg = "Claude Code SDK retornou resposta vazia"
             raise ValueError(msg)
 
-        # Parse e validação
-        parsed = parse_json(response_text)
-        validated = pydantic_model.model_validate(parsed)
+        # A recusa sai como ProviderRejectedOutputError, transitória pela classe e
+        # sem o texto da resposta na mensagem (ver validation_error_summary).
+        try:
+            parsed = parse_json(response_text)
+        except ValueError as err:
+            msg = "Falha no parsing da resposta: o texto não contém um JSON válido"
+            raise ProviderRejectedOutputError(msg) from err
+        try:
+            validated = pydantic_model.model_validate(parsed)
+        except ValidationError as err:
+            msg = f"Falha na validação da resposta: {validation_error_summary(err)}"
+            raise ProviderRejectedOutputError(msg) from err
 
         usage = _usage_from_sdk(getattr(result, "usage", None), spent)
         return {"data": validated.model_dump(), "usage": usage}

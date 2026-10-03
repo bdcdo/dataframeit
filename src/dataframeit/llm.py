@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast
 from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError
 
-from .errors import ProviderRejectedOutputError, retry_with_backoff
+from .errors import ProviderRejectedOutputError, retry_with_backoff, validation_error_summary
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -423,11 +423,7 @@ def _request_correction(
     validation_error = _validation_error_of(error, pydantic_model, payload)
     if validation_error is not None:
         detail = _format_validation_error(validation_error)
-        rules = [
-            f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: {item.get('msg', '')}"
-            for item in validation_error.errors()[:_MAX_ERRORS]
-        ]
-        summary = f"{validation_error.error_count()} erro(s): {'; '.join(rules)}"
+        summary = validation_error_summary(validation_error)
     elif error is not None:
         detail = str(error)[:_MAX_ERROR_TEXT]
         summary = f"resposta fora do esquema ({type(error).__name__})"

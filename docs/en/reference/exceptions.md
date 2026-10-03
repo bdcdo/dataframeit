@@ -50,7 +50,7 @@ ValueError
 | `ProviderError` | No | Definitive provider error, such as rejected authentication or exhausted `claude_code` budget |
 | `ProviderTransientError` | Yes | Network or service failure that usually goes away on its own |
 | `ProviderOverloadedError` | Yes | Provider overload or HTTP 429 |
-| `ProviderRejectedOutputError` | Yes | The response failed validation against the Pydantic model; the new attempt sends the model the rejected response and the error |
-| `ProviderOutputError` | No | The provider finished without a usable response, such as a `codex` turn with no content |
+| `ProviderRejectedOutputError` | Yes | The response failed validation against the Pydantic model. With LangChain providers, the new attempt sends the model the rejected response and the error; with `claude_code`, it repeats the request |
+| `ProviderOutputError` | No | The provider finished without a usable response, such as a `codex` turn with no content or with a response that fails validation against the Pydantic model |
 
 Errors from providers via LangChain do not use these classes. They are classified by the type LangChain itself declares, by the HTTP status and by the message. The details are in [Error Handling](../guides/error-handling.md).

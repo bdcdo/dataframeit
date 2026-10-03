@@ -22,6 +22,8 @@ from .search import get_provider
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from pydantic import ValidationError
+
     from .search import SearchProvider
 
 
@@ -79,6 +81,25 @@ class ProviderConfigurationError(ValueError):
 
 class ProviderOutputError(ValueError):
     """Resposta definitiva incompatível com o contrato de saída."""
+
+
+# Teto de regras listadas na mensagem de uma resposta recusada.
+_MAX_REJECTED_RULES = 20
+
+
+def validation_error_summary(error: ValidationError) -> str:
+    """Caminho e regra de cada erro de validação, sem o valor recusado.
+
+    A mensagem vai para `_error_details` e passa pela classificação de erros. O
+    valor recusado vem do texto analisado: levaria dado da linha para a coluna, e
+    um número como '401' nele seria tomado por status HTTP.
+    """
+    rules = [
+        f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: "
+        f"{item.get('msg', '')}"
+        for item in error.errors()[:_MAX_REJECTED_RULES]
+    ]
+    return f"{error.error_count()} erro(s): {'; '.join(rules)}"
 
 
 # Erros considerados recuperáveis (transientes)
@@ -403,14 +424,22 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     Returns:
         Mensagem de erro amigável com instruções de como resolver.
     """
+    # As duas classes de resposta recusada decidem pela classe: a mensagem não
+    # traz o texto analisado, mas um número como '401' no caminho de um campo
+    # não pode virar erro de chave.
     if isinstance(error, ProviderRejectedOutputError):
-        # Decidida pela classe: a mensagem não traz o texto analisado, mas um
-        # número como '401' no caminho de um campo não pode virar erro de chave.
         return (
             "RESPOSTA RECUSADA PELA VALIDAÇÃO DO MODELO PYDANTIC\n"
             f"{error}\n"
-            "As tentativas levaram o erro de volta ao modelo, sem sucesso. Veja as regras "
-            "do modelo que falharam; se o texto é ambíguo, a instrução do campo pode ajudar."
+            "Nenhuma tentativa produziu resposta válida. Veja as regras do modelo que "
+            "falharam; se o texto é ambíguo, a instrução do campo pode ajudar."
+        )
+    if isinstance(error, ProviderOutputError):
+        return (
+            "RESPOSTA FORA DO CONTRATO DE SAÍDA\n"
+            f"{error}\n"
+            "O provider respondeu, mas a resposta não serve ao modelo Pydantic, e a linha "
+            "não é tentada de novo. Veja as regras do modelo que falharam."
         )
 
     error_str = f"{type(error).__name__}: {error}".lower()

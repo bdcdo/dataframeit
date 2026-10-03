@@ -75,6 +75,8 @@ The wait before attempt `n + 1` is `min(base_delay × 2^(n-1), max_delay)`, plus
 
 With LangChain providers, the next attempt sends the model the rejected response and the list of errors, each with the field path and the rejected value, asking it to answer again fixing those points. Repeating the same prompt tends to repeat the same error. When the response is not JSON, the request carries the parser's error text.
 
+With `claude_code`, the next attempt repeats the request, without the list of errors. With `codex`, a response that fails validation raises `ProviderOutputError`, and the row fails without a new attempt. In both, `_error_details` names the path and the rule of each error, without the rejected value.
+
 With OpenAI, the SDK validates the response inside the call and raises before returning the message; the rejected response and its tokens are read from the HTTP response attached to the error. When no raw response is available, the correction request goes with the prompt, carrying the rejected values. When a later attempt succeeds, tokens from the rejected ones are added to `_input_tokens` and `_output_tokens`, because they are billed too; if every attempt fails, the row gets status `error`, no token count, and `_error_details` names the field and the rule of each error.
 
 ### Permanent Errors (no retry)

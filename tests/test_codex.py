@@ -1244,6 +1244,27 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 1
 
+    def test_number_in_rejected_response_is_not_a_credential_error(self, codex_sdk, tmp_path):
+        response = '{"sentimento": "Súmula 403 do STJ", "confianca": "art. 401"}'
+        backend, _, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response=response)
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderOutputError) as error,
+        ):
+            backend.invoke("texto")
+
+        message = str(error.value)
+        assert "Súmula" not in message
+        assert "art. 401" not in message
+        assert "confianca: Input should be a valid number" in message
+        friendly = get_friendly_error_message(error.value, "codex")
+        assert "AUTENTICAÇÃO" not in friendly
+        assert "PERMISSÃO" not in friendly
+        assert "login" not in friendly
+
     @pytest.mark.parametrize(
         ("response", "status", "message"),
         [
