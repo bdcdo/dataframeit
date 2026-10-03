@@ -2,9 +2,11 @@
 
 import datetime
 import warnings
-from typing import Literal, Optional
+from enum import Enum
+from typing import Annotated, Literal, Optional
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel, Field, model_validator
@@ -38,7 +40,7 @@ def test_falha_de_gravacao_nao_marca_a_linha_como_erro(tmp_path, parallel_reques
     """Um OSError ao gravar não reescreve como erro uma linha já processada."""
     gravacoes = []
 
-    def grava_ou_falha(df, path, _meta=None):
+    def grava_ou_falha(df, path, *_):
         gravacoes.append(int((df["_dataframeit_status"] == "processed").sum()))
         if len(gravacoes) == 1:
             raise OSError(28, "No space left on device")
@@ -305,7 +307,7 @@ def test_campo_condicional_presente_mantem_as_restricoes():
 def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, parallel_requests):
     gravacoes = []
 
-    def grava(df, path, _meta=None):
+    def grava(df, path, *_):
         processadas = int((df["_dataframeit_status"] == "processed").sum())
         gravacoes.append(processadas)
         if processadas == 6 and len(gravacoes) < 4:
@@ -343,6 +345,28 @@ def test_checkpoint_textual_serializa_data_dentro_de_dict(tmp_path):
     assert pd.read_csv(ckpt)["meta"][0] == '{"quando": "2026-09-24"}'
 
 
+def test_checkpoint_textual_serializa_array_e_enum_como_json(tmp_path):
+    """Array no topo e dentro de dict vira lista, e Enum vai pelo valor."""
+
+    class Cor(Enum):
+        AZUL = "azul"
+
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame(
+        {
+            "tags": [np.array(["x", "y"], dtype=object)],
+            "numeros": [[np.int64(5), np.bool_(True)]],
+            "interno": [{"itens": np.array(["a"], dtype=object), "cor": Cor.AZUL}],
+        }
+    )
+    _save_checkpoint(df, ckpt)
+
+    relido = pd.read_csv(ckpt)
+    assert relido["tags"][0] == '["x", "y"]'
+    assert relido["numeros"][0] == "[5, true]"
+    assert relido["interno"][0] == '{"itens": ["a"], "cor": "azul"}'
+
+
 @pytest.mark.parametrize("texto", ["{[1]: 2} petição", "{[1], [2]}", "[1, 2"])
 def test_normalize_value_devolve_o_texto_quando_nao_e_estrutura(texto):
 
@@ -378,6 +402,39 @@ def test_accepts_only_text_cobre_optional_e_literal():
     assert not accepts_only_text(Literal["a", 1])
     assert not accepts_only_text(Optional[int])
     assert not accepts_only_text(list[str])
+    assert accepts_only_text(Annotated[str, Field(min_length=1)] | None)
+    assert not accepts_only_text(Annotated[int, Field(ge=0)] | None)
+
+
+def test_estrutura_anotada_e_opcional_volta_do_checkpoint_csv(tmp_path):
+    """Annotated dentro de Optional: o CSV guarda JSON, e a retomada o relê como lista."""
+
+    class Anotado(BaseModel):
+        tags: Annotated[list[str], Field(min_length=1)] | None = None
+
+    ckpt = tmp_path / "ckpt.csv"
+    chamadas = []
+
+    def llm(text, *args, **kwargs):
+        chamadas.append(text)
+        return {"data": {"tags": ["x", "y"]}, "usage": None}
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        for _ in range(2):
+            saida = dataframeit(
+                pd.DataFrame({"texto": ["a"]}),
+                questions=Anotado,
+                prompt="{texto}",
+                batch_size=1,
+                checkpoint_path=ckpt,
+            )
+
+    assert read_df(str(ckpt), Anotado)["tags"][0] == ["x", "y"]
+    assert saida["tags"][0] == ["x", "y"]
+    assert chamadas == ["a"]
 
 
 # =============================================================================
@@ -461,14 +518,14 @@ def test_validador_do_modelo_inteiro_acusa_todos_os_campos():
 def test_default_factory_que_le_outro_campo_invalido_tambem_e_acusado():
     """Com o campo lido pela factory inválido, o default não pode ser calculado.
 
-    A factory lê com .get: antes da 2.12, o Pydantic a chama mesmo depois de
-    'quantidade' falhar, com os dados validados vazios, e um dados['quantidade']
-    levantaria KeyError em vez de ValidationError.
+    A factory lê sem proteção: o Pydantic do piso declarado não a chama depois
+    de 'quantidade' falhar, e acusa os dois campos em vez de deixar o KeyError
+    dela escapar.
     """
 
     class Pedido(BaseModel):
         quantidade: int
-        rotulo: str = Field(default_factory=lambda dados: f"{dados.get('quantidade')} unidades")
+        rotulo: str = Field(default_factory=lambda dados: f"{dados['quantidade']} unidades")
 
     df = pd.DataFrame(
         {

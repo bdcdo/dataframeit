@@ -309,6 +309,11 @@ def is_complex_type(field_type: object) -> bool:
     """
     origin = get_origin(field_type)
 
+    # O Pydantic tira o Annotated só do nível de cima da anotação; dentro de
+    # Optional ele fica, e o tipo que importa é o primeiro argumento.
+    if origin is typing.Annotated:
+        return is_complex_type(get_args(field_type)[0])
+
     # Tipos genéricos: list[str], dict[str, int], tuple[int, str], etc.
     if origin in (list, dict, tuple):
         return True
@@ -355,6 +360,8 @@ def accepts_only_text(field_type: object) -> bool:
     if field_type is str:
         return True
     origin = get_origin(field_type)
+    if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
+        return accepts_only_text(get_args(field_type)[0])
     if origin is typing.Literal:
         return all(isinstance(arg, str) for arg in get_args(field_type))
     if origin is typing.Union or isinstance(field_type, types.UnionType):

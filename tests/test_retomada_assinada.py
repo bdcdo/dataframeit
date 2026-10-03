@@ -1,17 +1,27 @@
 """Retomada automática pelo checkpoint: só o arquivo desta execução é retomado."""
 
 import contextlib
+import datetime
 import warnings
+from enum import Enum
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
-from dataframeit.core import _run_signature
+from dataframeit.core import _run_signature, _same_json
+from dataframeit.utils import get_complex_fields
 
 
 class Modelo(BaseModel):
@@ -493,3 +503,390 @@ def test_saida_com_a_coluna_de_status_devolvida_mantem_a_correcao(tmp_path, stat
 
     assert len(chamadas) == 0
     assert final["campo1"].tolist() == ["v1", "corrigido", "v3"]
+
+
+class ComDict(BaseModel):
+    extra: dict
+
+
+class ComListaDeDicts(BaseModel):
+    extra: list[dict]
+
+
+_ESTRUTURAS = {
+    ComDict: {"a": {"x": 1}, "b": {"y": 2}},
+    ComListaDeDicts: {"a": [{"x": 1}], "b": [{"y": 2}, {"x": 3, "z": "t"}]},
+}
+
+
+@pytest.mark.parametrize("modelo", list(_ESTRUTURAS))
+def test_estrutura_relida_do_checkpoint_parquet_e_a_gravada(tmp_path, modelo):
+    """O parquet gravaria dicts como struct, com as chaves de todas as linhas."""
+    pytest.importorskip("pyarrow")
+    respostas = _ESTRUTURAS[modelo]
+    ckpt = tmp_path / "ckpt.parquet"
+    chamadas = []
+
+    def llm(text, *args, **kwargs):
+        chamadas.append(text)
+        return {"data": {"extra": respostas[text]}, "usage": None}
+
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    direta = _roda(df, llm, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+    relido = read_df(str(ckpt), modelo)
+    relido_sem_modelo = read_df(str(ckpt))
+    retomada = _roda(df, llm, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+
+    esperado = [respostas["a"], respostas["b"]]
+    assert list(direta["extra"]) == esperado
+    assert list(relido["extra"]) == esperado
+    assert list(relido_sem_modelo["extra"]) == esperado
+    assert list(retomada["extra"]) == esperado
+    assert chamadas == ["a", "b"]
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_campo_lista_da_saida_polars_volta_igual_do_checkpoint(tmp_path, formato):
+    """A saída polars traz o campo lista como array do numpy, ao lado das listas novas."""
+    pl = pytest.importorskip("polars")
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pl.DataFrame({"texto": ["a", "b", "c"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(
+            df,
+            _llm_lista(1, ProviderUsageLimitError("limite"))[1],
+            modelo=ComLista,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Falha ao gravar o checkpoint")
+        _roda(
+            saida,
+            _llm_lista(100, SystemExit())[1],
+            modelo=ComLista,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    assert list(read_df(str(ckpt), ComLista)["tags"]) == [["t1", "u"], ["t1", "u"], ["t2", "u"]]
+
+
+class Itens(BaseModel):
+    itens: list[str]
+
+
+class ComAninhado(BaseModel):
+    interno: Itens
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_array_dentro_de_modelo_aninhado_volta_igual_do_checkpoint(tmp_path, formato):
+    """A saída polars traz a lista do modelo aninhado como array dentro do dict."""
+    pl = pytest.importorskip("polars")
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    chamadas = []
+    limite = ProviderUsageLimitError("limite")
+
+    def llm(text, *args, **kwargs):
+        chamadas.append(text)
+        if chamadas == ["a", "b"]:
+            raise limite
+        return {"data": {"interno": {"itens": [text, "z"]}}, "usage": None}
+
+    df = pl.DataFrame({"texto": ["a", "b"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(df, llm, modelo=ComAninhado, batch_size=1, checkpoint_path=ckpt)
+    _roda(saida, llm, modelo=ComAninhado, batch_size=1, checkpoint_path=ckpt)
+
+    relido = read_df(str(ckpt), ComAninhado)
+    assert list(relido["interno"]) == [{"itens": ["a", "z"]}, {"itens": ["b", "z"]}]
+
+
+class ComData(BaseModel):
+    quando: dict[str, datetime.date]
+
+
+class ComTupla(BaseModel):
+    par: tuple[int, str]
+
+
+class ComChaveInt(BaseModel):
+    mapa: dict[int, str]
+
+
+_TIPADOS = {
+    ComData: ("quando", lambda texto: {texto: datetime.date(2024, 1, 2)}),
+    ComTupla: ("par", lambda texto: (1, texto)),
+    ComChaveInt: ("mapa", lambda texto: {1: texto, 10: texto, 2: texto}),
+}
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+@pytest.mark.parametrize("modelo", list(_TIPADOS))
+def test_valor_retomado_do_checkpoint_tem_o_tipo_do_campo(tmp_path, modelo, formato):
+    """Data, tupla e chave int, que o JSON não guarda, voltam da retomada com o tipo declarado."""
+    pytest.importorskip("pyarrow")
+    campo, resposta = _TIPADOS[modelo]
+    ckpt = tmp_path / f"ckpt.{formato}"
+
+    def llm(text, *args, **kwargs):
+        return {"data": modelo(**{campo: resposta(text)}).model_dump(), "usage": None}
+
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    direta = _roda(df, llm, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+    _, sem_llm = _llm(0, SystemExit())
+    retomada = _roda(df, sem_llm, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+
+    assert list(retomada[campo]) == list(direta[campo])
+    assert [type(v) for v in retomada[campo]] == [type(v) for v in direta[campo]]
+
+
+def test_coluna_do_usuario_volta_nativa_do_checkpoint_parquet(tmp_path):
+    """Só os campos de estrutura do modelo viram JSON no parquet."""
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / "ckpt.parquet"
+    df = pd.DataFrame({"texto": ["a", "b"], "meta": [["m1", "m2"], ["m3"]]})
+    _roda(df, _llm_lista(100, SystemExit())[1], modelo=ComLista, batch_size=1, checkpoint_path=ckpt)
+
+    relido = read_df(str(ckpt), ComLista)
+    assert [list(v) for v in relido["meta"]] == [["m1", "m2"], ["m3"]]
+    assert list(relido["tags"]) == [["t1", "u"], ["t2", "u"]]
+
+
+class Cor(Enum):
+    AZUL = "azul"
+
+
+class CoresComoTexto(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
+    cores: list[Cor]
+
+
+class CoresComoEnum(BaseModel):
+    cores: list[Cor]
+
+
+class Exclamado(BaseModel):
+    n: list[str]
+
+    @field_validator("n")
+    @classmethod
+    def exclama(cls, valor):
+        return [f"{item}!" for item in valor]
+
+
+class ComValidador(BaseModel):
+    interno: Exclamado
+
+
+class ExclamaAteDuasVezes(BaseModel):
+    """A segunda passada do validador sobre o valor já validado falha."""
+
+    n: list[str]
+
+    @field_validator("n")
+    @classmethod
+    def exclama(cls, valor):
+        if any(item.count("!") > 1 for item in valor):
+            msg = "exclamação demais"
+            raise ValueError(msg)
+        return [f"{item}!" for item in valor]
+
+
+class FiltraPorOutroCampo(BaseModel):
+    """O validador de `itens` lê `tem_itens`, que só a linha inteira traz."""
+
+    tem_itens: bool
+    itens: list[str]
+
+    @field_validator("itens")
+    @classmethod
+    def so_com_itens(cls, valor, info):
+        return valor if info.data.get("tem_itens") else []
+
+
+class DatasDepoisDoInicio(BaseModel):
+    inicio: datetime.date
+    datas: list[datetime.date]
+
+    @model_validator(mode="after")
+    def depois_do_inicio(self):
+        if any(data < self.inicio for data in self.datas):
+            msg = "data antes do início"
+            raise ValueError(msg)
+        return self
+
+
+class DatasEmTexto(BaseModel):
+    datas: list[datetime.date]
+
+    @field_serializer("datas")
+    def em_texto(self, valor):
+        return [str(item) for item in valor]
+
+
+class NomePorAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True, validate_by_name=True)
+    nome: str = Field(alias="Nome")
+
+
+class SubmodeloPorAlias(BaseModel):
+    """A execução grava o submodelo pelo alias, que o model_dump de fora não reescreve."""
+
+    subs: list[NomePorAlias]
+
+
+class Convergente(BaseModel):
+    """O validador muda "b" para "c" e deixa "c" como está: estável, mas não idempotente."""
+
+    n: list[str]
+
+    @field_validator("n")
+    @classmethod
+    def avanca(cls, valor):
+        proximo = {"a": "b", "b": "c"}
+        return [proximo.get(item, item) for item in valor]
+
+
+_POR_EXECUCAO = {
+    SubmodeloPorAlias: lambda texto: {"subs": [{"Nome": texto}]},
+    Convergente: lambda texto: {"n": ["a"]},
+    CoresComoTexto: lambda texto: {"cores": [Cor.AZUL]},
+    CoresComoEnum: lambda texto: {"cores": [Cor.AZUL]},
+    ComValidador: lambda texto: {"interno": {"n": [texto]}},
+    ExclamaAteDuasVezes: lambda texto: {"n": [texto]},
+    FiltraPorOutroCampo: lambda texto: {"tem_itens": True, "itens": [texto]},
+    DatasDepoisDoInicio: lambda texto: {
+        "inicio": datetime.date(2024, 1, 1),
+        "datas": [datetime.date(2024, 1, 2)],
+    },
+    DatasEmTexto: lambda texto: {"datas": [datetime.date(2024, 1, 2)]},
+}
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+@pytest.mark.parametrize("modelo", list(_POR_EXECUCAO))
+def test_retomadas_seguidas_devolvem_o_que_a_execucao_gravou(tmp_path, modelo, formato):
+    """Cada execução processa uma linha e é interrompida; a próxima retoma do checkpoint."""
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    limite = ProviderUsageLimitError("limite")
+
+    def uma_linha_por_execucao():
+        chamadas = []
+
+        def llm(text, *args, **kwargs):
+            chamadas.append(text)
+            if len(chamadas) > 1:
+                raise limite
+            dados = modelo(**_POR_EXECUCAO[modelo](text)).model_dump()
+            return {"data": dados, "usage": None}
+
+        return llm
+
+    direta = _roda(
+        df,
+        lambda text, *a, **k: {
+            "data": modelo(**_POR_EXECUCAO[modelo](text)).model_dump(),
+            "usage": None,
+        },
+        modelo=modelo,
+    )
+    for _ in range(2):
+        with pytest.warns(UserWarning, match="interrompida"):
+            _roda(df, uma_linha_por_execucao(), modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+    final = _roda(df, uma_linha_por_execucao(), modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+
+    # Campo escalar fora do JSON, como a data `inicio`, volta do CSV como texto.
+    for campo in get_complex_fields(modelo):
+        assert list(final[campo]) == list(direta[campo])
+
+
+def test_campo_excluido_do_dump_nao_derruba_a_retomada(tmp_path):
+    """Campo com exclude=True não sai no model_dump da linha validada."""
+
+    class ComOculto(BaseModel):
+        tags: list[str]
+        oculto: list[str] = Field(default_factory=list, exclude=True)
+
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "tags": [["x"]],
+            "oculto": [["y"]],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+    saida = _roda(df, _llm(0, SystemExit())[1], modelo=ComOculto)
+
+    assert list(saida["tags"]) == [["x"]]
+    assert list(saida["oculto"]) == [["y"]]
+
+
+def test_valor_que_o_json_nao_compara_fica_como_relido():
+    """Chave Enum não vira JSON, e a volta ao tipo não tem com o que comparar."""
+
+    class PorCor(BaseModel):
+        contagem: dict[Cor, int]
+
+    df = pd.DataFrame(
+        {"texto": ["a"], "contagem": [{"azul": 1}], "_dataframeit_status": ["processed"]}
+    )
+    saida = _roda(df, _llm(0, SystemExit())[1], modelo=PorCor)
+
+    assert list(saida["contagem"]) == [{"azul": 1}]
+
+
+def test_campo_excluido_e_ausente_nao_derruba_a_retomada():
+    """Sem a coluna, o campo excluído do dump não tem valor a completar."""
+
+    class ComOculto(BaseModel):
+        tags: list[str]
+        oculto: list[str] = Field(default_factory=list, exclude=True)
+
+    df = pd.DataFrame({"texto": ["a"], "tags": [["x"]], "_dataframeit_status": ["processed"]})
+    saida = _roda(df, _llm(0, SystemExit())[1], modelo=ComOculto)
+
+    assert list(saida["tags"]) == [["x"]]
+
+
+class AlternaNumero(BaseModel):
+    """O validador troca int por float e float por int a cada passada."""
+
+    n: list[int | float]
+
+    @field_validator("n")
+    @classmethod
+    def alterna(cls, valor):
+        return [float(item) if isinstance(item, int) else int(item) for item in valor]
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_volta_ao_tipo_distingue_int_de_float(tmp_path, formato):
+    """1 e 1.0 são o mesmo valor em Python, mas não o mesmo JSON."""
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a"]})
+
+    def llm(text, *args, **kwargs):
+        return {"data": AlternaNumero(n=[1]).model_dump(), "usage": None}
+
+    direta = _roda(df, llm, modelo=AlternaNumero, batch_size=1, checkpoint_path=ckpt)
+    retomada = _roda(
+        df, _llm(0, SystemExit())[1], modelo=AlternaNumero, batch_size=1, checkpoint_path=ckpt
+    )
+
+    assert [type(item) for item in retomada["n"][0]] == [type(item) for item in direta["n"][0]]
+
+
+def test_estrutura_funda_demais_para_o_json_fica_como_relida():
+    profunda: list = []
+    for _ in range(100_000):
+        profunda = [profunda]
+
+    assert _same_json(profunda, profunda) is False

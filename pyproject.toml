@@ -52,12 +52,14 @@ classifiers = [
 dependencies = [
     # Menores versões com que a suíte passa, conferidas pelo job lowest-direct
     # do CI (tests.yml). langchain < 1.2.11 fixa langgraph < 1.1, que quebra no
-    # import com o langgraph-prebuilt atual; pydantic < 2.11 falha nos testes;
+    # import com o langgraph-prebuilt atual; pydantic < 2.12 chama a
+    # default_factory com os dados validados vazios quando o campo que ela lê
+    # falhou, e o KeyError dela escapa da retomada em vez de acusar o campo;
     # pandas < 2.1.2 é instalado com numpy 2, com que é binariamente incompatível.
     "langchain>=1.2.11",
     "langchain-core>=1.2.10",
     "pandas>=2.1.2",
-    "pydantic>=2.11.0",
+    "pydantic>=2.12",
     "tqdm>=4.1.0",
 ]
 

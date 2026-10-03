@@ -7,11 +7,11 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 import importlib.util
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal, Optional
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dataframeit.utils import (
     get_complex_fields,
@@ -112,6 +112,13 @@ def test_is_complex_type_optional():
     assert is_complex_type(list[str] | None) is True
     assert is_complex_type(dict[str, int] | None) is True
     assert is_complex_type(str | None) is False
+
+
+def test_is_complex_type_annotated_dentro_de_optional():
+    """O Pydantic tira o Annotated só do nível de cima da anotação."""
+    assert is_complex_type(Annotated[list[str], Field(min_length=1)] | None) is True
+    assert is_complex_type(Optional[Annotated[dict, Field(description="x")]]) is True
+    assert is_complex_type(Annotated[str, Field(min_length=1)] | None) is False
 
 
 # =============================================================================

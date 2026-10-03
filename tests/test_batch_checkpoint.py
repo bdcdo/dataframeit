@@ -41,7 +41,7 @@ def test_checkpoint_fires_on_multiples_sequential(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg, _meta=None):
+    def spy(df_arg, path_arg, *_):
         observed_counts.append(
             (int((df_arg["_dataframeit_status"] == "processed").sum()), str(path_arg))
         )
@@ -73,7 +73,7 @@ def test_checkpoint_no_duplicate_final_save_sequential(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg, _meta=None):
+    def spy(df_arg, path_arg, *_):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -101,7 +101,7 @@ def test_checkpoint_fires_on_multiples_parallel(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg, _meta=None):
+    def spy(df_arg, path_arg, *_):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -132,7 +132,7 @@ def test_checkpoint_no_duplicate_final_save_parallel(tmp_path):
 
     observed_counts = []
 
-    def spy(df_arg, path_arg, _meta=None):
+    def spy(df_arg, path_arg, *_):
         observed_counts.append(int((df_arg["_dataframeit_status"] == "processed").sum()))
 
     _, mock_llm = _mock_llm_factory()
@@ -375,7 +375,7 @@ def test_checkpoint_paralelo_serializa_gravacoes_em_ordem(tmp_path):
     processadas_por_gravacao = []
     trava = threading.Lock()
 
-    def gravacao_lenta(df_arg, path_arg, _meta=None):
+    def gravacao_lenta(df_arg, path_arg, *_):
         with trava:
             ativas[0] += 1
             max_ativas[0] = max(max_ativas[0], ativas[0])
