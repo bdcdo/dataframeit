@@ -581,8 +581,9 @@ def should_skip_field(field_name: str, field_config: dict, field_data: dict[str,
     Returns:
         True se o campo deve ser pulado, False caso contrário.
     """
-    # `is None`, e não falsidade: o dict vazio é condição sem `field`, que
-    # evaluate_condition trata como falsa, e o campo é pulado.
+    # `is None`, e não falsidade, para concordar com evaluate_condition, que
+    # trata o dict vazio como condição falsa. Pela API, a forma malformada
+    # nem chega aqui: _check_condition a recusa antes de processar.
     condition = field_config.get("condition")
     if condition is None:
         return False
