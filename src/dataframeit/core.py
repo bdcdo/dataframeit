@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -297,6 +298,18 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         if isinstance(field.validation_alias, str):
             field_by_alias[field.validation_alias] = field_name
 
+    def rejected_fields(error: ValidationError) -> set[str]:
+        """Campos acusados pelo erro; o erro do modelo inteiro acusa todos."""
+        rejected = set()
+        for detail in error.errors():
+            location = detail.get("loc", ())
+            field_name = field_by_alias.get(location[0]) if location else None
+            if field_name is not None:
+                rejected.add(field_name)
+            else:
+                rejected.update(expected_columns)
+        return rejected
+
     if status_col not in df.columns:
         return [], values_to_fill
 
@@ -358,6 +371,10 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 row_values[field_name] = None
             elif field_name in complex_fields:
                 row_values[field_name] = normalize_value(value)
+            elif isinstance(value, pd.Timestamp):
+                # O datetime relido do XLSX ou do parquet; o pydantic devolveria
+                # o próprio Timestamp, e a coluna misturaria os dois tipos.
+                row_values[field_name] = value.to_pydatetime()
             else:
                 row_values[field_name] = value
 
@@ -378,16 +395,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     continue
             projected[field_name] = value
 
-        try:
-            validated = model_skipping(skipped).model_validate(projected)
-        except ValidationError as error:
-            for detail in error.errors():
-                location = detail.get("loc", ())
-                field_name = field_by_alias.get(location[0]) if location else None
-                if field_name is not None:
-                    incompatible_fields.add(field_name)
-                else:
-                    incompatible_fields.update(expected_columns)
+        validated_data, rejected = _validate_row(
+            model_skipping(skipped), projected, rejected_fields
+        )
+        if validated_data is None:
+            incompatible_fields.update(rejected)
             for field_name in missing_values:
                 field = pydantic_model.model_fields[field_name]
                 if field.is_required():
@@ -402,26 +414,73 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             continue
 
         # Campo com exclude=True não sai no dump, e não há o que completar nele.
-        validated_data = validated.model_dump(by_alias=False)
         for field_name in missing_values & validated_data.keys():
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
-        # O JSON do checkpoint não guarda data, tupla nem chave de dict que não
-        # seja texto. O model_dump da linha validada traz esses tipos de volta,
-        # com o contexto da linha inteira para os validadores. Ele só substitui
-        # o valor relido quando diz o mesmo em JSON: a volta muda o tipo, nunca
-        # o conteúdo. Um validador que muda o valor de novo, ou um submodelo que
-        # grava pelo alias, deixa o valor como foi relido.
-        for field_name in complex_fields:
-            if (
-                field_name in projected
-                and field_name in validated_data
-                and _same_json(validated_data[field_name], projected[field_name])
-            ):
+        # O arquivo não guarda o tipo de todo valor (ver _validate_row). O
+        # model_dump da linha validada traz o tipo declarado de volta, com o
+        # contexto da linha inteira para os validadores. Ele só substitui o
+        # valor relido quando diz o mesmo (_same_value): a volta muda o tipo,
+        # nunca o conteúdo. Um validador que muda o valor de novo, ou um
+        # submodelo que grava pelo alias, deixa o valor como foi relido.
+        for field_name, value in projected.items():
+            if field_name in validated_data and _same_value(validated_data[field_name], value):
                 values_to_fill[(position, field_name)] = validated_data[field_name]
 
     ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
+
+
+def _validate_row(
+    model: type[BaseModel],
+    projected: dict[str, Any],
+    rejected_fields: Callable[[ValidationError], set[str]],
+) -> tuple[dict[str, Any] | None, set[str]]:
+    """Valida a linha relida e devolve o model_dump dela, ou None e os campos recusados.
+
+    O arquivo muda a forma dos valores: o JSON grava data como texto ISO,
+    tupla como lista e Enum pelo valor, a coluna com linha pendente devolve o
+    inteiro como float, e o XLSX devolve o bool como 1.0 e a data como
+    datetime à meia-noite. O modelo com strict=True recusa essas formas.
+    Quando a validação configurada recusa a linha, ela é refeita sem strict,
+    e cada campo recusado só é aceito se o valor validado diz o mesmo que o
+    relido (_same_value): o "3" num campo int strict continua recusado,
+    porque o conteúdo do checkpoint não é o que o modelo aceita.
+    """
+    try:
+        return model.model_validate(projected).model_dump(by_alias=False), set()
+    except ValidationError as error:
+        rejected = rejected_fields(error)
+    try:
+        validated_data = model.model_validate(projected, strict=False).model_dump(by_alias=False)
+    except ValidationError as error:
+        return None, rejected_fields(error)
+    # Campo com exclude=True não sai no dump; sem o valor, fica aceito.
+    changed = {
+        field_name
+        for field_name in rejected & projected.keys() & validated_data.keys()
+        if not _same_value(validated_data[field_name], projected[field_name])
+    }
+    if changed:
+        return None, changed
+    return validated_data, set()
+
+
+def _same_value(validated: object, value: object) -> bool:
+    """Se o valor validado diz o mesmo que o relido, em JSON ou como escalar.
+
+    O CSV, o XLSX e o parquet mudam o tipo de um escalar sem mudar o
+    conteúdo, e a comparação em JSON, que distingue 1 de 1.0, não os
+    reconhece: o inteiro volta como float, o bool do XLSX como 1.0 e a data
+    do XLSX como datetime à meia-noite.
+    """
+    if _same_json(validated, value):
+        return True
+    if not (is_scalar(validated) and is_scalar(value)):
+        return False
+    if type(validated) is datetime.date and isinstance(value, datetime.datetime):
+        return value == datetime.datetime.combine(validated, datetime.time())
+    return bool(validated == value)
 
 
 def _same_json(left: object, right: object) -> bool:
@@ -1937,18 +1996,25 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     sem o outro deixaria a coluna mista, que o parquet recusa.
 
     Com `columns`, só essas colunas são serializadas; sem, todas as de objeto.
+
+    O Enum vai pelo valor em toda coluna de objeto, como dentro do JSON: o CSV
+    e o XLSX gravariam o texto dele ("Cor.AZUL"), que a validação recusa, e o
+    parquet recusa a coluna inteira.
     """
+
+    def enum_as_value(value: object) -> object:
+        return value.value if isinstance(value, Enum) else value
 
     def to_json(value: object) -> object:
         value = _array_as_list(value)
         if isinstance(value, (list, dict, tuple)):
             return json.dumps(value, ensure_ascii=False, default=_json_default)
-        return value
+        return enum_as_value(value)
 
     out = df.copy()
     for col in out.columns:
-        if out[col].dtype == object and (columns is None or col in columns):
-            out[col] = out[col].map(to_json)
+        if out[col].dtype == object:
+            out[col] = out[col].map(to_json if columns is None or col in columns else enum_as_value)
     return out
 
 
@@ -1965,9 +2031,9 @@ def _save_checkpoint(
     gravações, o hash não bate e a retomada recomeça em vez de aceitar o par.
 
     `structures` são os campos de estrutura do modelo. O parquet serializa só
-    eles, que a retomada devolve aos tipos declarados, e grava as
-    demais colunas como vieram; CSV e XLSX serializam toda coluna de objeto,
-    porque gravariam o repr de qualquer estrutura.
+    eles, que a retomada devolve aos tipos declarados, e grava as demais
+    colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
+    coluna de objeto, porque gravariam o repr de qualquer estrutura.
     """
     path = Path(path)
     ext = path.suffix.lower()
