@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from dataframeit.utils import (
+    _normalize_all_json_columns,
     get_complex_fields,
     is_complex_type,
     normalize_complex_columns,
@@ -486,3 +487,24 @@ def test_read_df_complex_model():
 # =============================================================================
 # EXECUTAR TESTES
 # =============================================================================
+
+
+def test_read_df_sem_modelo_normaliza_coluna_json_depois_de_coluna_numerica(tmp_path):
+    caminho = tmp_path / "dados.csv"
+    pd.DataFrame({"n": [1, 2], "itens": ['["a"]', '["b"]']}).to_csv(caminho, index=False)
+
+    df = read_df(str(caminho))
+
+    assert list(df["itens"]) == [["a"], ["b"]]
+
+
+def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():
+    """Só texto é testado como JSON: o número na amostra não tem `strip`."""
+    sem_json = pd.DataFrame({"misto": pd.Series([1, "x"], dtype=object)})
+    com_json = pd.DataFrame({"misto": pd.Series([1, '["a"]'], dtype=object)})
+
+    _normalize_all_json_columns(sem_json)
+    _normalize_all_json_columns(com_json)
+
+    assert list(sem_json["misto"]) == [1, "x"]
+    assert list(com_json["misto"]) == [1, ["a"]]

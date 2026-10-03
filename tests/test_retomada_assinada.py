@@ -890,3 +890,56 @@ def test_estrutura_funda_demais_para_o_json_fica_como_relida():
         profunda = [profunda]
 
     assert _same_json(profunda, profunda) is False
+
+
+def _llm_fixo(valor, limite):
+    chamadas = []
+    limite_de_uso = ProviderUsageLimitError("limite")
+
+    def llm(text, *args, **kwargs):
+        chamadas.append(text)
+        if len(chamadas) > limite:
+            raise limite_de_uso
+        return {"data": {"campo1": valor}, "usage": None}
+
+    return chamadas, llm
+
+
+def test_texto_com_cara_de_numero_volta_como_texto_da_retomada_csv(tmp_path):
+    """O checkpoint é relido com o modelo, que lê os campos de texto como texto."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(df, _llm_fixo("001", 1)[1], batch_size=1, checkpoint_path=ckpt)
+
+    chamadas, llm = _llm_fixo("002", 100)
+    final = _roda(df, llm, batch_size=1, checkpoint_path=ckpt)
+
+    assert list(final["campo1"]) == ["001", "002"]
+    assert chamadas == ["b"]
+
+
+def test_campo_do_modelo_vazio_em_float_recebe_o_texto_do_checkpoint(tmp_path):
+    """Coluna do modelo só com NaN chega como float, e o texto relido cabe nela."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b"], "campo1": [np.nan, np.nan]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(df, _llm_fixo("x", 1)[1], batch_size=1, checkpoint_path=ckpt)
+
+    final = _roda(df, _llm_fixo("y", 100)[1], batch_size=1, checkpoint_path=ckpt)
+
+    assert list(final["campo1"]) == ["x", "y"]
+
+
+def test_assinatura_que_nao_e_objeto_json_recomeca(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a"]})
+    _roda(df, _llm_fixo("x", 100)[1], batch_size=1, checkpoint_path=ckpt)
+    Path(f"{ckpt}.dataframeit.json").write_text("[1, 2]", encoding="utf-8")
+
+    chamadas, llm = _llm_fixo("y", 100)
+    with pytest.warns(UserWarning, match="não tem a assinatura"):
+        final = _roda(df, llm, batch_size=1, checkpoint_path=ckpt)
+
+    assert chamadas == ["a"]
+    assert list(final["campo1"]) == ["y"]
