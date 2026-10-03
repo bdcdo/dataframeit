@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -72,41 +71,12 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
 
 
 # Ferramentas e namespaces que o request de uma linha oferece ao modelo, com
-# `_CODEX_CONFIG_OVERRIDES` aplicado. Trocar o pin do SDK muda esta lista, e o
-# nome novo só entra aqui depois de conferido o que ele alcança; se alcançar
-# arquivo, rede, processo ou outro agente, a flag que o liga vai desligada em
-# `_CODEX_CONFIG_OVERRIDES`.
-_REVIEWED_MODEL_TOOLS = frozenset(
-    {
-        # Namespace em que o runtime agrupa as ferramentas abaixo.
-        "functions",
-        # Roda JavaScript num isolado V8 sem sistema de arquivos, rede nem
-        # processo. As ferramentas que ela alcança estão em `_REVIEWED_EXEC_TOOLS`.
-        "exec",
-        # Só retoma uma célula de `exec` que ainda está rodando.
-        "wait",
-        # O runtime recusa a chamada fora do modo Plan, e a thread do provider
-        # roda no modo padrão.
-        "request_user_input",
-        # Devolve só o aceite, sem que a pergunta chegue a alguém; o turno segue
-        # e a resposta final continua presa ao schema.
-        "request_user_input_async",
-    }
-)
-
-
-# Ferramentas que o JavaScript de `exec` alcança, lidas das declarações
-# TypeScript na descrição dela. Não aparecem como ferramenta de topo, e por
-# isso `_REVIEWED_MODEL_TOOLS` não as vê. Nome novo aqui segue a mesma regra
-# de `_REVIEWED_MODEL_TOOLS`.
-_REVIEWED_EXEC_TOOLS = frozenset(
-    {
-        # Edita arquivos, e o sandbox somente leitura recusa a edição.
-        "apply_patch",
-        # Só devolve a hora atual em UTC.
-        "clock__curr_time",
-    }
-)
+# `_CODEX_CONFIG_OVERRIDES` aplicado e o catálogo de `_write_model_catalog`.
+# Trocar o pin do SDK pode mudar este conjunto, e o nome novo só entra aqui
+# depois de conferido o que ele alcança; se alcançar arquivo, rede, processo ou
+# outro agente, a config ou o campo do catálogo que o liga vai desligado no
+# provider.
+_REVIEWED_MODEL_TOOLS = frozenset()
 
 
 def _isolated_config(tmp_path):
@@ -207,6 +177,46 @@ def test_enabled_features_match_reviewed_list(tmp_path):
     assert enabled == expected
 
 
+def test_model_catalog_keeps_every_model_without_tool_fields(tmp_path):
+    """O catálogo gravado traz todo modelo do runtime, sem os campos de ferramentas.
+
+    Sem conta, `codex debug models` devolve o catálogo embutido; a comparação
+    com `--bundled` mostra que nenhum modelo some no caminho.
+    """
+    from codex_cli_bin import bundled_codex_path  # noqa: PLC0415 (extra codex opcional)
+
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    env = {
+        "CODEX_HOME": os.fspath(home),
+        "CODEX_SQLITE_HOME": os.fspath(home),
+        "HOME": os.fspath(home),
+    }
+
+    path = codex_provider._write_model_catalog(workspace, env)
+    bundled = subprocess.run(  # noqa: S603 (binário empacotado, argumentos fixos)
+        [os.fspath(bundled_codex_path()), "debug", "models", "--bundled"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, **env},
+        check=True,
+        timeout=60,
+    )
+    bundled_models = json.loads(bundled.stdout)["models"]
+    models = json.loads(path.read_text(encoding="utf-8"))["models"]
+
+    assert path.parent == tmp_path
+    assert [model["slug"] for model in models] == [model["slug"] for model in bundled_models]
+    # Sem um modelo em code mode no catálogo embutido, o teste não prova a troca.
+    assert any(model["tool_mode"] == "code_mode_only" for model in bundled_models)
+    for model in models:
+        for field, value in codex_provider._CATALOG_TOOL_FIELDS.items():
+            assert model[field] == value
+
+
 class _RecordingProvider(BaseHTTPRequestHandler):
     """Provider de modelo local: guarda cada corpo recebido e recusa o turno."""
 
@@ -235,40 +245,6 @@ def _tool_names(node, names):
         for value in node:
             _tool_names(value, names)
     return names
-
-
-# Cada ferramenta aninhada vem num bloco `declare const tools: { nome(...`.
-_EXEC_DECLARATION = re.compile(r"declare const tools: \{\s*([A-Za-z_$][\w$]*)\(")
-
-
-def _exec_description(node):
-    """Descrição da ferramenta `exec` no request, em qualquer profundidade."""
-    if isinstance(node, dict):
-        if node.get("type") == "custom" and node.get("name") == "exec":
-            return node["description"]
-        children = node.values()
-    elif isinstance(node, list):
-        children = node
-    else:
-        return None
-    for child in children:
-        found = _exec_description(child)
-        if found is not None:
-            return found
-    return None
-
-
-def _exec_tool_names(request):
-    """Nomes das ferramentas declaradas na descrição de `exec`.
-
-    Toda declaração precisa produzir um nome: uma declaração que o padrão não
-    casa faz o teste falhar em vez de sumir da comparação.
-    """
-    description = _exec_description(request)
-    assert description is not None
-    names = _EXEC_DECLARATION.findall(description)
-    assert len(names) == description.count("declare const tools:"), description
-    return set(names)
 
 
 class _Answer(BaseModel):
@@ -318,8 +294,9 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url):
 def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     """O request de uma linha oferece ao modelo só as ferramentas revisadas.
 
-    O catálogo do runtime liga os sub-agentes para o `gpt-6-luna`, e só
-    `agents.enabled=false` os desliga.
+    O catálogo do runtime liga o code mode e os sub-agentes para o
+    `gpt-6-luna`; o catálogo de `_write_model_catalog` desliga o primeiro, e
+    `agents.enabled=false`, os segundos.
     """
     handler = type("Handler", (_RecordingProvider,), {"bodies": []})
     server = HTTPServer(("127.0.0.1", 0), handler)
@@ -344,11 +321,6 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     request = json.loads(raw)
     assert request["model"] == "gpt-6-luna"
     assert _tool_names(request, set()) == _REVIEWED_MODEL_TOOLS
-    # Sem nenhum nome, a leitura da descrição de `exec` deixou de casar o formato
-    # do runtime, e a igualdade abaixo não pode passar vazia.
-    exec_tools = _exec_tool_names(request)
-    assert exec_tools
-    assert exec_tools == _REVIEWED_EXEC_TOOLS
     # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
     # `collaboration` não serve para essa busca, porque aparece no texto das
     # instruções.
