@@ -526,12 +526,17 @@ class CodexBackend:
                 model=self.config.model,
                 sandbox=Sandbox.read_only,
             )
-            turn = thread.turn(
-                prompt,
-                effort=self._effort,
-                output_schema=self._schema,
-            )
-            completed, items = _collect_turn(turn, self._turn_timeout, usage_total)
+            try:
+                turn = thread.turn(
+                    prompt,
+                    effort=self._effort,
+                    output_schema=self._schema,
+                )
+                completed, items = _collect_turn(turn, self._turn_timeout, usage_total)
+            finally:
+                threading.Thread(
+                    target=_unsubscribe_quietly, args=(self._client, thread.id), daemon=True
+                ).start()
         except ProviderError:
             raise
         except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
@@ -565,6 +570,37 @@ def _interrupt_quietly(turn: TurnHandle) -> None:
     """
     with contextlib.suppress(Exception):
         turn.interrupt()
+
+
+def _unsubscribe_quietly(client: Codex, thread_id: str) -> None:
+    """Desfaz a assinatura da conexão na thread, para o app-server descarregá-la.
+
+    `thread/start` assina a conexão na thread, e a thread efêmera só sai da
+    memória do app-server depois de ficar sem assinante por um tempo, cerca de
+    60 s no runtime fixado pelo extra `codex`. Sem o pedido, cada tentativa de
+    cada linha deixaria uma thread carregada até o fim da execução. O protocolo
+    não tem outro jeito de descarregar thread efêmera: `thread/delete` e
+    `thread/archive` recusam a que não foi gravada em disco.
+
+    O SDK não expõe o método, e o pedido vai pelo cliente de protocolo, atributo
+    privado fixado em versão exata no extra `codex`. O pedido não tem prazo: a
+    linha o faz numa thread daemon, porque o app-server que travou o turno a
+    prenderia; a sonda do modelo o faz direto, com a mesma exposição do
+    `thread_start` que vem antes dele. O `interrupt` que chega depois do pedido
+    continua aceito, porque a thread só sai da memória depois do intervalo sem
+    assinante. A falha do pedido não muda o destino da tentativa: a thread só
+    fica carregada até o fim da execução.
+    """
+    with contextlib.suppress(Exception):
+        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
+            ThreadUnsubscribeResponse,
+        )
+
+        client._client.request(  # noqa: SLF001 (ver a docstring)
+            "thread/unsubscribe",
+            {"threadId": thread_id},
+            response_model=ThreadUnsubscribeResponse,
+        )
 
 
 @contextmanager
@@ -776,6 +812,7 @@ def _resolve_model(client: Codex, workspace: Path, requested: str | None) -> str
     started = client._client.thread_start(  # noqa: SLF001 (ver a docstring)
         ThreadStartParams(cwd=os.fspath(workspace), ephemeral=True, model=requested)
     )
+    _unsubscribe_quietly(client, started.thread.id)
     if requested is None:
         warnings.warn(
             f"provider='codex' sem model: o Codex vai usar {started.model!r}",

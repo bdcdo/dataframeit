@@ -254,6 +254,41 @@ def test_resumo_sai_uma_vez_por_handler_no_logger_do_pacote(capsys):
     assert "ESTATISTICAS" not in capsys.readouterr().err
 
 
+def _registro_sem_propagacao(nome):
+    logger = logging.getLogger(nome)
+    logger.propagate = False
+    return logger.makeRecord(nome, logging.INFO, __file__, 0, "resumo", (), None)
+
+
+def test_logger_sem_propagacao_nao_olha_os_handlers_acima(capsys):
+    """Sem propagação, o handler da raiz não recebe o registro, e a reserva escreve."""
+    raiz = _Coletor()
+    logging.getLogger().addHandler(raiz)
+    try:
+        core._FallbackHandler().emit(_registro_sem_propagacao("dataframeit.teste_sem_propagacao"))
+    finally:
+        logging.getLogger().removeHandler(raiz)
+
+    assert capsys.readouterr().err == "resumo\n"
+    assert raiz.registros == []
+
+
+def test_falha_ao_escrever_segue_o_tratamento_do_logging(monkeypatch):
+    class _StderrQueFalha:
+        def write(self, _texto):
+            msg = "stderr fechado"
+            raise OSError(msg)
+
+    handler = core._FallbackHandler()
+    registro = _registro_sem_propagacao("dataframeit.teste_stderr_fechado")
+    monkeypatch.setattr(core.sys, "stderr", _StderrQueFalha())
+
+    with patch.object(handler, "handleError") as tratamento:
+        handler.emit(registro)
+
+    tratamento.assert_called_once_with(registro)
+
+
 def test_handler_de_reserva_e_instalado_uma_vez():
     logger = logging.getLogger("dataframeit.teste_reserva")
     try:
