@@ -953,6 +953,16 @@ def _uma_linha_por_execucao(resposta):
     return llm
 
 
+class Nivel(Enum):
+    BAIXO = 1
+
+
+class Nota(Enum):
+    """Valor em texto que o CSV e o XLSX releriam como número."""
+
+    A = "1"
+
+
 class Estrito(BaseModel):
     model_config = ConfigDict(strict=True)
     datas: list[datetime.date]
@@ -961,6 +971,8 @@ class Estrito(BaseModel):
     dia: datetime.date
     quando: datetime.datetime
     cor: Cor
+    nivel: Nivel
+    nota: Nota
     n: int
     ok: bool
 
@@ -969,6 +981,8 @@ class Escalares(BaseModel):
     dia: datetime.date
     quando: datetime.datetime
     cor: Cor
+    nivel: Nivel
+    nota: Nota
     n: int
     ok: bool
 
@@ -980,6 +994,8 @@ _RESPOSTA_TIPADA = {
     "dia": datetime.date(2024, 1, 2),
     "quando": datetime.datetime(2024, 1, 2, 3, 4, 5),  # noqa: DTZ001 (o XLSX não guarda fuso)
     "cor": Cor.AZUL,
+    "nivel": Nivel.BAIXO,
+    "nota": Nota.A,
     "n": 3,
     "ok": True,
 }
@@ -992,7 +1008,7 @@ def test_retomada_devolve_o_tipo_declarado_em_todo_campo(tmp_path, modelo, forma
 
     A coluna com linha pendente devolve o int como float, o XLSX devolve a
     data como datetime e o bool como float, e o CSV devolve data e Enum como
-    texto.
+    texto, e o Enum de valor int como float.
     """
     pytest.importorskip("pyarrow")
     if formato == "xlsx":
@@ -1054,6 +1070,45 @@ def test_campo_recusado_tambem_sem_strict_e_o_unico_acusado():
     )
 
     assert incompativeis == ["n"]
+
+
+class EstritoVariado(BaseModel):
+    model_config = ConfigDict(strict=True)
+    n: int | None = None
+    ok: bool | None = None
+    oculto: int | None = Field(default=None, exclude=True)
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor"),
+    [
+        ("n", True),
+        ("ok", 1),
+        ("n", float(2**53)),
+        ("oculto", "3"),
+    ],
+)
+def test_igualdade_do_python_mais_larga_que_o_arquivo_continua_acusada(campo, valor):
+    """True == 1, e o float de 2**53 em diante já pode ter perdido dígitos do inteiro.
+
+    O campo excluído do dump não tem valor validado para comparar.
+    """
+    df = pd.DataFrame({campo: [valor], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", EstritoVariado, set())
+
+    assert incompativeis == [campo]
+
+
+def test_bool_relido_como_float_do_xlsx_volta_como_bool():
+    df = pd.DataFrame({"ok": [1.0], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", EstritoVariado, set()
+    )
+
+    assert incompativeis == []
+    assert valores[(0, "ok")] is True
 
 
 @pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])

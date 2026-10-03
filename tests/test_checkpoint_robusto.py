@@ -405,6 +405,15 @@ def test_accepts_only_text_cobre_optional_e_literal():
     assert accepts_only_text(Annotated[str, Field(min_length=1)] | None)
     assert not accepts_only_text(Annotated[int, Field(ge=0)] | None)
 
+    class Texto(Enum):
+        A = "1"
+
+    class Numero(Enum):
+        A = 1
+
+    assert accepts_only_text(Optional[Texto])
+    assert not accepts_only_text(Numero)
+
 
 def test_estrutura_anotada_e_opcional_volta_do_checkpoint_csv(tmp_path):
     """Annotated dentro de Optional: o CSV guarda JSON, e a retomada o relê como lista."""

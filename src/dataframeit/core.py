@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import pandas as pd
-from pandas.api.types import is_scalar
+from pandas.api.types import is_bool, is_scalar
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from tqdm import tqdm
 
@@ -424,8 +424,20 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         # nunca o conteúdo. Um validador que muda o valor de novo, ou um
         # submodelo que grava pelo alias, deixa o valor como foi relido.
         for field_name, value in projected.items():
-            if field_name in validated_data and _same_value(validated_data[field_name], value):
-                values_to_fill[(position, field_name)] = validated_data[field_name]
+            if field_name not in validated_data:
+                continue
+            validated = validated_data[field_name]
+            # O texto e o número que já voltam com o tipo e o valor validados
+            # são a maioria das células; gravá-los de novo, célula a célula,
+            # multiplicaria o tempo da retomada.
+            if (
+                type(validated) is type(value)
+                and isinstance(value, (str, int, float))
+                and validated == value
+            ):
+                continue
+            if _same_value(validated, value):
+                values_to_fill[(position, field_name)] = validated
 
     ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
@@ -455,28 +467,52 @@ def _validate_row(
         validated_data = model.model_validate(projected, strict=False).model_dump(by_alias=False)
     except ValidationError as error:
         return None, rejected_fields(error)
-    # Campo com exclude=True não sai no dump; sem o valor, fica aceito.
+    # Campo com exclude=True não sai no dump; sem o valor para comparar, ele
+    # continua recusado.
     changed = {
         field_name
-        for field_name in rejected & projected.keys() & validated_data.keys()
-        if not _same_value(validated_data[field_name], projected[field_name])
+        for field_name in rejected & projected.keys()
+        if field_name not in validated_data
+        or not _same_value(validated_data[field_name], projected[field_name])
     }
     if changed:
         return None, changed
     return validated_data, set()
 
 
-def _same_value(validated: object, value: object) -> bool:
+# A partir dele, o float não distingue dois inteiros vizinhos.
+_EXACT_INT_IN_FLOAT = 2**53
+
+
+def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma saída por forma de valor)
     """Se o valor validado diz o mesmo que o relido, em JSON ou como escalar.
 
     O CSV, o XLSX e o parquet mudam o tipo de um escalar sem mudar o
     conteúdo, e a comparação em JSON, que distingue 1 de 1.0, não os
     reconhece: o inteiro volta como float, o bool do XLSX como 1.0 e a data
-    do XLSX como datetime à meia-noite.
+    do XLSX como datetime à meia-noite. O Enum é comparado pelo valor, que é
+    o que o checkpoint grava.
+
+    A igualdade do Python é mais larga do que essas mudanças, e fica restrita
+    a elas: True == 1, mas o bool só diz o mesmo que outro bool ou que o
+    float do XLSX; e o float só diz o mesmo que um int abaixo de 2**53, a
+    partir do qual a coluna em float pode ter perdido dígitos do inteiro.
     """
+    if isinstance(validated, Enum) and not isinstance(value, Enum):
+        return _same_value(validated.value, value)
     if _same_json(validated, value):
         return True
     if not (is_scalar(validated) and is_scalar(value)):
+        return False
+    if is_bool(validated) != is_bool(value) and not (
+        is_bool(validated) and isinstance(value, float)
+    ):
+        return False
+    if (
+        isinstance(validated, int)
+        and isinstance(value, float)
+        and abs(value) >= _EXACT_INT_IN_FLOAT
+    ):
         return False
     if type(validated) is datetime.date and isinstance(value, datetime.datetime):
         return value == datetime.datetime.combine(validated, datetime.time())
@@ -504,11 +540,22 @@ def _apply_processed_values(
     df: pd.DataFrame,
     values: dict[tuple[int, str], Any],
 ) -> None:
-    """Grava por posição os valores completados na validação do checkpoint."""
+    """Grava por posição os valores completados na validação do checkpoint.
+
+    Cada coluna é regravada de uma vez: com .iat célula a célula, a retomada
+    de um checkpoint grande gasta mais tempo gravando do que validando. O
+    array de objetos guarda lista ou dict como valor único da célula, como
+    _set_cell, e a Series com dtype object impede o pandas de converter uma
+    coluna só de datetime em datetime64, que devolveria Timestamp.
+    """
+    by_column: dict[str, dict[int, Any]] = {}
     for (position, field_name), value in values.items():
-        column_position = df.columns.get_loc(field_name)
-        # .iat grava lista ou dict como valor único da célula, como _set_cell.
-        df.iat[position, column_position] = value  # noqa: PD009
+        by_column.setdefault(field_name, {})[position] = value
+    for field_name, cells in by_column.items():
+        column = df[field_name].to_numpy(dtype=object, copy=True)
+        for position, value in cells.items():
+            column[position] = value
+        df[field_name] = pd.Series(column, index=df.index, dtype=object)
 
 
 @contextmanager

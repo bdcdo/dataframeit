@@ -19,6 +19,7 @@ import sys
 import types
 import typing
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
@@ -356,9 +357,11 @@ def get_complex_fields(pydantic_model: type[BaseModel]) -> set:
 
 
 def accepts_only_text(field_type: object) -> bool:
-    """True se o tipo só aceita texto: str, Literal de strings ou esses com None."""
+    """True se o tipo só aceita texto: str, Literal ou Enum de textos, ou esses com None."""
     if field_type is str:
         return True
+    if isinstance(field_type, type) and issubclass(field_type, Enum):
+        return all(isinstance(member.value, str) for member in field_type)
     origin = get_origin(field_type)
     if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
         return accepts_only_text(get_args(field_type)[0])
