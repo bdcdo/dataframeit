@@ -984,7 +984,15 @@ class TestCondicaoPelaApi:
 
     @pytest.mark.parametrize(
         "condicao",
-        [{}, {"equals": "pj"}, {"field": 5, "equals": 1}, {"field": "tipo"}, "tipo"],
+        [
+            {},
+            {"equals": "pj"},
+            {"field": 5, "equals": 1},
+            {"field": "tipo"},
+            {"field": "tipo", "in": 5},
+            {"field": "tipo", "not_in": "pfj"},
+            "tipo",
+        ],
     )
     def test_condicao_de_forma_nao_aceita_falha_antes_de_processar(self, condicao):
         class Modelo(BaseModel):
@@ -1150,11 +1158,47 @@ def test_depends_on_ignorado_ou_ausente_avisa_com_a_mensagem_exata(caplog, confi
                 "equals, not_equals, in, not_in, exists"
             ),
         ),
+        (
+            {"field": "tipo", "in": 5},
+            (
+                "Campo 'cpf' tem 'condition' {'field': 'tipo', 'in': 5}: 'in' deve ser uma "
+                "lista, tupla, set ou frozenset dos valores aceitos"
+            ),
+        ),
+        (
+            {"field": "tipo", "not_in": "pfj"},
+            (
+                "Campo 'cpf' tem 'condition' {'field': 'tipo', 'not_in': 'pfj'}: 'not_in' "
+                "deve ser uma lista, tupla, set ou frozenset dos valores aceitos"
+            ),
+        ),
+        (
+            {"field": "tipo", "equals": "pf", "in": "pf"},
+            (
+                "Campo 'cpf' tem 'condition' {'field': 'tipo', 'equals': 'pf', 'in': 'pf'}: "
+                "'in' deve ser uma lista, tupla, set ou frozenset dos valores aceitos"
+            ),
+        ),
     ],
 )
 def test_condicao_de_forma_nao_aceita_tem_a_mensagem_exata(condicao, mensagem):
     with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
         get_field_execution_order(ModeloPessoaCondicional, {"cpf": {"condition": condicao}})
+
+
+@pytest.mark.parametrize("operador", ["in", "not_in"])
+@pytest.mark.parametrize(
+    "operando", [["pf", "pj"], ("pf", "pj"), {"pf", "pj"}, frozenset({"pf", "pj"})]
+)
+def test_operando_de_in_e_not_in_aceita_colecao(operador, operando):
+    condicao = {"field": "tipo", operador: operando}
+
+    _, dependencias = get_field_execution_order(
+        ModeloPessoaCondicional, {"cpf": {"condition": condicao}}
+    )
+
+    assert dependencias["cpf"] == ["tipo"]
+    assert evaluate_condition(condicao, {"tipo": "pf"}, "cpf") is (operador == "in")
 
 
 def test_condicao_vazia_pula_o_campo_como_evaluate_condition():

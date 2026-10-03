@@ -10,7 +10,7 @@ Com `use_search=True` e `search_per_field=True`, cada campo do modelo é preench
 
 Use a chave `condition` no `json_schema_extra` do campo:
 
-- `condition` (dict): a dependência, e portanto a ordem de execução, é derivada do campo em `condition['field']`. O dict traz `field`, o nome do campo em texto, e um operador: `equals`, `not_equals`, `in`, `not_in` ou `exists`.
+- `condition` (dict): a dependência, e portanto a ordem de execução, é derivada do campo em `condition['field']`. O dict traz `field`, o nome do campo em texto, e um operador: `equals`, `not_equals`, `in`, `not_in` ou `exists`. `in` e `not_in` recebem uma lista, tupla, set ou frozenset dos valores aceitos.
 - `condition` (callable): recebe os campos já preenchidos e devolve bool. Declare os campos lidos em `depends_on`, para que venham antes: o nome de um campo em texto, ou uma lista ou tupla de nomes.
 
 Outra forma de `condition` ou de `depends_on` levanta `ValueError` antes de processar.
