@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from dataframeit.utils import (
+    _normalize_all_json_columns,
     get_complex_fields,
     is_complex_type,
     normalize_complex_columns,
@@ -486,3 +487,20 @@ def test_read_df_complex_model():
 # =============================================================================
 # EXECUTAR TESTES
 # =============================================================================
+
+
+def test_read_df_sem_modelo_normaliza_coluna_json_depois_de_coluna_numerica(tmp_path):
+    caminho = tmp_path / "dados.csv"
+    pd.DataFrame({"n": [1, 2], "itens": ['["a"]', '["b"]']}).to_csv(caminho, index=False)
+
+    df = read_df(str(caminho))
+
+    assert list(df["itens"]) == [["a"], ["b"]]
+
+
+def test_coluna_de_objeto_com_numero_e_texto_nao_e_tratada_como_json():
+    df = pd.DataFrame({"misto": pd.Series([1, "x"], dtype=object)})
+
+    _normalize_all_json_columns(df)
+
+    assert list(df["misto"]) == [1, "x"]
