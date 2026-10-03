@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import os
+import re
 import tempfile
 import threading
 import warnings
@@ -143,6 +144,61 @@ _CONSTRAINING_SCHEMA_KEYWORDS = frozenset(
 )
 # Tratadas pela conversão: `oneOf` vira `anyOf`, e `discriminator` só é aceito ao lado dele.
 _CONVERTED_SCHEMA_KEYWORDS = frozenset({"discriminator", "oneOf"})
+# Valores de `format` da lista "Supported properties" da documentação do
+# Structured Outputs. O Pydantic gera outros, como `binary` para `bytes`,
+# `path` para `Path`, `uri` para `AnyUrl` e `uuid4` para `UUID4`.
+_SUPPORTED_STRING_FORMATS = frozenset(
+    {"date", "date-time", "duration", "email", "hostname", "ipv4", "ipv6", "time", "uuid"}
+)
+
+
+# Grupos que abrem uma construção recusada, na sintaxe do ECMA-262 e na do `re`.
+_UNSUPPORTED_PATTERN_GROUPS = (
+    ("(?=", "lookahead"),
+    ("(?!", "lookahead"),
+    ("(?<=", "lookbehind"),
+    ("(?<!", "lookbehind"),
+    ("(?P=", "referência a grupo"),
+)
+# Abertura de classe de caracteres. O `]` logo depois de `[` ou `[^` é literal,
+# como no `re` e no motor do pydantic-core, de onde vêm os patterns do modelo.
+_PATTERN_CLASS_OPENING = re.compile(r"\[\^?\]?")
+
+
+def _unsupported_pattern_constructs(pattern: str) -> list[str]:
+    r"""Lista as construções de `pattern` que o Structured Outputs não atende.
+
+    O lookaround a API recusa com `invalid_json_schema`. A referência a grupo
+    passa pela API, mas o turno gera texto até `max_output_tokens` e falha,
+    depois de cobrado.
+
+    Percorre a regex em vez de buscar a substring, porque `\(?=` e `[(?=]` são
+    literais.
+    """
+    found: set[str] = set()
+    in_class = False
+    index = 0
+    while index < len(pattern):
+        if pattern[index] == "\\":
+            escaped = pattern[index + 1 : index + 2]
+            # `\1` a `\9` e `\k<nome>`; o `\0` é o caractere nulo.
+            if not in_class and escaped and escaped in "123456789k":
+                found.add("referência a grupo")
+            index += 2
+        elif in_class:
+            in_class = pattern[index] != "]"
+            index += 1
+        elif opening := _PATTERN_CLASS_OPENING.match(pattern, index):
+            in_class = True
+            index = opening.end()
+        else:
+            found.update(
+                construct
+                for prefix, construct in _UNSUPPORTED_PATTERN_GROUPS
+                if pattern.startswith(prefix, index)
+            )
+            index += 1
+    return sorted(found)
 
 
 def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C901, PLR0915 (um passo por keyword do JSON Schema)
@@ -252,6 +308,31 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
                 "Keywords JSON Schema não suportadas pelo structured output do Codex: "
                 + ", ".join(unsupported)
             )
+
+        string_format = node.get("format")
+        # A conferência de tipo vem antes: um valor não hashable, como lista,
+        # levantaria TypeError no teste de pertinência ao frozenset.
+        if "format" in node and (
+            not isinstance(string_format, str) or string_format not in _SUPPORTED_STRING_FORMATS
+        ):
+            msg = (
+                f"format {string_format!r} não é suportado pelo structured output do Codex; "
+                "use: " + ", ".join(sorted(_SUPPORTED_STRING_FORMATS))
+            )
+            raise ProviderConfigurationError(msg)
+
+        if "pattern" in node:
+            pattern = node["pattern"]
+            if not isinstance(pattern, str):
+                msg = "pattern inválido no schema: deve ser texto"
+                raise ProviderConfigurationError(msg)
+            constructs = _unsupported_pattern_constructs(pattern)
+            if constructs:
+                msg = (
+                    f"pattern {pattern!r} usa construção não suportada pelo structured "
+                    "output do Codex: " + ", ".join(constructs)
+                )
+                raise ProviderConfigurationError(msg)
 
         if not any(keyword in node for keyword in ("type", "anyOf", "$ref")):
             msg = "O structured output do Codex exige tipo explícito; Any não é suportado"

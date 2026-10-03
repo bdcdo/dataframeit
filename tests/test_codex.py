@@ -9,12 +9,17 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import date, datetime, timedelta
+from datetime import time as time_type
+from decimal import Decimal
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, call, patch
+from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
@@ -477,6 +482,122 @@ class TestStrictPydanticSchema:
 
         with pytest.raises(ProviderConfigurationError, match=keyword):
             _to_strict_json_schema(Restrito.model_json_schema())
+
+    @pytest.mark.parametrize(
+        ("tipo", "formato"),
+        [(bytes, "binary"), (Path, "path"), (AnyUrl, "uri"), (UUID4, "uuid4")],
+    )
+    def test_format_fora_do_subconjunto_e_recusado(self, tipo, formato):
+        """Sem a conferência, cada linha falharia no turno, e não no preflight."""
+
+        class Modelo(BaseModel):
+            valor: tipo
+
+        schema = Modelo.model_json_schema()
+        schema["properties"]["valor"].pop("minLength", None)
+        with pytest.raises(ProviderConfigurationError, match=f"format '{formato}'"):
+            _to_strict_json_schema(schema)
+
+    @pytest.mark.parametrize(
+        ("tipo", "formato"),
+        [
+            (date, "date"),
+            (datetime, "date-time"),
+            (time_type, "time"),
+            (timedelta, "duration"),
+            (UUID, "uuid"),
+            (IPv4Address, "ipv4"),
+            (IPv6Address, "ipv6"),
+        ],
+    )
+    def test_format_do_subconjunto_e_mantido(self, tipo, formato):
+        class Modelo(BaseModel):
+            valor: tipo
+
+        schema = _to_strict_json_schema(Modelo.model_json_schema())
+
+        assert schema["properties"]["valor"]["format"] == formato
+
+    @pytest.mark.parametrize("formato", [["date"], None, 1])
+    def test_format_que_nao_e_texto_e_recusado(self, formato):
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "format": formato}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match="não é suportado"):
+            _to_strict_json_schema(schema)
+
+    def test_pattern_do_decimal_e_recusado_pelo_lookahead(self):
+        class Modelo(BaseModel):
+            valor: Decimal
+
+        with pytest.raises(ProviderConfigurationError, match="lookahead"):
+            _to_strict_json_schema(Modelo.model_json_schema())
+
+    @pytest.mark.parametrize(
+        ("pattern", "construcao"),
+        [
+            (r"^(?!x)\w+$", "lookahead"),
+            (r"^\w+(?=x)", "lookahead"),
+            (r"^.*(?<=x)$", "lookbehind"),
+            (r"^.*(?<!x)$", "lookbehind"),
+            (r"^(a)\1$", "referência a grupo"),
+            (r"^(?P<n>a)(?P=n)$", "referência a grupo"),
+            (r"^(?<n>a)\k<n>$", "referência a grupo"),
+        ],
+    )
+    def test_pattern_com_construcao_nao_suportada_e_recusado(self, pattern, construcao):
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "pattern": pattern}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match=construcao):
+            _to_strict_json_schema(schema)
+
+    def test_pattern_de_field_com_motor_python_re_e_conferido(self):
+        """O motor padrão do pydantic-core já recusa lookaround; o `re` aceita."""
+
+        class Modelo(BaseModel):
+            model_config = ConfigDict(regex_engine="python-re")
+            valor: str = Field(pattern=r"^(?!x)\w+$")
+
+        with pytest.raises(ProviderConfigurationError, match="lookahead"):
+            _to_strict_json_schema(Modelo.model_json_schema())
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            r"^[0-9]{3}-[a-z]+$",
+            r"^\(?=x$",
+            r"^[(?=]+$",
+            r"^[]\1(?<=]+$",
+            r"^[^](?!]+$",
+            r"^(?:ab)+\0?$",
+            r"^(?<nome>a)b$",
+            "^a\\\\$",
+        ],
+    )
+    def test_pattern_sem_construcao_recusada_e_mantido(self, pattern):
+        """Escape e classe de caracteres tornam literal o que pareceria lookaround."""
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "pattern": pattern}},
+        }
+
+        strict_schema = _to_strict_json_schema(schema)
+
+        assert strict_schema["properties"]["valor"]["pattern"] == pattern
+
+    def test_pattern_que_nao_e_texto_e_recusado(self):
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "pattern": 1}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match="pattern inválido"):
+            _to_strict_json_schema(schema)
 
     def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
