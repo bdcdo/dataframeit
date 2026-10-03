@@ -231,10 +231,17 @@ def test_nivel_warning_silencia_o_resumo_e_mantem_as_colunas(capsys):
     assert saida["_output_tokens"].tolist() == [1]
 
 
+class _Coletor(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.registros = []
+
+    def emit(self, record):
+        self.registros.append(record)
+
+
 def test_resumo_sai_uma_vez_por_handler_no_logger_do_pacote(capsys):
-    registros = []
-    handler = logging.Handler()
-    handler.emit = registros.append
+    handler = _Coletor()
     pacote = logging.getLogger("dataframeit")
     pacote.addHandler(handler)
     try:
@@ -243,7 +250,7 @@ def test_resumo_sai_uma_vez_por_handler_no_logger_do_pacote(capsys):
     finally:
         pacote.removeHandler(handler)
 
-    assert ["ESTATISTICAS" in r.getMessage() for r in registros] == [True]
+    assert ["ESTATISTICAS" in r.getMessage() for r in handler.registros] == [True]
     assert "ESTATISTICAS" not in capsys.readouterr().err
 
 
