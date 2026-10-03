@@ -283,7 +283,9 @@ def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
         msg = "Não foi possível gerar JSON Schema para o modelo Pydantic"
         raise ProviderConfigurationError(msg) from err
     except (AttributeError, TypeError) as err:
-        msg = "questions deve ser um modelo Pydantic v2"
+        # Objeto que não é modelo já falha antes, em dataframeit(); aqui a
+        # exceção vem de um hook de schema do próprio modelo.
+        msg = f"A geração do JSON Schema do modelo Pydantic falhou: {err}"
         raise ProviderConfigurationError(msg) from err
     if not isinstance(schema, dict):
         msg = "model_json_schema() deve retornar um objeto JSON Schema"
