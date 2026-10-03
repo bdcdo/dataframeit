@@ -1,12 +1,15 @@
 """Integração local com o runtime empacotado pelo SDK Codex."""
 
+import dataclasses
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -15,7 +18,7 @@ from pydantic import BaseModel
 
 from dataframeit import codex as codex_provider
 from dataframeit.codex import _CODEX_CONFIG_OVERRIDES
-from dataframeit.errors import ProviderError, ProviderTransientError
+from dataframeit.errors import ProviderAbortError, ProviderError, ProviderTransientError
 from dataframeit.llm import LLMConfig
 
 openai_codex = pytest.importorskip("openai_codex")
@@ -386,3 +389,49 @@ def test_connection_failure_fails_turn_as_transient(tmp_path, monkeypatch):
 
     assert isinstance(outcome.get("error"), ProviderTransientError)
     assert str(outcome["error"]).startswith("Turno Codex falhou:")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP só existe em POSIX")
+def test_app_server_that_stops_answering_is_closed_and_aborts(tmp_path, monkeypatch):
+    """O app-server parado sem encerrar é derrubado pelo prazo da tentativa.
+
+    Com `SIGSTOP`, o processo continua vivo e o stdout aberto, e o pedido
+    `thread/start` espera na fila do SDK, que não tem timeout. O relógio da
+    tentativa encerra o app-server, o leitor do stdout acorda o pedido, e a
+    linha aborta em vez de repetir no mesmo app-server. A linha roda em outra
+    thread, com prazo, para que a regressão falhe o teste em vez de prender a
+    suíte.
+    """
+    deadline = 30
+    outcome = {}
+
+    def invoke_row(backend):
+        try:
+            backend.invoke("oi")
+        except Exception as err:  # noqa: BLE001 (o erro é conferido fora da thread)
+            outcome["error"] = err
+
+    with socket.socket() as closed_port:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        config = dataclasses.replace(config, model_kwargs={"effort": "low", "timeout": 1})
+        with codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend:
+            process = backend._client._client._proc
+            assert process is not None
+            os.kill(process.pid, signal.SIGSTOP)
+            try:
+                start = time.monotonic()
+                worker = threading.Thread(target=invoke_row, args=(backend,), daemon=True)
+                worker.start()
+                worker.join(deadline)
+                assert not worker.is_alive(), f"a linha não terminou em {deadline}s"
+                elapsed = time.monotonic() - start
+            finally:
+                if process.poll() is None:
+                    os.kill(process.pid, signal.SIGCONT)
+
+    assert isinstance(outcome.get("error"), ProviderAbortError)
+    assert "não respondeu a thread/start no prazo de 1 s" in str(outcome["error"])
+    assert process.poll() is not None
+    assert elapsed < deadline

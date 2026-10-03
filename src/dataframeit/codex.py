@@ -319,7 +319,10 @@ def _validate_config(config: LLMConfig) -> ReasoningEffort:
 
 
 def _turn_timeout(config: LLMConfig) -> float | None:
-    """Prazo, em segundos, da espera pelos eventos do turno; `None` desliga o prazo."""
+    """Prazo, em segundos, de cada tentativa, do `thread/start` ao fim do turno.
+
+    `None` desliga o prazo.
+    """
     timeout = (config.model_kwargs or {}).get("timeout", _DEFAULT_TURN_TIMEOUT)
     if timeout is None:
         return None
@@ -436,25 +439,32 @@ class CodexBackend:
         )
         from openai_codex.types import TurnStatus  # noqa: PLC0415 (extra codex opcional)
 
-        try:
-            thread = self._client.thread_start(
-                approval_mode=ApprovalMode.deny_all,
-                cwd=os.fspath(self._workspace),
-                developer_instructions=_CODEX_DEVELOPER_INSTRUCTIONS,
-                ephemeral=True,
-                model=self.config.model,
-                sandbox=Sandbox.read_only,
-            )
-            turn = thread.turn(
-                prompt,
-                effort=self._effort,
-                output_schema=self._schema,
-            )
-            completed, items = _collect_turn(turn, self._turn_timeout, usage_total)
-        except ProviderError:
-            raise
-        except Exception as err:  # noqa: BLE001 (todo erro do SDK é classificado)
-            _raise_classified_sdk_error(err)
+        with _attempt_deadline(self._client, self._turn_timeout) as deadline:
+            try:
+                thread = self._client.thread_start(
+                    approval_mode=ApprovalMode.deny_all,
+                    cwd=os.fspath(self._workspace),
+                    developer_instructions=_CODEX_DEVELOPER_INSTRUCTIONS,
+                    ephemeral=True,
+                    model=self.config.model,
+                    sandbox=Sandbox.read_only,
+                )
+                deadline.waiting_for("turn/start")
+                turn = thread.turn(
+                    prompt,
+                    effort=self._effort,
+                    output_schema=self._schema,
+                )
+                deadline.watch_turn(turn)
+                completed, items = _collect_turn(turn, deadline, usage_total)
+            except ProviderError:
+                raise
+            except Exception as err:
+                # O erro que acorda o pedido é o do transporte que o relógio
+                # derrubou, e a causa é o app-server que não respondeu.
+                if deadline.stuck_request is not None:
+                    raise deadline.stuck_error() from err
+                _raise_classified_sdk_error(err)
 
         if completed.status == TurnStatus.failed:
             _raise_turn_error(completed.error)
@@ -486,30 +496,84 @@ def _interrupt_quietly(turn: TurnHandle) -> None:
         turn.interrupt()
 
 
-@contextmanager
-def _turn_deadline(turn: TurnHandle, timeout: float | None) -> Iterator[threading.Event]:
-    """Arma o prazo do turno e devolve o evento que diz se ele estourou.
+class _AttemptDeadline:
+    """Prazo de uma tentativa, do `thread/start` ao fim do turno.
 
-    No estouro, a assinatura do turno é fechada, o que acorda o `next()` do
-    stream com `TransportClosedError` na thread da linha. A assinatura é atributo
-    privado do SDK, fixado em versão exata no extra `codex`. O `interrupt` vem
-    depois, na thread do relógio.
+    `thread/start` e `turn/start` esperam a resposta do app-server numa fila sem
+    timeout, que só acorda quando o leitor do stdout termina e o roteador do SDK
+    derruba todos os pedidos em voo. Por isso o estouro antes de o turno existir
+    encerra o app-server, e a tentativa levanta `ProviderAbortError`: um
+    app-server que não responde a um pedido prende também as outras linhas, e a
+    mesma linha ficaria presa de novo nele.
+
+    Depois que o turno existe, o estouro fecha a assinatura dele, o que acorda o
+    `next()` do stream com `TransportClosedError` na thread da linha, e o
+    app-server continua de pé. A assinatura é atributo privado do SDK, fixado em
+    versão exata no extra `codex`. O `interrupt` vem depois, na thread do relógio.
     """
-    expired = threading.Event()
-    if timeout is None:
-        yield expired
-        return
 
-    def expire() -> None:
-        expired.set()
+    def __init__(self, client: Codex, timeout: float | None) -> None:
+        self.timeout = timeout
+        self.expired = threading.Event()
+        # Pedido sem resposta quando o relógio encerrou o app-server.
+        self.stuck_request: str | None = None
+        self._client = client
+        self._pending_request = "thread/start"
+        self._turn: TurnHandle | None = None
+        # A troca de fase e o estouro passam pela mesma trava. Sem ela, o
+        # estouro logo depois da resposta do `turn/start` derrubaria o
+        # transporte antes de a assinatura do turno existir, e o stream dela
+        # esperaria para sempre um evento que o roteador não entrega mais.
+        self._lock = threading.Lock()
+
+    def waiting_for(self, request: str) -> None:
+        """Registra o pedido que a tentativa espera, para a mensagem do estouro."""
+        with self._lock:
+            self._pending_request = request
+
+    def watch_turn(self, turn: TurnHandle) -> None:
+        """Passa o prazo para o stream do turno, ou aborta se ele já estourou."""
+        with self._lock:
+            if not self.expired.is_set():
+                self._turn = turn
+                return
+        raise self.stuck_error()
+
+    def stuck_error(self) -> ProviderAbortError:
+        msg = (
+            f"O app-server do Codex não respondeu a {self.stuck_request} "
+            f"no prazo de {self.timeout} s e foi encerrado"
+        )
+        return ProviderAbortError(msg)
+
+    def expire(self) -> None:
+        with self._lock:
+            self.expired.set()
+            turn = self._turn
+            if turn is None:
+                self.stuck_request = self._pending_request
+        if turn is None:
+            # `close` encerra o processo, o leitor do stdout recebe EOF, e o
+            # `fail_all` do roteador acorda todo pedido em voo.
+            with contextlib.suppress(Exception):
+                self._client.close()
+            return
         turn._subscription.close()  # noqa: SLF001 (ver a docstring)
         _interrupt_quietly(turn)
 
-    timer = threading.Timer(timeout, expire)
+
+@contextmanager
+def _attempt_deadline(client: Codex, timeout: float | None) -> Iterator[_AttemptDeadline]:
+    """Arma o relógio da tentativa e o desarma na saída, com ou sem erro."""
+    deadline = _AttemptDeadline(client, timeout)
+    if timeout is None:
+        yield deadline
+        return
+    timer = threading.Timer(timeout, deadline.expire)
     timer.daemon = True
     timer.start()
     try:
-        yield expired
+        yield deadline
     finally:
         timer.cancel()
 
@@ -529,7 +593,7 @@ def _add_usage(usage: ThreadTokenUsage | None, usage_total: dict[str, int]) -> N
 
 
 def _collect_turn(
-    turn: TurnHandle, timeout: float | None, usage_total: dict[str, int]
+    turn: TurnHandle, deadline: _AttemptDeadline, usage_total: dict[str, int]
 ) -> tuple[Turn, list[ThreadItem]]:
     """Consome o stream do turno e devolve o turno concluído e os itens.
 
@@ -538,9 +602,9 @@ def _collect_turn(
     definitivo; `run` levanta `RuntimeError` só com a mensagem, e o histórico não
     pode ser relido depois, porque thread efêmera recusa `thread/read` com
     `includeTurns`. O reroteamento para outro modelo, que só aparece no stream,
-    interrompe o turno em vez de passar despercebido. E o turno tem prazo: a
-    espera do SDK por evento não tem timeout, e um turno que não termina
-    prenderia a execução inteira.
+    interrompe o turno em vez de passar despercebido. E o turno tem prazo, o da
+    tentativa: a espera do SDK por evento não tem timeout, e um turno que não
+    termina prenderia a execução inteira.
 
     O uso informado entra em `usage_total` em toda saída, inclusive no estouro
     do prazo e no stream sem conclusão, porque o turno é cobrado mesmo assim.
@@ -557,38 +621,38 @@ def _collect_turn(
     items: list[ThreadItem] = []
     usage = None
     stream = turn.stream()
-    with _turn_deadline(turn, timeout) as expired:
-        try:
-            for event in stream:
-                payload = event.payload
-                if isinstance(payload, ModelReroutedNotification) and payload.turn_id == turn.id:
-                    threading.Thread(target=_interrupt_quietly, args=(turn,), daemon=True).start()
-                    msg = (
-                        f"O Codex trocou o modelo do turno de {payload.from_model!r} para "
-                        f"{payload.to_model!r} (motivo: {payload.reason.root})"
-                    )
-                    raise ProviderError(msg)
-                if isinstance(payload, ItemCompletedNotification) and payload.turn_id == turn.id:
-                    items.append(payload.item)
-                elif (
-                    isinstance(payload, ThreadTokenUsageUpdatedNotification)
-                    and payload.turn_id == turn.id
-                ):
-                    usage = payload.token_usage
-                elif isinstance(payload, TurnCompletedNotification) and payload.turn.id == turn.id:
-                    completed = payload.turn
-        except TransportClosedError as err:
-            # Sem o estouro, o transporte fechou de fato, e a classificação do
-            # `_invoke_once` interrompe a execução.
-            if not expired.is_set():
-                raise
-            msg = f"O turno Codex não terminou no prazo de {timeout} s"
-            raise ProviderTransientError(msg) from err
-        finally:
-            # `stream` é anotado como Iterator, mas é um gerador, e fechá-lo desfaz o
-            # registro das notificações do turno no roteador do SDK.
-            stream.close()  # ty: ignore[unresolved-attribute]
-            _add_usage(usage, usage_total)
+    try:
+        for event in stream:
+            payload = event.payload
+            if isinstance(payload, ModelReroutedNotification) and payload.turn_id == turn.id:
+                threading.Thread(target=_interrupt_quietly, args=(turn,), daemon=True).start()
+                msg = (
+                    f"O Codex trocou o modelo do turno de {payload.from_model!r} para "
+                    f"{payload.to_model!r} (motivo: {payload.reason.root})"
+                )
+                raise ProviderError(msg)
+            if isinstance(payload, ItemCompletedNotification) and payload.turn_id == turn.id:
+                items.append(payload.item)
+            elif (
+                isinstance(payload, ThreadTokenUsageUpdatedNotification)
+                and payload.turn_id == turn.id
+            ):
+                usage = payload.token_usage
+            elif isinstance(payload, TurnCompletedNotification) and payload.turn.id == turn.id:
+                completed = payload.turn
+    except TransportClosedError as err:
+        # Sem o estouro, o transporte fechou de fato, e a classificação do
+        # `_invoke_once` interrompe a execução. Com ele, o relógio já viu o
+        # turno, e o que fechou foi só a assinatura.
+        if not deadline.expired.is_set():
+            raise
+        msg = f"O turno Codex não terminou no prazo de {deadline.timeout} s"
+        raise ProviderTransientError(msg) from err
+    finally:
+        # `stream` é anotado como Iterator, mas é um gerador, e fechá-lo desfaz o
+        # registro das notificações do turno no roteador do SDK.
+        stream.close()  # ty: ignore[unresolved-attribute]
+        _add_usage(usage, usage_total)
 
     if completed is None:
         msg = "O stream do turno Codex terminou sem o evento de conclusão"

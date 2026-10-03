@@ -1667,6 +1667,156 @@ class TestPrazoDoTurno:
             backend.invoke("texto")
 
 
+def unanswered_request(client):
+    """Pedido ao app-server que espera a resposta como o SDK, e o `close` que o acorda.
+
+    A espera é a fila do `MessageRouter` do SDK, sem timeout, como em
+    `CodexClient._request_raw`. O `close` do cliente faz o que o leitor do stdout
+    faz quando o processo encerra: chama `fail_all`, que entrega o erro de
+    transporte a todo pedido em voo.
+    """
+    from openai_codex._message_router import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        MessageRouter,
+    )
+    from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        TransportClosedError,
+    )
+
+    router = MessageRouter()
+    client.close.side_effect = lambda: router.fail_all(
+        TransportClosedError("Codex process closed stdout")
+    )
+
+    def wait_for_response(*_, **__):
+        item = router.create_response_waiter("pedido-1").get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    return wait_for_response
+
+
+class TestPrazoDosPedidos:
+    def test_thread_start_sem_resposta_encerra_o_app_server_e_aborta(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        client.thread_start.side_effect = unanswered_request(client)
+
+        inicio = time.monotonic()
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(
+                ProviderAbortError,
+                match=r"não respondeu a thread/start no prazo de 0\.05 s e foi encerrado",
+            ),
+        ):
+            backend.invoke("texto")
+
+        assert time.monotonic() - inicio < 5
+        client.close.assert_called_once_with()
+        assert client.thread_start.call_count == 1
+
+    def test_turn_start_sem_resposta_encerra_o_app_server_e_aborta(self, codex_sdk, tmp_path):
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        thread.turn.side_effect = unanswered_request(client)
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
+        ):
+            backend.invoke("texto")
+
+        client.close.assert_called_once_with()
+        turn.stream.assert_not_called()
+
+    def test_resposta_do_turn_start_depois_do_estouro_nao_entra_no_stream(
+        self, codex_sdk, tmp_path
+    ):
+        """O turno aberto depois de o relógio derrubar o app-server não é esperado.
+
+        O `fail_all` já passou, e a assinatura registrada depois dele não recebe
+        evento nenhum: entrar no stream prenderia a linha para sempre.
+        """
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        encerrado = threading.Event()
+        client.close.side_effect = encerrado.set
+
+        def responde_tarde(*_, **__):
+            assert encerrado.wait(5)
+            return turn
+
+        thread.turn.side_effect = responde_tarde
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
+        ):
+            backend.invoke("texto")
+
+        turn.stream.assert_not_called()
+        turn.interrupt.assert_not_called()
+
+    def test_relogio_e_armado_antes_do_thread_start(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=60)
+        ordem = []
+        thread = client.thread_start.return_value
+
+        def abre_thread(**_):
+            ordem.append("thread/start")
+            return thread
+
+        client.thread_start.side_effect = abre_thread
+
+        with patch("dataframeit.codex.threading.Timer") as timer:
+            timer.return_value.start.side_effect = lambda: ordem.append("relógio")
+            backend.invoke("texto")
+
+        assert ordem == ["relógio", "thread/start"]
+        timer.return_value.cancel.assert_called_once_with()
+
+    def test_estouro_no_stream_nao_encerra_o_app_server(self, codex_sdk, tmp_path):
+        backend, client, thread, normal = initialized_backend(
+            tmp_path, codex_sdk, turn_timeout=0.05
+        )
+        thread.turn.side_effect = [stuck_turn(codex_sdk)[0], normal]
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            backend.invoke("texto")
+
+        client.close.assert_not_called()
+
+    def test_sem_prazo_o_pedido_nao_e_encerrado(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=None)
+        espera = unanswered_request(client)
+        liberado = threading.Event()
+
+        def responde_depois(**_):
+            # Sem prazo, só o fim do teste encerra o cliente e solta o pedido.
+            liberado.set()
+            return espera()
+
+        client.thread_start.side_effect = responde_depois
+        resultado = {}
+
+        def processa():
+            try:
+                backend.invoke("texto")
+            except Exception as err:  # noqa: BLE001 (o erro é conferido fora da thread)
+                resultado["erro"] = err
+
+        linha = threading.Thread(target=processa, daemon=True)
+        linha.start()
+        assert liberado.wait(5)
+        linha.join(0.3)
+        assert linha.is_alive()
+        client.close.assert_not_called()
+        client.close()
+        linha.join(5)
+
+        assert not linha.is_alive()
+        assert isinstance(resultado["erro"], ProviderAbortError)
+        assert "app-server do Codex encerrou" in str(resultado["erro"])
+
+
 class TestConfiguracaoDoPrazo:
     def test_prazo_padrao_e_de_600_segundos(self):
         assert _turn_timeout(make_config()) == 600
