@@ -6,8 +6,10 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import logging
 import numbers
 import re
+import sys
 import threading
 import time
 import warnings
@@ -70,6 +72,39 @@ if TYPE_CHECKING:
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
+
+
+class _FallbackHandler(logging.Handler):
+    """Escreve em stderr só quando nenhum outro handler recebe o registro.
+
+    Com a aplicação configurando o logging (basicConfig, pytest, um handler no
+    logger `dataframeit`), o registro sobe por propagação e sai por ela, e
+    escrever aqui também o duplicaria. O stderr é lido na hora da escrita,
+    porque o notebook e o pytest o trocam depois do import.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        logger: logging.Logger | None = logging.getLogger(record.name)
+        while logger is not None:
+            if any(handler is not self for handler in logger.handlers):
+                return
+            if not logger.propagate:
+                break
+            logger = logger.parent
+        try:
+            sys.stderr.write(self.format(record) + "\n")
+        except Exception:  # noqa: BLE001 (falha de escrita segue o tratamento do logging)
+            self.handleError(record)
+
+
+# O resumo de uso sai em INFO por um logger próprio, e não pelo pai
+# `dataframeit`: subir o pai para INFO mostraria também o registro por campo
+# pulado de conditional.py. O handler de reserva mantém o resumo visível sem
+# configuração, e o nível WARNING nesse logger o silencia.
+_stats_logger = logging.getLogger("dataframeit.stats")
+_stats_logger.setLevel(logging.INFO)
+_stats_logger.addHandler(_FallbackHandler())
+
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
@@ -907,7 +942,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             processada com sucesso (padrão: 0.0). Linhas com erro não pausam. O teto de
             vazão fica em parallel_requests * 60 / rate_limit_delay linhas por minuto,
             sem contar o tempo das próprias chamadas.
-        track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
+        track_tokens: Se True, grava o uso de tokens por linha e, no fim, registra o
+            resumo de uso em INFO no logger "dataframeit.stats" (padrão: True). Sem
+            logging configurado, o resumo sai em stderr; setLevel(logging.WARNING)
+            nesse logger o silencia e mantém as colunas.
         model_kwargs: Parâmetros extras do modelo (ex: temperature, reasoning_effort).
             Com provider='codex', aceita somente effort.
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
@@ -1415,27 +1453,25 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             stacklevel=2,
         )
 
-    # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
-        _print_token_stats(
+        summary_text = _format_token_stats(
             token_stats,
             model,
             parallel_requests,
             search_provider=search_provider if use_search else None,
         )
+        if summary_text:
+            _stats_logger.info("%s", summary_text)
 
-    # Aviso de workers reduzidos (aparece SEMPRE, independente de track_tokens)
+    # Independe de track_tokens: o número final de workers é a dica de configuração.
     if token_stats.get("workers_reduced"):
-        print("\n" + "=" * 60)
-        print("AVISO: WORKERS REDUZIDOS POR RATE LIMIT")
-        print("=" * 60)
-        print(f"Workers iniciais: {token_stats['initial_workers']}")
-        print(f"Workers finais:   {token_stats['final_workers']}")
-        print(
-            f"\nDica: Considere usar parallel_requests={token_stats['final_workers']} "
-            f"para evitar rate limits."
+        warnings.warn(
+            f"Workers reduzidos por rate limit: de {token_stats['initial_workers']} para "
+            f"{token_stats['final_workers']}. Considere usar "
+            f"parallel_requests={token_stats['final_workers']} para evitar rate limits.",
+            UserWarning,
+            stacklevel=2,
         )
-        print("=" * 60 + "\n")
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
     return from_pandas(df_pandas, conversion_info, status_col)
@@ -1542,13 +1578,13 @@ def _get_processing_indices(
     return is_pending.tolist(), processed_count
 
 
-def _print_token_stats(
+def _format_token_stats(
     token_stats: dict,
     model: str | None,
     parallel_requests: int = 1,
     search_provider: str | None = None,
-) -> None:
-    """Exibe estatísticas de uso de tokens e throughput.
+) -> str:
+    """Monta o resumo de uso de tokens e throughput, vazio quando não há uso.
 
     Args:
         token_stats: Dict com contadores de tokens e métricas de tempo.
@@ -1559,52 +1595,57 @@ def _print_token_stats(
     if not token_stats or (
         token_stats.get("total_tokens", 0) == 0 and not token_stats.get("cost_usd")
     ):
-        return
+        return ""
 
-    print("\n" + "=" * 60)
-    print("ESTATISTICAS DE USO")
-    print("=" * 60)
-    print(f"Modelo: {model or 'escolhido pelo runtime do provider'}")
-    print(f"Total de tokens: {token_stats['total_tokens']:,}")
-    print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
+    lines = [
+        "=" * 60,
+        "ESTATISTICAS DE USO",
+        "=" * 60,
+        f"Modelo: {model or 'escolhido pelo runtime do provider'}",
+        f"Total de tokens: {token_stats['total_tokens']:,}",
+        f"  - Input:  {token_stats['input_tokens']:,} tokens",
+    ]
     if token_stats.get("cached_input_tokens", 0) > 0:
-        print(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
-    print(f"  - Output: {token_stats['output_tokens']:,} tokens")
+        lines.append(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
+    lines.append(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get("reasoning_tokens", 0) > 0:
-        print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
+        lines.append(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
     # Só providers que informam o custo, como o claude_code, preenchem este total,
     # que inclui as tentativas re-tentadas e as linhas que falharam.
     if token_stats.get("cost_usd", 0) > 0:
-        print(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
+        lines.append(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
 
     # Métricas de throughput (se disponíveis)
     if "elapsed_seconds" in token_stats and token_stats["elapsed_seconds"] > 0:
         elapsed = token_stats["elapsed_seconds"]
         requests = token_stats.get("requests_completed", 0)
 
-        print("-" * 60)
-        print("METRICAS DE THROUGHPUT")
-        print("-" * 60)
-        print(f"Tempo total: {elapsed:.1f}s")
-        print(f"Workers paralelos: {parallel_requests}")
-
+        lines += [
+            "-" * 60,
+            "METRICAS DE THROUGHPUT",
+            "-" * 60,
+            f"Tempo total: {elapsed:.1f}s",
+            f"Workers paralelos: {parallel_requests}",
+        ]
         if requests > 0:
             rpm = (requests / elapsed) * 60
-            print(f"Requisicoes: {requests}")
-            print(f"  - RPM (req/min): {rpm:.1f}")
+            lines += [f"Requisicoes: {requests}", f"  - RPM (req/min): {rpm:.1f}"]
 
         tpm = (token_stats["total_tokens"] / elapsed) * 60
-        print(f"  - TPM (tokens/min): {tpm:,.0f}")
+        lines.append(f"  - TPM (tokens/min): {tpm:,.0f}")
 
     # Métricas de busca (se houver)
     if token_stats.get("search_count", 0) > 0:
-        print("-" * 60)
-        print(f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})")
-        print("-" * 60)
-        print(f"Total de buscas: {token_stats['search_count']}")
-        print(f"Creditos usados: {token_stats['search_credits']}")
+        lines += [
+            "-" * 60,
+            f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})",
+            "-" * 60,
+            f"Total de buscas: {token_stats['search_count']}",
+            f"Creditos usados: {token_stats['search_credits']}",
+        ]
 
-    print("=" * 60 + "\n")
+    lines.append("=" * 60)
+    return "\n".join(lines)
 
 
 _SUPPORTED_CHECKPOINT_EXTS = (".csv", ".xlsx", ".parquet")
@@ -2111,7 +2152,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     reprocess_columns: Sequence[str] | None,
     token_stats: dict,
 ) -> str:
-    """Grava a falha da linha, mostra a mensagem amigável e devolve o erro em texto.
+    """Grava a falha da linha, avisa com a mensagem amigável e devolve o erro em texto.
 
     O custo informado pelo provider entra no resumo mesmo com a linha falhando.
     """
@@ -2128,9 +2169,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
         error_details += _KEPT_VALUES_NOTE
 
     friendly_msg = get_friendly_error_message(error, config.provider)
-    print(f"\n{friendly_msg}\n")
-
-    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
+    warnings.warn(f"Falha ao processar linha {idx}.\n{friendly_msg}", stacklevel=1)
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
     return error_msg

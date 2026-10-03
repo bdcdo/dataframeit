@@ -37,6 +37,8 @@ Rate limit detected → 1 worker
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.
 
+At the end of the run, a `UserWarning` reports the initial and final workers and suggests using the final number in `parallel_requests`.
+
 ## Rate Limiting
 
 Use `rate_limit_delay` to prevent rate limit errors:
@@ -130,7 +132,7 @@ result = dataframeit(
 )
 ```
 
-At the end, DataFrameIt prints a summary (always in Portuguese):
+At the end, DataFrameIt logs a summary (always in Portuguese) on the `dataframeit.stats` logger, at INFO level. Without logging configured, the summary goes to stderr; with logging configured, it goes through the application's handlers:
 
 ```
 ============================================================
@@ -152,6 +154,14 @@ Requisicoes: 100
 ```
 
 Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
+
+To silence the summary and keep the usage columns, raise the logger level:
+
+```python
+import logging
+
+logging.getLogger("dataframeit.stats").setLevel(logging.WARNING)
+```
 
 ### Added Columns
 
