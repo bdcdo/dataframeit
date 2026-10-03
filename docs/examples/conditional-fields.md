@@ -10,7 +10,7 @@ Com `use_search=True` e `search_per_field=True`, cada campo do modelo é preench
 
 Use a chave `condition` no `json_schema_extra` do campo:
 
-- `condition` (dict): a dependência, e portanto a ordem de execução, é derivada do campo em `condition['field']`. O dict traz `field`, o nome do campo em texto, e um operador: `equals`, `not_equals`, `in`, `not_in` ou `exists`.
+- `condition` (dict): a dependência, e portanto a ordem de execução, é derivada do campo em `condition['field']`. O dict traz `field`, o nome do campo em texto, e um operador: `equals`, `not_equals`, `in`, `not_in` ou `exists`. `in` e `not_in` recebem uma lista, tupla, set ou frozenset dos valores aceitos.
 - `condition` (callable): recebe os campos já preenchidos e devolve bool. Monte o `json_schema_extra` com `field_condition(condicao, depends_on=...)`, que pede junto os campos lidos pela função, para que venham antes: o nome de um campo em texto, ou uma lista ou tupla de nomes. O helper devolve `{'condition': condicao, 'depends_on': [...]}`, o mesmo dict que se escreveria à mão; escrito à mão, o checker de tipos recusa o `Field`, porque o Pydantic tipa `json_schema_extra` como JSON e uma função não é JSON.
 
 Outra forma de `condition` ou de `depends_on` levanta `ValueError` antes de processar.

@@ -10,7 +10,7 @@ With `use_search=True` and `search_per_field=True`, each model field is filled b
 
 Use the `condition` key in the field's `json_schema_extra`:
 
-- `condition` (dict): the dependency, and therefore the execution order, is derived from the field in `condition['field']`. The dict holds `field`, the field name as a string, and one operator: `equals`, `not_equals`, `in`, `not_in` or `exists`.
+- `condition` (dict): the dependency, and therefore the execution order, is derived from the field in `condition['field']`. The dict holds `field`, the field name as a string, and one operator: `equals`, `not_equals`, `in`, `not_in` or `exists`. `in` and `not_in` take a list, tuple, set or frozenset of the accepted values.
 - `condition` (callable): receives the fields already filled and returns a bool. Build the `json_schema_extra` with `field_condition(condition, depends_on=...)`, which also takes the fields the function reads, so they run first: a field name as a string, or a list or tuple of names. The helper returns `{'condition': condition, 'depends_on': [...]}`, the same dict you would write by hand; written by hand, the type checker rejects the `Field`, because Pydantic types `json_schema_extra` as JSON and a function is not JSON.
 
 Any other form of `condition` or `depends_on` raises `ValueError` before processing.

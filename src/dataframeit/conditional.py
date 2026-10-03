@@ -43,6 +43,10 @@ _CONDITION_OPERATORS: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {
     "not_in": ("not in", lambda value, options: value not in options),
 }
 
+# Operandos aceitos por `in` e `not_in`. Texto fica de fora porque `in` sobre
+# texto busca substring: {"in": "pfj"} aceitaria "pf", "fj" e "j".
+_MEMBERSHIP_OPERAND_TYPES = (list, tuple, set, frozenset)
+
 
 def field_condition(
     condition: Callable[[dict[str, Any]], bool],
@@ -464,17 +468,30 @@ def _check_condition(field_name: str, condition: object) -> None:
 
     Raises:
         ValueError: Se `condition` não é dict nem callable, se `field` não é o
-            nome de um campo em texto, ou se falta um operador.
+            nome de um campo em texto, se falta um operador, ou se o operando
+            de `in` ou `not_in` não é lista, tupla, set ou frozenset.
     """
     if condition is None or callable(condition):
         return
     if isinstance(condition, dict):
         field_path = condition.get("field")
         operators = [*_CONDITION_OPERATORS, "exists"]
+        bad_operand = next(
+            (
+                key
+                for key in ("in", "not_in")
+                if key in condition and not isinstance(condition[key], _MEMBERSHIP_OPERAND_TYPES)
+            ),
+            None,
+        )
         if not isinstance(field_path, str) or not field_path:
             problem = "'field' deve ser o nome de um campo em texto"
         elif not any(key in condition for key in operators):
             problem = f"falta um operador, um de {', '.join(operators)}"
+        elif bad_operand is not None:
+            problem = (
+                f"'{bad_operand}' deve ser uma lista, tupla, set ou frozenset dos valores aceitos"
+            )
         else:
             return
     else:
