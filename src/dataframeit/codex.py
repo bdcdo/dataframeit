@@ -166,7 +166,11 @@ _PATTERN_CLASS_OPENING = re.compile(r"\[\^?\]?")
 
 
 def _unsupported_pattern_constructs(pattern: str) -> list[str]:
-    r"""Lista as construções de `pattern` que o Structured Outputs recusa.
+    r"""Lista as construções de `pattern` que o Structured Outputs não atende.
+
+    O lookaround a API recusa com `invalid_json_schema`. A referência a grupo
+    passa pela API, mas o turno gera texto até `max_output_tokens` e falha,
+    depois de cobrado.
 
     Percorre a regex em vez de buscar a substring, porque `\(?=` e `[(?=]` são
     literais.
