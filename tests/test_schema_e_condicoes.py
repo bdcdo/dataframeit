@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
 
-from dataframeit import dataframeit
+from dataframeit import dataframeit, field_condition
 from dataframeit.agent import (
     _build_field_prompt,
     _llm_field,
@@ -74,12 +74,12 @@ def _chaves_da_biblioteca_no_schema(schema) -> set:
 
 class ModeloMulta(BaseModel):
     tem_multa: bool
-    # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-    valor_multa: Optional[float] = Field(  # ty: ignore[no-matching-overload]
+    valor_multa: Optional[float] = Field(
         default=None,
         json_schema_extra={
-            "condition": lambda dados: dados.get("tem_multa") is True,
-            "depends_on": ["tem_multa"],
+            **field_condition(
+                lambda dados: dados.get("tem_multa") is True, depends_on=["tem_multa"]
+            ),
             "prompt_append": "Valor em reais.",
             "search_depth": "advanced",
         },
@@ -117,13 +117,11 @@ class TestSchemaSemChavesDaBiblioteca:
 
         class ModeloGrupo(BaseModel):
             tem_multa: bool
-            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-            valor_multa: Optional[float] = Field(  # ty: ignore[no-matching-overload]
+            valor_multa: Optional[float] = Field(
                 default=None,
-                json_schema_extra={
-                    "condition": lambda dados: dados.get("tem_multa") is True,
-                    "depends_on": ["tem_multa"],
-                },
+                json_schema_extra=field_condition(
+                    lambda dados: dados.get("tem_multa") is True, depends_on=["tem_multa"]
+                ),
             )
             orgao: Optional[str] = None
 
@@ -498,13 +496,11 @@ def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
     class Modelo(BaseModel):
         tem_multa: bool
         orgao: Optional[str] = None
-        # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-        valor_multa: Optional[float] = Field(  # ty: ignore[no-matching-overload]
+        valor_multa: Optional[float] = Field(
             default=None,
-            json_schema_extra={
-                "condition": lambda dados: dados.get("tem_multa") is True,
-                "depends_on": ["tem_multa"],
-            },
+            json_schema_extra=field_condition(
+                lambda dados: dados.get("tem_multa") is True, depends_on=["tem_multa"]
+            ),
         )
 
     schemas = []

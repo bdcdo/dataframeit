@@ -291,7 +291,7 @@ class _TimerFalso:
         pass
 
 
-def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch, capsys):
+def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch):
     """'a' e 'c' batem no rate limit; só a primeira reduz, porque já resta um worker."""
     esperas = []
     _TimerFalso.intervalos = []
@@ -332,10 +332,13 @@ def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch, capsy
     # 'c' e 'd' rodam depois da redução, com o evento de rate limit ainda ativo.
     assert esperas == [2.0, 2.0]
     assert resultado["_dataframeit_status"].tolist() == ["error", "processed", "error", "processed"]
-    saida = capsys.readouterr().out
-    assert "AVISO: WORKERS REDUZIDOS POR RATE LIMIT" in saida
-    assert "Workers iniciais: 2" in saida
-    assert "Workers finais:   1" in saida
+    finais = [str(a.message) for a in avisos if "reduzidos por rate limit" in str(a.message)]
+    assert finais == [
+        (
+            "Workers reduzidos por rate limit: de 2 para 1. Considere usar "
+            "parallel_requests=1 para evitar rate limits."
+        )
+    ]
 
 
 class _ErroIlegivel(Exception):

@@ -10,12 +10,17 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import date, datetime, timedelta
+from datetime import time as time_type
+from decimal import Decimal
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, call, patch
+from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
@@ -256,6 +261,22 @@ def as_stream(events):
     yield from events
 
 
+def threads_descarregadas(client) -> list[str]:
+    """Ids das threads cujo `thread/unsubscribe` o backend pediu, na ordem."""
+    return [
+        chamada.args[1]["threadId"]
+        for chamada in client._client.request.call_args_list
+        if chamada.args[0] == "thread/unsubscribe"
+    ]
+
+
+def aguardar_descargas() -> None:
+    """Espera as threads daemon que pedem `thread/unsubscribe` terminarem."""
+    for pedido in threading.enumerate():
+        if "_unsubscribe_quietly" in pedido.name:
+            pedido.join(5)
+
+
 def initialized_backend(tmp_path, codex_sdk, result=None, turn_timeout=None):
     sdk, sdk_types, _ = codex_sdk
     workspace = tmp_path / "workspace"
@@ -266,8 +287,10 @@ def initialized_backend(tmp_path, codex_sdk, result=None, turn_timeout=None):
     turn.id = "turn-1"
     turn.stream.side_effect = lambda: as_stream(events)
     thread = MagicMock(spec=sdk.Thread)
+    thread.id = "thread-1"
     thread.turn.return_value = turn
     client = MagicMock(spec=sdk.Codex)
+    client._client = MagicMock()
     client.thread_start.return_value = thread
     config = make_config()
     backend = CodexBackend(
@@ -290,13 +313,14 @@ def as_context_manager(client, resolved_model="gpt-6-luna"):
     que por padrão é o de `make_config`.
     """
     from openai_codex.generated.v2_all import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        Thread,
         ThreadStartResponse,
     )
 
     client.__enter__.return_value = client
     client._client = MagicMock()
     client._client.thread_start.return_value = ThreadStartResponse.model_construct(
-        model=resolved_model
+        model=resolved_model, thread=Thread.model_construct(id="thread-sonda")
     )
 
     def close_without_suppressing(*_):
@@ -478,6 +502,122 @@ class TestStrictPydanticSchema:
 
         with pytest.raises(ProviderConfigurationError, match=keyword):
             _to_strict_json_schema(Restrito.model_json_schema())
+
+    @pytest.mark.parametrize(
+        ("tipo", "formato"),
+        [(bytes, "binary"), (Path, "path"), (AnyUrl, "uri"), (UUID4, "uuid4")],
+    )
+    def test_format_fora_do_subconjunto_e_recusado(self, tipo, formato):
+        """Sem a conferência, cada linha falharia no turno, e não no preflight."""
+
+        class Modelo(BaseModel):
+            valor: tipo
+
+        schema = Modelo.model_json_schema()
+        schema["properties"]["valor"].pop("minLength", None)
+        with pytest.raises(ProviderConfigurationError, match=f"format '{formato}'"):
+            _to_strict_json_schema(schema)
+
+    @pytest.mark.parametrize(
+        ("tipo", "formato"),
+        [
+            (date, "date"),
+            (datetime, "date-time"),
+            (time_type, "time"),
+            (timedelta, "duration"),
+            (UUID, "uuid"),
+            (IPv4Address, "ipv4"),
+            (IPv6Address, "ipv6"),
+        ],
+    )
+    def test_format_do_subconjunto_e_mantido(self, tipo, formato):
+        class Modelo(BaseModel):
+            valor: tipo
+
+        schema = _to_strict_json_schema(Modelo.model_json_schema())
+
+        assert schema["properties"]["valor"]["format"] == formato
+
+    @pytest.mark.parametrize("formato", [["date"], None, 1])
+    def test_format_que_nao_e_texto_e_recusado(self, formato):
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "format": formato}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match="não é suportado"):
+            _to_strict_json_schema(schema)
+
+    def test_pattern_do_decimal_e_recusado_pelo_lookahead(self):
+        class Modelo(BaseModel):
+            valor: Decimal
+
+        with pytest.raises(ProviderConfigurationError, match="lookahead"):
+            _to_strict_json_schema(Modelo.model_json_schema())
+
+    @pytest.mark.parametrize(
+        ("pattern", "construcao"),
+        [
+            (r"^(?!x)\w+$", "lookahead"),
+            (r"^\w+(?=x)", "lookahead"),
+            (r"^.*(?<=x)$", "lookbehind"),
+            (r"^.*(?<!x)$", "lookbehind"),
+            (r"^(a)\1$", "referência a grupo"),
+            (r"^(?P<n>a)(?P=n)$", "referência a grupo"),
+            (r"^(?<n>a)\k<n>$", "referência a grupo"),
+        ],
+    )
+    def test_pattern_com_construcao_nao_suportada_e_recusado(self, pattern, construcao):
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "pattern": pattern}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match=construcao):
+            _to_strict_json_schema(schema)
+
+    def test_pattern_de_field_com_motor_python_re_e_conferido(self):
+        """O motor padrão do pydantic-core já recusa lookaround; o `re` aceita."""
+
+        class Modelo(BaseModel):
+            model_config = ConfigDict(regex_engine="python-re")
+            valor: str = Field(pattern=r"^(?!x)\w+$")
+
+        with pytest.raises(ProviderConfigurationError, match="lookahead"):
+            _to_strict_json_schema(Modelo.model_json_schema())
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            r"^[0-9]{3}-[a-z]+$",
+            r"^\(?=x$",
+            r"^[(?=]+$",
+            r"^[]\1(?<=]+$",
+            r"^[^](?!]+$",
+            r"^(?:ab)+\0?$",
+            r"^(?<nome>a)b$",
+            "^a\\\\$",
+        ],
+    )
+    def test_pattern_sem_construcao_recusada_e_mantido(self, pattern):
+        """Escape e classe de caracteres tornam literal o que pareceria lookaround."""
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "pattern": pattern}},
+        }
+
+        strict_schema = _to_strict_json_schema(schema)
+
+        assert strict_schema["properties"]["valor"]["pattern"] == pattern
+
+    def test_pattern_que_nao_e_texto_e_recusado(self):
+        schema = {
+            "type": "object",
+            "properties": {"valor": {"type": "string", "pattern": 1}},
+        }
+
+        with pytest.raises(ProviderConfigurationError, match="pattern inválido"):
+            _to_strict_json_schema(schema)
 
     def test_one_of_without_discriminator_is_converted_to_any_of(self):
         schema = {
@@ -759,6 +899,27 @@ class TestBackendLifecycle:
         assert client._client.thread_start.call_count == 1
         client.thread_start.assert_not_called()
         assert backend.config.model == "gpt-6-luna"
+        assert threads_descarregadas(client) == ["thread-sonda"]
+
+    def test_falha_ao_descarregar_a_sonda_nao_impede_a_abertura(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        client._client.request.side_effect = RuntimeError("app-server recusou")
+
+        with (
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
+        ):
+            assert backend.config.model == "gpt-6-luna"
+
+        assert threads_descarregadas(client) == ["thread-sonda"]
 
     @pytest.mark.parametrize(
         ("model_kwargs", "prazo"), [({}, 600), ({"timeout": 30}, 30), ({"timeout": None}, None)]
@@ -1874,3 +2035,137 @@ class TestMensagensEAtrasos:
             assert all(t.daemon for t in presas)
         finally:
             liberar.set()
+
+
+class TestDescargaDaThread:
+    """Cada tentativa pede ao app-server que descarregue a sua thread efêmera."""
+
+    def test_thread_da_linha_e_descarregada_depois_do_turno(self, codex_sdk, tmp_path):
+        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            ThreadUnsubscribeResponse,
+        )
+
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        ordem = []
+
+        def stream_do_turno():
+            ordem.append("turno")
+            return as_stream(make_result(codex_sdk))
+
+        turn.stream.side_effect = stream_do_turno
+        client._client.request.side_effect = lambda *_, **__: ordem.append("descarga")
+
+        result = backend.invoke("texto")
+        aguardar_descargas()
+
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        assert ordem == ["turno", "descarga"]
+        client._client.request.assert_called_once_with(
+            "thread/unsubscribe",
+            {"threadId": "thread-1"},
+            response_model=ThreadUnsubscribeResponse,
+        )
+
+    def test_cada_tentativa_descarrega_a_propria_thread(self, codex_sdk, tmp_path):
+        sdk, _, generated = codex_sdk
+        backend, client, primeira, _ = initialized_backend(
+            tmp_path,
+            codex_sdk,
+            make_result(codex_sdk, error_info=generated.CodexErrorInfoValue.server_overloaded),
+        )
+        segunda = MagicMock(spec=sdk.Thread)
+        segunda.id = "thread-2"
+        turno_ok = MagicMock(spec=sdk.TurnHandle)
+        turno_ok.id = "turn-1"
+        turno_ok.stream.side_effect = lambda: as_stream(make_result(codex_sdk))
+        segunda.turn.return_value = turno_ok
+        client.thread_start.side_effect = [primeira, segunda]
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+        aguardar_descargas()
+
+        assert result["_retry_info"]["retries"] == 1
+        assert sorted(threads_descarregadas(client)) == ["thread-1", "thread-2"]
+
+    def test_thread_e_descarregada_quando_o_turno_nem_comeca(self, codex_sdk, tmp_path):
+        backend, client, thread, _ = initialized_backend(tmp_path, codex_sdk)
+        thread.turn.side_effect = RuntimeError("turn/start recusado")
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="turn/start recusado"),
+        ):
+            backend.invoke("texto")
+        aguardar_descargas()
+
+        assert threads_descarregadas(client) == ["thread-1"]
+
+    def test_sem_thread_aberta_nada_e_descarregado(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        client.thread_start.side_effect = RuntimeError("thread/start recusado")
+
+        with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderError):
+            backend.invoke("texto")
+        aguardar_descargas()
+
+        assert threads_descarregadas(client) == []
+
+    def test_descarga_que_trava_nao_prende_a_linha(self, codex_sdk, tmp_path):
+        backend, client, thread, normal = initialized_backend(
+            tmp_path, codex_sdk, turn_timeout=0.05
+        )
+        thread.turn.side_effect = [stuck_turn(codex_sdk)[0], normal]
+        liberar = threading.Event()
+        client._client.request.side_effect = lambda *_, **__: liberar.wait()
+
+        inicio = time.monotonic()
+        try:
+            with pytest.warns(UserWarning, match="Tentativa 1/2"):
+                result = backend.invoke("texto")
+            presas = [t for t in threading.enumerate() if "_unsubscribe_quietly" in t.name]
+            assert presas
+            assert all(t.daemon for t in presas)
+        finally:
+            liberar.set()
+        aguardar_descargas()
+
+        assert time.monotonic() - inicio < 5
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        # As duas tentativas usam a mesma thread simulada.
+        assert threads_descarregadas(client) == ["thread-1", "thread-1"]
+
+    def test_turno_reroteado_tambem_descarrega_a_thread(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        from openai_codex.models import Notification  # noqa: PLC0415 (SDK carregado pelo fixture)
+
+        rerouted = Notification(
+            method="model/rerouted",
+            payload=generated.ModelReroutedNotification(
+                fromModel="gpt-6-luna",
+                toModel="outro",
+                reason=generated.ModelRerouteReason("highRiskCyberActivity"),
+                threadId="thread-1",
+                turnId="turn-1",
+            ),
+        )
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, [rerouted])
+
+        with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderError):
+            backend.invoke("texto")
+        aguardar_descargas()
+
+        assert threads_descarregadas(client) == ["thread-1"]
+
+    def test_falha_da_descarga_nao_escapa_nem_muda_o_resultado(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        client._client.request.side_effect = RuntimeError("app-server recusou")
+        escapadas = []
+
+        with patch.object(threading, "excepthook", escapadas.append):
+            result = backend.invoke("texto")
+            aguardar_descargas()
+
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        assert threads_descarregadas(client) == ["thread-1"]
+        assert escapadas == []
