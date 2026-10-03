@@ -9,7 +9,7 @@ import tempfile
 import threading
 import warnings
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -403,6 +403,51 @@ def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
             yield workspace, codex_home
 
 
+class _AppServerStop:
+    """Encerramento do app-server pelo prazo, compartilhado pelas linhas do backend.
+
+    `thread/start` e `turn/start` esperam a resposta do app-server numa fila sem
+    timeout, que só acorda quando o leitor do stdout termina e o roteador do SDK
+    derruba todos os pedidos em voo. Por isso o estouro antes de o turno existir
+    encerra o app-server, e a execução aborta: um app-server que não responde a
+    um pedido prende também as outras linhas, e a mesma linha ficaria presa de
+    novo nele. A causa fica aqui, e não na tentativa, para que toda linha em voo
+    aborte com ela, e não com o erro de transporte que o encerramento provocou.
+    """
+
+    def __init__(self) -> None:
+        self.reason: str | None = None
+        self._lock = threading.Lock()
+
+    def stop(self, client: Codex, reason: str) -> None:
+        with self._lock:
+            if self.reason is None:
+                self.reason = reason
+        _shut_down_app_server(client)
+
+    def error(self) -> ProviderAbortError:
+        return ProviderAbortError(self.reason)
+
+
+def _shut_down_app_server(client: Codex) -> None:
+    """Mata o processo do app-server e fecha o cliente.
+
+    `close` fecha o stdin antes de sinalizar o processo, e o fechamento espera
+    a trava do buffer de escrita. Uma linha bloqueada escrevendo um pedido maior
+    que o buffer do pipe segura essa trava enquanto o app-server parado não lê,
+    e o `close` ficaria preso com ela. Matar antes quebra o pipe e solta a
+    escrita. O processo é atributo privado do SDK, fixado em versão exata no
+    extra `codex`. O fim do processo leva o leitor do stdout ao EOF, e o
+    `fail_all` do roteador acorda todo pedido em voo.
+    """
+    process = getattr(getattr(client, "_client", None), "_proc", None)
+    if process is not None:
+        with contextlib.suppress(OSError):
+            process.kill()
+    with contextlib.suppress(Exception):
+        client.close()
+
+
 @dataclass(frozen=True, slots=True)
 class CodexBackend:
     """Backend ativo vinculado a um único app-server Codex."""
@@ -415,6 +460,7 @@ class CodexBackend:
     _client: Codex
     _workspace: Path
     _turn_timeout: float | None
+    _stop: _AppServerStop = field(default_factory=_AppServerStop)
 
     def invoke(self, text: str) -> dict:
         """Processa uma linha com structured output nativo do Codex."""
@@ -439,7 +485,7 @@ class CodexBackend:
         )
         from openai_codex.types import TurnStatus  # noqa: PLC0415 (extra codex opcional)
 
-        with _attempt_deadline(self._client, self._turn_timeout) as deadline:
+        with _attempt_deadline(self._client, self._turn_timeout, self._stop) as deadline:
             try:
                 thread = self._client.thread_start(
                     approval_mode=ApprovalMode.deny_all,
@@ -457,13 +503,17 @@ class CodexBackend:
                 )
                 deadline.watch_turn(turn)
                 completed, items = _collect_turn(turn, deadline, usage_total)
-            except ProviderError:
+            except ProviderAbortError:
                 raise
             except Exception as err:
-                # O erro que acorda o pedido é o do transporte que o relógio
-                # derrubou, e a causa é o app-server que não respondeu.
-                if deadline.stuck_request is not None:
-                    raise deadline.stuck_error() from err
+                # Depois que um relógio derrubou o app-server, a falha de qualquer
+                # linha é consequência dele, seja qual for o erro: o pedido
+                # acordado pelo `fail_all`, o stream encerrado ou a escrita que
+                # pegou o cliente no meio do fechamento.
+                if self._stop.reason is not None:
+                    raise self._stop.error() from err
+                if isinstance(err, ProviderError):
+                    raise
                 _raise_classified_sdk_error(err)
 
         if completed.status == TurnStatus.failed:
@@ -499,31 +549,23 @@ def _interrupt_quietly(turn: TurnHandle) -> None:
 class _AttemptDeadline:
     """Prazo de uma tentativa, do `thread/start` ao fim do turno.
 
-    `thread/start` e `turn/start` esperam a resposta do app-server numa fila sem
-    timeout, que só acorda quando o leitor do stdout termina e o roteador do SDK
-    derruba todos os pedidos em voo. Por isso o estouro antes de o turno existir
-    encerra o app-server, e a tentativa levanta `ProviderAbortError`: um
-    app-server que não responde a um pedido prende também as outras linhas, e a
-    mesma linha ficaria presa de novo nele.
-
-    Depois que o turno existe, o estouro fecha a assinatura dele, o que acorda o
+    Antes de o turno existir, o estouro encerra o app-server pelo `_AppServerStop`
+    do backend. Depois, o estouro fecha a assinatura do turno, o que acorda o
     `next()` do stream com `TransportClosedError` na thread da linha, e o
     app-server continua de pé. A assinatura é atributo privado do SDK, fixado em
     versão exata no extra `codex`. O `interrupt` vem depois, na thread do relógio.
     """
 
-    def __init__(self, client: Codex, timeout: float | None) -> None:
+    def __init__(self, client: Codex, timeout: float | None, stop: _AppServerStop) -> None:
         self.timeout = timeout
         self.expired = threading.Event()
-        # Pedido sem resposta quando o relógio encerrou o app-server.
-        self.stuck_request: str | None = None
         self._client = client
+        self._stop = stop
         self._pending_request = "thread/start"
         self._turn: TurnHandle | None = None
-        # A troca de fase e o estouro passam pela mesma trava. Sem ela, o
-        # estouro logo depois da resposta do `turn/start` derrubaria o
-        # transporte antes de a assinatura do turno existir, e o stream dela
-        # esperaria para sempre um evento que o roteador não entrega mais.
+        # A troca de fase e o estouro passam pela mesma trava: o estouro que vê
+        # o turno passado ao stream nunca derruba o app-server das outras
+        # linhas, e o turno aberto depois do estouro não chega ao stream.
         self._lock = threading.Lock()
 
     def waiting_for(self, request: str) -> None:
@@ -537,35 +579,30 @@ class _AttemptDeadline:
             if not self.expired.is_set():
                 self._turn = turn
                 return
-        raise self.stuck_error()
-
-    def stuck_error(self) -> ProviderAbortError:
-        msg = (
-            f"O app-server do Codex não respondeu a {self.stuck_request} "
-            f"no prazo de {self.timeout} s e foi encerrado"
-        )
-        return ProviderAbortError(msg)
+        raise self._stop.error()
 
     def expire(self) -> None:
         with self._lock:
             self.expired.set()
             turn = self._turn
-            if turn is None:
-                self.stuck_request = self._pending_request
+            request = self._pending_request
         if turn is None:
-            # `close` encerra o processo, o leitor do stdout recebe EOF, e o
-            # `fail_all` do roteador acorda todo pedido em voo.
-            with contextlib.suppress(Exception):
-                self._client.close()
+            self._stop.stop(
+                self._client,
+                f"O app-server do Codex não respondeu a {request} "
+                f"no prazo de {self.timeout} s e foi encerrado",
+            )
             return
         turn._subscription.close()  # noqa: SLF001 (ver a docstring)
         _interrupt_quietly(turn)
 
 
 @contextmanager
-def _attempt_deadline(client: Codex, timeout: float | None) -> Iterator[_AttemptDeadline]:
+def _attempt_deadline(
+    client: Codex, timeout: float | None, stop: _AppServerStop
+) -> Iterator[_AttemptDeadline]:
     """Arma o relógio da tentativa e o desarma na saída, com ou sem erro."""
-    deadline = _AttemptDeadline(client, timeout)
+    deadline = _AttemptDeadline(client, timeout, stop)
     if timeout is None:
         yield deadline
         return
