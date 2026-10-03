@@ -502,16 +502,19 @@ def _unsubscribe_quietly(client: Codex, thread_id: str) -> None:
     `thread/archive` recusam a que não foi gravada em disco.
 
     O SDK não expõe o método, e o pedido vai pelo cliente de protocolo, atributo
-    privado fixado em versão exata no extra `codex`. Quem chama a função na
-    linha a põe numa thread daemon, porque o pedido não tem prazo, e o app-server
-    que travou o turno prenderia a linha. A falha do pedido não muda o destino
-    da tentativa: a thread só fica carregada até o fim da execução.
+    privado fixado em versão exata no extra `codex`. O pedido não tem prazo: a
+    linha o faz numa thread daemon, porque o app-server que travou o turno a
+    prenderia; a sonda do modelo o faz direto, com a mesma exposição do
+    `thread_start` que vem antes dele. O `interrupt` que chega depois do pedido
+    continua aceito, porque a thread só sai da memória depois do intervalo sem
+    assinante. A falha do pedido não muda o destino da tentativa: a thread só
+    fica carregada até o fim da execução.
     """
-    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
-        ThreadUnsubscribeResponse,
-    )
-
     with contextlib.suppress(Exception):
+        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
+            ThreadUnsubscribeResponse,
+        )
+
         client._client.request(  # noqa: SLF001 (ver a docstring)
             "thread/unsubscribe",
             {"threadId": thread_id},

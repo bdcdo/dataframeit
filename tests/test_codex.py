@@ -1933,9 +1933,34 @@ class TestDescargaDaThread:
             assert all(t.daemon for t in presas)
         finally:
             liberar.set()
+        aguardar_descargas()
 
         assert time.monotonic() - inicio < 5
         assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        # As duas tentativas usam a mesma thread simulada.
+        assert threads_descarregadas(client) == ["thread-1", "thread-1"]
+
+    def test_turno_reroteado_tambem_descarrega_a_thread(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        from openai_codex.models import Notification  # noqa: PLC0415 (SDK carregado pelo fixture)
+
+        rerouted = Notification(
+            method="model/rerouted",
+            payload=generated.ModelReroutedNotification(
+                fromModel="gpt-6-luna",
+                toModel="outro",
+                reason=generated.ModelRerouteReason("highRiskCyberActivity"),
+                threadId="thread-1",
+                turnId="turn-1",
+            ),
+        )
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, [rerouted])
+
+        with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderError):
+            backend.invoke("texto")
+        aguardar_descargas()
+
+        assert threads_descarregadas(client) == ["thread-1"]
 
     def test_falha_da_descarga_nao_escapa_nem_muda_o_resultado(self, codex_sdk, tmp_path):
         backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
