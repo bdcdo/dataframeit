@@ -253,6 +253,39 @@ normalize_complex_columns(df, get_complex_fields(MyModel))
 
 ---
 
+## field_condition()
+
+Builds the `json_schema_extra` of a field with a callable condition, for [conditional fields](../examples/conditional-fields.md).
+
+```python
+def field_condition(
+    condition: Callable[[dict[str, Any]], bool],
+    depends_on: str | list[str] | tuple[str, ...],
+) -> JsonDict
+```
+
+- `condition` receives the row's fields already filled and returns a bool; the field is only requested from the LLM when it returns true.
+- `depends_on` names the fields the function reads, which are extracted before it: a field name as a string, or a list or tuple of names.
+- Returns `{'condition': condition, 'depends_on': [...]}`, with a type that Pydantic's `Field` accepts under a type checker.
+- Raises `ValueError` if `condition` is not a function, or if `depends_on` is not a string, list or tuple, or is empty.
+
+```python
+from pydantic import BaseModel, Field
+from dataframeit import field_condition
+
+class Pedido(BaseModel):
+    tipo_cliente: str
+    desconto: float | None = Field(
+        default=None,
+        json_schema_extra=field_condition(
+            lambda dados: dados.get('tipo_cliente') == 'vip',
+            depends_on='tipo_cliente',
+        ),
+    )
+```
+
+---
+
 ## Exceptions
 
 The exceptions that dataframeit raises are listed in [Exceptions](exceptions.md).

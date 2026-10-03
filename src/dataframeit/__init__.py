@@ -3,6 +3,7 @@
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
+from .conditional import field_condition
 from .core import dataframeit
 from .errors import (
     ProviderAbortError,
@@ -32,6 +33,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "dataframeit",
+    "field_condition",
     "read_df",
     "normalize_value",
     "normalize_complex_columns",

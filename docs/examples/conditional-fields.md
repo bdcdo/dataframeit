@@ -11,7 +11,7 @@ Com `use_search=True` e `search_per_field=True`, cada campo do modelo é preench
 Use a chave `condition` no `json_schema_extra` do campo:
 
 - `condition` (dict): a dependência, e portanto a ordem de execução, é derivada do campo em `condition['field']`. O dict traz `field`, o nome do campo em texto, e um operador: `equals`, `not_equals`, `in`, `not_in` ou `exists`.
-- `condition` (callable): recebe os campos já preenchidos e devolve bool. Declare os campos lidos em `depends_on`, para que venham antes: o nome de um campo em texto, ou uma lista ou tupla de nomes.
+- `condition` (callable): recebe os campos já preenchidos e devolve bool. Monte o `json_schema_extra` com `field_condition(condicao, depends_on=...)`, que pede junto os campos lidos pela função, para que venham antes: o nome de um campo em texto, ou uma lista ou tupla de nomes. O helper devolve `{'condition': condicao, 'depends_on': [...]}`, o mesmo dict que se escreveria à mão; escrito à mão, o checker de tipos recusa o `Field`, porque o Pydantic tipa `json_schema_extra` como JSON e uma função não é JSON.
 
 Outra forma de `condition` ou de `depends_on` levanta `ValueError` antes de processar.
 
@@ -85,24 +85,28 @@ A ordem de execução é `pais → estado → cep` e `pais → zip_code`.
 
 ## Exemplo 3: Condição Callable com Múltiplas Dependências
 
-Quando a condição combina vários campos, use um callable e declare os campos lidos em `depends_on`:
+Quando a condição combina vários campos, use uma função e declare os campos lidos em `depends_on`:
 
 ```python
+from dataframeit import field_condition
+
 class PedidoInfo(BaseModel):
     tipo_cliente: str = Field(description="Tipo do cliente: 'novo' ou 'vip'")
     valor_pedido: float = Field(description="Valor total do pedido")
     desconto: float | None = Field(
         default=None,
         description="Desconto aplicado",
-        json_schema_extra={
-            'depends_on': ['tipo_cliente', 'valor_pedido'],
-            'condition': lambda dados: (
+        json_schema_extra=field_condition(
+            lambda dados: (
                 dados.get('tipo_cliente') == 'vip'
                 and (dados.get('valor_pedido') or 0) > 1000
             ),
-        },
+            depends_on=['tipo_cliente', 'valor_pedido'],
+        ),
     )
 ```
+
+Para somar outras chaves por campo, desempacote o dict: `json_schema_extra={**field_condition(...), 'search_depth': 'advanced'}`.
 
 ## Operadores de Condição
 

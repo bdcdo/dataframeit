@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from typing import Any
 from unittest.mock import patch
 
 import pandas as pd
@@ -12,7 +13,7 @@ import pytest
 from pydantic import BaseModel, Field
 from pydantic.json_schema import JsonDict
 
-from dataframeit import dataframeit
+from dataframeit import dataframeit, field_condition
 from dataframeit.agent import field_extractor
 from dataframeit.conditional import (
     check_dependencies_exist,
@@ -275,11 +276,10 @@ class TestGetFieldExecutionOrder:
             cpf: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
             cnpj: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pj"}})
             validacao: str = Field(
-                # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-                json_schema_extra={  # ty: ignore[invalid-argument-type]
-                    "depends_on": ["cpf", "cnpj"],
-                    "condition": lambda data: bool(data.get("cpf") or data.get("cnpj")),
-                }
+                json_schema_extra=field_condition(
+                    lambda data: bool(data.get("cpf") or data.get("cnpj")),
+                    depends_on=["cpf", "cnpj"],
+                )
             )
 
         field_configs = {
@@ -432,10 +432,12 @@ class TestGetFieldExecutionOrder:
     def test_callable_condition_without_depends_on_has_no_deps(self):
         """Testa que callable sem depends_on não impõe ordem (não levanta erro)."""
 
+        # O helper field_condition exige depends_on; sem ele, só o dict escrito à mão.
+        sem_dependencia: dict[str, Any] = {"condition": lambda data: bool(data.get("a"))}
+
         class M(BaseModel):
             a: str
-            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-            b: str = Field(json_schema_extra={"condition": lambda data: bool(data.get("a"))})  # ty: ignore[invalid-argument-type]
+            b: str = Field(json_schema_extra=sem_dependencia)
 
         configs = {
             "a": {},
@@ -448,10 +450,12 @@ class TestGetFieldExecutionOrder:
     def test_callable_condition_without_depends_on_emits_warning(self, caplog):
         """Testa que callable sem depends_on emite warning."""
 
+        # O helper field_condition exige depends_on; sem ele, só o dict escrito à mão.
+        sem_dependencia: dict[str, Any] = {"condition": lambda data: bool(data.get("a"))}
+
         class M(BaseModel):
             a: str
-            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-            b: str = Field(json_schema_extra={"condition": lambda data: bool(data.get("a"))})  # ty: ignore[invalid-argument-type]
+            b: str = Field(json_schema_extra=sem_dependencia)
 
         configs = {
             "a": {},
@@ -469,11 +473,9 @@ class TestGetFieldExecutionOrder:
         class M(BaseModel):
             a: str
             b: str = Field(
-                # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-                json_schema_extra={  # ty: ignore[invalid-argument-type]
-                    "depends_on": ["a"],
-                    "condition": lambda data: bool(data.get("a")),
-                }
+                json_schema_extra=field_condition(
+                    lambda data: bool(data.get("a")), depends_on=["a"]
+                )
             )
 
         configs = {
@@ -856,9 +858,8 @@ class TestCondicaoPelaApi:
 
         class Modelo(BaseModel):
             tipo: str
-            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
-                None, json_schema_extra={"condition": condicao_quebrada, "depends_on": ["tipo"]}
+            detalhe: str | None = Field(
+                None, json_schema_extra=field_condition(condicao_quebrada, depends_on=["tipo"])
             )
 
         with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
@@ -891,15 +892,14 @@ class TestCondicaoPelaApi:
     def test_depends_on_em_texto_vale_como_lista_de_um_campo(self):
         """Com depends_on='tipo', 'detalhe' espera 'tipo', mesmo declarado antes dele."""
 
+        # Dict escrito à mão: field_condition guardaria o texto já convertido em lista.
+        configuracao: dict[str, Any] = {
+            "condition": lambda dados: dados.get("tipo") == "pj",
+            "depends_on": "tipo",
+        }
+
         class Modelo(BaseModel):
-            # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
-                None,
-                json_schema_extra={
-                    "condition": lambda dados: dados.get("tipo") == "pj",
-                    "depends_on": "tipo",
-                },
-            )
+            detalhe: str | None = Field(None, json_schema_extra=configuracao)
             tipo: str
 
         linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pj", "detalhe": "x"})
@@ -910,16 +910,14 @@ class TestCondicaoPelaApi:
     def test_depends_on_em_tupla_vale_como_lista(self, caplog):
         """A tupla de nomes ordena o campo e não dispara o aviso de depends_on ausente."""
 
+        # Dict escrito à mão: field_condition guardaria a tupla já convertida em lista.
+        configuracao: dict[str, Any] = {
+            "condition": lambda dados: dados.get("tipo") == "pj",
+            "depends_on": ("tipo",),
+        }
+
         class Modelo(BaseModel):
-            # Tupla em depends_on e condição callable são formas aceitas; o pydantic tipa
-            # json_schema_extra como JSON (#171).
-            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
-                None,
-                json_schema_extra={
-                    "condition": lambda dados: dados.get("tipo") == "pj",
-                    "depends_on": ("tipo",),
-                },
-            )
+            detalhe: str | None = Field(None, json_schema_extra=configuracao)
             tipo: str
 
         with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
@@ -959,13 +957,12 @@ class TestCondicaoPelaApi:
             get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
 
     def test_depends_on_de_forma_nao_aceita_falha_antes_de_processar(self):
+        # O set é a forma recusada que o teste exercita, e field_condition já o recusaria.
+        configuracao: dict[str, Any] = {"condition": lambda dados: True, "depends_on": {"tipo"}}
+
         class Modelo(BaseModel):
             tipo: str
-            # O set em depends_on é a forma recusada que o teste exercita; o pydantic tipa
-            # json_schema_extra como JSON (#171).
-            detalhe: str | None = Field(  # ty: ignore[no-matching-overload]
-                None, json_schema_extra={"condition": lambda dados: True, "depends_on": {"tipo"}}
-            )
+            detalhe: str | None = Field(None, json_schema_extra=configuracao)
 
         with (
             patch("dataframeit.core.validate_provider_dependencies"),
@@ -1201,3 +1198,38 @@ def test_ciclo_entre_grupo_e_campo_nomeia_cada_unidade():
     mensagem = "Dependências circulares entre grupos e campos: grupo 'g' -> 'endereco' -> grupo 'g'"
     with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
         get_group_execution_units(_ModeloComGrupo, grupos, dependencias)
+
+
+def _tipo_pj(dados):
+    return dados.get("tipo") == "pj"
+
+
+def test_field_condition_devolve_o_dict_que_o_motor_le():
+    extra = field_condition(_tipo_pj, depends_on=["tipo"])
+
+    assert extra == {"condition": _tipo_pj, "depends_on": ["tipo"]}
+    _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": extra})
+    assert dependencias["cpf"] == ["tipo"]
+
+
+@pytest.mark.parametrize("depends_on", ["tipo", ("tipo",), ["tipo"]])
+def test_field_condition_guarda_depends_on_como_lista(depends_on):
+    assert field_condition(_tipo_pj, depends_on=depends_on)["depends_on"] == ["tipo"]
+
+
+def test_field_condition_aceita_outras_chaves_desempacotado():
+    extra = {**field_condition(_tipo_pj, depends_on="tipo"), "search_depth": "advanced"}
+
+    assert extra == {"condition": _tipo_pj, "depends_on": ["tipo"], "search_depth": "advanced"}
+
+
+@pytest.mark.parametrize("condicao", [{"field": "tipo", "equals": "pj"}, "tipo", None])
+def test_field_condition_recusa_condicao_que_nao_e_funcao(condicao):
+    with pytest.raises(ValueError, match="a condição deve ser uma função"):
+        field_condition(condicao, depends_on="tipo")
+
+
+@pytest.mark.parametrize("depends_on", [[], (), "", {"tipo"}, None])
+def test_field_condition_recusa_depends_on_vazio_ou_de_outra_forma(depends_on):
+    with pytest.raises(ValueError, match="declare os campos lidos pela condição"):
+        field_condition(_tipo_pj, depends_on=depends_on)

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel, Field
 
+from dataframeit import field_condition
 from dataframeit.agent import field_extractor
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
@@ -271,9 +272,8 @@ def _a_tipo_x(dados):
 class DependeDeCaminho(BaseModel):
     a: Optional[Sub] = None
     # depends_on explícito guarda o caminho inteiro; a condição dict guardaria só a raiz.
-    # Condição callable é a forma documentada; o pydantic tipa json_schema_extra como JSON (#171).
-    b: Optional[str] = Field(  # ty: ignore[no-matching-overload]
-        None, json_schema_extra={"condition": _a_tipo_x, "depends_on": ["a.tipo"]}
+    b: Optional[str] = Field(
+        None, json_schema_extra=field_condition(_a_tipo_x, depends_on=["a.tipo"])
     )
 
 
