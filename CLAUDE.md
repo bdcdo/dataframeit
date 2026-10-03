@@ -33,6 +33,10 @@ git checkout -b <tipo>/<descricao>
 # - refactor/ -> refatoração
 ```
 
+### Revisão antes do merge
+
+Todo PR passa por revisão de um subagente novo antes de ser mesclado, inclusive quando o Bruno já aprovou. O agente que implementou não revisa o próprio diff, porque carrega as mesmas suposições que produziram o código. O briefing traz o branch, o SHA, a issue e o diff contra a `main`, mas não o raciocínio da implementação, e pede evidência reproduzível de cada achado (arquivo:linha e script com a saída observada). O agente principal confere a evidência antes de aceitar um achado; o achado confirmado é corrigido no branch, e o recusado ganha o motivo no PR. Só depois disso, e com o CI verde, o PR é mesclado.
+
 ## Versionamento
 
 ### CHANGELOG
