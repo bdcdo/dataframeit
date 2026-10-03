@@ -234,22 +234,27 @@ class _RecordingProvider(BaseHTTPRequestHandler):
         pass
 
 
-def _offered_tools(node, offered):
-    """Toda entrada de toda lista `tools` do request, em qualquer profundidade.
-
-    Cada entrada conta pelo nome ou, sem nome, pelo tipo, para que uma
-    ferramenta de tipo novo, como `tool_search` ou `web_search`, também entre na
-    comparação. Os namespaces entram ao lado das ferramentas que agrupam.
-    """
+def _tool_lists(node, lists):
+    """Toda lista `tools` do request, em qualquer profundidade."""
     if isinstance(node, dict):
-        for entry in node.get("tools") or ():
-            offered.add(entry.get("name") or entry.get("type"))
+        if isinstance(node.get("tools"), list):
+            lists.append(node["tools"])
         for value in node.values():
-            _offered_tools(value, offered)
+            _tool_lists(value, lists)
     elif isinstance(node, list):
         for value in node:
-            _offered_tools(value, offered)
-    return offered
+            _tool_lists(value, lists)
+    return lists
+
+
+def _offered_tools(lists):
+    """Cada entrada das listas `tools`, pelo nome ou, sem nome, pelo tipo.
+
+    Contar pelo tipo faz uma ferramenta de tipo novo, como `tool_search` ou
+    `web_search`, também entrar na comparação. Os namespaces entram ao lado das
+    ferramentas que agrupam, porque as listas aninhadas também são lidas.
+    """
+    return {entry.get("name") or entry.get("type") for tools in lists for entry in tools}
 
 
 class _Answer(BaseModel):
@@ -353,7 +358,11 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
         assert encoding is None
         request = json.loads(raw)
         assert request["model"] == slug
-        assert _offered_tools(request, set()) == _REVIEWED_MODEL_TOOLS, slug
+        # Sem nenhuma lista, o runtime mudou onde põe as ferramentas, e a
+        # igualdade com o conjunto revisado, vazio, passaria sem provar nada.
+        tool_lists = _tool_lists(request, [])
+        assert tool_lists, slug
+        assert _offered_tools(tool_lists) == _REVIEWED_MODEL_TOOLS, slug
         # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
         # `collaboration` não serve para essa busca, porque aparece no texto das
         # instruções.

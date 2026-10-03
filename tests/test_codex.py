@@ -28,6 +28,7 @@ from dataframeit.codex import (
     CodexBackend,
     _build_schema,
     _to_strict_json_schema,
+    _toml_string,
     _turn_timeout,
     _validate_config,
     open_codex_backend,
@@ -719,6 +720,16 @@ class TestBackendConfiguration:
             _validate_config(make_config(**overrides))
 
         codex.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["/srv/codex", 'C:\\Users\\Zé\\a"b', "/srv/códex 😀", "/srv/a\x7fb", "/srv/a\x01b"],
+)
+def test_toml_string_volta_ao_mesmo_valor(value):
+    tomllib = pytest.importorskip("tomllib")
+
+    assert tomllib.loads(f"k = {_toml_string(value)}")["k"] == value
 
 
 class TestBackendLifecycle:

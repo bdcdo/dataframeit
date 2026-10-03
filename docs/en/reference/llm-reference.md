@@ -208,7 +208,7 @@ result = dataframeit(
 )
 ```
 
-The `codex` provider accepts only `effort` and `timeout` in `model_kwargs` and does not support `use_search=True`. The integration disables web search, shell access, and MCP servers, denies approvals, and uses a read-only sandbox to block writes; the runtime may still present internal utilities such as `apply_patch` without granting permission to change files. See [Installation](../getting-started/installation.md) for runtime and authentication requirements.
+The `codex` provider accepts only `effort` and `timeout` in `model_kwargs` and does not support `use_search=True`. The integration disables web search, shell access, and MCP servers, denies approvals, and uses a read-only sandbox to block writes, and the model receives the request with no tools at all. See [Installation](../getting-started/installation.md) for runtime and authentication requirements.
 
 The `claude_code` provider uses Claude Code's authentication (credentials of a Claude Code login on the machine, or `ANTHROPIC_API_KEY`) and ignores `api_key`. In `model_kwargs`, it reads only `max_turns`, `max_budget_usd` (a cap per attempt) and `effort`. It does not support `use_search=True`. It runs with no tools and without the user's settings and MCP servers. See [Providers](../guides/providers.md#claude-code).
 

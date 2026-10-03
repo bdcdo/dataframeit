@@ -503,7 +503,8 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
     """Grava o catálogo de modelos da conta sem os campos que põem ferramentas.
 
     `codex debug models` devolve o catálogo que o app-server usaria: o do
-    servidor, com a conta do ChatGPT, ou o embutido no runtime, sem ela. Com
+    servidor, com a conta do ChatGPT, ou o embutido no runtime, sem ela ou
+    quando o download falha, caso em que sai com código 0 e sem aviso. Com
     `model_catalog_json`, o app-server deixa de baixar o catálogo e usa só o
     arquivo, e por isso ele parte do catálogo da conta, e não de uma cópia
     fixa, que esconderia os modelos lançados depois do runtime.
@@ -548,6 +549,18 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
         msg = f"Não foi possível ler o catálogo de modelos do Codex: {err}"
         raise ProviderConfigurationError(msg) from err
     return path
+
+
+def _toml_string(value: str) -> str:
+    r"""String básica TOML com o valor, para um override `--config`.
+
+    A string JSON escapa aspas, barras invertidas, como as de um caminho do
+    Windows, e caracteres de controle abaixo de U+0020, como o TOML pede. Com
+    `ensure_ascii=True`, um caractere fora do BMP viraria um par substituto
+    (`\ud83d\ude00`), que o TOML recusa; e o JSON deixa U+007F cru, que o
+    TOML também recusa.
+    """
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 @dataclass(frozen=True, slots=True)
@@ -918,13 +931,9 @@ def open_codex_backend(
         catalog = _write_model_catalog(workspace, env)
         codex_config = CodexConfig(
             cwd=os.fspath(workspace),
-            # O caminho vai como string JSON, que também é string TOML válida,
-            # inclusive com as barras invertidas de um caminho do Windows. Sem
-            # `ensure_ascii=False`, um caractere fora do BMP viraria um par
-            # substituto `\ud83d\ude00`, que o TOML recusa.
             config_overrides=(
                 *_CODEX_CONFIG_OVERRIDES,
-                f"model_catalog_json={json.dumps(os.fspath(catalog), ensure_ascii=False)}",
+                f"model_catalog_json={_toml_string(os.fspath(catalog))}",
             ),
             env=env,
         )
