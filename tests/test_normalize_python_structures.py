@@ -498,9 +498,13 @@ def test_read_df_sem_modelo_normaliza_coluna_json_depois_de_coluna_numerica(tmp_
     assert list(df["itens"]) == [["a"], ["b"]]
 
 
-def test_coluna_de_objeto_com_numero_e_texto_nao_e_tratada_como_json():
-    df = pd.DataFrame({"misto": pd.Series([1, "x"], dtype=object)})
+def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():
+    """Só texto é testado como JSON: o número na amostra não tem `strip`."""
+    sem_json = pd.DataFrame({"misto": pd.Series([1, "x"], dtype=object)})
+    com_json = pd.DataFrame({"misto": pd.Series([1, '["a"]'], dtype=object)})
 
-    _normalize_all_json_columns(df)
+    _normalize_all_json_columns(sem_json)
+    _normalize_all_json_columns(com_json)
 
-    assert list(df["misto"]) == [1, "x"]
+    assert list(sem_json["misto"]) == [1, "x"]
+    assert list(com_json["misto"]) == [1, ["a"]]
