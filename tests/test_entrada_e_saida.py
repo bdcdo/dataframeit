@@ -1,5 +1,6 @@
 """Entrada e saída de dataframeit(): colunas de controle, texto ausente, índice e avisos."""
 
+import logging
 import warnings
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from dataframeit import ProviderError, core, dataframeit
-from dataframeit.core import _print_token_stats
+from dataframeit.core import _format_token_stats
 
 
 class Modelo(BaseModel):
@@ -212,9 +213,8 @@ def test_batch_size_rejeita_nao_inteiros(valor, tmp_path):
         _rodar(pd.DataFrame({"texto": ["a"]}), batch_size=valor, checkpoint_path=tmp_path / "c.csv")
 
 
-def test_estatisticas_de_busca_usam_o_provider_escolhido(capsys):
-
-    _print_token_stats(
+def test_estatisticas_de_busca_usam_o_provider_escolhido():
+    saida = _format_token_stats(
         {
             "input_tokens": 1,
             "output_tokens": 1,
@@ -225,7 +225,6 @@ def test_estatisticas_de_busca_usam_o_provider_escolhido(capsys):
         model="m",
         search_provider="exa",
     )
-    saida = capsys.readouterr().out
     assert "EXA" in saida
     assert "TAVILY" not in saida
 
@@ -445,7 +444,7 @@ def test_status_column_personalizado_fica_depois_dos_tokens(tipo):
     assert colunas.index("_input_tokens") < colunas.index("st")
 
 
-def test_estatisticas_de_busca_de_ponta_a_ponta_usam_o_provider(capsys):
+def test_estatisticas_de_busca_de_ponta_a_ponta_usam_o_provider(caplog):
     resposta = {
         "data": {"x": "ok"},
         "usage": {
@@ -460,6 +459,7 @@ def test_estatisticas_de_busca_de_ponta_a_ponta_usam_o_provider(capsys):
         patch("dataframeit.agent.call_agent", return_value=resposta),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
+        caplog.at_level(logging.INFO, logger="dataframeit.stats"),
     ):
         dataframeit(
             pd.DataFrame({"texto": ["a"]}),
@@ -468,7 +468,7 @@ def test_estatisticas_de_busca_de_ponta_a_ponta_usam_o_provider(capsys):
             use_search=True,
             search_provider="exa",
         )
-    saida = capsys.readouterr().out
+    saida = caplog.text
     assert "EXA" in saida
     assert "TAVILY" not in saida
 
@@ -576,8 +576,8 @@ def test_rate_limit_delay_espera_depois_de_cada_linha(monkeypatch, parallel_requ
 # =============================================================================
 
 
-def test_resumo_detalha_cache_e_raciocinio(capsys):
-    _print_token_stats(
+def test_resumo_detalha_cache_e_raciocinio():
+    saida = _format_token_stats(
         {
             "input_tokens": 100,
             "cached_input_tokens": 40,
@@ -588,14 +588,13 @@ def test_resumo_detalha_cache_e_raciocinio(capsys):
         model="m",
     )
 
-    saida = capsys.readouterr().out
     assert "└─ Cache: 40 (incluído no Input)" in saida
     assert "└─ Reasoning: 10 (incluído no Output)" in saida
 
 
-def test_resumo_sem_requisicao_concluida_omite_a_taxa(capsys):
+def test_resumo_sem_requisicao_concluida_omite_a_taxa():
     """Linhas que falharam com custo informado entram no resumo sem uma taxa de requisições."""
-    _print_token_stats(
+    saida = _format_token_stats(
         {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -608,7 +607,6 @@ def test_resumo_sem_requisicao_concluida_omite_a_taxa(capsys):
         parallel_requests=2,
     )
 
-    saida = capsys.readouterr().out
     assert "METRICAS DE THROUGHPUT" in saida
     assert "TPM (tokens/min): 0" in saida
     assert "Requisicoes" not in saida

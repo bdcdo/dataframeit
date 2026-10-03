@@ -37,6 +37,8 @@ Rate limit detected → 1 worker
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.
 
+At the end of the run, a `UserWarning` reports the initial and final workers and suggests using the final number in `parallel_requests`.
+
 ## Rate Limiting
 
 Use `rate_limit_delay` to prevent rate limit errors:
@@ -101,7 +103,7 @@ result = dataframeit(
 )
 ```
 
-The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). In every format, the model's list, dict and tuple fields are saved as JSON text; `read_df` turns them back into structures, and resuming, into the types declared in the model. If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. On every save, `<checkpoint>.dataframeit.json` is written next to it with the run's signature (prompt, provider, model, `model_kwargs` except `timeout`, schema, search, and the text and status columns), a hash of each row's text, and a hash of the checkpoint itself. The checkpoint is resumed only when all three match; with another configuration, another input, or a file that is not the one the signature describes, the run warns, starts over, and overwrites it. In a row already concluded, successfully or with an error, the model fields come from the checkpoint, over whatever the input carried in them; in a successful row, that is what an uninterrupted run would give, because it writes the answer over them. To keep an output corrected by hand as it is, pass it with the status column, and the checkpoint is not read again. A complete output is returned without it, and the column comes back with `output["_dataframeit_status"] = "processed"` (or the name passed in `status_column`). With `resume=False`, the file is ignored and overwritten.
+The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). In every format, the model's list, dict and tuple fields are saved as JSON text, and `Enum` values by their value; `read_df` turns the structures back, and resuming returns structures and date, time, `datetime`, `Enum`, `int` and `bool` fields with their declared type, also with `strict=True`: a date saved as text, an integer read back as a float and a tuple read back as a list come back as `date`, `int` and `tuple`. If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. On every save, `<checkpoint>.dataframeit.json` is written next to it with the run's signature (prompt, provider, model, `model_kwargs` except `timeout`, schema, search, and the text and status columns), a hash of each row's text, and a hash of the checkpoint itself. The checkpoint is resumed only when all three match; with another configuration, another input, or a file that is not the one the signature describes, the run warns, starts over, and overwrites it. In a row already concluded, successfully or with an error, the model fields come from the checkpoint, over whatever the input carried in them; in a successful row, that is what an uninterrupted run would give, because it writes the answer over them. To keep an output corrected by hand as it is, pass it with the status column, and the checkpoint is not read again. A complete output is returned without it, and the column comes back with `output["_dataframeit_status"] = "processed"` (or the name passed in `status_column`). With `resume=False`, the file is ignored and overwritten.
 
 To inspect what has already been processed, `read_df` loads the file with lists, dicts and text in the model's types. That DataFrame also works as input for resuming, and then the file is not read again:
 
@@ -130,7 +132,7 @@ result = dataframeit(
 )
 ```
 
-At the end, DataFrameIt prints a summary (always in Portuguese):
+At the end, DataFrameIt logs a summary (always in Portuguese) on the `dataframeit.stats` logger, at INFO level. Without logging configured, the summary goes to stderr; with logging configured, it goes through the application's handlers:
 
 ```
 ============================================================
@@ -152,6 +154,14 @@ Requisicoes: 100
 ```
 
 Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
+
+To silence the summary and keep the usage columns, raise the logger level:
+
+```python
+import logging
+
+logging.getLogger("dataframeit.stats").setLevel(logging.WARNING)
+```
 
 ### Added Columns
 

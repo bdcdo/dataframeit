@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import operator
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any, cast, get_args, get_origin
 
 from .utils import get_nested_pydantic_models, resolve_forward_refs
 
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
     from pydantic.fields import FieldInfo
+    from pydantic.json_schema import JsonDict
 
     from .llm import SearchGroupConfig
 
@@ -41,6 +42,68 @@ _CONDITION_OPERATORS: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {
     "in": ("in", lambda value, options: value in options),
     "not_in": ("not in", lambda value, options: value not in options),
 }
+
+# Operandos aceitos por `in` e `not_in`. Texto fica de fora porque `in` sobre
+# texto busca substring: {"in": "pfj"} aceitaria "pf", "fj" e "j".
+_MEMBERSHIP_OPERAND_TYPES = (list, tuple, set, frozenset)
+
+
+def field_condition(
+    condition: Callable[[dict[str, Any]], bool],
+    depends_on: str | list[str] | tuple[str, ...],
+) -> JsonDict:
+    """Monta o `json_schema_extra` de um campo com condição callable.
+
+    O campo só é pedido ao LLM quando `condition` devolve verdadeiro para os
+    campos já preenchidos da linha. Os campos lidos pela função vão em
+    `depends_on`, para que sejam extraídos antes dela.
+
+    Args:
+        condition: Função que recebe o dict dos campos já preenchidos e devolve
+            bool.
+        depends_on: Nome do campo lido pela função, ou lista ou tupla de nomes.
+            Campo de modelo aninhado usa notação de ponto (`endereco.cidade`).
+
+    Returns:
+        `{"condition": condition, "depends_on": [...]}`, o mesmo dict que se
+        escreveria à mão em `json_schema_extra`. Outras chaves por campo entram
+        desempacotando-o: `{**field_condition(...), "search_depth": "advanced"}`.
+
+    Raises:
+        ValueError: Se `condition` não é callable, ou se `depends_on` não é
+            texto, lista ou tupla, ou está vazio.
+
+    Examples:
+        >>> from pydantic import BaseModel, Field
+        >>> class Pedido(BaseModel):
+        ...     tipo_cliente: str
+        ...     desconto: float | None = Field(
+        ...         default=None,
+        ...         json_schema_extra=field_condition(
+        ...             lambda dados: dados.get("tipo_cliente") == "vip",
+        ...             depends_on="tipo_cliente",
+        ...         ),
+        ...     )
+    """
+    if not callable(condition):
+        msg = f"field_condition recebeu {condition!r}: a condição deve ser uma função"
+        raise ValueError(msg)  # noqa: TRY004 (a mesma exceção de _check_condition)
+    # Aceita as mesmas formas do dict escrito à mão. Cada nome é conferido antes
+    # de processar, com o nome do campo na mensagem (_declared_depends_on);
+    # aqui se recusa também a lista vazia, que deixaria a condição sem ordem
+    # garantida.
+    if not isinstance(depends_on, (str, list, tuple)) or not depends_on:
+        msg = (
+            f"field_condition recebeu 'depends_on' {depends_on!r}: declare os campos lidos "
+            "pela condição, com o nome de um campo em texto ou uma lista ou tupla de nomes"
+        )
+        raise ValueError(msg)
+    names = [depends_on] if isinstance(depends_on, str) else list(depends_on)
+    # O pydantic tipa json_schema_extra como JSON, e uma função não é JSON; o
+    # cast é o que deixa o Field aceitar o dict no checker de tipos. A função
+    # não chega ao schema enviado ao LLM, porque agent._llm_field tira
+    # `condition` e `depends_on` do campo antes de montá-lo.
+    return cast("JsonDict", {"condition": condition, "depends_on": names})
 
 
 def _collect_configured_fields(
@@ -405,17 +468,30 @@ def _check_condition(field_name: str, condition: object) -> None:
 
     Raises:
         ValueError: Se `condition` não é dict nem callable, se `field` não é o
-            nome de um campo em texto, ou se falta um operador.
+            nome de um campo em texto, se falta um operador, ou se o operando
+            de `in` ou `not_in` não é lista, tupla, set ou frozenset.
     """
     if condition is None or callable(condition):
         return
     if isinstance(condition, dict):
         field_path = condition.get("field")
         operators = [*_CONDITION_OPERATORS, "exists"]
+        bad_operand = next(
+            (
+                key
+                for key in ("in", "not_in")
+                if key in condition and not isinstance(condition[key], _MEMBERSHIP_OPERAND_TYPES)
+            ),
+            None,
+        )
         if not isinstance(field_path, str) or not field_path:
             problem = "'field' deve ser o nome de um campo em texto"
         elif not any(key in condition for key in operators):
             problem = f"falta um operador, um de {', '.join(operators)}"
+        elif bad_operand is not None:
+            problem = (
+                f"'{bad_operand}' deve ser uma lista, tupla, set ou frozenset dos valores aceitos"
+            )
         else:
             return
     else:

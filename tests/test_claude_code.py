@@ -1,6 +1,7 @@
 """Testes para o provider claude_code (Claude Code SDK)."""
 
 import asyncio
+import logging
 import sys
 import types
 import warnings
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 
 from dataframeit import dataframeit
 from dataframeit.claude_code import _build_json_system_prompt, call_claude_code
-from dataframeit.core import _print_token_stats
+from dataframeit.core import _format_token_stats
 from dataframeit.errors import (
     ProviderError,
     ProviderOverloadedError,
@@ -402,13 +403,12 @@ def test_custo_informado_pelo_sdk_entra_no_usage(sdk_falso):
     assert resultado["usage"]["cost_usd"] == pytest.approx(0.0125)
 
 
-def test_custo_somado_nas_estatisticas(capsys):
-
-    _print_token_stats(
+def test_custo_somado_nas_estatisticas():
+    resumo = _format_token_stats(
         {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cost_usd": 0.25},
         model=None,
     )
-    assert "US$ 0.2500" in capsys.readouterr().out
+    assert "US$ 0.2500" in resumo
 
 
 def _resposta_valida(custo):
@@ -447,7 +447,7 @@ def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
 
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
-def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
+def test_resumo_soma_o_custo_das_linhas_e_das_falhas(caplog, parallel_requests):
 
     def call_claude_code(text, *args, **kwargs):
         if text.endswith("falha"):
@@ -464,6 +464,7 @@ def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
         patch("dataframeit.claude_code.call_claude_code", side_effect=call_claude_code),
         patch("dataframeit.core.validate_provider_dependencies"),
         warnings.catch_warnings(),
+        caplog.at_level(logging.INFO, logger="dataframeit.stats"),
     ):
         warnings.simplefilter("ignore")
         dataframeit(
@@ -473,16 +474,15 @@ def test_resumo_soma_o_custo_das_linhas_e_das_falhas(capsys, parallel_requests):
             provider="claude_code",
             parallel_requests=parallel_requests,
         )
-    assert "US$ 0.7000" in capsys.readouterr().out
+    assert "US$ 0.7000" in caplog.text
 
 
-def test_custo_sem_tokens_aparece_no_resumo(capsys):
-
-    _print_token_stats(
+def test_custo_sem_tokens_aparece_no_resumo():
+    resumo = _format_token_stats(
         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.25},
         model=None,
     )
-    assert "US$ 0.2500" in capsys.readouterr().out
+    assert "US$ 0.2500" in resumo
 
 
 # =============================================================================

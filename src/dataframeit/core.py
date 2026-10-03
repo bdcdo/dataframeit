@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import hashlib
 import importlib.util
 import json
+import logging
 import numbers
 import re
+import sys
 import threading
 import time
 import warnings
@@ -20,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import pandas as pd
-from pandas.api.types import is_scalar
+from pandas.api.types import is_bool, is_scalar
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from tqdm import tqdm
 
@@ -70,6 +73,59 @@ if TYPE_CHECKING:
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
+
+
+class _FallbackHandler(logging.Handler):
+    """Escreve em stderr só quando nenhum outro handler recebe o registro.
+
+    Com a aplicação configurando o logging (basicConfig, pytest, um handler no
+    logger `dataframeit`), o registro sobe por propagação e sai por ela, e
+    escrever aqui também o duplicaria. O stderr é lido na hora da escrita,
+    porque o notebook e o pytest o trocam depois do import.
+
+    O handler se reconhece pelo atributo, e não pela classe, porque recarregar
+    o módulo (importlib.reload, %autoreload) cria outra classe enquanto o
+    logger guarda a instância da anterior.
+    """
+
+    is_dataframeit_fallback = True
+
+    def emit(self, record: logging.LogRecord) -> None:
+        logger: logging.Logger | None = logging.getLogger(record.name)
+        while logger is not None:
+            if any(not _is_fallback(handler) for handler in logger.handlers):
+                return
+            if not logger.propagate:
+                break
+            logger = logger.parent
+        try:
+            sys.stderr.write(self.format(record) + "\n")
+        except Exception:  # noqa: BLE001 (falha de escrita segue o tratamento do logging)
+            self.handleError(record)
+
+
+# O resumo de uso sai em INFO por um logger próprio, e não pelo pai
+# `dataframeit`: subir o pai para INFO mostraria também o registro por campo
+# pulado de conditional.py. O handler de reserva mantém o resumo visível sem
+# configuração, e o nível WARNING nesse logger o silencia.
+def _is_fallback(handler: logging.Handler) -> bool:
+    return getattr(handler, "is_dataframeit_fallback", False)
+
+
+def _install_fallback_handler(logger: logging.Logger) -> None:
+    """Põe o handler de reserva no logger, uma vez só mesmo com o módulo recarregado.
+
+    Dois deles no mesmo logger se tomariam por handler da aplicação, e o
+    resumo sumiria.
+    """
+    if not any(_is_fallback(handler) for handler in logger.handlers):
+        logger.addHandler(_FallbackHandler())
+
+
+_stats_logger = logging.getLogger("dataframeit.stats")
+_stats_logger.setLevel(logging.INFO)
+_install_fallback_handler(_stats_logger)
+
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.
 # Ordem: convenção da lib ('texto'), inglês ('text'), juscraper cjpg/cjsg ('decisao'),
@@ -242,6 +298,18 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         if isinstance(field.validation_alias, str):
             field_by_alias[field.validation_alias] = field_name
 
+    def rejected_fields(error: ValidationError) -> set[str]:
+        """Campos acusados pelo erro; o erro do modelo inteiro acusa todos."""
+        rejected = set()
+        for detail in error.errors():
+            location = detail.get("loc", ())
+            field_name = field_by_alias.get(location[0]) if location else None
+            if field_name is not None:
+                rejected.add(field_name)
+            else:
+                rejected.update(expected_columns)
+        return rejected
+
     if status_col not in df.columns:
         return [], values_to_fill
 
@@ -303,6 +371,10 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 row_values[field_name] = None
             elif field_name in complex_fields:
                 row_values[field_name] = normalize_value(value)
+            elif isinstance(value, pd.Timestamp):
+                # O datetime relido do XLSX ou do parquet; o pydantic devolveria
+                # o próprio Timestamp, e a coluna misturaria os dois tipos.
+                row_values[field_name] = value.to_pydatetime()
             else:
                 row_values[field_name] = value
 
@@ -323,16 +395,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     continue
             projected[field_name] = value
 
-        try:
-            validated = model_skipping(skipped).model_validate(projected)
-        except ValidationError as error:
-            for detail in error.errors():
-                location = detail.get("loc", ())
-                field_name = field_by_alias.get(location[0]) if location else None
-                if field_name is not None:
-                    incompatible_fields.add(field_name)
-                else:
-                    incompatible_fields.update(expected_columns)
+        validated_data, rejected = _validate_row(
+            model_skipping(skipped), projected, rejected_fields
+        )
+        if validated_data is None:
+            incompatible_fields.update(rejected)
             for field_name in missing_values:
                 field = pydantic_model.model_fields[field_name]
                 if field.is_required():
@@ -347,26 +414,109 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             continue
 
         # Campo com exclude=True não sai no dump, e não há o que completar nele.
-        validated_data = validated.model_dump(by_alias=False)
         for field_name in missing_values & validated_data.keys():
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
-        # O JSON do checkpoint não guarda data, tupla nem chave de dict que não
-        # seja texto. O model_dump da linha validada traz esses tipos de volta,
-        # com o contexto da linha inteira para os validadores. Ele só substitui
-        # o valor relido quando diz o mesmo em JSON: a volta muda o tipo, nunca
-        # o conteúdo. Um validador que muda o valor de novo, ou um submodelo que
-        # grava pelo alias, deixa o valor como foi relido.
-        for field_name in complex_fields:
+        # O arquivo não guarda o tipo de todo valor (ver _validate_row). O
+        # model_dump da linha validada traz o tipo declarado de volta, com o
+        # contexto da linha inteira para os validadores. Ele só substitui o
+        # valor relido quando diz o mesmo (_same_value): a volta muda o tipo,
+        # nunca o conteúdo. Um validador que muda o valor de novo, ou um
+        # submodelo que grava pelo alias, deixa o valor como foi relido.
+        for field_name, value in projected.items():
+            if field_name not in validated_data:
+                continue
+            validated = validated_data[field_name]
+            # O texto e o número que já voltam com o tipo e o valor validados
+            # são a maioria das células; gravá-los de novo, célula a célula,
+            # multiplicaria o tempo da retomada.
             if (
-                field_name in projected
-                and field_name in validated_data
-                and _same_json(validated_data[field_name], projected[field_name])
+                type(validated) is type(value)
+                and isinstance(value, (str, int, float))
+                and validated == value
             ):
-                values_to_fill[(position, field_name)] = validated_data[field_name]
+                continue
+            if _same_value(validated, value):
+                values_to_fill[(position, field_name)] = validated
 
     ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
+
+
+def _validate_row(
+    model: type[BaseModel],
+    projected: dict[str, Any],
+    rejected_fields: Callable[[ValidationError], set[str]],
+) -> tuple[dict[str, Any] | None, set[str]]:
+    """Valida a linha relida e devolve o model_dump dela, ou None e os campos recusados.
+
+    O arquivo muda a forma dos valores: o JSON grava data como texto ISO,
+    tupla como lista e Enum pelo valor, a coluna com linha pendente devolve o
+    inteiro como float, e o XLSX devolve o bool como 1.0 e a data como
+    datetime à meia-noite. O modelo com strict=True recusa essas formas.
+    Quando a validação configurada recusa a linha, ela é refeita sem strict,
+    e cada campo recusado só é aceito se o valor validado diz o mesmo que o
+    relido (_same_value): o "3" num campo int strict continua recusado,
+    porque o conteúdo do checkpoint não é o que o modelo aceita.
+    """
+    try:
+        return model.model_validate(projected).model_dump(by_alias=False), set()
+    except ValidationError as error:
+        rejected = rejected_fields(error)
+    try:
+        validated_data = model.model_validate(projected, strict=False).model_dump(by_alias=False)
+    except ValidationError as error:
+        return None, rejected_fields(error)
+    # Campo com exclude=True não sai no dump; sem o valor para comparar, ele
+    # continua recusado.
+    changed = {
+        field_name
+        for field_name in rejected & projected.keys()
+        if field_name not in validated_data
+        or not _same_value(validated_data[field_name], projected[field_name])
+    }
+    if changed:
+        return None, changed
+    return validated_data, set()
+
+
+# A partir dele, o float não distingue dois inteiros vizinhos.
+_EXACT_INT_IN_FLOAT = 2**53
+
+
+def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma saída por forma de valor)
+    """Se o valor validado diz o mesmo que o relido, em JSON ou como escalar.
+
+    O CSV, o XLSX e o parquet mudam o tipo de um escalar sem mudar o
+    conteúdo, e a comparação em JSON, que distingue 1 de 1.0, não os
+    reconhece: o inteiro volta como float, o bool do XLSX como 1.0 e a data
+    do XLSX como datetime à meia-noite. O Enum é comparado pelo valor, que é
+    o que o checkpoint grava.
+
+    A igualdade do Python é mais larga do que essas mudanças, e fica restrita
+    a elas: True == 1, mas o bool só diz o mesmo que outro bool ou que o
+    float do XLSX; e o float só diz o mesmo que um int abaixo de 2**53, a
+    partir do qual a coluna em float pode ter perdido dígitos do inteiro.
+    """
+    if isinstance(validated, Enum) and not isinstance(value, Enum):
+        return _same_value(validated.value, value)
+    if _same_json(validated, value):
+        return True
+    if not (is_scalar(validated) and is_scalar(value)):
+        return False
+    if is_bool(validated) != is_bool(value) and not (
+        is_bool(validated) and isinstance(value, float)
+    ):
+        return False
+    if (
+        isinstance(validated, int)
+        and isinstance(value, float)
+        and abs(value) >= _EXACT_INT_IN_FLOAT
+    ):
+        return False
+    if type(validated) is datetime.date and isinstance(value, datetime.datetime):
+        return value == datetime.datetime.combine(validated, datetime.time())
+    return bool(validated == value)
 
 
 def _same_json(left: object, right: object) -> bool:
@@ -390,11 +540,22 @@ def _apply_processed_values(
     df: pd.DataFrame,
     values: dict[tuple[int, str], Any],
 ) -> None:
-    """Grava por posição os valores completados na validação do checkpoint."""
+    """Grava por posição os valores completados na validação do checkpoint.
+
+    Cada coluna é regravada de uma vez: com .iat célula a célula, a retomada
+    de um checkpoint grande gasta mais tempo gravando do que validando. O
+    array de objetos guarda lista ou dict como valor único da célula, como
+    _set_cell, e a Series com dtype object impede o pandas de converter uma
+    coluna só de datetime em datetime64, que devolveria Timestamp.
+    """
+    by_column: dict[str, dict[int, Any]] = {}
     for (position, field_name), value in values.items():
-        column_position = df.columns.get_loc(field_name)
-        # .iat grava lista ou dict como valor único da célula, como _set_cell.
-        df.iat[position, column_position] = value  # noqa: PD009
+        by_column.setdefault(field_name, {})[position] = value
+    for field_name, cells in by_column.items():
+        column = df[field_name].to_numpy(dtype=object, copy=True)
+        for position, value in cells.items():
+            column[position] = value
+        df[field_name] = pd.Series(column, index=df.index, dtype=object)
 
 
 @contextmanager
@@ -907,7 +1068,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             processada com sucesso (padrão: 0.0). Linhas com erro não pausam. O teto de
             vazão fica em parallel_requests * 60 / rate_limit_delay linhas por minuto,
             sem contar o tempo das próprias chamadas.
-        track_tokens: Se True, rastreia uso de tokens e exibe estatísticas (padrão: True).
+        track_tokens: Se True, grava o uso de tokens por linha e, no fim, registra o
+            resumo de uso em INFO no logger "dataframeit.stats" (padrão: True). Sem
+            logging configurado, o resumo sai em stderr; setLevel(logging.WARNING)
+            nesse logger o silencia e mantém as colunas.
         model_kwargs: Parâmetros extras do modelo (ex: temperature, reasoning_effort).
             Com provider='codex', aceita somente effort.
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
@@ -1415,27 +1579,25 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             stacklevel=2,
         )
 
-    # Exibir estatísticas de tokens e throughput
     if track_tokens and token_stats and any(token_stats.values()):
-        _print_token_stats(
+        summary_text = _format_token_stats(
             token_stats,
             model,
             parallel_requests,
             search_provider=search_provider if use_search else None,
         )
+        if summary_text:
+            _stats_logger.info("%s", summary_text)
 
-    # Aviso de workers reduzidos (aparece SEMPRE, independente de track_tokens)
+    # Independe de track_tokens: o número final de workers é a dica de configuração.
     if token_stats.get("workers_reduced"):
-        print("\n" + "=" * 60)
-        print("AVISO: WORKERS REDUZIDOS POR RATE LIMIT")
-        print("=" * 60)
-        print(f"Workers iniciais: {token_stats['initial_workers']}")
-        print(f"Workers finais:   {token_stats['final_workers']}")
-        print(
-            f"\nDica: Considere usar parallel_requests={token_stats['final_workers']} "
-            f"para evitar rate limits."
+        warnings.warn(
+            f"Workers reduzidos por rate limit: de {token_stats['initial_workers']} para "
+            f"{token_stats['final_workers']}. Considere usar "
+            f"parallel_requests={token_stats['final_workers']} para evitar rate limits.",
+            UserWarning,
+            stacklevel=2,
         )
-        print("=" * 60 + "\n")
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
     return from_pandas(df_pandas, conversion_info, status_col)
@@ -1542,13 +1704,13 @@ def _get_processing_indices(
     return is_pending.tolist(), processed_count
 
 
-def _print_token_stats(
+def _format_token_stats(
     token_stats: dict,
     model: str | None,
     parallel_requests: int = 1,
     search_provider: str | None = None,
-) -> None:
-    """Exibe estatísticas de uso de tokens e throughput.
+) -> str:
+    """Monta o resumo de uso de tokens e throughput, vazio quando não há uso.
 
     Args:
         token_stats: Dict com contadores de tokens e métricas de tempo.
@@ -1559,52 +1721,57 @@ def _print_token_stats(
     if not token_stats or (
         token_stats.get("total_tokens", 0) == 0 and not token_stats.get("cost_usd")
     ):
-        return
+        return ""
 
-    print("\n" + "=" * 60)
-    print("ESTATISTICAS DE USO")
-    print("=" * 60)
-    print(f"Modelo: {model or 'escolhido pelo runtime do provider'}")
-    print(f"Total de tokens: {token_stats['total_tokens']:,}")
-    print(f"  - Input:  {token_stats['input_tokens']:,} tokens")
+    lines = [
+        "=" * 60,
+        "ESTATISTICAS DE USO",
+        "=" * 60,
+        f"Modelo: {model or 'escolhido pelo runtime do provider'}",
+        f"Total de tokens: {token_stats['total_tokens']:,}",
+        f"  - Input:  {token_stats['input_tokens']:,} tokens",
+    ]
     if token_stats.get("cached_input_tokens", 0) > 0:
-        print(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
-    print(f"  - Output: {token_stats['output_tokens']:,} tokens")
+        lines.append(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
+    lines.append(f"  - Output: {token_stats['output_tokens']:,} tokens")
     if token_stats.get("reasoning_tokens", 0) > 0:
-        print(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
+        lines.append(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
     # Só providers que informam o custo, como o claude_code, preenchem este total,
     # que inclui as tentativas re-tentadas e as linhas que falharam.
     if token_stats.get("cost_usd", 0) > 0:
-        print(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
+        lines.append(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
 
     # Métricas de throughput (se disponíveis)
     if "elapsed_seconds" in token_stats and token_stats["elapsed_seconds"] > 0:
         elapsed = token_stats["elapsed_seconds"]
         requests = token_stats.get("requests_completed", 0)
 
-        print("-" * 60)
-        print("METRICAS DE THROUGHPUT")
-        print("-" * 60)
-        print(f"Tempo total: {elapsed:.1f}s")
-        print(f"Workers paralelos: {parallel_requests}")
-
+        lines += [
+            "-" * 60,
+            "METRICAS DE THROUGHPUT",
+            "-" * 60,
+            f"Tempo total: {elapsed:.1f}s",
+            f"Workers paralelos: {parallel_requests}",
+        ]
         if requests > 0:
             rpm = (requests / elapsed) * 60
-            print(f"Requisicoes: {requests}")
-            print(f"  - RPM (req/min): {rpm:.1f}")
+            lines += [f"Requisicoes: {requests}", f"  - RPM (req/min): {rpm:.1f}"]
 
         tpm = (token_stats["total_tokens"] / elapsed) * 60
-        print(f"  - TPM (tokens/min): {tpm:,.0f}")
+        lines.append(f"  - TPM (tokens/min): {tpm:,.0f}")
 
     # Métricas de busca (se houver)
     if token_stats.get("search_count", 0) > 0:
-        print("-" * 60)
-        print(f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})")
-        print("-" * 60)
-        print(f"Total de buscas: {token_stats['search_count']}")
-        print(f"Creditos usados: {token_stats['search_credits']}")
+        lines += [
+            "-" * 60,
+            f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})",
+            "-" * 60,
+            f"Total de buscas: {token_stats['search_count']}",
+            f"Creditos usados: {token_stats['search_credits']}",
+        ]
 
-    print("=" * 60 + "\n")
+    lines.append("=" * 60)
+    return "\n".join(lines)
 
 
 _SUPPORTED_CHECKPOINT_EXTS = (".csv", ".xlsx", ".parquet")
@@ -1876,18 +2043,25 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     sem o outro deixaria a coluna mista, que o parquet recusa.
 
     Com `columns`, só essas colunas são serializadas; sem, todas as de objeto.
+
+    O Enum vai pelo valor em toda coluna de objeto, como dentro do JSON: o CSV
+    e o XLSX gravariam o texto dele ("Cor.AZUL"), que a validação recusa, e o
+    parquet recusa a coluna inteira.
     """
+
+    def enum_as_value(value: object) -> object:
+        return value.value if isinstance(value, Enum) else value
 
     def to_json(value: object) -> object:
         value = _array_as_list(value)
         if isinstance(value, (list, dict, tuple)):
             return json.dumps(value, ensure_ascii=False, default=_json_default)
-        return value
+        return enum_as_value(value)
 
     out = df.copy()
     for col in out.columns:
-        if out[col].dtype == object and (columns is None or col in columns):
-            out[col] = out[col].map(to_json)
+        if out[col].dtype == object:
+            out[col] = out[col].map(to_json if columns is None or col in columns else enum_as_value)
     return out
 
 
@@ -1904,9 +2078,9 @@ def _save_checkpoint(
     gravações, o hash não bate e a retomada recomeça em vez de aceitar o par.
 
     `structures` são os campos de estrutura do modelo. O parquet serializa só
-    eles, que a retomada devolve aos tipos declarados, e grava as
-    demais colunas como vieram; CSV e XLSX serializam toda coluna de objeto,
-    porque gravariam o repr de qualquer estrutura.
+    eles, que a retomada devolve aos tipos declarados, e grava as demais
+    colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
+    coluna de objeto, porque gravariam o repr de qualquer estrutura.
     """
     path = Path(path)
     ext = path.suffix.lower()
@@ -2111,7 +2285,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     reprocess_columns: Sequence[str] | None,
     token_stats: dict,
 ) -> str:
-    """Grava a falha da linha, mostra a mensagem amigável e devolve o erro em texto.
+    """Grava a falha da linha, avisa com a mensagem amigável e devolve o erro em texto.
 
     O custo informado pelo provider entra no resumo mesmo com a linha falhando.
     """
@@ -2128,9 +2302,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
         error_details += _KEPT_VALUES_NOTE
 
     friendly_msg = get_friendly_error_message(error, config.provider)
-    print(f"\n{friendly_msg}\n")
-
-    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
+    warnings.warn(f"Falha ao processar linha {idx}.\n{friendly_msg}", stacklevel=1)
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
     return error_msg

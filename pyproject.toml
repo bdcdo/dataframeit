@@ -170,9 +170,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# core.py imprime de propósito as estatísticas de uso e o aviso de workers
-# reduzidos, que o usuário lê no fim da execução.
-"src/dataframeit/core.py" = ["T201"]
 # __all__ segue a ordem da API pública: a função dataframeit, os utilitários e
 # as exceções, e não a ordem alfabética.
 "src/dataframeit/__init__.py" = ["RUF022"]

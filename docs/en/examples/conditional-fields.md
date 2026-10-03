@@ -10,8 +10,8 @@ With `use_search=True` and `search_per_field=True`, each model field is filled b
 
 Use the `condition` key in the field's `json_schema_extra`:
 
-- `condition` (dict): the dependency, and therefore the execution order, is derived from the field in `condition['field']`. The dict holds `field`, the field name as a string, and one operator: `equals`, `not_equals`, `in`, `not_in` or `exists`.
-- `condition` (callable): receives the fields already filled and returns a bool. Declare the fields it reads in `depends_on`, so they run first: a field name as a string, or a list or tuple of names.
+- `condition` (dict): the dependency, and therefore the execution order, is derived from the field in `condition['field']`. The dict holds `field`, the field name as a string, and one operator: `equals`, `not_equals`, `in`, `not_in` or `exists`. `in` and `not_in` take a list, tuple, set or frozenset of the accepted values.
+- `condition` (callable): receives the fields already filled and returns a bool. Build the `json_schema_extra` with `field_condition(condition, depends_on=...)`, which also takes the fields the function reads, so they run first: a field name as a string, or a list or tuple of names. The helper returns `{'condition': condition, 'depends_on': [...]}`, the same dict you would write by hand; written by hand, the type checker rejects the `Field`, because Pydantic types `json_schema_extra` as JSON and a function is not JSON.
 
 Any other form of `condition` or `depends_on` raises `ValueError` before processing.
 
@@ -85,24 +85,28 @@ The execution order is `pais → estado → cep` and `pais → zip_code`.
 
 ## Example 3: Callable Condition with Several Dependencies
 
-When the condition combines several fields, use a callable and declare the fields it reads in `depends_on`:
+When the condition combines several fields, use a function and declare the fields it reads in `depends_on`:
 
 ```python
+from dataframeit import field_condition
+
 class PedidoInfo(BaseModel):
     tipo_cliente: str = Field(description="Customer type: 'novo' or 'vip'")
     valor_pedido: float = Field(description="Order total")
     desconto: float | None = Field(
         default=None,
         description="Discount applied",
-        json_schema_extra={
-            'depends_on': ['tipo_cliente', 'valor_pedido'],
-            'condition': lambda dados: (
+        json_schema_extra=field_condition(
+            lambda dados: (
                 dados.get('tipo_cliente') == 'vip'
                 and (dados.get('valor_pedido') or 0) > 1000
             ),
-        },
+            depends_on=['tipo_cliente', 'valor_pedido'],
+        ),
     )
 ```
+
+To add other per-field keys, unpack the dict: `json_schema_extra={**field_condition(...), 'search_depth': 'advanced'}`.
 
 ## Condition Operators
 

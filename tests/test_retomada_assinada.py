@@ -20,8 +20,12 @@ from pydantic import (
 )
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
-from dataframeit.core import _run_signature, _same_json
-from dataframeit.utils import get_complex_fields
+from dataframeit.core import (
+    _run_signature,
+    _same_json,
+    _save_checkpoint,
+    _validate_processed_rows,
+)
 
 
 class Modelo(BaseModel):
@@ -775,35 +779,25 @@ def test_retomadas_seguidas_devolvem_o_que_a_execucao_gravou(tmp_path, modelo, f
     pytest.importorskip("pyarrow")
     ckpt = tmp_path / f"ckpt.{formato}"
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
-    limite = ProviderUsageLimitError("limite")
 
-    def uma_linha_por_execucao():
-        chamadas = []
+    def resposta(text):
+        return modelo(**_POR_EXECUCAO[modelo](text)).model_dump()
 
-        def llm(text, *args, **kwargs):
-            chamadas.append(text)
-            if len(chamadas) > 1:
-                raise limite
-            dados = modelo(**_POR_EXECUCAO[modelo](text)).model_dump()
-            return {"data": dados, "usage": None}
-
-        return llm
-
-    direta = _roda(
-        df,
-        lambda text, *a, **k: {
-            "data": modelo(**_POR_EXECUCAO[modelo](text)).model_dump(),
-            "usage": None,
-        },
-        modelo=modelo,
-    )
+    direta = _roda(df, lambda text, *a, **k: {"data": resposta(text), "usage": None}, modelo=modelo)
     for _ in range(2):
         with pytest.warns(UserWarning, match="interrompida"):
-            _roda(df, uma_linha_por_execucao(), modelo=modelo, batch_size=1, checkpoint_path=ckpt)
-    final = _roda(df, uma_linha_por_execucao(), modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+            _roda(
+                df,
+                _uma_linha_por_execucao(resposta),
+                modelo=modelo,
+                batch_size=1,
+                checkpoint_path=ckpt,
+            )
+    final = _roda(
+        df, _uma_linha_por_execucao(resposta), modelo=modelo, batch_size=1, checkpoint_path=ckpt
+    )
 
-    # Campo escalar fora do JSON, como a data `inicio`, volta do CSV como texto.
-    for campo in get_complex_fields(modelo):
+    for campo in modelo.model_fields:
         assert list(final[campo]) == list(direta[campo])
 
 
@@ -943,3 +937,188 @@ def test_assinatura_que_nao_e_objeto_json_recomeca(tmp_path):
 
     assert chamadas == ["a"]
     assert list(final["campo1"]) == ["y"]
+
+
+def _uma_linha_por_execucao(resposta):
+    """LLM que responde uma linha e interrompe a execução na seguinte."""
+    chamadas = []
+    limite = ProviderUsageLimitError("limite")
+
+    def llm(text, *args, **kwargs):
+        chamadas.append(text)
+        if len(chamadas) > 1:
+            raise limite
+        return {"data": resposta(text), "usage": None}
+
+    return llm
+
+
+class Nivel(Enum):
+    BAIXO = 1
+
+
+class Nota(Enum):
+    """Valor em texto que o CSV e o XLSX releriam como número."""
+
+    A = "1"
+
+
+class Estrito(BaseModel):
+    model_config = ConfigDict(strict=True)
+    datas: list[datetime.date]
+    par: tuple[int, str]
+    cores: list[Cor]
+    dia: datetime.date
+    quando: datetime.datetime
+    cor: Cor
+    nivel: Nivel
+    nota: Nota
+    n: int
+    ok: bool
+
+
+class Escalares(BaseModel):
+    dia: datetime.date
+    quando: datetime.datetime
+    cor: Cor
+    nivel: Nivel
+    nota: Nota
+    n: int
+    ok: bool
+
+
+_RESPOSTA_TIPADA = {
+    "datas": [datetime.date(2024, 1, 2)],
+    "par": (1, "a"),
+    "cores": [Cor.AZUL],
+    "dia": datetime.date(2024, 1, 2),
+    "quando": datetime.datetime(2024, 1, 2, 3, 4, 5),  # noqa: DTZ001 (o XLSX não guarda fuso)
+    "cor": Cor.AZUL,
+    "nivel": Nivel.BAIXO,
+    "nota": Nota.A,
+    "n": 3,
+    "ok": True,
+}
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize("modelo", [Estrito, Escalares])
+def test_retomada_devolve_o_tipo_declarado_em_todo_campo(tmp_path, modelo, formato):
+    """Strict ou não, todo campo volta do checkpoint parcial como a execução direta o dá (#178).
+
+    A coluna com linha pendente devolve o int como float, o XLSX devolve a
+    data como datetime e o bool como float, e o CSV devolve data e Enum como
+    texto, e o Enum de valor int como float.
+    """
+    pytest.importorskip("pyarrow")
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+
+    def resposta(text):
+        return modelo(
+            **{campo: _RESPOSTA_TIPADA[campo] for campo in modelo.model_fields}
+        ).model_dump()
+
+    direta = _roda(df, lambda text, *a, **k: {"data": resposta(text), "usage": None}, modelo=modelo)
+    for _ in range(2):
+        with pytest.warns(UserWarning, match="interrompida"):
+            _roda(
+                df,
+                _uma_linha_por_execucao(resposta),
+                modelo=modelo,
+                batch_size=1,
+                checkpoint_path=ckpt,
+            )
+    final = _roda(
+        df, _uma_linha_por_execucao(resposta), modelo=modelo, batch_size=1, checkpoint_path=ckpt
+    )
+
+    for campo in modelo.model_fields:
+        assert list(final[campo]) == list(direta[campo])
+        assert [type(v) for v in final[campo]] == [type(v) for v in direta[campo]]
+
+
+class EstritoComNumero(BaseModel):
+    model_config = ConfigDict(strict=True)
+    datas: list[datetime.date]
+    n: int
+
+
+def test_valor_que_o_strict_recusa_pelo_conteudo_continua_acusado():
+    """Sem strict, "3" vira 3; o campo só é aceito quando o valor validado diz o mesmo."""
+    df = pd.DataFrame(
+        {"datas": ['["2024-01-02"]'], "n": ["3"], "_dataframeit_status": ["processed"]}
+    )
+
+    incompativeis, _ = _validate_processed_rows(
+        df, "_dataframeit_status", EstritoComNumero, {"datas"}
+    )
+
+    assert incompativeis == ["n"]
+
+
+def test_campo_recusado_tambem_sem_strict_e_o_unico_acusado():
+    """A data em texto, que só o strict recusa, não entra no reprocess_columns pedido."""
+    df = pd.DataFrame(
+        {"datas": ['["2024-01-02"]'], "n": ["três"], "_dataframeit_status": ["processed"]}
+    )
+
+    incompativeis, _ = _validate_processed_rows(
+        df, "_dataframeit_status", EstritoComNumero, {"datas"}
+    )
+
+    assert incompativeis == ["n"]
+
+
+class EstritoVariado(BaseModel):
+    model_config = ConfigDict(strict=True)
+    n: int | None = None
+    ok: bool | None = None
+    oculto: int | None = Field(default=None, exclude=True)
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor"),
+    [
+        ("n", True),
+        ("ok", 1),
+        ("n", float(2**53)),
+        ("oculto", "3"),
+    ],
+)
+def test_igualdade_do_python_mais_larga_que_o_arquivo_continua_acusada(campo, valor):
+    """True == 1, e o float de 2**53 em diante já pode ter perdido dígitos do inteiro.
+
+    O campo excluído do dump não tem valor validado para comparar.
+    """
+    df = pd.DataFrame({campo: [valor], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", EstritoVariado, set())
+
+    assert incompativeis == [campo]
+
+
+def test_bool_relido_como_float_do_xlsx_volta_como_bool():
+    df = pd.DataFrame({"ok": [1.0], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", EstritoVariado, set()
+    )
+
+    assert incompativeis == []
+    assert valores[(0, "ok")] is True
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_checkpoint_grava_enum_escalar_pelo_valor(tmp_path, formato):
+    """O CSV e o XLSX gravariam "Cor.AZUL", e o parquet recusaria a coluna."""
+    pytest.importorskip("pyarrow")
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    ckpt = tmp_path / f"ckpt.{formato}"
+
+    _save_checkpoint(pd.DataFrame({"cor": [Cor.AZUL, None]}), ckpt, structures=frozenset())
+
+    assert read_df(str(ckpt))["cor"][0] == "azul"
