@@ -68,14 +68,14 @@ The wait before attempt `n + 1` is `min(base_delay × 2^(n-1), max_delay)`, plus
 - **Connection error**: Network issues
 - **5xx errors**: Server problems
 
-### Response rejected by validation (retry with the error)
+### Response rejected by validation
 
 - **Validation error**: the response fails the Pydantic model, including custom validators (`model_validator`, `field_validator`)
 - **Parsing error**: the response is not valid JSON or did not come in the structured format
 
 With LangChain providers, the next attempt sends the model the rejected response and the list of errors, each with the field path and the rejected value, asking it to answer again fixing those points. Repeating the same prompt tends to repeat the same error. When the response is not JSON, the request carries the parser's error text.
 
-With `claude_code`, the next attempt repeats the request, without the list of errors. With `codex`, a response that fails validation raises `ProviderOutputError`, and the row fails without a new attempt. In both, `_error_details` names the path and the rule of each error, without the rejected value.
+With `claude_code`, the next attempt repeats the request, without the list of errors. With `codex`, a response that fails validation raises `ProviderOutputError`, and the row fails without a new attempt. In both, a validation failure writes to `_error_details` the path and the rule of each error, without the rejected value; path and rule still carry response text when Pydantic puts it there, such as a dict key or a custom validator's message. A `claude_code` parsing failure only records that the response holds no valid JSON.
 
 With OpenAI, the SDK validates the response inside the call and raises before returning the message; the rejected response and its tokens are read from the HTTP response attached to the error. When no raw response is available, the correction request goes with the prompt, carrying the rejected values. When a later attempt succeeds, tokens from the rejected ones are added to `_input_tokens` and `_output_tokens`, because they are billed too; if every attempt fails, the row gets status `error`, no token count, and `_error_details` names the field and the rule of each error.
 

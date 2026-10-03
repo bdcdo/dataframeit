@@ -68,14 +68,14 @@ A espera antes da tentativa `n + 1` é `min(base_delay × 2^(n-1), max_delay)`, 
 - **Erro de conexão**: Problemas de rede
 - **Erro 5xx**: Problemas no servidor
 
-### Resposta recusada pela validação (retry com o erro)
+### Resposta recusada pela validação
 
 - **Erro de validação**: a resposta não passa no modelo Pydantic, inclusive nos validadores próprios (`model_validator`, `field_validator`)
 - **Erro de parsing**: a resposta não é JSON válido ou não veio no formato estruturado
 
 Nos providers do LangChain, a tentativa seguinte leva ao modelo a resposta recusada e a lista de erros, cada um com o caminho do campo e o valor recusado, e pede que ele responda de novo corrigindo esses pontos. Repetir o mesmo prompt tende a repetir o mesmo erro. Quando a resposta não é JSON, o pedido leva o texto do erro do parser.
 
-No `claude_code`, a tentativa seguinte repete o pedido, sem a lista de erros. No `codex`, a resposta que não passa na validação levanta `ProviderOutputError`, e a linha falha sem nova tentativa. Nos dois, `_error_details` diz o caminho e a regra de cada erro, sem o valor recusado.
+No `claude_code`, a tentativa seguinte repete o pedido, sem a lista de erros. No `codex`, a resposta que não passa na validação levanta `ProviderOutputError`, e a linha falha sem nova tentativa. Nos dois, a falha de validação grava em `_error_details` o caminho e a regra de cada erro, sem o valor recusado; caminho e regra ainda trazem texto da resposta quando o Pydantic o põe ali, como a chave de um dict ou a mensagem de um validador próprio. A falha de parsing do `claude_code` grava só que a resposta não contém JSON válido.
 
 Na OpenAI, o SDK valida a resposta dentro da chamada e levanta o erro antes de devolver a mensagem; a resposta recusada e os tokens são lidos da resposta HTTP anexada ao erro. Quando nenhuma resposta bruta está disponível, o pedido de correção vai junto do prompt, com os valores recusados. Quando uma tentativa seguinte dá certo, os tokens das recusadas entram em `_input_tokens` e `_output_tokens`, porque também são cobrados; se todas falham, a linha fica com status `error`, sem contagem de tokens, e `_error_details` diz o campo e a regra de cada erro.
 

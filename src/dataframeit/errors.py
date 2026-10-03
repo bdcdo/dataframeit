@@ -54,7 +54,9 @@ class ProviderOverloadedError(ProviderTransientError):
 
 
 class ProviderRejectedOutputError(ProviderTransientError, ValueError):
-    """Resposta recusada pela validação do modelo; a tentativa seguinte pede a correção.
+    """Resposta recusada pela validação do modelo; ganha nova tentativa.
+
+    Nos providers do LangChain, a tentativa seguinte pede a correção.
 
     É transitória por classe, e não pela mensagem: um número como '404' no texto
     analisado faria a classificação por texto tratá-la como erro HTTP definitivo.
@@ -83,21 +85,24 @@ class ProviderOutputError(ValueError):
     """Resposta definitiva incompatível com o contrato de saída."""
 
 
-# Teto de regras listadas na mensagem de uma resposta recusada.
-_MAX_REJECTED_RULES = 20
+# Teto de erros de validação listados por resposta recusada, na mensagem da
+# exceção e no pedido de correção do LangChain.
+MAX_REJECTED_RULES = 20
 
 
 def validation_error_summary(error: ValidationError) -> str:
-    """Caminho e regra de cada erro de validação, sem o valor recusado.
+    """Caminho e regra de cada erro de validação, sem o valor recusado (`input`).
 
-    A mensagem vai para `_error_details` e passa pela classificação de erros. O
-    valor recusado vem do texto analisado: levaria dado da linha para a coluna, e
-    um número como '401' nele seria tomado por status HTTP.
+    A mensagem vai para `_error_details`, e o valor recusado levaria dado da
+    linha para a coluna. O caminho e a regra ainda trazem texto da resposta
+    quando o Pydantic o põe ali: chave de dict, tag de união discriminada,
+    mensagem de validador próprio. Por isso a classificação das exceções que
+    carregam este resumo decide pela classe, e não pelo texto.
     """
     rules = [
         f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: "
         f"{item.get('msg', '')}"
-        for item in error.errors()[:_MAX_REJECTED_RULES]
+        for item in error.errors()[:MAX_REJECTED_RULES]
     ]
     return f"{error.error_count()} erro(s): {'; '.join(rules)}"
 
@@ -438,8 +443,8 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
         return (
             "RESPOSTA FORA DO CONTRATO DE SAÍDA\n"
             f"{error}\n"
-            "O provider respondeu, mas a resposta não serve ao modelo Pydantic, e a linha "
-            "não é tentada de novo. Veja as regras do modelo que falharam."
+            "O provider terminou sem uma resposta que sirva ao modelo Pydantic, e a linha "
+            "não é tentada de novo."
         )
 
     error_str = f"{type(error).__name__}: {error}".lower()
@@ -818,7 +823,9 @@ def is_rate_limit_error(error: Exception) -> bool:
     """
     if isinstance(error, ProviderOverloadedError):
         return True
-    if isinstance(error, ProviderTransientError):
+    # As demais classes do pacote decidem pela classe: a mensagem de uma resposta
+    # recusada traz texto do modelo, em que '429' seria tomado por rate limit.
+    if isinstance(error, (ProviderError, ProviderConfigurationError, ProviderOutputError)):
         return False
     if _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError):
         return True

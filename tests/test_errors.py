@@ -3,9 +3,12 @@
 import pytest
 
 from dataframeit.errors import (
+    ProviderError,
+    ProviderOutputError,
     ProviderTransientError,
     _infer_provider_info,
     get_friendly_error_message,
+    is_rate_limit_error,
     retry_with_backoff,
 )
 
@@ -136,3 +139,31 @@ def test_falha_ao_anotar_o_resultado_ganha_nova_tentativa():
 
     assert len(chamadas) == 2
     assert resultado["_retry_info"]["retries"] == 1
+
+
+# O caminho de um erro de validação pode trazer texto da resposta, como a chave
+# de um dict; um número nele não pode decidir a categoria do erro.
+_CAMINHO_COM_NUMERO = (
+    "Resposta do Codex não corresponde ao schema: 1 erro(s): "
+    "contagens.art. {numero} da CLT: Input should be a valid integer"
+)
+
+
+def test_resposta_fora_do_contrato_nao_vira_erro_de_credencial():
+    erro = ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=401))
+
+    amigavel = get_friendly_error_message(erro, "codex")
+
+    assert amigavel.startswith("RESPOSTA FORA DO CONTRATO DE SAÍDA")
+    assert "login" not in amigavel
+
+
+@pytest.mark.parametrize(
+    "erro",
+    [
+        ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=429)),
+        ProviderError("Claude Code falhou: art. 429 do CPC"),
+    ],
+)
+def test_erro_definitivo_nao_conta_como_rate_limit_pelo_texto(erro):
+    assert is_rate_limit_error(erro) is False
