@@ -81,12 +81,18 @@ class _FallbackHandler(logging.Handler):
     logger `dataframeit`), o registro sobe por propagação e sai por ela, e
     escrever aqui também o duplicaria. O stderr é lido na hora da escrita,
     porque o notebook e o pytest o trocam depois do import.
+
+    O handler se reconhece pelo atributo, e não pela classe, porque recarregar
+    o módulo (importlib.reload, %autoreload) cria outra classe enquanto o
+    logger guarda a instância da anterior.
     """
+
+    is_dataframeit_fallback = True
 
     def emit(self, record: logging.LogRecord) -> None:
         logger: logging.Logger | None = logging.getLogger(record.name)
         while logger is not None:
-            if any(handler is not self for handler in logger.handlers):
+            if any(not _is_fallback(handler) for handler in logger.handlers):
                 return
             if not logger.propagate:
                 break
@@ -101,9 +107,23 @@ class _FallbackHandler(logging.Handler):
 # `dataframeit`: subir o pai para INFO mostraria também o registro por campo
 # pulado de conditional.py. O handler de reserva mantém o resumo visível sem
 # configuração, e o nível WARNING nesse logger o silencia.
+def _is_fallback(handler: logging.Handler) -> bool:
+    return getattr(handler, "is_dataframeit_fallback", False)
+
+
+def _install_fallback_handler(logger: logging.Logger) -> None:
+    """Põe o handler de reserva no logger, uma vez só mesmo com o módulo recarregado.
+
+    Dois deles no mesmo logger se tomariam por handler da aplicação, e o
+    resumo sumiria.
+    """
+    if not any(_is_fallback(handler) for handler in logger.handlers):
+        logger.addHandler(_FallbackHandler())
+
+
 _stats_logger = logging.getLogger("dataframeit.stats")
 _stats_logger.setLevel(logging.INFO)
-_stats_logger.addHandler(_FallbackHandler())
+_install_fallback_handler(_stats_logger)
 
 
 # Nomes candidatos consultados quando o usuário não passa text_column explicitamente.

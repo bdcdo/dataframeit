@@ -231,6 +231,32 @@ def test_nivel_warning_silencia_o_resumo_e_mantem_as_colunas(capsys):
     assert saida["_output_tokens"].tolist() == [1]
 
 
+def test_resumo_sai_uma_vez_por_handler_no_logger_do_pacote(capsys):
+    registros = []
+    handler = logging.Handler()
+    handler.emit = registros.append
+    pacote = logging.getLogger("dataframeit")
+    pacote.addHandler(handler)
+    try:
+        with _sem_handler_no_root():
+            _roda(["a"], _llm())
+    finally:
+        pacote.removeHandler(handler)
+
+    assert ["ESTATISTICAS" in r.getMessage() for r in registros] == [True]
+    assert "ESTATISTICAS" not in capsys.readouterr().err
+
+
+def test_handler_de_reserva_e_instalado_uma_vez():
+    logger = logging.getLogger("dataframeit.teste_reserva")
+    try:
+        core._install_fallback_handler(logger)
+        core._install_fallback_handler(logger)
+        assert len(logger.handlers) == 1
+    finally:
+        logger.handlers.clear()
+
+
 class _Barra:
     """Registra o rótulo, o total e os avanços da barra de progresso."""
 
