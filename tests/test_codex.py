@@ -24,6 +24,7 @@ from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
     CodexBackend,
+    _AppServerStop,
     _build_schema,
     _to_strict_json_schema,
     _turn_timeout,
@@ -1713,7 +1714,52 @@ def stuck_turn(codex_sdk, events=()):
     return turn, protocol_client
 
 
+class _RelogioDoStream:
+    """`threading.Timer` que só começa a contar quando a linha passa o turno ao stream.
+
+    O prazo real começa antes do `thread/start`, e uma pausa do runner antes de
+    o turno abrir faria o estouro cair na fase dos pedidos, que aborta em vez
+    de repetir a linha. Os testes do stream esperam o estouro dentro dele.
+    """
+
+    def __init__(self, interval, function):
+        self.interval = interval
+        self.function = function
+        self.daemon = True
+        self._cancelado = threading.Event()
+        self.thread = threading.Thread(target=self._conta, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def cancel(self):
+        self._cancelado.set()
+
+    def _conta(self):
+        prazo = self.function.__self__
+        while prazo._turn is None:
+            if self._cancelado.wait(0.001):
+                return
+        if not self._cancelado.wait(self.interval):
+            self.function()
+
+
+@pytest.fixture
+def relogio_do_stream():
+    """Troca o relógio da tentativa pelo `_RelogioDoStream` e devolve os criados."""
+    criados = []
+
+    def cria(interval, function):
+        relogio = _RelogioDoStream(interval, function)
+        criados.append(relogio)
+        return relogio
+
+    with patch("dataframeit.codex.threading.Timer", cria):
+        yield criados
+
+
 class TestPrazoDoTurno:
+    @pytest.mark.usefixtures("relogio_do_stream")
     def test_turno_sem_conclusao_estoura_o_prazo_e_a_linha_e_tentada_de_novo(
         self, codex_sdk, tmp_path
     ):
@@ -1734,6 +1780,7 @@ class TestPrazoDoTurno:
         assert interrompido.wait(5)
         protocol_client.turn_interrupt.assert_called_once_with("thread-1", "turn-1")
 
+    @pytest.mark.usefixtures("relogio_do_stream")
     def test_prazo_esgotado_em_todas_as_tentativas_falha_a_linha_sem_abortar(
         self, codex_sdk, tmp_path
     ):
@@ -1748,6 +1795,7 @@ class TestPrazoDoTurno:
 
         assert thread.turn.call_count == 2
 
+    @pytest.mark.usefixtures("relogio_do_stream")
     def test_interrupt_que_trava_nao_prende_a_linha(self, codex_sdk, tmp_path):
         backend, _, thread, normal = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
         travado, protocol_client = stuck_turn(codex_sdk)
@@ -1765,6 +1813,7 @@ class TestPrazoDoTurno:
         assert time.monotonic() - inicio < 5
         assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
 
+    @pytest.mark.usefixtures("relogio_do_stream")
     def test_uso_do_turno_que_estourou_o_prazo_e_somado(self, codex_sdk, tmp_path):
         backend, _, thread, normal = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
         so_uso = make_result(codex_sdk, response=None)[:-1]
@@ -1826,6 +1875,250 @@ class TestPrazoDoTurno:
             pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"),
         ):
             backend.invoke("texto")
+
+
+def unanswered_request(client):
+    """Pedido ao app-server que espera a resposta como o SDK, e o `close` que o acorda.
+
+    A espera é a fila do `MessageRouter` do SDK, sem timeout, como em
+    `CodexClient._request_raw`. O `close` do cliente faz o que o leitor do stdout
+    faz quando o processo encerra: chama `fail_all`, que entrega o erro de
+    transporte a todo pedido em voo.
+    """
+    from openai_codex._message_router import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        MessageRouter,
+    )
+    from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        TransportClosedError,
+    )
+
+    router = MessageRouter()
+    closed = threading.Event()
+
+    def close():
+        closed.set()
+        router.fail_all(TransportClosedError("Codex process closed stdout"))
+
+    client.close.side_effect = close
+
+    def wait_for_response(*_, **__):
+        waiter = router.create_response_waiter("pedido-1")
+        # Com o cliente já fechado, o SDK real recusa escrever o pedido; sem
+        # esta conferência, a fila criada depois do `fail_all` não acordaria.
+        if closed.is_set():
+            msg = "Codex process is not running"
+            raise TransportClosedError(msg)
+        # O limite só existe para que uma regressão falhe o teste em vez de
+        # prender a suíte.
+        item = waiter.get(timeout=10)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    return wait_for_response
+
+
+class TestPrazoDosPedidos:
+    def test_thread_start_sem_resposta_encerra_o_app_server_e_aborta(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        client.thread_start.side_effect = unanswered_request(client)
+
+        inicio = time.monotonic()
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(
+                ProviderAbortError,
+                match=r"não respondeu a thread/start no prazo de 0\.05 s e foi encerrado",
+            ),
+        ):
+            backend.invoke("texto")
+
+        assert time.monotonic() - inicio < 5
+        client.close.assert_called_once_with()
+        assert client.thread_start.call_count == 1
+
+    def test_turn_start_sem_resposta_encerra_o_app_server_e_aborta(self, codex_sdk, tmp_path):
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        thread.turn.side_effect = unanswered_request(client)
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
+        ):
+            backend.invoke("texto")
+
+        client.close.assert_called_once_with()
+        turn.stream.assert_not_called()
+
+    def test_resposta_do_turn_start_depois_do_estouro_nao_entra_no_stream(
+        self, codex_sdk, tmp_path
+    ):
+        """O turno aberto depois de o relógio derrubar o app-server aborta a linha.
+
+        A resposta chegou, mas o app-server já foi encerrado, e a linha aborta
+        com a causa do estouro em vez de esperar o stream de um turno morto.
+        """
+        backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        encerrado = threading.Event()
+        client.close.side_effect = encerrado.set
+
+        def responde_tarde(*_, **__):
+            assert encerrado.wait(5)
+            return turn
+
+        thread.turn.side_effect = responde_tarde
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
+        ):
+            backend.invoke("texto")
+
+        turn.stream.assert_not_called()
+        turn.interrupt.assert_not_called()
+
+    def test_relogio_e_armado_antes_do_thread_start(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=60)
+        ordem = []
+        thread = client.thread_start.return_value
+
+        def abre_thread(**_):
+            ordem.append("thread/start")
+            return thread
+
+        client.thread_start.side_effect = abre_thread
+
+        with patch("dataframeit.codex.threading.Timer") as timer:
+            timer.return_value.start.side_effect = lambda: ordem.append("relógio")
+            backend.invoke("texto")
+
+        assert ordem == ["relógio", "thread/start"]
+        timer.return_value.cancel.assert_called_once_with()
+
+    @pytest.mark.usefixtures("relogio_do_stream")
+    def test_estouro_no_stream_nao_encerra_o_app_server(self, codex_sdk, tmp_path):
+        backend, client, thread, normal = initialized_backend(
+            tmp_path, codex_sdk, turn_timeout=0.05
+        )
+        thread.turn.side_effect = [stuck_turn(codex_sdk)[0], normal]
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            backend.invoke("texto")
+
+        client.close.assert_not_called()
+
+    def test_sem_prazo_o_pedido_nao_e_encerrado(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=None)
+        espera = unanswered_request(client)
+        liberado = threading.Event()
+
+        def responde_depois(**_):
+            # Sem prazo, só o fim do teste encerra o cliente e solta o pedido.
+            liberado.set()
+            return espera()
+
+        client.thread_start.side_effect = responde_depois
+        resultado = {}
+
+        def processa():
+            try:
+                backend.invoke("texto")
+            except Exception as err:  # noqa: BLE001 (o erro é conferido fora da thread)
+                resultado["erro"] = err
+
+        linha = threading.Thread(target=processa, daemon=True)
+        linha.start()
+        assert liberado.wait(5)
+        linha.join(0.3)
+        assert linha.is_alive()
+        client.close.assert_not_called()
+        client.close()
+        linha.join(5)
+
+        assert not linha.is_alive()
+        assert isinstance(resultado["erro"], ProviderAbortError)
+        assert "app-server do Codex encerrou" in str(resultado["erro"])
+
+    def test_processo_e_morto_antes_de_fechar_o_cliente(self, codex_sdk, tmp_path):
+        """O `close` do SDK fecha o stdin antes de sinalizar o processo.
+
+        Com uma escrita bloqueada no pipe de um app-server parado, o fechamento
+        esperaria a trava do buffer para sempre; matar antes quebra o pipe.
+        """
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        espera = unanswered_request(client)
+        ordem = []
+        client._client = MagicMock()
+        client._client._proc.kill.side_effect = lambda: ordem.append("kill")
+        fecha = client.close.side_effect
+        client.close.side_effect = lambda: ordem.append("close") or fecha()
+        client.thread_start.side_effect = espera
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="thread/start"),
+        ):
+            backend.invoke("texto")
+
+        assert ordem == ["kill", "close"]
+
+    def test_dois_estouros_mantem_a_primeira_causa(self):
+        """Linhas que estouram juntas abortam todas com a causa de quem chegou primeiro."""
+        parada = _AppServerStop()
+        cliente = MagicMock()
+        processo = cliente._client._proc
+
+        def fecha():
+            # Como o SDK: o `close` solta o processo, e o segundo encerramento
+            # encontra o cliente já sem ele.
+            cliente._client._proc = None
+
+        cliente.close.side_effect = fecha
+
+        parada.stop(cliente, "primeira causa")
+        parada.stop(cliente, "segunda causa")
+
+        assert str(parada.error()) == "primeira causa"
+        processo.kill.assert_called_once_with()
+        assert cliente.close.call_count == 2
+
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            AttributeError("'NoneType' object has no attribute 'stdin'"),
+            ValueError("I/O operation on closed file."),
+            BrokenPipeError(32, "Broken pipe"),
+        ],
+    )
+    def test_falha_de_outra_linha_depois_do_encerramento_aborta_com_a_causa(
+        self, codex_sdk, tmp_path, erro
+    ):
+        """A linha em voo que pega o cliente no meio do fechamento aborta pela causa.
+
+        Sem o estado compartilhado, o erro da escrita interrompida viraria falha
+        definitiva da linha, gravada como 'error' e não retomada.
+        """
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
+        espera = unanswered_request(client)
+        tentativas = []
+
+        def abre_thread(**_):
+            tentativas.append(1)
+            if len(tentativas) == 1:
+                return espera()
+            raise erro
+
+        client.thread_start.side_effect = abre_thread
+
+        with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderAbortError):
+            backend.invoke("primeira")
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderAbortError, match="não respondeu a thread/start") as excinfo,
+        ):
+            backend.invoke("segunda")
+
+        assert excinfo.value.__cause__ is erro
 
 
 class TestConfiguracaoDoPrazo:
@@ -1911,7 +2204,7 @@ class TestMensagensEAtrasos:
         assert 4 <= primeiro <= 4.4
         assert 5 <= segundo <= 5.5
 
-    def test_falha_do_interrupt_nao_escapa_da_thread(self, codex_sdk, tmp_path):
+    def test_falha_do_interrupt_nao_escapa_da_thread(self, codex_sdk, tmp_path, relogio_do_stream):
         backend, _, thread, normal = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
         travado, protocol_client = stuck_turn(codex_sdk)
         tentou = threading.Event()
@@ -1929,9 +2222,8 @@ class TestMensagensEAtrasos:
             with pytest.warns(UserWarning, match="Tentativa 1/2"):
                 backend.invoke("texto")
             assert tentou.wait(5)
-            for relogio in threading.enumerate():
-                if isinstance(relogio, threading.Timer):
-                    relogio.join(5)
+            for relogio in relogio_do_stream:
+                relogio.thread.join(5)
 
         assert escapadas == []
 
@@ -2037,6 +2329,7 @@ class TestDescargaDaThread:
 
         assert threads_descarregadas(client) == []
 
+    @pytest.mark.usefixtures("relogio_do_stream")
     def test_descarga_que_trava_nao_prende_a_linha(self, codex_sdk, tmp_path):
         backend, client, thread, normal = initialized_backend(
             tmp_path, codex_sdk, turn_timeout=0.05
