@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import subprocess
 import sys
@@ -23,10 +24,12 @@ from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 from dataframeit.codex import (
+    _CATALOG_TOOL_FIELDS,
     CodexBackend,
     _AppServerStop,
     _build_schema,
     _to_strict_json_schema,
+    _toml_string,
     _turn_timeout,
     _validate_config,
     open_codex_backend,
@@ -720,6 +723,16 @@ class TestBackendConfiguration:
         codex.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "value",
+    ["/srv/codex", 'C:\\Users\\Zé\\a"b', "/srv/códex 😀", "/srv/a\x7fb", "/srv/a\x01b"],
+)
+def test_toml_string_volta_ao_mesmo_valor(value):
+    tomllib = pytest.importorskip("tomllib")
+
+    assert tomllib.loads(f"k = {_toml_string(value)}")["k"] == value
+
+
 class TestBackendLifecycle:
     def test_uses_bundled_runtime_in_isolated_home_and_cleans_up(
         self, codex_sdk, monkeypatch, tmp_path
@@ -798,6 +811,117 @@ class TestBackendLifecycle:
         client.close.assert_called_once_with()
         assert auth_lock_is_available(lock_path)
         assert not workspace.parent.exists()
+
+    def test_app_server_le_o_catalogo_gravado_no_runtime(self, codex_sdk, monkeypatch, tmp_path):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+
+        with (
+            patch.object(sdk, "Codex", return_value=client) as codex,
+            open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
+        ):
+            catalog_override = codex.call_args.args[0].config_overrides[-1]
+            assert catalog_override.startswith("model_catalog_json=")
+            catalog_path = Path(json.loads(catalog_override.removeprefix("model_catalog_json=")))
+            assert catalog_path.parent == backend._workspace.parent
+            models = json.loads(catalog_path.read_text(encoding="utf-8"))["models"]
+
+        assert models
+        for model in models:
+            for field, value in _CATALOG_TOOL_FIELDS.items():
+                assert model[field] == value
+        assert not catalog_path.exists()
+
+    @pytest.mark.parametrize(
+        ("stdout", "message"),
+        [
+            ("não é json", "Expecting value"),
+            ('{"modelos": []}', "'models'"),
+            ('{"models": ["gpt-6-luna"]}', "update"),
+        ],
+    )
+    def test_catalogo_ilegivel_falha_antes_do_app_server(
+        self, codex_sdk, monkeypatch, tmp_path, stdout, message
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        listing = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+        with (
+            patch("dataframeit.codex.subprocess.run", return_value=listing),
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        codex.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("run", "message"),
+        [
+            ({"side_effect": subprocess.TimeoutExpired(["codex"], 60)}, "timed out"),
+            ({"side_effect": FileNotFoundError("codex ausente")}, "codex ausente"),
+            (
+                {
+                    "return_value": subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout='{"models": []}', stderr=""
+                    )
+                },
+                "disco cheio",
+            ),
+        ],
+    )
+    def test_falha_ao_obter_ou_gravar_o_catalogo_falha_antes_do_app_server(
+        self, codex_sdk, monkeypatch, tmp_path, run, message
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+        with (
+            patch("dataframeit.codex.subprocess.run", **run),
+            patch.object(Path, "write_text", side_effect=OSError("disco cheio")),
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        codex.assert_not_called()
+
+    def test_falha_do_runtime_ao_ler_o_catalogo_traz_o_stderr(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, _, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        failure = subprocess.CalledProcessError(1, ["codex"], output="", stderr="  sem rede\n")
+
+        with (
+            patch("dataframeit.codex.subprocess.run", side_effect=failure),
+            patch.object(sdk, "Codex") as codex,
+            pytest.raises(
+                ProviderConfigurationError,
+                match=r"catálogo de modelos do Codex \(código 1\): sem rede$",
+            ),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        codex.assert_not_called()
 
     def _open_with_resolved_model(self, codex_sdk, monkeypatch, tmp_path, resolved, **config):
         sdk, sdk_types, generated = codex_sdk

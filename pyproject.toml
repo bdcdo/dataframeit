@@ -238,6 +238,9 @@ DEP002 = [
     "pyarrow",
     "openpyxl",
 ]
+# O runtime empacotado chega pelo `openai-codex`, que fixa a versão exata dele;
+# declarar o pacote à parte no extra `codex` duplicaria esse pin.
+DEP003 = ["codex_cli_bin"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
