@@ -255,6 +255,22 @@ def as_stream(events):
     yield from events
 
 
+def threads_descarregadas(client) -> list[str]:
+    """Ids das threads cujo `thread/unsubscribe` o backend pediu, na ordem."""
+    return [
+        chamada.args[1]["threadId"]
+        for chamada in client._client.request.call_args_list
+        if chamada.args[0] == "thread/unsubscribe"
+    ]
+
+
+def aguardar_descargas() -> None:
+    """Espera as threads daemon que pedem `thread/unsubscribe` terminarem."""
+    for pedido in threading.enumerate():
+        if "_unsubscribe_quietly" in pedido.name:
+            pedido.join(5)
+
+
 def initialized_backend(tmp_path, codex_sdk, result=None, turn_timeout=None):
     sdk, sdk_types, _ = codex_sdk
     workspace = tmp_path / "workspace"
@@ -265,8 +281,10 @@ def initialized_backend(tmp_path, codex_sdk, result=None, turn_timeout=None):
     turn.id = "turn-1"
     turn.stream.side_effect = lambda: as_stream(events)
     thread = MagicMock(spec=sdk.Thread)
+    thread.id = "thread-1"
     thread.turn.return_value = turn
     client = MagicMock(spec=sdk.Codex)
+    client._client = MagicMock()
     client.thread_start.return_value = thread
     config = make_config()
     backend = CodexBackend(
@@ -289,13 +307,14 @@ def as_context_manager(client, resolved_model="gpt-6-luna"):
     que por padrão é o de `make_config`.
     """
     from openai_codex.generated.v2_all import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+        Thread,
         ThreadStartResponse,
     )
 
     client.__enter__.return_value = client
     client._client = MagicMock()
     client._client.thread_start.return_value = ThreadStartResponse.model_construct(
-        model=resolved_model
+        model=resolved_model, thread=Thread.model_construct(id="thread-sonda")
     )
 
     def close_without_suppressing(*_):
@@ -685,6 +704,27 @@ class TestBackendLifecycle:
         assert client._client.thread_start.call_count == 1
         client.thread_start.assert_not_called()
         assert backend.config.model == "gpt-6-luna"
+        assert threads_descarregadas(client) == ["thread-sonda"]
+
+    def test_falha_ao_descarregar_a_sonda_nao_impede_a_abertura(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        client._client.request.side_effect = RuntimeError("app-server recusou")
+
+        with (
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
+        ):
+            assert backend.config.model == "gpt-6-luna"
+
+        assert threads_descarregadas(client) == ["thread-sonda"]
 
     @pytest.mark.parametrize(
         ("model_kwargs", "prazo"), [({}, 600), ({"timeout": 30}, 30), ({"timeout": None}, None)]
@@ -1800,3 +1840,112 @@ class TestMensagensEAtrasos:
             assert all(t.daemon for t in presas)
         finally:
             liberar.set()
+
+
+class TestDescargaDaThread:
+    """Cada tentativa pede ao app-server que descarregue a sua thread efêmera."""
+
+    def test_thread_da_linha_e_descarregada_depois_do_turno(self, codex_sdk, tmp_path):
+        from openai_codex.generated.v2_all import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            ThreadUnsubscribeResponse,
+        )
+
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        ordem = []
+
+        def stream_do_turno():
+            ordem.append("turno")
+            return as_stream(make_result(codex_sdk))
+
+        turn.stream.side_effect = stream_do_turno
+        client._client.request.side_effect = lambda *_, **__: ordem.append("descarga")
+
+        result = backend.invoke("texto")
+        aguardar_descargas()
+
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        assert ordem == ["turno", "descarga"]
+        client._client.request.assert_called_once_with(
+            "thread/unsubscribe",
+            {"threadId": "thread-1"},
+            response_model=ThreadUnsubscribeResponse,
+        )
+
+    def test_cada_tentativa_descarrega_a_propria_thread(self, codex_sdk, tmp_path):
+        sdk, _, generated = codex_sdk
+        backend, client, primeira, _ = initialized_backend(
+            tmp_path,
+            codex_sdk,
+            make_result(codex_sdk, error_info=generated.CodexErrorInfoValue.server_overloaded),
+        )
+        segunda = MagicMock(spec=sdk.Thread)
+        segunda.id = "thread-2"
+        turno_ok = MagicMock(spec=sdk.TurnHandle)
+        turno_ok.id = "turn-1"
+        turno_ok.stream.side_effect = lambda: as_stream(make_result(codex_sdk))
+        segunda.turn.return_value = turno_ok
+        client.thread_start.side_effect = [primeira, segunda]
+
+        with pytest.warns(UserWarning, match="Tentativa 1/2"):
+            result = backend.invoke("texto")
+        aguardar_descargas()
+
+        assert result["_retry_info"]["retries"] == 1
+        assert sorted(threads_descarregadas(client)) == ["thread-1", "thread-2"]
+
+    def test_thread_e_descarregada_quando_o_turno_nem_comeca(self, codex_sdk, tmp_path):
+        backend, client, thread, _ = initialized_backend(tmp_path, codex_sdk)
+        thread.turn.side_effect = RuntimeError("turn/start recusado")
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="turn/start recusado"),
+        ):
+            backend.invoke("texto")
+        aguardar_descargas()
+
+        assert threads_descarregadas(client) == ["thread-1"]
+
+    def test_sem_thread_aberta_nada_e_descarregado(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        client.thread_start.side_effect = RuntimeError("thread/start recusado")
+
+        with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderError):
+            backend.invoke("texto")
+        aguardar_descargas()
+
+        assert threads_descarregadas(client) == []
+
+    def test_descarga_que_trava_nao_prende_a_linha(self, codex_sdk, tmp_path):
+        backend, client, thread, normal = initialized_backend(
+            tmp_path, codex_sdk, turn_timeout=0.05
+        )
+        thread.turn.side_effect = [stuck_turn(codex_sdk)[0], normal]
+        liberar = threading.Event()
+        client._client.request.side_effect = lambda *_, **__: liberar.wait()
+
+        inicio = time.monotonic()
+        try:
+            with pytest.warns(UserWarning, match="Tentativa 1/2"):
+                result = backend.invoke("texto")
+            presas = [t for t in threading.enumerate() if "_unsubscribe_quietly" in t.name]
+            assert presas
+            assert all(t.daemon for t in presas)
+        finally:
+            liberar.set()
+
+        assert time.monotonic() - inicio < 5
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+
+    def test_falha_da_descarga_nao_escapa_nem_muda_o_resultado(self, codex_sdk, tmp_path):
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        client._client.request.side_effect = RuntimeError("app-server recusou")
+        escapadas = []
+
+        with patch.object(threading, "excepthook", escapadas.append):
+            result = backend.invoke("texto")
+            aguardar_descargas()
+
+        assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
+        assert threads_descarregadas(client) == ["thread-1"]
+        assert escapadas == []
