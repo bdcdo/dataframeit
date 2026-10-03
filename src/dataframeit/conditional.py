@@ -396,6 +396,37 @@ def _declared_depends_on(field_name: str, depends_on: object) -> list[str]:
     raise ValueError(msg)
 
 
+def _check_condition(field_name: str, condition: object) -> None:
+    """Confere a forma de `condition` antes de processar.
+
+    `evaluate_condition` trata a forma malformada como condição falsa, com aviso
+    a cada linha; conferida aqui, ela levanta erro uma vez, antes da primeira
+    chamada ao LLM.
+
+    Raises:
+        ValueError: Se `condition` não é dict nem callable, se `field` não é o
+            nome de um campo em texto, ou se falta um operador.
+    """
+    if condition is None or callable(condition):
+        return
+    if isinstance(condition, dict):
+        field_path = condition.get("field")
+        operators = [*_CONDITION_OPERATORS, "exists"]
+        if not isinstance(field_path, str) or not field_path:
+            problem = "'field' deve ser o nome de um campo em texto"
+        elif not any(key in condition for key in operators):
+            problem = f"falta um operador, um de {', '.join(operators)}"
+        else:
+            return
+    else:
+        problem = (
+            "use um dict com 'field' e um operador, ou uma função que recebe os campos "
+            "já preenchidos"
+        )
+    msg = f"Campo '{field_name}' tem 'condition' {condition!r}: {problem}"
+    raise ValueError(msg)
+
+
 def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
     """Resolve as dependências de um campo a partir de sua configuração.
 
@@ -405,10 +436,12 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
     3. Com `condition` callable sem `depends_on`, retorna lista vazia (com warning).
 
     Raises:
-        ValueError: Se `depends_on` tem forma não aceita (ver _declared_depends_on).
+        ValueError: Se `depends_on` ou `condition` têm forma não aceita (ver
+            _declared_depends_on e _check_condition).
     """
     explicit = _declared_depends_on(field_name, config.get("depends_on"))
     condition = config.get("condition")
+    _check_condition(field_name, condition)
 
     if condition is None:
         if explicit:
@@ -421,10 +454,8 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
 
     derived: list[str] = []
     if isinstance(condition, dict):
-        field_path = condition.get("field")
-        if field_path:
-            derived = [field_path.split(".")[0]]
-    elif callable(condition) and not explicit:
+        derived = [condition["field"].split(".")[0]]
+    elif not explicit:
         logger.warning(
             "Campo '%s' tem 'condition' callable sem 'depends_on': "
             "a ordem de execução não é garantida. Declare 'depends_on' com os campos "
@@ -550,8 +581,10 @@ def should_skip_field(field_name: str, field_config: dict, field_data: dict[str,
     Returns:
         True se o campo deve ser pulado, False caso contrário.
     """
+    # `is None`, e não falsidade: o dict vazio é condição sem `field`, que
+    # evaluate_condition trata como falsa, e o campo é pulado.
     condition = field_config.get("condition")
-    if not condition:
+    if condition is None:
         return False
 
     # Se a condição não é satisfeita, pular o campo

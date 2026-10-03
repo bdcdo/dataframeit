@@ -982,21 +982,29 @@ class TestCondicaoPelaApi:
             )
         call_agent.assert_not_called()
 
-    def test_condicao_sem_campo_nao_cria_dependencia_e_sempre_pula(self, caplog):
+    @pytest.mark.parametrize(
+        "condicao",
+        [{}, {"equals": "pj"}, {"field": 5, "equals": 1}, {"field": "tipo"}, "tipo"],
+    )
+    def test_condicao_de_forma_nao_aceita_falha_antes_de_processar(self, condicao):
         class Modelo(BaseModel):
             tipo: str
-            detalhe: str | None = Field(None, json_schema_extra={"condition": {"equals": "pj"}})
+            detalhe: str | None = Field(None, json_schema_extra={"condition": condicao})
 
-        _, dependencias = get_field_execution_order(
-            Modelo, {"detalhe": {"condition": {"equals": "pj"}}}
-        )
-        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
-            linha, chamadas = _executar_por_campo(Modelo, {"tipo": "pj", "detalhe": "x"})
-
-        assert dependencias["detalhe"] == []
-        assert chamadas == [["tipo"]]
-        assert linha["detalhe"] is None
-        assert "não tem 'field' definido" in caplog.text
+        with (
+            patch("dataframeit.core.validate_provider_dependencies"),
+            patch("dataframeit.core.validate_search_dependencies"),
+            patch("dataframeit.agent.call_agent") as call_agent,
+            pytest.raises(ValueError, match="Campo 'detalhe' tem 'condition'"),
+        ):
+            dataframeit(
+                pd.DataFrame({"texto": ["x"]}),
+                questions=Modelo,
+                prompt="Analise {texto}",
+                use_search=True,
+                search_per_field=True,
+            )
+        call_agent.assert_not_called()
 
 
 def test_modelo_auto_referente_e_validado_sem_laco():
@@ -1109,6 +1117,50 @@ def test_depends_on_ignorado_ou_ausente_avisa_com_a_mensagem_exata(caplog, confi
         get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
 
     assert _mensagens(caplog) == [("WARNING", mensagem)]
+
+
+@pytest.mark.parametrize(
+    ("condicao", "mensagem"),
+    [
+        (
+            "tipo",
+            (
+                "Campo 'cpf' tem 'condition' 'tipo': use um dict com 'field' e um operador, "
+                "ou uma função que recebe os campos já preenchidos"
+            ),
+        ),
+        (
+            {"equals": "pf"},
+            (
+                "Campo 'cpf' tem 'condition' {'equals': 'pf'}: 'field' deve ser o nome de um "
+                "campo em texto"
+            ),
+        ),
+        (
+            {"field": 5, "equals": 1},
+            (
+                "Campo 'cpf' tem 'condition' {'field': 5, 'equals': 1}: 'field' deve ser o "
+                "nome de um campo em texto"
+            ),
+        ),
+        (
+            {"field": "tipo"},
+            (
+                "Campo 'cpf' tem 'condition' {'field': 'tipo'}: falta um operador, um de "
+                "equals, not_equals, in, not_in, exists"
+            ),
+        ),
+    ],
+)
+def test_condicao_de_forma_nao_aceita_tem_a_mensagem_exata(condicao, mensagem):
+    with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+        get_field_execution_order(ModeloPessoaCondicional, {"cpf": {"condition": condicao}})
+
+
+def test_condicao_vazia_pula_o_campo_como_evaluate_condition():
+    """O dict vazio é condição sem 'field': falsa nas duas funções."""
+    assert evaluate_condition({}, {"tipo": "pf"}, "cpf") is False
+    assert should_skip_field("cpf", {"condition": {}}, {"tipo": "pf"}) is True
 
 
 def test_depends_on_de_forma_nao_aceita_tem_a_mensagem_exata():

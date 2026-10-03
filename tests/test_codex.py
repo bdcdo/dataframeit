@@ -1233,13 +1233,15 @@ class TestSchemaMalformado:
     @pytest.mark.parametrize("erro", [AttributeError, TypeError])
     def test_falha_do_schema_personalizado_e_erro_de_configuracao(self, erro):
         def json_schema_extra(schema):
-            raise erro
+            msg = "hook quebrou"
+            raise erro(msg)
 
         class Modelo(BaseModel):
             model_config = ConfigDict(json_schema_extra=json_schema_extra)
             valor: str
 
-        with pytest.raises(ProviderConfigurationError, match="modelo Pydantic v2") as exc_info:
+        mensagem = "A geração do JSON Schema do modelo Pydantic falhou: hook quebrou"
+        with pytest.raises(ProviderConfigurationError, match=f"^{mensagem}$") as exc_info:
             _build_schema(Modelo)
 
         assert isinstance(exc_info.value.__cause__, erro)
