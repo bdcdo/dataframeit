@@ -113,7 +113,7 @@ Returns data in the same format as input with extracted columns added.
 | `list` | `pd.DataFrame` with numeric index |
 | `dict` | `pd.DataFrame` with keys as index |
 
-With polars input, the input columns that are not model fields come back as they went in, with the same type and the same values. In polars output, an `Enum` field comes out as the member's value. When the answers of a field do not fit a typed polars column, such as a `Union[int, str]` that received a number in one row and text in another, the column comes out with the `Object` type, holding the Python objects as the model returned them, and a warning names the columns; convert them before writing to parquet.
+With polars input, the input columns that are not model fields and do not have the name of one of the [added columns](#added-columns) come back as they went in, with the same type and the same values. In polars output, an `Enum` field comes out as the member's value. When the answers of a field do not fit a typed polars column, such as a `Union[int, str]` that received a number in one row and text in another, the column comes out with the `Object` type, holding the Python objects as the model returned them, and a warning names the columns; convert them before writing to a file.
 
 ### Added Columns
 

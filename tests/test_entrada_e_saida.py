@@ -1,8 +1,9 @@
 """Entrada e saída de dataframeit(): colunas de controle, texto ausente, índice e avisos."""
 
+import linecache
 import logging
 import warnings
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional, Union
@@ -879,7 +880,11 @@ def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
 # Entrada polars: campo do modelo que o Arrow não tipa
 # =============================================================================
 
+_FUSO_DE_DESLOCAMENTO = timezone(timedelta(hours=5, minutes=30))
+
 # Tipo do campo e as respostas de duas linhas que o Arrow não põe na mesma coluna.
+# O datetime com fuso de deslocamento é recusado pelo polars, com ComputeError,
+# que não é ValueError nem TypeError.
 _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     "tupla_heterogenea": (tuple[int, str], [(1, "a"), (2, "b")]),
     "uniao_com_numero_primeiro": (Union[int, str], [1, "dois"]),
@@ -890,6 +895,13 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     "lista_de_enum": (list[Cor], [[Cor.AZUL], [Cor.VERDE]]),
     "inteiro_que_o_float_arredonda_com_float": (Union[int, float], [_ID_GRANDE, 2.5]),
     "inteiro_acima_do_int64": (int, [2**64 - 1, 1]),
+    "datetime_com_fuso_de_deslocamento": (
+        datetime,
+        [
+            datetime(2024, 1, 2, tzinfo=_FUSO_DE_DESLOCAMENTO),
+            datetime(2024, 1, 3, tzinfo=_FUSO_DE_DESLOCAMENTO),
+        ],
+    ),
 }
 
 
@@ -939,6 +951,69 @@ def test_aviso_de_object_nomeia_so_a_coluna_que_o_arrow_nao_tipa():
     assert aviso.filename == __file__
 
 
+def test_aviso_de_object_aponta_para_a_linha_que_chamou_dataframeit():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    modelo = create_model("ModeloDoCaso", campo=(Union[int, str], ...))
+
+    # Sem _rodar no meio: com ele, o quadro seguinte da pilha também fica neste
+    # arquivo, e o stacklevel um nível acima do certo passaria.
+    with (
+        patch(
+            "dataframeit.core.call_langchain", side_effect=_responde_por_linha("campo", [1, "x"])
+        ),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(record=True) as avisos,
+    ):
+        warnings.simplefilter("always")
+        dataframeit(entrada, questions=modelo, prompt="Analise {texto}", track_tokens=False)
+
+    (aviso,) = [a for a in avisos if "Object" in str(a.message)]
+    assert aviso.filename == __file__
+    assert "dataframeit(entrada" in linecache.getline(aviso.filename, aviso.lineno)
+
+
+def test_um_so_aviso_nomeia_todas_as_colunas_que_saem_object():
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", a=(Union[int, str], ...), b=(Union[int, str], ...))
+
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=modelo,
+            llm=_responde_em_sequencia({"a": 1, "b": "x"}, {"a": "dois", "b": 2}),
+        )
+
+    assert resultado["a"].dtype == resultado["b"].dtype == pl.Object
+    (aviso,) = [a for a in avisos if "Object" in str(a.message)]
+    assert "['a', 'b']" in str(aviso.message)
+
+
+def test_coluna_que_a_conversao_devolve_com_nulo_a_mais_sai_como_object(monkeypatch):
+    """Simula o polars que converte o texto ao lado de número e anula o número."""
+    pl = pytest.importorskip("polars")
+    converte = pl.from_pandas
+
+    def converte_e_anula(valores, *args, **kwargs):
+        if valores.name == "campo":
+            return pl.Series("campo", ["dois", None], dtype=pl.Utf8)
+        return converte(valores, *args, **kwargs)
+
+    monkeypatch.setattr(pl, "from_pandas", converte_e_anula)
+
+    with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=ModeloMisto,
+            llm=_responde_em_sequencia({"x": "p", "campo": "dois"}, {"x": "q", "campo": 1}),
+        )
+
+    assert resultado["campo"].dtype == pl.Object
+    assert resultado["campo"].to_list() == ["dois", 1]
+    assert resultado["x"].dtype != pl.Object
+
+
 def test_enum_sai_pelo_valor_na_saida_polars():
     pl = pytest.importorskip("polars")
 
@@ -952,6 +1027,20 @@ def test_enum_sai_pelo_valor_na_saida_polars():
 
     assert resultado["cor"].to_list() == ["azul", "verde"]
     assert resultado["cor"].dtype != pl.Object
+
+
+def test_enum_sai_pelo_valor_tambem_na_coluna_object():
+    pl = pytest.importorskip("polars")
+
+    with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=create_model("ModeloDoCaso", campo=(Optional[Union[Cor, int]], ...)),
+            llm=_responde_por_linha("campo", [Cor.AZUL, None, 2]),
+        )
+
+    assert resultado["campo"].dtype == pl.Object
+    assert resultado["campo"].to_list() == ["azul", None, 2]
 
 
 def test_campo_que_o_arrow_nao_tipa_com_entrada_polars_series():

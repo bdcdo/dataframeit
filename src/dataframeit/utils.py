@@ -250,19 +250,34 @@ def from_pandas(
                 columns.append(untouched[col])
                 continue
             values = _enums_by_value(df[col])
-            # A coluna com valores de tipos diferentes, como int e str, é recusada
-            # com ValueError (o ArrowInvalid do pyarrow) ou com TypeError, conforme
-            # a ordem dos valores, e o inteiro acima do Int64, com OverflowError.
+            # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
+            # pyarrow recusam, seja qual for o erro (ValueError, TypeError,
+            # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
             try:
-                columns.append(pl.from_pandas(values))
-            except (ValueError, TypeError, OverflowError):
-                columns.append(pl.Series(col, values.tolist(), dtype=pl.Object))
+                column = pl.from_pandas(values)
+            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores e a versão)
+                column = None
+            # Há versões do polars que, em vez de recusar a coluna de texto com um
+            # valor de outro tipo, a convertem com nulo no lugar dele: o nulo que o
+            # pandas não tinha é esse valor perdido. A Struct fica fora da comparação
+            # porque há versões que contam como nula a linha com todos os campos nulos.
+            if column is None or (
+                column.dtype != pl.Struct and column.null_count() > values.isna().sum()
+            ):
+                # O construtor de Series olha o primeiro valor mesmo com dtype=pl.Object
+                # e, conforme a versão, levanta erro com range ou dataclass; do array
+                # numpy de objetos, a coluna que começa por texto não sai Object. O
+                # map_elements guarda o que a função devolve, sem inspecionar.
+                items = values.tolist()
+                positions = pl.Series(col, range(len(items)), dtype=pl.Int64)
+                column = positions.map_elements(items.__getitem__, return_dtype=pl.Object)
                 as_object.append(col)
+            columns.append(column)
         if as_object:
             warnings.warn(
                 f"As colunas {as_object} têm valores de tipos que o polars não reúne numa "
                 "coluna tipada e saem com o tipo Object, com os objetos Python como o modelo "
-                "os devolveu. Converta-as antes de gravar em parquet.",
+                "os devolveu. Converta-as antes de gravar em arquivo.",
                 UserWarning,
                 stacklevel=3,
             )
