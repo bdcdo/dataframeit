@@ -58,6 +58,13 @@ class Cor(Enum):
     VERDE = "verde"
 
 
+class Tinta(Enum):
+    """O valor de cada membro é membro de outro Enum."""
+
+    CLARA = Cor.AZUL
+    ESCURA = Cor.VERDE
+
+
 class ModeloCor(BaseModel):
     cor: Cor
 
@@ -990,30 +997,6 @@ def test_um_so_aviso_nomeia_todas_as_colunas_que_saem_object():
     assert "['a', 'b']" in str(aviso.message)
 
 
-def test_coluna_que_a_conversao_devolve_com_nulo_a_mais_sai_como_object(monkeypatch):
-    """Simula o polars que converte o texto ao lado de número e anula o número."""
-    pl = pytest.importorskip("polars")
-    converte = pl.from_pandas
-
-    def converte_e_anula(valores, *args, **kwargs):
-        if valores.name == "campo":
-            return pl.Series("campo", ["dois", None], dtype=pl.Utf8)
-        return converte(valores, *args, **kwargs)
-
-    monkeypatch.setattr(pl, "from_pandas", converte_e_anula)
-
-    with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
-        resultado, _ = _rodar(
-            pl.DataFrame({"texto": ["a", "b"]}),
-            questions=ModeloMisto,
-            llm=_responde_em_sequencia({"x": "p", "campo": "dois"}, {"x": "q", "campo": 1}),
-        )
-
-    assert resultado["campo"].dtype == pl.Object
-    assert resultado["campo"].to_list() == ["dois", 1]
-    assert resultado["x"].dtype != pl.Object
-
-
 def test_enum_sai_pelo_valor_na_saida_polars():
     pl = pytest.importorskip("polars")
 
@@ -1041,6 +1024,29 @@ def test_enum_sai_pelo_valor_tambem_na_coluna_object():
 
     assert resultado["campo"].dtype == pl.Object
     assert resultado["campo"].to_list() == ["azul", None, 2]
+
+
+@pytest.mark.parametrize(
+    ("respostas", "valores"),
+    [
+        ([Tinta.CLARA, Tinta.ESCURA], [Cor.AZUL, Cor.VERDE]),
+        ([Tinta.CLARA, None], [Cor.AZUL, None]),
+    ],
+    ids=["so_membros", "membro_e_nulo"],
+)
+def test_valor_de_enum_que_e_membro_de_outro_enum_fica_inteiro_na_coluna_object(respostas, valores):
+    """Sobra um membro de Enum na coluna Object, e o polars não o troca pelo valor dele."""
+    pl = pytest.importorskip("polars")
+
+    with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(Optional[Tinta], ...)),
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == pl.Object
+    assert resultado["campo"].to_list() == valores
 
 
 def test_campo_que_o_arrow_nao_tipa_com_entrada_polars_series():

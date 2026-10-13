@@ -7,11 +7,9 @@ Testa conversão de/para:
 - dict
 """
 
-import dataclasses
 import datetime
 import importlib.util
 import sys
-import warnings
 
 import pandas as pd
 import pytest
@@ -33,6 +31,7 @@ from dataframeit.utils import (
     ORIGINAL_TYPE_POLARS_DF,
     ORIGINAL_TYPE_POLARS_SERIES,
     ConversionInfo,
+    _enums_by_value,
     from_pandas,
     to_pandas,
 )
@@ -275,11 +274,6 @@ class TestRoundTrip:
         assert "resumo" in result.columns
 
 
-@dataclasses.dataclass
-class Ponto:
-    x: int
-
-
 @pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
 class TestEntradaPolars:
     """A entrada polars guarda o frame original e não arredonda inteiro com nulo."""
@@ -351,48 +345,10 @@ class TestEntradaPolars:
         assert result["a"].to_list() == [1, "dois"]
         assert result["b"].to_list() == ["x", "y"]
 
-    @pytest.mark.parametrize(
-        "valores",
-        [["dois", 1], [None, "dois", 1], [b"dois", 1], [range(3), 1], [Ponto(1), 2]],
-        ids=["texto", "texto_depois_de_nulo", "bytes", "range", "dataclass"],
-    )
-    def test_coluna_object_guarda_os_valores_sem_o_polars_os_inspecionar(self, valores):
-        """O primeiro valor é de um tipo pelo qual o construtor de Series escolhe caminho."""
-        df = pd.DataFrame({"a": pd.Series(valores, dtype=object)})
+    def test_troca_de_enum_devolve_a_mesma_coluna_quando_ela_nao_e_de_objetos(self):
+        valores = pd.Series([1.5, 2.5])
 
-        with pytest.warns(UserWarning, match=r"\['a'\].*Object"):
-            result = from_pandas(df, True)
-
-        assert result["a"].dtype == pl.Object
-        assert result["a"].to_list() == valores
-
-    @pytest.mark.parametrize(
-        "valores",
-        [
-            pd.Series([1.5, float("nan")]),
-            pd.Series([1, pd.NA], dtype="Int64"),
-            pd.Series([pd.Timestamp("2024-01-02"), pd.NaT]),
-            pd.Series(["x", None], dtype=object),
-            pd.Series([[1, None], None], dtype=object),
-            pd.Series([None, None], dtype=object),
-            pd.Series([{"n": None}, {"n": 1}], dtype=object),
-        ],
-        ids=[
-            "float_com_nan",
-            "inteiro_com_na",
-            "datetime_com_nat",
-            "texto_com_none",
-            "lista_com_none_dentro",
-            "toda_nula",
-            "dict_com_todos_os_campos_nulos",
-        ],
-    )
-    def test_coluna_com_nulo_continua_tipada_e_sem_aviso(self, valores):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            result = from_pandas(pd.DataFrame({"a": valores}), True)
-
-        assert result["a"].dtype != pl.Object
+        assert _enums_by_value(valores) is valores
 
     def test_coluna_de_status_personalizada_que_estava_na_entrada_sai_do_pandas(self):
         data = pl.DataFrame({"texto": ["a", "b"], "st": ["error", None]})

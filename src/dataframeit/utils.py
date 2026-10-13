@@ -156,7 +156,7 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return _polars_to_pandas(data), ConversionInfo(
+        return data.to_pandas(), ConversionInfo(
             original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
         )
 
@@ -254,30 +254,22 @@ def from_pandas(
             # pyarrow recusam, seja qual for o erro (ValueError, TypeError,
             # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
             try:
-                column = pl.from_pandas(values)
-            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores e a versão)
-                column = None
-            # Há versões do polars que, em vez de recusar a coluna de texto com um
-            # valor de outro tipo, a convertem com nulo no lugar dele: o nulo que o
-            # pandas não tinha é esse valor perdido. A Struct fica fora da comparação
-            # porque há versões que contam como nula a linha com todos os campos nulos.
-            if column is None or (
-                column.dtype != pl.Struct and column.null_count() > values.isna().sum()
-            ):
-                # O construtor de Series olha o primeiro valor mesmo com dtype=pl.Object
-                # e, conforme a versão, levanta erro com range ou dataclass; do array
-                # numpy de objetos, a coluna que começa por texto não sai Object. O
+                columns.append(pl.from_pandas(values))
+            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
+                # O construtor de Series inspeciona os valores mesmo com dtype=pl.Object:
+                # quando o primeiro valor não nulo é membro de Enum, troca cada valor
+                # pelo `.value`, e levanta erro no que não o tem, como o None. O
                 # map_elements guarda o que a função devolve, sem inspecionar.
                 items = values.tolist()
                 positions = pl.Series(col, range(len(items)), dtype=pl.Int64)
-                column = positions.map_elements(items.__getitem__, return_dtype=pl.Object)
+                columns.append(positions.map_elements(items.__getitem__, return_dtype=pl.Object))
                 as_object.append(col)
-            columns.append(column)
         if as_object:
             warnings.warn(
                 f"As colunas {as_object} têm valores de tipos que o polars não reúne numa "
-                "coluna tipada e saem com o tipo Object, com os objetos Python como o modelo "
-                "os devolveu. Converta-as antes de gravar em arquivo.",
+                "coluna tipada e saem com o tipo Object, com os objetos Python que o modelo "
+                "devolveu, exceto o Enum fora de lista ou dict, que sai pelo valor. Converta-as "
+                "antes de gravar em arquivo.",
                 UserWarning,
                 stacklevel=3,
             )
@@ -314,24 +306,9 @@ def _enums_by_value(values: pd.Series) -> pd.Series:
         return values
     return pd.Series(
         [value.value if isinstance(value, Enum) else value for value in values],
-        index=values.index,
         name=values.name,
         dtype=object,
     )
-
-
-def _polars_to_pandas(data: PolarsDataFrame) -> pd.DataFrame:
-    """Converte para pandas lendo a coluna Object pelos objetos que ela guarda.
-
-    É a coluna que a saída traz quando o Arrow não tipa um campo do modelo, e
-    ela volta como entrada na retomada. No polars 0.20, o `to_pandas()` devolve
-    bytes sem sentido no lugar dos objetos.
-    """
-    df = data.to_pandas()
-    for name, dtype in data.schema.items():
-        if str(dtype) == "Object":
-            df[name] = pd.Series(data[name].to_list(), index=df.index, dtype=object)
-    return df
 
 
 def _untouched_columns(
