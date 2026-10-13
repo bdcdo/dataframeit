@@ -7,6 +7,7 @@ Testa conversão de/para:
 - dict
 """
 
+import datetime
 import importlib.util
 import sys
 
@@ -270,6 +271,67 @@ class TestRoundTrip:
         assert isinstance(result, pd.DataFrame)
         assert list(result.index) == ["documento_1", "documento_2"]
         assert "resumo" in result.columns
+
+
+@pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
+class TestEntradaPolars:
+    """A entrada polars guarda o frame original e não arredonda inteiro com nulo."""
+
+    def test_inteiro_com_nulo_mantem_precisao_e_tipo(self):
+        ids = [9007199254740993, None, 1234567890123456789]
+        data = pl.DataFrame({"texto": ["a", "b", "c"], "id": pl.Series(ids, dtype=pl.Int64)})
+
+        df, info = to_pandas(data)
+        df["resultado"] = ["x", "y", "z"]
+        result = from_pandas(df, info)
+
+        assert df["id"].dtype == "Int64"
+        assert df["id"].tolist()[0] == ids[0]
+        assert result["id"].dtype == pl.Int64
+        assert result["id"].to_list() == ids
+        assert result["resultado"].to_list() == ["x", "y", "z"]
+
+    def test_inteiro_sem_nulo_fica_como_estava(self):
+        data = pl.DataFrame({"id": pl.Series([1, 2], dtype=pl.UInt8)})
+
+        df, info = to_pandas(data)
+
+        assert df["id"].dtype == "uint8"
+        assert from_pandas(df, info)["id"].dtype == pl.UInt8
+
+    def test_coluna_de_data_continua_data(self):
+        data = pl.DataFrame({"texto": ["a"], "dia": [datetime.date(2024, 1, 2)]})
+
+        df, info = to_pandas(data)
+        result = from_pandas(df, info)
+
+        assert result["dia"].dtype == pl.Date
+        assert result["dia"].to_list() == [datetime.date(2024, 1, 2)]
+
+    def test_campo_do_modelo_que_estava_na_entrada_sai_do_pandas(self):
+        data = pl.DataFrame({"texto": ["a"], "nota": [7]})
+        df, info = to_pandas(data)
+        df["nota"] = [7.5]
+
+        assert from_pandas(df, info)["nota"].to_list() == [7]
+        assert from_pandas(df, info, model_columns=["nota"])["nota"].to_list() == [7.5]
+
+    def test_coluna_de_controle_que_estava_na_entrada_sai_do_pandas(self):
+        data = pl.DataFrame({"texto": ["a", "b"], "_dataframeit_status": ["error", None]})
+        df, info = to_pandas(data)
+        df["_dataframeit_status"] = ["processed", "error"]
+
+        result = from_pandas(df, info)
+
+        assert result["_dataframeit_status"].to_list() == ["processed", "error"]
+
+    def test_coluna_de_status_personalizada_que_estava_na_entrada_sai_do_pandas(self):
+        data = pl.DataFrame({"texto": ["a", "b"], "st": ["error", None]})
+        df, info = to_pandas(data)
+        df["st"] = ["processed", "error"]
+
+        assert from_pandas(df, info)["st"].to_list() == ["error", None]
+        assert from_pandas(df, info, "st")["st"].to_list() == ["processed", "error"]
 
 
 def test_dict_com_chaves_tupla_mantem_indice_simples():

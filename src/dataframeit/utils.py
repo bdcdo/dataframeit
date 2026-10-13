@@ -28,9 +28,10 @@ from pandas.api.types import is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Hashable
+    from collections.abc import Callable, Collection, Hashable
 
     from polars import DataFrame as PolarsDataFrame
+    from polars import Series as PolarsSeries
 
 # Import opcional de Polars
 try:
@@ -90,6 +91,8 @@ class ConversionInfo:
     original_type: str
     original_index: pd.Index | list | None = None  # Índice/chaves originais para reconversão
     series_name: Hashable | None = None  # Nome original da Series (se aplicável)
+    # DataFrame polars de entrada, de onde a saída tira as colunas que a execução não escreve
+    polars_frame: PolarsDataFrame | None = None
 
 
 def parse_json(resposta: str) -> dict:
@@ -152,7 +155,9 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return data.to_pandas(), ConversionInfo(original_type=ORIGINAL_TYPE_POLARS_DF)
+        return _polars_to_pandas(data), ConversionInfo(
+            original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
+        )
 
     # pandas Series
     if isinstance(data, pd.Series):
@@ -199,6 +204,7 @@ def from_pandas(
     df: pd.DataFrame,
     conversion_info: ConversionInfo | bool,  # noqa: FBT001 (bool aceito por retrocompatibilidade)
     status_col: str = "_dataframeit_status",
+    model_columns: Collection[str] = (),
 ) -> pd.DataFrame | PolarsDataFrame:
     """Converte DataFrame pandas de volta para o formato original.
 
@@ -210,6 +216,8 @@ def from_pandas(
         conversion_info: ConversionInfo com metadados da conversão original,
                         ou bool para retrocompatibilidade (True = era polars).
         status_col: Nome da coluna de status (o `status_column` do usuário).
+        model_columns: Campos do modelo que a execução gravou. Na saída polars,
+                        só eles e as colunas de controle são convertidos do pandas.
 
     Returns:
         Dados no formato original (DataFrame, Series, list ou dict).
@@ -245,51 +253,86 @@ def from_pandas(
 
     df = _reorder_columns(df, status_col)
     if original_type in _POLARS_INPUTS and pl is not None:
-        return pl.from_pandas(df)
+        untouched = _untouched_columns(conversion_info.polars_frame, status_col, model_columns)
+        converted = pl.from_pandas(df[[col for col in df.columns if col not in untouched]])
+        return pl.DataFrame(
+            [untouched[col] if col in untouched else converted[col] for col in df.columns]
+        )
     return df
 
 
-def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") -> pd.DataFrame:
-    """Reordena colunas para que internas fiquem no final.
+def _polars_to_pandas(data: PolarsDataFrame) -> pd.DataFrame:
+    """Converte para pandas mantendo o inteiro com nulo como inteiro anulável.
 
-    Ordem final das colunas:
+    O `to_pandas()` do polars leva o inteiro com nulo a float64, que arredonda
+    valores acima de 2**53. É o caso do campo inteiro do modelo numa saída
+    interrompida, que volta como entrada na retomada com as linhas pendentes
+    nulas, e de toda coluna inteira com nulo que o checkpoint grava.
+    """
+    df = data.to_pandas()
+    for name, dtype in data.schema.items():
+        if dtype.is_integer() and data[name].null_count() > 0:
+            df[name] = pd.array(data[name].to_list(), dtype=str(dtype))
+    return df
+
+
+def _untouched_columns(
+    source: PolarsDataFrame | None,
+    status_col: str,
+    model_columns: Collection[str],
+) -> dict[str, PolarsSeries]:
+    """Colunas da entrada polars que a execução não escreve, pelo nome.
+
+    São as colunas do usuário que não são campo do modelo. A saída as tira de
+    `source`, o DataFrame polars de entrada: convertidas de volta do pandas,
+    elas trocariam de tipo (Date por Datetime, Enum por Categorical) e trariam
+    arredondado o inteiro acima de 2**53 dentro de Struct e List, que passa por
+    float na ida. As linhas da saída estão na ordem das de `source`, porque a
+    execução grava por rótulo e não remove nem reordena linhas.
+
+    Sem `source` (entrada polars.Series, que só traz o texto), todas as colunas
+    são da execução.
+    """
+    if source is None:
+        return {}
+    return {
+        col: source[col]
+        for col in source.columns
+        if col not in model_columns and _column_rank(col, status_col) == _USER_COLUMN
+    }
+
+
+# Posição da coluna do usuário em _column_rank; as demais são as que a execução acrescenta.
+_USER_COLUMN = (0, 0)
+
+
+def _column_rank(col: Hashable, status_col: str) -> tuple[int, int]:
+    """Família da coluna e posição dentro dela, na ordem em que a saída as traz.
+
     1. Colunas do usuário (originais + campos do modelo)
     2. Colunas de trace (_trace_*)
     3. Colunas de busca (_search_credits)
-    4. Colunas de tokens (_input_tokens, _cached_input_tokens, _output_tokens,
-       _reasoning_tokens)
-    5. Colunas de controle (_dataframeit_status, _error_details)
-
-    Args:
-        df: DataFrame a reordenar.
-        status_col: Nome da coluna de status.
-
-    Returns:
-        DataFrame com colunas reordenadas.
+    4. Colunas de tokens, na ordem de TOKEN_COLUMNS
+    5. Colunas de controle (status e _error_details)
     """
-    # Separar colunas por categoria
-    user_cols = []
-    trace_cols = []
-    search_cols = []
-    token_cols = [col for col in TOKEN_COLUMNS if col in df.columns]
-    status_cols = []
+    if str(col).startswith("_trace_"):
+        return (1, 0)
+    if col == "_search_credits":
+        return (2, 0)
+    if col in TOKEN_COLUMNS:
+        return (3, TOKEN_COLUMNS.index(col))
+    if col in (status_col, "_error_details"):
+        return (4, 0)
+    return _USER_COLUMN
 
-    for col in df.columns:
-        if str(col).startswith("_trace_"):
-            trace_cols.append(col)
-        elif col == "_search_credits":
-            search_cols.append(col)
-        elif col in TOKEN_COLUMNS:
-            continue
-        elif col in (status_col, "_error_details"):
-            status_cols.append(col)
-        else:
-            user_cols.append(col)
 
-    # Ordem final: user -> trace -> search -> tokens -> status
-    new_order = user_cols + trace_cols + search_cols + token_cols + status_cols
+def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") -> pd.DataFrame:
+    """Reordena as colunas para que as da execução fiquem no final.
 
-    return df[new_order]
+    A ordem é a de `_column_rank`; dentro de cada família, menos a de tokens,
+    as colunas ficam na ordem em que estavam.
+    """
+    return df[sorted(df.columns, key=lambda col: _column_rank(col, status_col))]
 
 
 # =============================================================================
