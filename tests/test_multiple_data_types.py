@@ -291,6 +291,14 @@ class TestEntradaPolars:
         assert result["id"].to_list() == ids
         assert result["resultado"].to_list() == ["x", "y", "z"]
 
+    def test_inteiro_com_nulo_que_cabe_no_float_fica_como_o_pandas_o_leria(self):
+        data = pl.DataFrame({"texto": ["a", "b"], "n": pl.Series([2**53, None], dtype=pl.Int64)})
+
+        df, info = to_pandas(data)
+
+        assert df["n"].dtype == "float64"
+        assert from_pandas(df, info)["n"].to_list() == [2**53, None]
+
     def test_inteiro_sem_nulo_fica_como_estava(self):
         data = pl.DataFrame({"id": pl.Series([1, 2], dtype=pl.UInt8)})
 

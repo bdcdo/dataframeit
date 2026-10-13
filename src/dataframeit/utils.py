@@ -262,18 +262,23 @@ def from_pandas(
 
 
 def _polars_to_pandas(data: PolarsDataFrame) -> pd.DataFrame:
-    """Converte para pandas sem passar o inteiro com nulo por float.
+    """Converte para pandas sem arredondar o inteiro com nulo.
 
-    O `to_pandas()` do polars leva o inteiro com nulo a float64, que arredonda
-    valores acima de 2**53. A coluna vem como objetos, com int do Python e
-    None: é como a execução guarda o campo inteiro do modelo, que numa saída
-    interrompida volta como entrada na retomada com as linhas pendentes nulas,
-    e é o que a validação strict aceita de volta.
+    O `to_pandas()` do polars leva o inteiro com nulo a float64. Enquanto todo
+    valor cabe exato no float, a coluna fica assim: é como o pandas a leria de
+    um arquivo, e é a forma que a retomada reconhece num campo int ou bool.
+    Quando algum valor não cabe, acima de 2**53, a coluna vem como objetos, com
+    int do Python e None, que é como a execução guarda o campo inteiro do
+    modelo. É o caso do campo de uma saída interrompida, que volta como entrada
+    na retomada com as linhas pendentes nulas.
     """
     df = data.to_pandas()
     for name, dtype in data.schema.items():
-        if dtype.is_integer() and data[name].null_count() > 0:
-            df[name] = pd.Series(data[name].to_list(), index=df.index, dtype=object)
+        if not dtype.is_integer() or data[name].null_count() == 0:
+            continue
+        values = data[name].to_list()
+        if any(value is not None and int(float(value)) != value for value in values):
+            df[name] = pd.Series(values, index=df.index, dtype=object)
     return df
 
 

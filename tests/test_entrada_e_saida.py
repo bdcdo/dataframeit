@@ -48,6 +48,16 @@ class ModeloContagemEstrita(BaseModel):
     n: Optional[int] = None
 
 
+class ModeloFlag(BaseModel):
+    relevante: bool
+
+
+class ModeloFlagEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    relevante: bool
+
+
 def _responde(**campos):
     def call_langchain(text, *args, **kwargs):
         return {
@@ -858,3 +868,22 @@ def test_retomada_de_saida_polars_traz_os_tokens_das_linhas_novas():
 
     assert retomada["_input_tokens"].to_list() == [3, 3]
     assert retomada["_output_tokens"].to_list() == [2, 2]
+
+
+@pytest.mark.parametrize("modelo", [ModeloFlag, ModeloFlagEstrita])
+def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
+    """Um bool lido de volta de SQLite pelo polars chega como Int64 0/1."""
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "relevante": pl.Series([1, 0, None], dtype=pl.Int64),
+            "_dataframeit_status": ["processed", "processed", None],
+        }
+    )
+
+    resultado, llm = _rodar(entrada, questions=modelo, llm=_responde(relevante=True), resume=True)
+
+    assert llm.call_count == 1
+    assert resultado["relevante"].dtype == pl.Boolean
+    assert resultado["relevante"].to_list() == [True, False, True]
