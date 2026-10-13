@@ -7,6 +7,7 @@ Testa conversão de/para:
 - dict
 """
 
+import datetime
 import importlib.util
 import sys
 
@@ -270,6 +271,93 @@ class TestRoundTrip:
         assert isinstance(result, pd.DataFrame)
         assert list(result.index) == ["documento_1", "documento_2"]
         assert "resumo" in result.columns
+
+
+@pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
+class TestEntradaPolars:
+    """A entrada polars guarda o frame original e não arredonda inteiro com nulo."""
+
+    def test_inteiro_com_nulo_mantem_precisao_e_tipo(self):
+        ids = [9007199254740993, None, 1234567890123456789]
+        data = pl.DataFrame({"texto": ["a", "b", "c"], "id": pl.Series(ids, dtype=pl.Int64)})
+
+        df, info = to_pandas(data)
+        df["resultado"] = ["x", "y", "z"]
+        result = from_pandas(df, info)
+
+        assert result["id"].dtype == pl.Int64
+        assert result["id"].to_list() == ids
+        assert result["resultado"].to_list() == ["x", "y", "z"]
+
+    def test_inteiro_sem_nulo_fica_como_estava(self):
+        data = pl.DataFrame({"id": pl.Series([1, 2], dtype=pl.UInt8)})
+
+        df, info = to_pandas(data)
+
+        assert df["id"].dtype == "uint8"
+        assert from_pandas(df, info)["id"].dtype == pl.UInt8
+
+    def test_coluna_de_data_continua_data(self):
+        data = pl.DataFrame({"texto": ["a"], "dia": [datetime.date(2024, 1, 2)]})
+
+        df, info = to_pandas(data)
+        result = from_pandas(df, info)
+
+        assert result["dia"].dtype == pl.Date
+        assert result["dia"].to_list() == [datetime.date(2024, 1, 2)]
+
+    def test_campo_do_modelo_que_estava_na_entrada_sai_do_pandas(self):
+        data = pl.DataFrame({"texto": ["a"], "nota": [7]})
+        df, info = to_pandas(data)
+        df["nota"] = [7.5]
+
+        assert from_pandas(df, info)["nota"].to_list() == [7]
+        assert from_pandas(df, info, model_columns=["nota"])["nota"].to_list() == [7.5]
+
+    @pytest.mark.parametrize(
+        "coluna",
+        [
+            "_trace",
+            "_trace_campo",
+            "_search_credits",
+            "_input_tokens",
+            "_dataframeit_status",
+            "_error_details",
+        ],
+    )
+    def test_coluna_de_controle_que_estava_na_entrada_sai_do_pandas(self, coluna):
+        data = pl.DataFrame({"texto": ["a", "b"], coluna: ["antes", None]})
+        df, info = to_pandas(data)
+        df[coluna] = ["depois", "error"]
+
+        result = from_pandas(df, info)
+
+        assert result[coluna].to_list() == ["depois", "error"]
+
+    def test_coluna_de_status_personalizada_que_estava_na_entrada_sai_do_pandas(self):
+        data = pl.DataFrame({"texto": ["a", "b"], "st": ["error", None]})
+        df, info = to_pandas(data)
+        df["st"] = ["processed", "error"]
+
+        assert from_pandas(df, info)["st"].to_list() == ["error", None]
+        assert from_pandas(df, info, "st")["st"].to_list() == ["processed", "error"]
+
+
+def test_rotulo_repetido_nao_duplica_coluna_na_reordenacao():
+    df = pd.DataFrame([[1, 2, 3, 4]], columns=["_input_tokens", "a", "_input_tokens", "a"])
+
+    resultado = from_pandas(df, ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF))
+
+    assert list(resultado.columns) == ["a", "a", "_input_tokens", "_input_tokens"]
+    assert resultado.to_numpy().tolist() == [[2, 4, 1, 3]]
+
+
+def test_coluna_trace_sem_sufixo_fica_com_as_de_trace():
+    df = pd.DataFrame([[1, 2, 3]], columns=["_trace", "texto", "_search_credits"])
+
+    resultado = from_pandas(df, ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF))
+
+    assert list(resultado.columns) == ["texto", "_trace", "_search_credits"]
 
 
 def test_dict_com_chaves_tupla_mantem_indice_simples():

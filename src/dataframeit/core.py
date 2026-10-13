@@ -1425,7 +1425,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
-        return from_pandas(df_pandas, conversion_info, status_col)
+        return from_pandas(df_pandas, conversion_info, status_col, expected_columns)
 
     # Os resultados são gravados por rótulo (df.at); com rótulo repetido, o
     # resultado de uma linha cairia em outra. Um checkpoint já concluído, que
@@ -1600,7 +1600,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
-    return from_pandas(df_pandas, conversion_info, status_col)
+    return from_pandas(df_pandas, conversion_info, status_col, expected_columns)
 
 
 def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)

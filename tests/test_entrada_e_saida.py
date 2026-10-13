@@ -2,14 +2,17 @@
 
 import logging
 import warnings
+from datetime import date
+from decimal import Decimal
+from typing import Optional, Union
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from dataframeit import ProviderError, core, dataframeit
+from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
 
 
@@ -21,6 +24,33 @@ class ModeloLista(BaseModel):
     tags: list[str]
 
 
+class ModeloNotaInteira(BaseModel):
+    nota: int
+
+
+class ModeloNotaDecimal(BaseModel):
+    nota: float
+
+
+class ModeloNotaMista(BaseModel):
+    nota: Union[int, float]
+
+
+class ModeloContagem(BaseModel):
+    x: str
+    n: Optional[int] = None
+
+
+class ModeloFlag(BaseModel):
+    relevante: bool
+
+
+class ModeloFlagEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    relevante: bool
+
+
 def _responde(**campos):
     def call_langchain(text, *args, **kwargs):
         return {
@@ -29,6 +59,24 @@ def _responde(**campos):
         }
 
     return call_langchain
+
+
+def _responde_em_sequencia(*respostas):
+    """Uma resposta por chamada; a que for exceção é levantada."""
+    fila = iter(respostas)
+
+    def call_langchain(text, *args, **kwargs):
+        resposta = next(fila)
+        if isinstance(resposta, Exception):
+            raise resposta
+        return {"data": resposta, "usage": None}
+
+    return call_langchain
+
+
+def _responde_em_sequencia_com_uso(uso, *respostas):
+    sem_uso = _responde_em_sequencia(*respostas)
+    return lambda text, *args, **kwargs: {**sem_uso(text), "usage": uso}
 
 
 def _rodar(df, questions=Modelo, llm=None, **opcoes):
@@ -610,3 +658,203 @@ def test_resumo_sem_requisicao_concluida_omite_a_taxa():
     assert "METRICAS DE THROUGHPUT" in saida
     assert "TPM (tokens/min): 0" in saida
     assert "Requisicoes" not in saida
+
+
+# =============================================================================
+# Entrada polars: colunas que a execução não escreve
+# =============================================================================
+
+# 2**53 + 1, o primeiro inteiro que o float64 arredonda.
+_ID_GRANDE = 9007199254740993
+
+# Um tipo por coluna que a ida e volta pelo pandas trocaria ou arredondaria.
+_COLUNAS_POLARS = {
+    "int64_com_nulo": lambda pl: pl.Series([_ID_GRANDE, None], dtype=pl.Int64),
+    "uint64_com_nulo": lambda pl: pl.Series([2**64 - 1, None], dtype=pl.UInt64),
+    "float_com_nan_e_nulo": lambda pl: pl.Series([float("nan"), None], dtype=pl.Float64),
+    "date": lambda pl: pl.Series([date(2024, 1, 2), None], dtype=pl.Date),
+    "enum": lambda pl: pl.Series(["a", None], dtype=pl.Enum(["a", "b"])),
+    "decimal": lambda pl: pl.Series([Decimal("1.10"), None], dtype=pl.Decimal(10, 2)),
+    "array": lambda pl: pl.Series([[1, 2], [3, 4]], dtype=pl.Array(pl.Int64, 2)),
+    "struct_com_inteiro_grande": lambda pl: pl.Series(
+        [{"id": _ID_GRANDE}, {"id": None}], dtype=pl.Struct({"id": pl.Int64})
+    ),
+    "lista_com_inteiro_grande": lambda pl: pl.Series(
+        [[_ID_GRANDE, None], [1]], dtype=pl.List(pl.Int64)
+    ),
+    "null": lambda pl: pl.Series([None, None], dtype=pl.Null),
+    "object": lambda pl: pl.Series([{1}, None], dtype=pl.Object),
+}
+
+
+@pytest.mark.parametrize("tipo", _COLUNAS_POLARS)
+def test_coluna_polars_que_a_execucao_nao_escreve_volta_como_entrou(tipo):
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame({"texto": ["a", "b"], "c": _COLUNAS_POLARS[tipo](pl)})
+
+    resultado, _ = _rodar(entrada)
+
+    assert resultado.columns == ["texto", "c", "x"]
+    assert resultado["c"].dtype == entrada["c"].dtype
+    # Series.equals não compara Object, nem Decimal no polars 0.20.
+    if entrada["c"].dtype in (pl.Object, pl.Decimal):
+        assert resultado["c"].to_list() == entrada["c"].to_list()
+    else:
+        assert resultado["c"].equals(entrada["c"])
+
+
+def test_saida_polars_mantem_cada_linha_com_o_seu_resultado():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {"texto": ["a", "b", "c"], "id": pl.Series([_ID_GRANDE, None, 1], dtype=pl.Int64)}
+    )
+
+    def llm(text, *args, **kwargs):
+        if text.endswith("b"):
+            msg = "falhou"
+            raise ValueError(msg)
+        return {"data": {"x": text[-1]}, "usage": None}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        resultado, _ = _rodar(entrada, llm=llm, max_retries=1)
+
+    assert resultado["id"].to_list() == [_ID_GRANDE, None, 1]
+    assert resultado["x"].to_list() == ["a", None, "c"]
+    assert resultado["_dataframeit_status"].to_list() == ["processed", "error", "processed"]
+
+
+def test_campo_reprocessado_em_saida_polars_sai_com_o_tipo_da_resposta_nova():
+    pl = pytest.importorskip("polars")
+    primeira, _ = _rodar(
+        pl.DataFrame({"texto": ["a", "b"]}), questions=ModeloNotaInteira, llm=_responde(nota=7)
+    )
+    assert primeira["nota"].dtype == pl.Int64
+
+    segunda, _ = _rodar(
+        primeira, questions=ModeloNotaDecimal, llm=_responde(nota=7.5), reprocess_columns=["nota"]
+    )
+
+    assert segunda["nota"].to_list() == [7.5, 7.5]
+
+
+def test_retomada_de_saida_polars_nao_trunca_a_resposta_nova():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            entrada,
+            questions=ModeloNotaMista,
+            llm=_responde_em_sequencia({"nota": 7}, ProviderAbortError("limite")),
+        )
+    assert interrompida["nota"].dtype == pl.Int64
+
+    retomada, _ = _rodar(
+        interrompida,
+        questions=ModeloNotaMista,
+        llm=_responde_em_sequencia({"nota": 8.5}, {"nota": 9.9}),
+        resume=True,
+    )
+
+    assert retomada["nota"].to_list() == [7.0, 8.5, 9.9]
+
+
+def test_retomada_de_saida_polars_sem_resposta_tipa_o_campo_pelas_respostas():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            entrada,
+            questions=ModeloContagem,
+            llm=_responde_em_sequencia(ProviderAbortError("limite")),
+        )
+    assert interrompida["n"].null_count() == 3
+
+    retomada, _ = _rodar(
+        interrompida,
+        questions=ModeloContagem,
+        llm=_responde_em_sequencia({"x": "p", "n": 1}, {"x": "q"}, {"x": "r", "n": 3}),
+        resume=True,
+    )
+
+    assert retomada["n"].dtype == pl.Int64
+    assert retomada["n"].to_list() == [1, None, 3]
+
+
+def test_saida_polars_ja_concluida_devolve_o_campo_de_lista_normalizado():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {"texto": ["a"], "tags": ['["p", "q"]'], "_dataframeit_status": ["processed"]}
+    )
+
+    resultado, llm = _rodar(entrada, questions=ModeloLista, resume=True)
+
+    llm.assert_not_called()
+    assert resultado["tags"].to_list() == [["p", "q"]]
+
+
+def test_entrada_polars_com_colunas_existentes_volta_igual():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {"texto": ["a"], "x": [date(2024, 1, 2)], "id": pl.Series([None], dtype=pl.Int64)}
+    )
+
+    with pytest.warns(UserWarning, match="já existem"):
+        resultado, llm = _rodar(entrada, resume=False)
+
+    llm.assert_not_called()
+    assert resultado.schema == entrada.schema
+    assert resultado.equals(entrada)
+
+
+def test_entrada_polars_vazia_mantem_o_tipo_das_colunas():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {"texto": pl.Series([], dtype=pl.Utf8), "dia": pl.Series([], dtype=pl.Date)}
+    )
+
+    resultado, _ = _rodar(entrada)
+
+    assert resultado.columns == ["texto", "dia", "x"]
+    assert resultado["dia"].dtype == pl.Date
+
+
+def test_retomada_de_saida_polars_traz_os_tokens_das_linhas_novas():
+    pl = pytest.importorskip("polars")
+    uso = {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            llm=_responde_em_sequencia_com_uso(uso, {"x": "p"}, ProviderAbortError("limite")),
+            track_tokens=True,
+        )
+    assert interrompida["_input_tokens"].to_list() == [3, None]
+
+    retomada, _ = _rodar(
+        interrompida,
+        llm=_responde_em_sequencia_com_uso(uso, {"x": "q"}),
+        track_tokens=True,
+        resume=True,
+    )
+
+    assert retomada["_input_tokens"].to_list() == [3, 3]
+    assert retomada["_output_tokens"].to_list() == [2, 2]
+
+
+@pytest.mark.parametrize("modelo", [ModeloFlag, ModeloFlagEstrita])
+def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
+    """Um bool lido de volta de SQLite pelo polars chega como Int64 0/1."""
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "relevante": pl.Series([1, 0, None], dtype=pl.Int64),
+            "_dataframeit_status": ["processed", "processed", None],
+        }
+    )
+
+    resultado, llm = _rodar(entrada, questions=modelo, llm=_responde(relevante=True), resume=True)
+
+    assert llm.call_count == 1
+    assert resultado["relevante"].dtype == pl.Boolean
+    assert resultado["relevante"].to_list() == [True, False, True]
