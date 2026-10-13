@@ -334,6 +334,16 @@ class TestEntradaPolars:
 
         assert result[coluna].to_list() == ["depois", "error"]
 
+    def test_coluna_que_o_arrow_nao_tipa_sai_como_object_com_aviso(self):
+        df = pd.DataFrame({"a": [1, "dois"], "b": ["x", "y"]})
+
+        with pytest.warns(UserWarning, match=r"\['a'\].*Object"):
+            result = from_pandas(df, True)
+
+        assert result["a"].dtype == pl.Object
+        assert result["a"].to_list() == [1, "dois"]
+        assert result["b"].to_list() == ["x", "y"]
+
     def test_coluna_de_status_personalizada_que_estava_na_entrada_sai_do_pandas(self):
         data = pl.DataFrame({"texto": ["a", "b"], "st": ["error", None]})
         df, info = to_pandas(data)

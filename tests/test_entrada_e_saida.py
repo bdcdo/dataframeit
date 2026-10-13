@@ -4,13 +4,14 @@ import logging
 import warnings
 from datetime import date
 from decimal import Decimal
-from typing import Optional, Union
+from enum import Enum
+from typing import Any, Optional, Union
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, create_model
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
@@ -49,6 +50,20 @@ class ModeloFlagEstrita(BaseModel):
     model_config = ConfigDict(strict=True)
 
     relevante: bool
+
+
+class Cor(Enum):
+    AZUL = "azul"
+    VERDE = "verde"
+
+
+class ModeloCor(BaseModel):
+    cor: Cor
+
+
+class ModeloMisto(BaseModel):
+    x: str
+    campo: Union[int, str]
 
 
 def _responde(**campos):
@@ -858,3 +873,121 @@ def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
     assert llm.call_count == 1
     assert resultado["relevante"].dtype == pl.Boolean
     assert resultado["relevante"].to_list() == [True, False, True]
+
+
+# =============================================================================
+# Entrada polars: campo do modelo que o Arrow não tipa
+# =============================================================================
+
+# Tipo do campo e as respostas de duas linhas que o Arrow não põe na mesma coluna.
+_CAMPOS_QUE_O_ARROW_NAO_TIPA = {
+    "tupla_heterogenea": (tuple[int, str], [(1, "a"), (2, "b")]),
+    "uniao_com_numero_primeiro": (Union[int, str], [1, "dois"]),
+    "uniao_com_texto_primeiro": (Union[int, str], ["dois", 1]),
+    "any_com_tipos_diferentes": (Any, [1, "x"]),
+    "dict_com_valores_de_tipos_diferentes": (dict[str, Any], [{"a": 1}, {"a": [1]}]),
+    "lista_de_uniao": (list[Union[int, str]], [[1, "a"], [2]]),
+    "lista_de_enum": (list[Cor], [[Cor.AZUL], [Cor.VERDE]]),
+    "inteiro_que_o_float_arredonda_com_float": (Union[int, float], [_ID_GRANDE, 2.5]),
+    "inteiro_acima_do_int64": (int, [2**64 - 1, 1]),
+}
+
+
+def _responde_por_linha(campo, valores):
+    fila = iter(valores)
+    return lambda text, *args, **kwargs: {"data": {campo: next(fila)}, "usage": None}
+
+
+@pytest.mark.parametrize("caso", _CAMPOS_QUE_O_ARROW_NAO_TIPA)
+def test_campo_que_o_arrow_nao_tipa_sai_como_object_com_os_valores_do_pandas(caso):
+    pl = pytest.importorskip("polars")
+    tipo, valores = _CAMPOS_QUE_O_ARROW_NAO_TIPA[caso]
+    modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
+    pandas, _ = _rodar(
+        pd.DataFrame({"texto": ["a", "b"]}),
+        questions=modelo,
+        llm=_responde_por_linha("campo", valores),
+    )
+
+    with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=modelo,
+            llm=_responde_por_linha("campo", valores),
+        )
+
+    assert resultado["campo"].dtype == pl.Object
+    assert resultado["campo"].to_list() == pandas["campo"].tolist() == valores
+
+
+def test_aviso_de_object_nomeia_so_a_coluna_que_o_arrow_nao_tipa():
+    pl = pytest.importorskip("polars")
+    respostas = iter([{"x": "p", "campo": 1}, {"x": "q", "campo": "dois"}])
+
+    with pytest.warns(UserWarning, match="Object") as avisos:
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=ModeloMisto,
+            llm=lambda text, *args, **kwargs: {"data": next(respostas), "usage": None},
+        )
+
+    assert resultado["x"].to_list() == ["p", "q"]
+    assert resultado["x"].dtype != pl.Object
+    (aviso,) = [a for a in avisos if "Object" in str(a.message)]
+    assert "['campo']" in str(aviso.message)
+    # O aviso aponta para quem chamou dataframeit(), que aqui é _rodar.
+    assert aviso.filename == __file__
+
+
+def test_enum_sai_pelo_valor_na_saida_polars():
+    pl = pytest.importorskip("polars")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=ModeloCor,
+            llm=_responde_por_linha("cor", [Cor.AZUL, Cor.VERDE]),
+        )
+
+    assert resultado["cor"].to_list() == ["azul", "verde"]
+    assert resultado["cor"].dtype != pl.Object
+
+
+def test_campo_que_o_arrow_nao_tipa_com_entrada_polars_series():
+    pl = pytest.importorskip("polars")
+
+    with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
+        resultado, _ = _rodar(
+            pl.Series(["a", "b"]),
+            questions=create_model("ModeloDoCaso", campo=(Union[int, str], ...)),
+            llm=_responde_por_linha("campo", [1, "dois"]),
+        )
+
+    assert resultado["campo"].to_list() == [1, "dois"]
+
+
+def test_saida_polars_com_coluna_object_e_retomada():
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(Union[int, str], ...))
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always")
+        interrompida, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=modelo,
+            llm=_responde_em_sequencia(
+                {"campo": 1}, {"campo": "dois"}, ProviderAbortError("limite")
+            ),
+        )
+    mensagens = [str(a.message) for a in avisos]
+    assert any("interrompida" in mensagem for mensagem in mensagens)
+    assert any("Object" in mensagem for mensagem in mensagens)
+    assert interrompida["campo"].dtype == pl.Object
+
+    with pytest.warns(UserWarning, match="Object"):
+        retomada, llm = _rodar(
+            interrompida, questions=modelo, llm=_responde_em_sequencia({"campo": 3}), resume=True
+        )
+
+    assert llm.call_count == 1
+    assert retomada["campo"].to_list() == [1, "dois", 3]

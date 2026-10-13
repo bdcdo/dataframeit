@@ -113,6 +113,8 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 | `list` | `pd.DataFrame` com índice numérico |
 | `dict` | `pd.DataFrame` com chaves como índice |
 
+Com entrada polars, as colunas de entrada que não são campo do modelo voltam como entraram, com o mesmo tipo e os mesmos valores. Na saída polars, um campo `Enum` sai pelo valor do membro. Quando as respostas de um campo não cabem numa coluna tipada do polars, como um `Union[int, str]` que recebeu número numa linha e texto em outra, a coluna sai com o tipo `Object`, com os objetos Python como o modelo os devolveu, e um aviso diz quais colunas são; converta-as antes de gravar em parquet.
+
 ### Colunas Adicionadas
 
 | Coluna | Quando existe | Conteúdo |
