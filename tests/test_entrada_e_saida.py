@@ -719,8 +719,8 @@ def test_coluna_polars_que_a_execucao_nao_escreve_volta_como_entrou(tipo):
 
     assert resultado.columns == ["texto", "c", "x"]
     assert resultado["c"].dtype == entrada["c"].dtype
-    # Series.equals não compara Object, nem Decimal no polars 0.20.
-    if entrada["c"].dtype in (pl.Object, pl.Decimal):
+    # Series.equals não compara Object.
+    if entrada["c"].dtype == pl.Object:
         assert resultado["c"].to_list() == entrada["c"].to_list()
     else:
         assert resultado["c"].equals(entrada["c"])

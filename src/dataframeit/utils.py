@@ -251,15 +251,17 @@ def from_pandas(
                 continue
             values = _enums_by_value(df[col])
             # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
-            # pyarrow recusam, seja qual for o erro (ValueError, TypeError,
+            # pyarrow recusam, seja qual for a exceção (ValueError, TypeError,
             # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
+            # O pânico do polars não é Exception e passa por aqui.
             try:
                 columns.append(pl.from_pandas(values))
             except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
-                # O construtor de Series inspeciona os valores mesmo com dtype=pl.Object:
-                # quando o primeiro valor não nulo é membro de Enum, troca cada valor
-                # pelo `.value`, e levanta erro no que não o tem, como o None. O
-                # map_elements guarda o que a função devolve, sem inspecionar.
+                # Há versões do polars em que o construtor de Series inspeciona os
+                # valores mesmo com dtype=pl.Object: quando o primeiro valor não nulo
+                # é membro de Enum, troca cada valor pelo `.value`, e levanta erro no
+                # que não o tem, como o None. O map_elements guarda o que a função
+                # devolve, sem inspecionar.
                 items = values.tolist()
                 positions = pl.Series(col, range(len(items)), dtype=pl.Int64)
                 columns.append(positions.map_elements(items.__getitem__, return_dtype=pl.Object))
