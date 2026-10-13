@@ -1,7 +1,7 @@
 # DataFrameIt
 
 [![PyPI version](https://badge.fury.io/py/dataframeit.svg)](https://badge.fury.io/py/dataframeit)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://github.com/bdcdo/dataframeit/actions/workflows/tests.yml/badge.svg)](https://github.com/bdcdo/dataframeit/actions/workflows/tests.yml)
 

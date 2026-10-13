@@ -8,7 +8,7 @@ version = "0.10.0"
 description = "Enrich DataFrames with LLM-based text analysis. Extract structured information from text with Pydantic."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Bruno da Cunha de Oliveira" }
 ]
@@ -41,7 +41,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -87,7 +86,8 @@ codex = [
 ]
 polars = [
     "polars>=0.20",
-    "pyarrow>=10",
+    # A 10.0.0 não tem wheel para Python 3.11, e a compilação do fonte falha.
+    "pyarrow>=10.0.1",
 ]
 excel = [
     "openpyxl>=3.1",
@@ -111,7 +111,7 @@ all = [
     "langchain-exa>=1.0.0",
     "claude-agent-sdk>=0.1.48",
     "polars>=0.20",
-    "pyarrow>=10",
+    "pyarrow>=10.0.1",
     "openpyxl>=3.1",
 ]
 dev = [
@@ -145,7 +145,7 @@ include = [
 packages = ["src/dataframeit"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]

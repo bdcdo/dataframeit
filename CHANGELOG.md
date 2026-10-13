@@ -32,6 +32,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Com `resume=True` e `checkpoint_path` existente, rodar a mesma chamada de novo continua do checkpoint, sem carregá-lo à mão; antes, a execução recomeçava e o sobrescrevia. `<checkpoint>.dataframeit.json`, gravado a cada gravação do checkpoint, guarda a assinatura da execução, o hash do texto de cada linha e o do próprio arquivo, e o checkpoint só é retomado quando os três batem; com outra configuração ou entrada, a execução avisa e recomeça como antes. Das linhas concluídas, com sucesso ou com erro, vêm também os campos do modelo, sobre o que a entrada trazia neles.
 - No provider `codex`, o app-server roda com `HOME` no diretório isolado da execução, e as skills do usuário, como as de `~/.agents/skills`, deixam de ser carregadas.
 - Com `search_per_field=True`, o modo por grupo também devolve `search_provider` no uso, e o modo por campo devolve os campos na ordem do modelo, como o modo por grupo. O campo pulado por condição é registrado uma vez no log, e não duas.
+- O Python mínimo sobe para 3.11. O 3.10 saiu de suporte em outubro de 2026, e as versões atuais do numpy e do pandas já não o aceitam. Em Python 3.10, o pip continua instalando a última versão publicada que o aceita.
+- O piso do pyarrow nos extras `polars` e `all` sobe para 10.0.1, a primeira versão com wheel para Python 3.11.
 
 ### Corrigido
 

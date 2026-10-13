@@ -355,7 +355,7 @@ def is_complex_type(field_type: object) -> bool:
         args = get_args(field_type)
         return any(is_complex_type(arg) for arg in args if arg is not type(None))
 
-    # types.UnionType para sintaxe X | Y (Python 3.10+)
+    # types.UnionType para sintaxe X | Y
     if isinstance(field_type, types.UnionType):
         args = get_args(field_type)
         return any(is_complex_type(arg) for arg in args if arg is not type(None))
