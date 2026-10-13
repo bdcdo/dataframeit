@@ -12,7 +12,6 @@ import time
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from datetime import time as time_type
-from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -552,11 +551,22 @@ class TestStrictPydanticSchema:
             _to_strict_json_schema(schema)
 
     def test_pattern_do_decimal_e_recusado_pelo_lookahead(self):
-        class Modelo(BaseModel):
-            valor: Decimal
+        # O pattern que o pydantic emite para Decimal até a 2.13, escrito aqui
+        # porque da 2.14 em diante o schema do tipo não traz pattern.
+        schema = {
+            "type": "object",
+            "properties": {
+                "valor": {
+                    "anyOf": [
+                        {"type": "number"},
+                        {"type": "string", "pattern": r"^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$"},
+                    ]
+                }
+            },
+        }
 
         with pytest.raises(ProviderConfigurationError, match="lookahead"):
-            _to_strict_json_schema(Modelo.model_json_schema())
+            _to_strict_json_schema(schema)
 
     @pytest.mark.parametrize(
         ("pattern", "construcao"),
