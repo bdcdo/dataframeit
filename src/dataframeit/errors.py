@@ -429,9 +429,10 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     Returns:
         Mensagem de erro amigável com instruções de como resolver.
     """
-    # As duas classes de resposta recusada decidem pela classe: a mensagem não
-    # traz o texto analisado, mas um número como '401' no caminho de um campo
-    # não pode virar erro de chave.
+    # As duas classes de resposta recusada decidem pela classe: a mensagem pode
+    # trazer texto da resposta no caminho e na regra de um erro de validação
+    # (ver validation_error_summary), e um número como '401' na chave de um dict
+    # não pode virar erro de credencial.
     if isinstance(error, ProviderRejectedOutputError):
         return (
             "RESPOSTA RECUSADA PELA VALIDAÇÃO DO MODELO PYDANTIC\n"

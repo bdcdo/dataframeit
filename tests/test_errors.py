@@ -5,6 +5,7 @@ import pytest
 from dataframeit.errors import (
     ProviderError,
     ProviderOutputError,
+    ProviderRejectedOutputError,
     ProviderTransientError,
     _infer_provider_info,
     get_friendly_error_message,
@@ -156,6 +157,23 @@ def test_resposta_fora_do_contrato_nao_vira_erro_de_credencial():
 
     assert amigavel.startswith("RESPOSTA FORA DO CONTRATO DE SAÍDA")
     assert "login" not in amigavel
+
+
+def test_mensagem_da_resposta_fora_do_contrato_traz_o_detalhe_do_erro():
+    erro = ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=401))
+
+    assert str(erro) in get_friendly_error_message(erro, "codex")
+
+
+# Só os providers do LangChain levam o erro de volta ao modelo; o claude_code
+# repete o pedido, e a mensagem da classe vale para os dois caminhos.
+def test_mensagem_da_resposta_recusada_nao_promete_retorno_ao_modelo():
+    erro = ProviderRejectedOutputError("Falha na validação da resposta: 1 erro(s): campo: regra")
+
+    amigavel = get_friendly_error_message(erro, "claude_code")
+
+    assert str(erro) in amigavel
+    assert "ao modelo" not in amigavel.lower()
 
 
 def test_numero_no_caminho_da_validacao_nao_conta_como_rate_limit():

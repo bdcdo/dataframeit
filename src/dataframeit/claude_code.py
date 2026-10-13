@@ -238,8 +238,10 @@ def call_claude_code(
             msg = "Claude Code SDK retornou resposta vazia"
             raise ValueError(msg)
 
-        # A recusa sai como ProviderRejectedOutputError, transitória pela classe e
-        # sem o texto da resposta na mensagem (ver validation_error_summary).
+        # A recusa sai como ProviderRejectedOutputError, transitória pela classe.
+        # A mensagem não leva o valor recusado, mas na falha de validação o
+        # caminho e a regra trazem texto da resposta quando o Pydantic o põe
+        # ali (ver validation_error_summary).
         try:
             parsed = parse_json(response_text)
         except ValueError as err:
