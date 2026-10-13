@@ -7,6 +7,7 @@ Testa conversão de/para:
 - dict
 """
 
+import datetime
 import importlib.util
 import sys
 
@@ -30,6 +31,7 @@ from dataframeit.utils import (
     ORIGINAL_TYPE_POLARS_DF,
     ORIGINAL_TYPE_POLARS_SERIES,
     ConversionInfo,
+    _restore_polars_dtypes,
     from_pandas,
     to_pandas,
 )
@@ -304,3 +306,43 @@ def test_sem_polars_a_entrada_pandas_continua_funcionando(monkeypatch):
     assert copia.pl is None
     assert info.original_type == ORIGINAL_TYPE_PANDAS_DF
     assert copia.from_pandas(convertido, info).equals(df)
+
+
+@pytest.mark.skipif(not HAS_POLARS, reason="polars não instalado")
+class TestPolarsDtypeRoundTrip:
+    """Colunas do polars que o dataframeit não toca voltam com o tipo de entrada."""
+
+    def test_integer_with_null_keeps_precision_and_dtype(self):
+        ids = [9007199254740993, None, 1234567890123456789]
+        data = pl.DataFrame({"texto": ["a", "b", "c"], "id": pl.Series(ids, dtype=pl.Int64)})
+
+        df, info = to_pandas(data)
+        df["resultado"] = ["x", "y", "z"]
+        result = from_pandas(df, info)
+
+        assert result["id"].dtype == pl.Int64
+        assert result["id"].to_list() == ids
+
+    def test_integer_without_null_is_unchanged(self):
+        data = pl.DataFrame({"id": pl.Series([1, 2], dtype=pl.UInt8)})
+
+        df, info = to_pandas(data)
+
+        assert df["id"].tolist() == [1, 2]
+        assert from_pandas(df, info)["id"].dtype == pl.UInt8
+
+    def test_date_column_stays_date(self):
+        data = pl.DataFrame({"texto": ["a"], "dia": [datetime.date(2024, 1, 2)]})
+
+        df, info = to_pandas(data)
+        result = from_pandas(df, info)
+
+        assert result["dia"].dtype == pl.Date
+        assert result["dia"].to_list() == [datetime.date(2024, 1, 2)]
+
+    def test_column_that_rejects_the_original_dtype_is_left_alone(self):
+        result = pl.DataFrame({"id": ["abc"]})
+
+        restored = _restore_polars_dtypes(result, {"id": pl.Int64})
+
+        assert restored["id"].dtype == pl.String

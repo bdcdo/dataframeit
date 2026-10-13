@@ -90,6 +90,7 @@ class ConversionInfo:
     original_type: str
     original_index: pd.Index | list | None = None  # Índice/chaves originais para reconversão
     series_name: Hashable | None = None  # Nome original da Series (se aplicável)
+    polars_schema: dict[str, Any] | None = None  # Tipos do DataFrame polars de entrada
 
 
 def parse_json(resposta: str) -> dict:
@@ -152,7 +153,10 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return data.to_pandas(), ConversionInfo(original_type=ORIGINAL_TYPE_POLARS_DF)
+        return _polars_to_pandas(data), ConversionInfo(
+            original_type=ORIGINAL_TYPE_POLARS_DF,
+            polars_schema=dict(data.schema),
+        )
 
     # pandas Series
     if isinstance(data, pd.Series):
@@ -245,8 +249,38 @@ def from_pandas(
 
     df = _reorder_columns(df, status_col)
     if original_type in _POLARS_INPUTS and pl is not None:
-        return pl.from_pandas(df)
+        result = pl.from_pandas(df)
+        if conversion_info.polars_schema:
+            result = _restore_polars_dtypes(result, conversion_info.polars_schema)
+        return result
     return df
+
+
+def _polars_to_pandas(data: pl.DataFrame) -> pd.DataFrame:
+    """Converte para pandas mantendo inteiros com nulo como inteiros anuláveis.
+
+    `to_pandas()` leva um inteiro com nulo a float64, o que arredonda ids acima de 2**53.
+    """
+    df = data.to_pandas()
+    for name, dtype in data.schema.items():
+        if dtype.is_integer() and data[name].null_count() > 0:
+            df[name] = pd.array(data[name].to_list(), dtype=str(dtype))
+    return df
+
+
+def _restore_polars_dtypes(result: pl.DataFrame, schema: dict[str, Any]) -> pl.DataFrame:
+    """Devolve às colunas de entrada o tipo polars que elas tinham.
+
+    A volta pelo pandas troca `Date` por `Datetime`, por exemplo. Uma coluna que não aceita
+    o tipo original fica como está.
+    """
+    for name, dtype in schema.items():
+        if name in result.columns and result.schema[name] != dtype:
+            try:
+                result = result.with_columns(pl.col(name).cast(dtype))
+            except pl.exceptions.PolarsError:
+                continue
+    return result
 
 
 def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") -> pd.DataFrame:
