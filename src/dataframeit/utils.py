@@ -370,8 +370,6 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
     annotation = _without_optional(annotation)
     origin, args = get_origin(annotation), get_args(annotation)
     if (origin or annotation) is dict:
-        # dtype=object porque a coluna só de NaN, como a do checkpoint CSV relido
-        # sem nenhuma resposta, seria inferida como float.
         values = pd.Series(
             [
                 json.dumps(value, ensure_ascii=False, default=_json_default)
@@ -380,8 +378,9 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
                 for value in values
             ],
             name=values.name,
-            dtype=object,
         )
+        # A coluna de texto JSON sem nenhuma resposta segue a regra do campo str.
+        annotation = str
     series = polars.from_pandas(values)
     item = args[0] if origin is list and args else annotation
     dtype = next((dtype for python_type, dtype in scalars if item is python_type), None)

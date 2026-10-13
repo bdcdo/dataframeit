@@ -316,14 +316,15 @@ class TestEntradaPolars:
         assert from_pandas(df, info)["nota"].to_list() == [7]
         assert from_pandas(df, info, model_columns={"nota": float})["nota"].to_list() == [7.5]
 
-    def test_campo_dict_so_com_nan_fica_com_o_tipo_inferido(self):
+    def test_campo_dict_sem_nenhuma_resposta_sai_como_texto(self):
         # O checkpoint CSV relido traz NaN na linha sem resposta.
         df, info = to_pandas(pl.DataFrame({"texto": ["a"]}))
         df["campo"] = pd.Series([float("nan")], dtype=object)
 
         result = from_pandas(df, info, model_columns={"campo": dict[str, int]})
 
-        assert result["campo"].dtype == pl.from_pandas(df["campo"]).dtype
+        assert result["campo"].dtype == pl.String
+        assert result["campo"].to_list() == [None]
 
     @pytest.mark.parametrize(
         "coluna",
