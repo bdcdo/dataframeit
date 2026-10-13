@@ -1,8 +1,10 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
 import pytest
+from pydantic import ValidationError, create_model
 
 from dataframeit.errors import (
+    MAX_REJECTED_RULES,
     ProviderError,
     ProviderOutputError,
     ProviderRejectedOutputError,
@@ -11,6 +13,7 @@ from dataframeit.errors import (
     get_friendly_error_message,
     is_rate_limit_error,
     retry_with_backoff,
+    validation_error_summary,
 )
 
 
@@ -142,16 +145,17 @@ def test_falha_ao_anotar_o_resultado_ganha_nova_tentativa():
     assert resultado["_retry_info"]["retries"] == 1
 
 
-# O caminho de um erro de validação pode trazer texto da resposta, como a chave
-# de um dict; um número nele não pode decidir a categoria do erro.
-_CAMINHO_COM_NUMERO = (
+# O resumo de um erro de validação pode trazer texto da resposta, como a
+# mensagem de um validador próprio; um número nele não pode decidir a categoria
+# do erro.
+_RESUMO_COM_NUMERO = (
     "Resposta do Codex não corresponde ao schema: 1 erro(s): "
-    "contagens.art. {numero} da CLT: Input should be a valid integer"
+    "fundamento: Value error, art. {numero} da CLT não consta da lista"
 )
 
 
 def test_resposta_fora_do_contrato_nao_vira_erro_de_credencial():
-    erro = ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=401))
+    erro = ProviderOutputError(_RESUMO_COM_NUMERO.format(numero=401))
 
     amigavel = get_friendly_error_message(erro, "codex")
 
@@ -160,9 +164,24 @@ def test_resposta_fora_do_contrato_nao_vira_erro_de_credencial():
 
 
 def test_mensagem_da_resposta_fora_do_contrato_traz_o_detalhe_do_erro():
-    erro = ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=401))
+    erro = ProviderOutputError(_RESUMO_COM_NUMERO.format(numero=401))
+    amigavel = get_friendly_error_message(erro, "codex")
 
-    assert str(erro) in get_friendly_error_message(erro, "codex")
+    assert str(erro) in amigavel
+    assert "não é tentada de novo" in amigavel
+
+
+def test_resumo_da_validacao_conta_todos_os_erros_e_lista_ate_o_teto():
+    campos = {f"campo_{i}": (int, ...) for i in range(MAX_REJECTED_RULES + 5)}
+    # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
+    modelo = create_model("MuitosCampos", **campos)  # ty: ignore[no-matching-overload]
+    with pytest.raises(ValidationError) as recusa:
+        modelo.model_validate({})
+
+    resumo = validation_error_summary(recusa.value)
+
+    assert resumo.startswith(f"{MAX_REJECTED_RULES + 5} erro(s): ")
+    assert resumo.count("Field required") == MAX_REJECTED_RULES
 
 
 # Só os providers do LangChain levam o erro de volta ao modelo; o claude_code
@@ -176,8 +195,8 @@ def test_mensagem_da_resposta_recusada_nao_promete_retorno_ao_modelo():
     assert "ao modelo" not in amigavel.lower()
 
 
-def test_numero_no_caminho_da_validacao_nao_conta_como_rate_limit():
-    erro = ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=429))
+def test_numero_no_resumo_da_validacao_nao_conta_como_rate_limit():
+    erro = ProviderOutputError(_RESUMO_COM_NUMERO.format(numero=429))
 
     assert is_rate_limit_error(erro) is False
 
