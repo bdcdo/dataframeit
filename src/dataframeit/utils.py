@@ -262,17 +262,18 @@ def from_pandas(
 
 
 def _polars_to_pandas(data: PolarsDataFrame) -> pd.DataFrame:
-    """Converte para pandas mantendo o inteiro com nulo como inteiro anulável.
+    """Converte para pandas sem passar o inteiro com nulo por float.
 
     O `to_pandas()` do polars leva o inteiro com nulo a float64, que arredonda
-    valores acima de 2**53. É o caso do campo inteiro do modelo numa saída
-    interrompida, que volta como entrada na retomada com as linhas pendentes
-    nulas, e de toda coluna inteira com nulo que o checkpoint grava.
+    valores acima de 2**53. A coluna vem como objetos, com int do Python e
+    None: é como a execução guarda o campo inteiro do modelo, que numa saída
+    interrompida volta como entrada na retomada com as linhas pendentes nulas,
+    e é o que a validação strict aceita de volta.
     """
     df = data.to_pandas()
     for name, dtype in data.schema.items():
         if dtype.is_integer() and data[name].null_count() > 0:
-            df[name] = pd.array(data[name].to_list(), dtype=str(dtype))
+            df[name] = pd.Series(data[name].to_list(), index=df.index, dtype=object)
     return df
 
 
@@ -310,12 +311,12 @@ def _column_rank(col: Hashable, status_col: str) -> tuple[int, int]:
     """Família da coluna e posição dentro dela, na ordem em que a saída as traz.
 
     1. Colunas do usuário (originais + campos do modelo)
-    2. Colunas de trace (_trace_*)
+    2. Colunas de trace (_trace e _trace_*)
     3. Colunas de busca (_search_credits)
     4. Colunas de tokens, na ordem de TOKEN_COLUMNS
     5. Colunas de controle (status e _error_details)
     """
-    if str(col).startswith("_trace_"):
+    if col == "_trace" or str(col).startswith("_trace_"):
         return (1, 0)
     if col == "_search_credits":
         return (2, 0)
@@ -330,9 +331,11 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") 
     """Reordena as colunas para que as da execução fiquem no final.
 
     A ordem é a de `_column_rank`; dentro de cada família, menos a de tokens,
-    as colunas ficam na ordem em que estavam.
+    as colunas ficam na ordem em que estavam. A seleção é por posição, para que
+    um rótulo repetido não traga a coluna mais de uma vez.
     """
-    return df[sorted(df.columns, key=lambda col: _column_rank(col, status_col))]
+    order = sorted(range(df.shape[1]), key=lambda i: _column_rank(df.columns[i], status_col))
+    return df.iloc[:, order]
 
 
 # =============================================================================

@@ -285,8 +285,8 @@ class TestEntradaPolars:
         df["resultado"] = ["x", "y", "z"]
         result = from_pandas(df, info)
 
-        assert df["id"].dtype == "Int64"
-        assert df["id"].tolist()[0] == ids[0]
+        assert df["id"].tolist() == ids
+        assert type(df["id"].iloc[0]) is int
         assert result["id"].dtype == pl.Int64
         assert result["id"].to_list() == ids
         assert result["resultado"].to_list() == ["x", "y", "z"]
@@ -316,14 +316,25 @@ class TestEntradaPolars:
         assert from_pandas(df, info)["nota"].to_list() == [7]
         assert from_pandas(df, info, model_columns=["nota"])["nota"].to_list() == [7.5]
 
-    def test_coluna_de_controle_que_estava_na_entrada_sai_do_pandas(self):
-        data = pl.DataFrame({"texto": ["a", "b"], "_dataframeit_status": ["error", None]})
+    @pytest.mark.parametrize(
+        "coluna",
+        [
+            "_trace",
+            "_trace_campo",
+            "_search_credits",
+            "_input_tokens",
+            "_dataframeit_status",
+            "_error_details",
+        ],
+    )
+    def test_coluna_de_controle_que_estava_na_entrada_sai_do_pandas(self, coluna):
+        data = pl.DataFrame({"texto": ["a", "b"], coluna: ["antes", None]})
         df, info = to_pandas(data)
-        df["_dataframeit_status"] = ["processed", "error"]
+        df[coluna] = ["depois", "error"]
 
         result = from_pandas(df, info)
 
-        assert result["_dataframeit_status"].to_list() == ["processed", "error"]
+        assert result[coluna].to_list() == ["depois", "error"]
 
     def test_coluna_de_status_personalizada_que_estava_na_entrada_sai_do_pandas(self):
         data = pl.DataFrame({"texto": ["a", "b"], "st": ["error", None]})
@@ -332,6 +343,23 @@ class TestEntradaPolars:
 
         assert from_pandas(df, info)["st"].to_list() == ["error", None]
         assert from_pandas(df, info, "st")["st"].to_list() == ["processed", "error"]
+
+
+def test_rotulo_repetido_nao_duplica_coluna_na_reordenacao():
+    df = pd.DataFrame([[1, 2, 3, 4]], columns=["_input_tokens", "a", "_input_tokens", "a"])
+
+    resultado = from_pandas(df, ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF))
+
+    assert list(resultado.columns) == ["a", "a", "_input_tokens", "_input_tokens"]
+    assert resultado.to_numpy().tolist() == [[2, 4, 1, 3]]
+
+
+def test_coluna_trace_sem_sufixo_fica_com_as_de_trace():
+    df = pd.DataFrame([[1, 2, 3]], columns=["_trace", "texto", "_search_credits"])
+
+    resultado = from_pandas(df, ConversionInfo(original_type=ORIGINAL_TYPE_PANDAS_DF))
+
+    assert list(resultado.columns) == ["texto", "_trace", "_search_credits"]
 
 
 def test_dict_com_chaves_tupla_mantem_indice_simples():

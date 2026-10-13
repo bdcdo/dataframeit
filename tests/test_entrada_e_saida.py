@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
@@ -41,6 +41,13 @@ class ModeloContagem(BaseModel):
     n: Optional[int] = None
 
 
+class ModeloContagemEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    x: str
+    n: Optional[int] = None
+
+
 def _responde(**campos):
     def call_langchain(text, *args, **kwargs):
         return {
@@ -62,6 +69,11 @@ def _responde_em_sequencia(*respostas):
         return {"data": resposta, "usage": None}
 
     return call_langchain
+
+
+def _responde_em_sequencia_com_uso(uso, *respostas):
+    sem_uso = _responde_em_sequencia(*respostas)
+    return lambda text, *args, **kwargs: {**sem_uso(text), "usage": uso}
 
 
 def _rodar(df, questions=Modelo, llm=None, **opcoes):
@@ -766,19 +778,20 @@ def test_retomada_de_saida_polars_sem_resposta_tipa_o_campo_pelas_respostas():
     assert retomada["n"].to_list() == [1, None, 3]
 
 
-def test_retomada_de_saida_polars_mantem_o_inteiro_grande_ja_respondido():
+@pytest.mark.parametrize("modelo", [ModeloContagem, ModeloContagemEstrita])
+def test_retomada_de_saida_polars_mantem_o_inteiro_grande_ja_respondido(modelo):
     pl = pytest.importorskip("polars")
     entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
     with pytest.warns(UserWarning, match="interrompida"):
         interrompida, _ = _rodar(
             entrada,
-            questions=ModeloContagem,
+            questions=modelo,
             llm=_responde_em_sequencia({"x": "p", "n": _ID_GRANDE}, ProviderAbortError("limite")),
         )
 
     retomada, _ = _rodar(
         interrompida,
-        questions=ModeloContagem,
+        questions=modelo,
         llm=_responde_em_sequencia({"x": "q"}, {"x": "r", "n": 3}),
         resume=True,
     )
@@ -823,3 +836,25 @@ def test_entrada_polars_vazia_mantem_o_tipo_das_colunas():
 
     assert resultado.columns == ["texto", "dia", "x"]
     assert resultado["dia"].dtype == pl.Date
+
+
+def test_retomada_de_saida_polars_traz_os_tokens_das_linhas_novas():
+    pl = pytest.importorskip("polars")
+    uso = {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            llm=_responde_em_sequencia_com_uso(uso, {"x": "p"}, ProviderAbortError("limite")),
+            track_tokens=True,
+        )
+    assert interrompida["_input_tokens"].to_list() == [3, None]
+
+    retomada, _ = _rodar(
+        interrompida,
+        llm=_responde_em_sequencia_com_uso(uso, {"x": "q"}),
+        track_tokens=True,
+        resume=True,
+    )
+
+    assert retomada["_input_tokens"].to_list() == [3, 3]
+    assert retomada["_output_tokens"].to_list() == [2, 2]
