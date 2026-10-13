@@ -823,9 +823,11 @@ def is_rate_limit_error(error: Exception) -> bool:
     """
     if isinstance(error, ProviderOverloadedError):
         return True
-    # As demais classes do pacote decidem pela classe: a mensagem de uma resposta
-    # recusada traz texto do modelo, em que '429' seria tomado por rate limit.
-    if isinstance(error, (ProviderError, ProviderConfigurationError, ProviderOutputError)):
+    # As transitórias decidem pela classe, e a resposta fora do contrato também:
+    # o resumo da validação traz texto do modelo, em que '429' seria tomado por
+    # rate limit. O ProviderError definitivo segue para o texto, porque um turno
+    # do codex sem código classificável só diz "429 Too Many Requests" na mensagem.
+    if isinstance(error, (ProviderTransientError, ProviderOutputError)):
         return False
     if _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError):
         return True

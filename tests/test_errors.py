@@ -158,12 +158,15 @@ def test_resposta_fora_do_contrato_nao_vira_erro_de_credencial():
     assert "login" not in amigavel
 
 
-@pytest.mark.parametrize(
-    "erro",
-    [
-        ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=429)),
-        ProviderError("Claude Code falhou: art. 429 do CPC"),
-    ],
-)
-def test_erro_definitivo_nao_conta_como_rate_limit_pelo_texto(erro):
+def test_numero_no_caminho_da_validacao_nao_conta_como_rate_limit():
+    erro = ProviderOutputError(_CAMINHO_COM_NUMERO.format(numero=429))
+
     assert is_rate_limit_error(erro) is False
+
+
+# O turno do codex que falha sem código classificável só traz o 429 no texto, e
+# a redução de workers depende de a mensagem ser lida.
+def test_erro_definitivo_com_429_na_mensagem_conta_como_rate_limit():
+    erro = ProviderError("Turno Codex falhou: 429 Too Many Requests")
+
+    assert is_rate_limit_error(erro) is True
