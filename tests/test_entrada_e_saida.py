@@ -41,13 +41,6 @@ class ModeloContagem(BaseModel):
     n: Optional[int] = None
 
 
-class ModeloContagemEstrita(BaseModel):
-    model_config = ConfigDict(strict=True)
-
-    x: str
-    n: Optional[int] = None
-
-
 class ModeloFlag(BaseModel):
     relevante: bool
 
@@ -786,28 +779,6 @@ def test_retomada_de_saida_polars_sem_resposta_tipa_o_campo_pelas_respostas():
 
     assert retomada["n"].dtype == pl.Int64
     assert retomada["n"].to_list() == [1, None, 3]
-
-
-@pytest.mark.parametrize("modelo", [ModeloContagem, ModeloContagemEstrita])
-def test_retomada_de_saida_polars_mantem_o_inteiro_grande_ja_respondido(modelo):
-    pl = pytest.importorskip("polars")
-    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
-    with pytest.warns(UserWarning, match="interrompida"):
-        interrompida, _ = _rodar(
-            entrada,
-            questions=modelo,
-            llm=_responde_em_sequencia({"x": "p", "n": _ID_GRANDE}, ProviderAbortError("limite")),
-        )
-
-    retomada, _ = _rodar(
-        interrompida,
-        questions=modelo,
-        llm=_responde_em_sequencia({"x": "q"}, {"x": "r", "n": 3}),
-        resume=True,
-    )
-
-    assert retomada["n"].dtype == pl.Int64
-    assert retomada["n"].to_list() == [_ID_GRANDE, None, 3]
 
 
 def test_saida_polars_ja_concluida_devolve_o_campo_de_lista_normalizado():

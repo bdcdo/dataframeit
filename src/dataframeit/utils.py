@@ -155,7 +155,7 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return _polars_to_pandas(data), ConversionInfo(
+        return data.to_pandas(), ConversionInfo(
             original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
         )
 
@@ -261,27 +261,6 @@ def from_pandas(
     return df
 
 
-def _polars_to_pandas(data: PolarsDataFrame) -> pd.DataFrame:
-    """Converte para pandas sem arredondar o inteiro com nulo.
-
-    O `to_pandas()` do polars leva o inteiro com nulo a float64. Enquanto todo
-    valor cabe exato no float, a coluna fica assim: é como o pandas a leria de
-    um arquivo, e é a forma que a retomada reconhece num campo int ou bool.
-    Quando algum valor não cabe, acima de 2**53, a coluna vem como objetos, com
-    int do Python e None, que é como a execução guarda o campo inteiro do
-    modelo. É o caso do campo de uma saída interrompida, que volta como entrada
-    na retomada com as linhas pendentes nulas.
-    """
-    df = data.to_pandas()
-    for name, dtype in data.schema.items():
-        if not dtype.is_integer() or data[name].null_count() == 0:
-            continue
-        values = data[name].to_list()
-        if any(value is not None and int(float(value)) != value for value in values):
-            df[name] = pd.Series(values, index=df.index, dtype=object)
-    return df
-
-
 def _untouched_columns(
     source: PolarsDataFrame | None,
     status_col: str,
@@ -292,8 +271,8 @@ def _untouched_columns(
     São as colunas do usuário que não são campo do modelo. A saída as tira de
     `source`, o DataFrame polars de entrada: convertidas de volta do pandas,
     elas trocariam de tipo (Date por Datetime, Enum por Categorical) e trariam
-    arredondado o inteiro acima de 2**53 dentro de Struct e List, que passa por
-    float na ida. As linhas da saída estão na ordem das de `source`, porque a
+    arredondado o inteiro acima de 2**53 que tem nulo na coluna ou está dentro
+    de Struct e List, porque o `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem das de `source`, porque a
     execução grava por rótulo e não remove nem reordena linhas.
 
     Sem `source` (entrada polars.Series, que só traz o texto), todas as colunas
