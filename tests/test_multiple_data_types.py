@@ -10,6 +10,7 @@ Testa conversão de/para:
 import datetime
 import importlib.util
 import sys
+import warnings
 
 import pandas as pd
 import pytest
@@ -31,6 +32,7 @@ from dataframeit.utils import (
     ORIGINAL_TYPE_POLARS_DF,
     ORIGINAL_TYPE_POLARS_SERIES,
     ConversionInfo,
+    _enums_by_value,
     from_pandas,
     to_pandas,
 )
@@ -333,6 +335,49 @@ class TestEntradaPolars:
         result = from_pandas(df, info)
 
         assert result[coluna].to_list() == ["depois", "error"]
+
+    def test_coluna_que_o_arrow_nao_tipa_sai_como_object_com_aviso(self):
+        df = pd.DataFrame({"a": [1, "dois"], "b": ["x", "y"]})
+
+        with pytest.warns(UserWarning, match=r"\['a'\].*Object"):
+            result = from_pandas(df, True)
+
+        assert result["a"].dtype == pl.Object
+        assert result["a"].to_list() == [1, "dois"]
+        assert result["b"].to_list() == ["x", "y"]
+
+    @pytest.mark.parametrize(
+        "valores",
+        [
+            pd.Series([1.5, float("nan")]),
+            pd.Series([1, pd.NA], dtype="Int64"),
+            pd.Series([pd.Timestamp("2024-01-02"), pd.NaT]),
+            pd.Series(["x", None], dtype=object),
+            pd.Series([[1, None], None], dtype=object),
+            pd.Series([None, None], dtype=object),
+            pd.Series([{"n": None}, {"n": 1}], dtype=object),
+        ],
+        ids=[
+            "float_com_nan",
+            "inteiro_com_na",
+            "datetime_com_nat",
+            "texto_com_none",
+            "lista_com_none_dentro",
+            "toda_nula",
+            "dict_com_todos_os_campos_nulos",
+        ],
+    )
+    def test_coluna_com_nulo_continua_tipada_e_sem_aviso(self, valores):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = from_pandas(pd.DataFrame({"a": valores}), True)
+
+        assert result["a"].dtype != pl.Object
+
+    def test_troca_de_enum_devolve_a_mesma_coluna_quando_ela_nao_e_de_objetos(self):
+        valores = pd.Series([1.5, 2.5])
+
+        assert _enums_by_value(valores) is valores
 
     def test_coluna_de_status_personalizada_que_estava_na_entrada_sai_do_pandas(self):
         data = pl.DataFrame({"texto": ["a", "b"], "st": ["error", None]})

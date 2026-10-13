@@ -85,7 +85,7 @@ codex = [
     "openai-codex==0.160.1",
 ]
 polars = [
-    "polars>=0.20",
+    "polars>=1.0",
     # A 10.0.0 não tem wheel para Python 3.11, e a compilação do fonte falha.
     "pyarrow>=10.0.1",
 ]
@@ -110,7 +110,7 @@ all = [
     "langchain-tavily>=0.2.12",
     "langchain-exa>=1.0.0",
     "claude-agent-sdk>=0.1.48",
-    "polars>=0.20",
+    "polars>=1.0",
     "pyarrow>=10.0.1",
     "openpyxl>=3.1",
 ]

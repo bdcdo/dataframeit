@@ -18,6 +18,7 @@ import re
 import sys
 import types
 import typing
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -229,19 +230,7 @@ def from_pandas(
             original_type=ORIGINAL_TYPE_POLARS_DF if was_polars else ORIGINAL_TYPE_PANDAS_DF
         )
 
-    error_col = "_error_details"
-
-    # Remover colunas de status/erro se não houver erros nem linha pendente. A
-    # linha sem status é a que uma interrupção deixou para `resume=True`, e sem a
-    # coluna ela não se distingue das processadas.
-    if status_col in df.columns:
-        has_errors = (df[status_col] == "error").any()
-        has_pending = df[status_col].isna().any()
-        has_error_details = error_col in df.columns and df[error_col].notna().any()
-
-        if not has_errors and not has_pending and not has_error_details:
-            cols_to_drop = [c for c in [status_col, error_col] if c in df.columns]
-            df = df.drop(columns=cols_to_drop)
+    df = _drop_idle_control_columns(df, status_col)
 
     # Series, list e dict viram DataFrame sem a coluna interna de texto; a
     # pandas.Series recupera o índice original.
@@ -254,11 +243,74 @@ def from_pandas(
     df = _reorder_columns(df, status_col)
     if original_type in _POLARS_INPUTS and pl is not None:
         untouched = _untouched_columns(conversion_info.polars_frame, status_col, model_columns)
-        converted = pl.from_pandas(df[[col for col in df.columns if col not in untouched]])
-        return pl.DataFrame(
-            [untouched[col] if col in untouched else converted[col] for col in df.columns]
-        )
+        columns = []
+        as_object = []
+        for col in df.columns:
+            if col in untouched:
+                columns.append(untouched[col])
+                continue
+            values = _enums_by_value(df[col])
+            # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
+            # pyarrow recusam, seja qual for a exceção (ValueError, TypeError,
+            # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
+            # O pânico do polars não é Exception e passa por aqui.
+            try:
+                columns.append(pl.from_pandas(values))
+            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
+                # Há versões do polars em que o construtor de Series inspeciona os
+                # valores mesmo com dtype=pl.Object: quando o primeiro valor não nulo
+                # é membro de Enum, troca cada valor pelo `.value`, e levanta erro no
+                # que não o tem, como o None. O map_elements guarda o que a função
+                # devolve, sem inspecionar.
+                items = values.tolist()
+                positions = pl.Series(col, range(len(items)), dtype=pl.Int64)
+                columns.append(positions.map_elements(items.__getitem__, return_dtype=pl.Object))
+                as_object.append(col)
+        if as_object:
+            warnings.warn(
+                f"As colunas {as_object} têm valores de tipos que o polars não reúne numa "
+                "coluna tipada e saem com o tipo Object, com os objetos Python que o modelo "
+                "devolveu, exceto o Enum fora de lista ou dict, que sai pelo valor. Converta-as "
+                "antes de gravar em arquivo.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return pl.DataFrame(columns)
     return df
+
+
+def _drop_idle_control_columns(df: pd.DataFrame, status_col: str) -> pd.DataFrame:
+    """Remove as colunas de status e de erro quando não há erro nem linha pendente.
+
+    A linha sem status é a que uma interrupção deixou para `resume=True`, e sem
+    a coluna ela não se distingue das processadas.
+    """
+    error_col = "_error_details"
+    if status_col not in df.columns:
+        return df
+    has_errors = (df[status_col] == "error").any()
+    has_pending = df[status_col].isna().any()
+    has_error_details = error_col in df.columns and df[error_col].notna().any()
+    if has_errors or has_pending or has_error_details:
+        return df
+    return df.drop(columns=[c for c in [status_col, error_col] if c in df.columns])
+
+
+def _enums_by_value(values: pd.Series) -> pd.Series:
+    """Troca o Enum pelo valor numa coluna de objetos.
+
+    O Arrow não tipa o membro de um Enum, e é pelo valor que o checkpoint o
+    grava. O Enum dentro de lista ou dict fica como está, e a coluna sai Object.
+    A Series é montada com dtype=object porque `Series.map` voltaria a inferir
+    o tipo e levaria o inteiro com None a float.
+    """
+    if values.dtype != object:
+        return values
+    return pd.Series(
+        [value.value if isinstance(value, Enum) else value for value in values],
+        name=values.name,
+        dtype=object,
+    )
 
 
 def _untouched_columns(

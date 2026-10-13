@@ -6,9 +6,11 @@ erro de tipo. O corpo fica sob TYPE_CHECKING porque executá-lo chamaria o LLM.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, assert_type
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from typing import assert_type
+
     import pandas as pd
     import polars as pl
     from pydantic import BaseModel

@@ -101,7 +101,8 @@ jobs:
   # pode subir o piso de uma dependência base (claude-agent-sdk puxa pydantic
   # >= 2.12) e esconder um piso quebrado. Uma dependência transitiva na versão
   # mais alta ainda pode subir um piso direto, como o langgraph faz com o
-  # langchain-core. Roda em 3.11 porque o pandas no piso não tem wheel para 3.13.
+  # langchain-core. Roda em 3.11 porque o pandas no piso não tem wheel para 3.13
+  # e o pyarrow no piso não tem para 3.12.
   lowest-direct:
     runs-on: ubuntu-latest
     strategy:
