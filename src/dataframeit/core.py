@@ -2061,7 +2061,13 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
-            out[col] = out[col].map(to_json if columns is None or col in columns else enum_as_value)
+            convert = to_json if columns is None or col in columns else enum_as_value
+            # Series.map infere o tipo do resultado, e uma coluna com um int e
+            # None viraria float64, que arredonda o int acima de 2**53 antes de
+            # chegar ao arquivo. A coluna refeita como object grava o int exato.
+            out[col] = pd.Series(
+                [convert(value) for value in out[col]], index=out.index, dtype=object
+            )
     return out
 
 

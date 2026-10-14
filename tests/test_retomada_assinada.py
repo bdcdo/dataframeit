@@ -1,6 +1,7 @@
 """Retomada automática pelo checkpoint: só o arquivo desta execução é retomado."""
 
 import contextlib
+import csv
 import datetime
 import warnings
 from enum import Enum
@@ -1122,3 +1123,68 @@ def test_checkpoint_grava_enum_escalar_pelo_valor(tmp_path, formato):
     _save_checkpoint(pd.DataFrame({"cor": [Cor.AZUL, None]}), ckpt, structures=frozenset())
 
     assert read_df(str(ckpt))["cor"][0] == "azul"
+
+
+# 2**53 + 1, o primeiro inteiro que o float64 arredonda.
+_INTEIRO_GRANDE = 9007199254740993
+
+
+def _celulas_gravadas(ckpt, coluna):
+    """A coluna como está no arquivo, sem a inferência de tipo do leitor do pandas."""
+    if ckpt.suffix == ".parquet":
+        pq = pytest.importorskip("pyarrow.parquet")
+        return pq.read_table(ckpt, columns=[coluna]).column(coluna).to_pylist()
+    with ckpt.open(encoding="utf-8", newline="") as arquivo:
+        return [linha[coluna] for linha in csv.DictReader(arquivo)]
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato):
+    """A coluna com int e None não passa por float64 antes do arquivo (#223)."""
+    pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+
+    _save_checkpoint(
+        pd.DataFrame({"nota": [_INTEIRO_GRANDE, None]}, dtype=object),
+        ckpt,
+        structures=frozenset(),
+    )
+
+    esperado = [str(_INTEIRO_GRANDE), ""] if formato == "csv" else [_INTEIRO_GRANDE, None]
+    assert _celulas_gravadas(ckpt, "nota") == esperado
+
+
+class NotaInteira(BaseModel):
+    nota: int
+
+
+class NotaOpcional(BaseModel):
+    nota: int | None = None
+
+
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+@pytest.mark.parametrize("modelo", [NotaInteira, NotaOpcional])
+def test_inteiro_grande_com_linha_pendente_chega_exato_ao_checkpoint(
+    tmp_path, modelo, formato, entrada
+):
+    """As linhas pendentes deixam None ao lado do int na coluna gravada (#223)."""
+    pytest.importorskip("pyarrow")
+    if entrada == "polars":
+        pl = pytest.importorskip("polars")
+        df = pl.DataFrame({"texto": ["a", "b", "c"]})
+    else:
+        df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    ckpt = tmp_path / f"ckpt.{formato}"
+
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _uma_linha_por_execucao(lambda text: {"nota": _INTEIRO_GRANDE}),
+            modelo=modelo,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    gravado = str(_INTEIRO_GRANDE) if formato == "csv" else _INTEIRO_GRANDE
+    assert _celulas_gravadas(ckpt, "nota")[0] == gravado
