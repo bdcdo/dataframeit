@@ -703,7 +703,8 @@ def read_df(
                Com ele e sem kwargs, a coluna de campo int ou Optional[int]
                que o CSV ou o parquet não devolve em tipo inteiro volta como
                object, com o int exato e None na célula vazia. A coluna só
-               com células vazias continua float.
+               com células vazias fica como lida: float no CSV e, na coluna
+               nula que o checkpoint grava no parquet, object com None.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.

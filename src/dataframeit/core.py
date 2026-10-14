@@ -2056,10 +2056,13 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
         if out[col].dtype == object:
             convert = to_json if columns is None or col in columns else enum_as_value
             converted = out[col].map(convert)
-            # Series.map infere o tipo do resultado, e uma coluna com um int e
-            # None vira float64, que arredonda o int acima de 2**53 antes de
-            # chegar ao arquivo. Só nesse caso a coluna é refeita como object,
-            # que grava o int exato; nos demais fica o tipo inferido.
+            # Series.map infere o tipo do resultado, e uma coluna com int ao
+            # lado de None ou de float vira float64, que arredonda o int acima
+            # de 2**53 antes de chegar ao arquivo. Sempre que o tipo inferido é
+            # float, a coluna é refeita como object, que o CSV grava com o int
+            # exato. O parquet recusa o int acima de 2**53 ao lado de float, e
+            # a gravação falha com aviso em vez de arredondar. Nos demais casos
+            # fica o tipo inferido.
             if converted.dtype.kind == "f":
                 converted = pd.Series(
                     [convert(value) for value in out[col]], index=out.index, dtype=object
