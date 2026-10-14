@@ -27,6 +27,7 @@ from dataframeit.codex import (
     CodexBackend,
     _AppServerStop,
     _build_schema,
+    _raise_classified_sdk_error,
     _to_strict_json_schema,
     _toml_string,
     _turn_timeout,
@@ -1321,6 +1322,76 @@ class TestCodexInvocation:
 
         assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
+
+    # O `is_retryable_error` do SDK reconhece só `server_overloaded`; o código de
+    # rate limit no `data` do erro JSON-RPC é lido como no turno que falha, e o
+    # "429" da mensagem não decide nada.
+    def test_rpc_rate_limit_code_is_overload_and_reduces_workers(self, codex_sdk, tmp_path):
+        sdk, _, _ = codex_sdk
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        client.thread_start.side_effect = lambda **_: (_ for _ in ()).throw(
+            sdk.CodexRpcError(
+                -32000, "429 Too Many Requests", {"codex_error_info": "rate_limit_exceeded"}
+            )
+        )
+
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderOverloadedError, match="429 Too Many Requests") as error,
+        ):
+            backend.invoke("texto")
+
+        assert client.thread_start.call_count == 2
+        assert is_rate_limit_error(error.value) is True
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"codex_error_info": "rate_limit_exceeded"},
+            {"codexErrorInfo": "rateLimitExceeded"},
+            {"errorInfo": "flex_unavailable"},
+            {"codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 429}}},
+            {"error": {"codexErrorInfo": "rateLimitExceeded"}},
+            [{"codexErrorInfo": "serverOverloaded"}],
+        ],
+    )
+    def test_rpc_overload_code_in_data_is_overload(self, codex_sdk, data):
+        sdk, _, _ = codex_sdk
+
+        with pytest.raises(ProviderOverloadedError):
+            _raise_classified_sdk_error(sdk.CodexRpcError(-32000, "falhou", data))
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            None,
+            "rateLimitExceeded",
+            {"message": "rate_limit_exceeded"},
+            {"codexErrorInfo": "badRequest"},
+            {"codexErrorInfo": "codigo_desconhecido"},
+            {"codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 401}}},
+            [{"codexErrorInfo": "unauthorized"}],
+        ],
+    )
+    def test_rpc_error_without_overload_code_is_definitive(self, codex_sdk, data):
+        sdk, _, _ = codex_sdk
+
+        with pytest.raises(ProviderError) as error:
+            _raise_classified_sdk_error(sdk.CodexRpcError(-32000, "429 Too Many Requests", data))
+
+        assert not isinstance(error.value, ProviderTransientError)
+        assert is_rate_limit_error(error.value) is False
+
+    def test_non_rpc_error_data_is_not_read(self, codex_sdk):
+        class ErrorWithData(RuntimeError):
+            def __init__(self, data: object) -> None:
+                super().__init__("falhou")
+                self.data = data
+
+        with pytest.raises(ProviderError) as raised:
+            _raise_classified_sdk_error(ErrorWithData({"codexErrorInfo": "rateLimitExceeded"}))
+
+        assert not isinstance(raised.value, ProviderTransientError)
 
     def test_failed_turn_overload_uses_real_protocol_error(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
