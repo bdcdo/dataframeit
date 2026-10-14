@@ -1016,7 +1016,7 @@ def test_retomada_de_lista_de_datas_guardada_como_array():
 
 _FUSO_DE_DESLOCAMENTO = timezone(timedelta(hours=5, minutes=30))
 
-# Tipo do campo e as respostas de duas linhas que o Arrow não põe na mesma coluna.
+# Tipo do campo e as respostas, uma por linha, que o Arrow não põe na mesma coluna.
 # O datetime com fuso de deslocamento é recusado pelo polars, com ComputeError,
 # que não é ValueError nem TypeError.
 _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
@@ -1057,6 +1057,19 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
         Optional[Union[Annotated[date, Field(description="dia")], int]],
         [date(2026, 1, 2), 5],
     ),
+    "tupla_variavel_de_uniao_de_date_e_int": (
+        tuple[Union[date, int], ...],
+        [(date(2026, 1, 2), 5), (date(2026, 1, 2), 6), (date(2026, 1, 2), 7)],
+    ),
+    "uniao_com_barra_de_date_e_int": (date | int, [date(2026, 1, 2), 5, date(2026, 1, 2)]),
+    "uniao_de_datetime_e_int": (
+        Union[datetime, int],
+        [
+            datetime.fromisoformat("2026-01-02T15:30"),
+            5,
+            datetime.fromisoformat("2026-01-02T15:30"),
+        ],
+    ),
 }
 
 
@@ -1069,16 +1082,17 @@ def _responde_por_linha(campo, valores):
 def test_campo_que_o_arrow_nao_tipa_sai_como_object_com_os_valores_do_pandas(caso):
     pl = pytest.importorskip("polars")
     tipo, valores = _CAMPOS_QUE_O_ARROW_NAO_TIPA[caso]
+    textos = [f"texto {i}" for i in range(len(valores))]
     modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
     pandas, _ = _rodar(
-        pd.DataFrame({"texto": ["a", "b"]}),
+        pd.DataFrame({"texto": textos}),
         questions=modelo,
         llm=_responde_por_linha("campo", valores),
     )
 
     with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
         resultado, _ = _rodar(
-            pl.DataFrame({"texto": ["a", "b"]}),
+            pl.DataFrame({"texto": textos}),
             questions=modelo,
             llm=_responde_por_linha("campo", valores),
         )
