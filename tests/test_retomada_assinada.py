@@ -1144,8 +1144,9 @@ def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato):
     pytest.importorskip("pyarrow")
     ckpt = tmp_path / f"ckpt.{formato}"
 
+    # O índice da entrada, que o checkpoint não grava, não precisa ser 0..n-1.
     _save_checkpoint(
-        pd.DataFrame({"nota": [_INTEIRO_GRANDE, None]}, dtype=object),
+        pd.DataFrame({"nota": [_INTEIRO_GRANDE, None]}, index=[10, 20], dtype=object),
         ckpt,
         structures=frozenset(),
     )
