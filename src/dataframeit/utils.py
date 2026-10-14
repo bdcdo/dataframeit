@@ -379,6 +379,29 @@ def _without_optional(annotation: object) -> object:
     return annotation
 
 
+_DATE_OR_TIME = (datetime.date, datetime.datetime, datetime.time)
+
+
+def _mixes_date_or_time(annotation: object) -> bool:
+    """Se a anotação junta date, datetime ou time a outro tipo, na união ou na tupla.
+
+    A lista ou a tupla é examinada em cada argumento, recursivamente: vale para
+    `tuple[Union[date, int], ...]`, para `list[tuple[date, int]]` e para listas
+    aninhadas. O Optional e o Annotated são desembrulhados, na anotação e em
+    cada membro.
+    """
+    annotation = _without_optional(annotation)
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin in (list, tuple) and any(_mixes_date_or_time(arg) for arg in args):
+        return True
+    if origin not in (typing.Union, types.UnionType, tuple):
+        return False
+    members = [_without_optional(arg) for arg in args if arg is not Ellipsis]
+    return any(member in _DATE_OR_TIME for member in members) and any(
+        member is not members[0] for member in members
+    )
+
+
 def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
     """Converte a coluna para polars; `annotation` é a do campo do modelo, ou None.
 
@@ -387,6 +410,11 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
     distinguiria da chave com valor nulo. O dict com chave que o JSON não
     aceita, como um Enum, levanta TypeError, e `from_pandas` devolve a coluna
     como Object.
+
+    A anotação que junta date, datetime ou time a outro tipo também levanta
+    TypeError, antes de olhar os valores. O pyarrow tiparia a coluna pelo
+    primeiro valor e converteria os outros sem erro: o datetime depois de um
+    date perderia a hora, e o int depois de um date viraria data.
 
     A coluna sem valor, toda nula ou só com listas vazias, não dá ao polars de
     onde inferir o tipo, e o schema da saída mudaria com as respostas. Ela
@@ -405,6 +433,9 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
         (datetime.date, polars.Date),
         (datetime.datetime, polars.Datetime),
     )
+    if _mixes_date_or_time(annotation):
+        msg = f"A anotação {annotation} junta data ou hora a outro tipo."
+        raise TypeError(msg)
     annotation = _without_optional(annotation)
     origin, args = get_origin(annotation), get_args(annotation)
     if (origin or annotation) is dict:
