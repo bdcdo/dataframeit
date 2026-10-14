@@ -76,7 +76,7 @@ Field and class names are arbitrary; the examples in the [`example/`](https://gi
 
 - **Multiple providers**: OpenAI, Google Gemini, Anthropic and Groq with their own extras, any other LangChain provider (Cohere, Mistral, Vertex AI, Bedrock, Azure) by installing its package, plus Claude Code and Codex through their official SDKs
 - **Multiple input types**: pandas or Polars DataFrame and Series, list, dict
-- **Structured output**: Pydantic validation; a rejected answer goes back to the model with the error
+- **Structured output**: Pydantic validation; with the LangChain providers, a rejected answer goes back to the model with the error
 - **Resilience**: Automatic retry with exponential backoff, and periodic checkpoints (`batch_size` + `checkpoint_path`) to resume long runs
 - **Performance**: Parallel processing that halves workers on rate limits, configurable rate limiting
 - **Web search**: Tavily or Exa, per field or per group of fields, with conditional fields (`condition`, `depends_on`)

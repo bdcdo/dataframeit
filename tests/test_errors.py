@@ -1,12 +1,22 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
-import pytest
+from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError, create_model
+
+from dataframeit.claude_code import _raise_for_result_error
 from dataframeit.errors import (
+    MAX_REJECTED_RULES,
+    ProviderError,
+    ProviderOutputError,
+    ProviderRejectedOutputError,
     ProviderTransientError,
     _infer_provider_info,
     get_friendly_error_message,
+    is_rate_limit_error,
     retry_with_backoff,
+    validation_error_summary,
 )
 
 
@@ -136,3 +146,88 @@ def test_falha_ao_anotar_o_resultado_ganha_nova_tentativa():
 
     assert len(chamadas) == 2
     assert resultado["_retry_info"]["retries"] == 1
+
+
+# O resumo de um erro de validação pode trazer texto da resposta, como a
+# mensagem de um validador próprio; um número nele não pode decidir a categoria
+# do erro.
+_RESUMO_COM_NUMERO = (
+    "Resposta do Codex não corresponde ao schema: 1 erro(s): "
+    "fundamento: Value error, art. {numero} da CLT não consta da lista"
+)
+
+
+def test_resposta_fora_do_contrato_nao_vira_erro_de_credencial():
+    erro = ProviderOutputError(_RESUMO_COM_NUMERO.format(numero=401))
+
+    amigavel = get_friendly_error_message(erro, "codex")
+
+    assert amigavel.startswith("RESPOSTA FORA DO CONTRATO DE SAÍDA")
+    assert "login" not in amigavel
+
+
+def test_mensagem_da_resposta_fora_do_contrato_traz_o_detalhe_do_erro():
+    erro = ProviderOutputError(_RESUMO_COM_NUMERO.format(numero=401))
+    amigavel = get_friendly_error_message(erro, "codex")
+
+    assert str(erro) in amigavel
+    assert "não é tentada de novo" in amigavel
+
+
+def test_resumo_da_validacao_conta_todos_os_erros_e_lista_ate_o_teto():
+    campos = {f"campo_{i}": (int, ...) for i in range(MAX_REJECTED_RULES + 5)}
+    # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
+    modelo = create_model("MuitosCampos", **campos)  # ty: ignore[no-matching-overload]
+    with pytest.raises(ValidationError) as recusa:
+        modelo.model_validate({})
+
+    resumo = validation_error_summary(recusa.value)
+
+    assert resumo.startswith(f"{MAX_REJECTED_RULES + 5} erro(s): ")
+    assert resumo.count("Field required") == MAX_REJECTED_RULES
+
+
+# Só os providers do LangChain levam o erro de volta ao modelo; o claude_code
+# repete o pedido, e a mensagem da classe vale para os dois caminhos.
+def test_mensagem_da_resposta_recusada_nao_promete_retorno_ao_modelo():
+    erro = ProviderRejectedOutputError("Falha na validação da resposta: 1 erro(s): campo: regra")
+
+    amigavel = get_friendly_error_message(erro, "claude_code")
+
+    assert str(erro) in amigavel
+    assert "ao modelo" not in amigavel.lower()
+
+
+def test_numero_no_resumo_da_validacao_nao_conta_como_rate_limit():
+    erro = ProviderOutputError(_RESUMO_COM_NUMERO.format(numero=429))
+
+    assert is_rate_limit_error(erro) is False
+
+
+# Rate limit do pacote é só ProviderOverloadedError. O ProviderError do
+# claude_code leva na mensagem o campo result do SDK, que pode trazer texto do
+# modelo, e um "429" ali não pode reduzir os workers.
+def test_429_no_result_do_claude_code_nao_conta_como_rate_limit():
+    resultado = SimpleNamespace(
+        is_error=True,
+        subtype="error_max_turns",
+        api_error_status=None,
+        errors=None,
+        result="Fundamento: art. 429 do CPC",
+    )
+    with pytest.raises(ProviderError) as falha:
+        _raise_for_result_error(resultado)
+
+    assert type(falha.value) is ProviderError
+    assert "art. 429 do CPC" in str(falha.value)
+    assert is_rate_limit_error(falha.value) is False
+
+
+# Nenhum ProviderError é lido pelo texto, nem o turno do codex que falha só com
+# "429 Too Many Requests" na mensagem, sem código classificável.
+@pytest.mark.parametrize(
+    "mensagem",
+    ["Turno Codex falhou: 429 Too Many Requests", "Claude Code falhou: art. 429 do CPC"],
+)
+def test_provider_error_com_429_na_mensagem_nao_conta_como_rate_limit(mensagem):
+    assert is_rate_limit_error(ProviderError(mensagem)) is False
