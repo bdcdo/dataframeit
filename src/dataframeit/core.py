@@ -1232,7 +1232,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
 
     # Converter para pandas se necessário
-    df_pandas, conversion_info = to_pandas(data)
+    annotations = {name: field.annotation for name, field in questions.model_fields.items()}
+    df_pandas, conversion_info = to_pandas(data, annotations)
 
     # Determinar coluna de texto
     is_dataframe_type = conversion_info.original_type in (
@@ -1276,7 +1277,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     if not expected_columns:
         msg = "Modelo Pydantic não pode estar vazio"
         raise ValueError(msg)
-    annotations = {name: field.annotation for name, field in questions.model_fields.items()}
 
     # Cada campo extraído é gravado numa coluna de mesmo nome, que não pode ser
     # a do texto de entrada.
