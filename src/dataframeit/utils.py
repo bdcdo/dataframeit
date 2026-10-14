@@ -255,10 +255,13 @@ def from_pandas(
             # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
             # pyarrow recusam, seja qual for a exceção (ValueError, TypeError,
             # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
-            # O pânico do polars não é Exception e passa por aqui.
+            # O pânico do polars, como o do Decimal acima de 38 dígitos, que o
+            # pyarrow entrega em 256 bits, herda de BaseException e é capturado
+            # pelo nome; capturar BaseException engoliria o KeyboardInterrupt. O
+            # polars ainda escreve a mensagem do pânico no stderr.
             try:
                 columns.append(_to_polars(values, model_columns.get(col)))
-            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
+            except (Exception, pl.exceptions.PanicException):  # noqa: BLE001 (a recusa muda de tipo com os valores)
                 # Há versões do polars em que o construtor de Series inspeciona os
                 # valores mesmo com dtype=pl.Object: quando o primeiro valor não nulo
                 # é membro de Enum, troca cada valor pelo `.value`, e levanta erro no
