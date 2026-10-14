@@ -25,7 +25,7 @@ resultado = dataframeit(
 
 ### Auto-redução em Rate Limits
 
-Quando uma linha falha depois de todas as tentativas com erro de rate limit ou de sobrecarga, o DataFrameIt reduz os workers pela metade:
+Quando uma linha falha depois de todas as tentativas com erro de rate limit, o DataFrameIt reduz os workers pela metade:
 
 ```
 Início: 10 workers
@@ -34,7 +34,7 @@ Rate limit detectado → 2 workers
 Rate limit detectado → 1 worker
 ```
 
-No `codex`, o rate limit é reconhecido pelo código ou pelo status do erro, sem ler a mensagem. Nos providers do LangChain, também pelo texto da mensagem, quando o erro não traz status HTTP.
+No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo código ou pelo status do erro, sem ler a mensagem. Nos providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela classe do erro e, quando o erro não traz nenhum dos dois, pelo texto da mensagem; a sobrecarga (529, 503) não reduz os workers.
 
 !!! info "Segurança"
     Workers são apenas **reduzidos**, nunca aumentados automaticamente. Isso evita custos inesperados.
