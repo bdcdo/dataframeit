@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -982,6 +983,66 @@ class TestBackendLifecycle:
             assert backend.config.model == "gpt-6-luna"
 
         assert threads_descarregadas(client) == ["thread-sonda"]
+
+    def _client_whose_close_raises(self, codex_sdk, monkeypatch, tmp_path, erro):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        client.close.side_effect = erro
+        return sdk, client
+
+    @pytest.mark.parametrize(
+        "erro",
+        [BrokenPipeError(32, "Broken pipe"), OSError(22, "Invalid argument")],
+        ids=["broken-pipe", "einval"],
+    )
+    @pytest.mark.parametrize(
+        "saida", [None, ProviderError("falha da linha")], ids=["normal", "erro-do-bloco"]
+    )
+    def test_falha_de_e_s_ao_fechar_nao_substitui_a_saida_do_backend(
+        self, codex_sdk, monkeypatch, tmp_path, erro, saida
+    ):
+        """O fechamento que falha na escrita do stdin não troca o que sai do bloco.
+
+        A escrita só falha com o app-server morto, e a morte já chega pela linha
+        em curso; propagar a falha do fechamento faria `dataframeit()` perder
+        as linhas processadas, ou trocaria o erro do bloco pelo do fechamento.
+        """
+        sdk, client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
+        esperado = pytest.raises(ProviderError) if saida is not None else contextlib.nullcontext()
+
+        with (
+            esperado as excinfo,
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            if saida is not None:
+                raise saida
+
+        client.close.assert_called_once_with()
+        if saida is not None:
+            assert excinfo is not None
+            assert excinfo.value is saida
+
+    def test_erro_que_nao_e_de_e_s_ao_fechar_continua_aparecendo(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        """Só a falha de E/S do fechamento é suprimida; erro de programação sobe."""
+        erro = AttributeError("'Codex' object has no attribute '_client'")
+        sdk, client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
+
+        with (
+            pytest.raises(AttributeError) as excinfo,
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        assert excinfo.value is erro
 
     @pytest.mark.parametrize(
         ("model_kwargs", "prazo"), [({}, 600), ({"timeout": 30}, 30), ({"timeout": None}, None)]
@@ -2226,6 +2287,48 @@ class TestPrazoDosPedidos:
         _close_client(cliente)
 
         assert ordem == esperado
+
+    def test_pipes_fecham_mesmo_quando_o_close_do_sdk_levanta(self):
+        """O `close` que levanta não deixa os pipes de saída abertos.
+
+        Com o app-server morto e um pedido no buffer do stdin, a descarga do
+        `close` levanta antes do `terminate`. As threads de leitura já viram o
+        fim do processo, e os dois pipes fecham; a exceção continua subindo.
+        """
+        erro = BrokenPipeError(32, "Broken pipe")
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        cliente.close.side_effect = erro
+        cliente._client._reader_thread.is_alive.return_value = False
+        cliente._client._stderr_thread.is_alive.return_value = False
+
+        with pytest.raises(BrokenPipeError) as excinfo:
+            _close_client(cliente)
+
+        assert excinfo.value is erro
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
+
+    def test_encerramento_pelo_prazo_nao_levanta_quando_o_close_falha(self):
+        """O relógio que derruba o app-server termina sem exceção.
+
+        Depois do `kill`, o `close` pode levantar ao descarregar o stdin do
+        processo morto. O encerramento roda na thread do relógio, e a falha não
+        tem quem a receba: as linhas já abortam pela causa registrada.
+        """
+        parada = _AppServerStop()
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        cliente.close.side_effect = BrokenPipeError(32, "Broken pipe")
+        cliente._client._reader_thread.is_alive.return_value = False
+        cliente._client._stderr_thread.is_alive.return_value = False
+
+        parada.stop(cliente, "causa")
+
+        assert str(parada.error()) == "causa"
+        processo.kill.assert_called_once_with()
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
 
     def test_dois_estouros_mantem_a_primeira_causa(self):
         """Linhas que estouram juntas abortam todas com a causa de quem chegou primeiro."""

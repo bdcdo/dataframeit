@@ -620,24 +620,32 @@ def _close_client(client: Codex) -> None:
     extra `codex`. O `close` solta o processo do cliente, e por isso ele é lido
     antes; o segundo fechamento, depois do encerramento pelo prazo, não acha
     processo e só repete o `close`, que não faz nada.
+
+    O `close` fecha o stdin antes de sinalizar o processo, e o fechamento
+    descarrega o que ficou no buffer de escrita. Se o app-server morreu com um
+    pedido no buffer, como o `thread/unsubscribe` da linha que abortou, a
+    descarga levanta `BrokenPipeError` antes do `terminate` e do `wait`. Os
+    pipes de saída fecham mesmo assim, e a exceção continua subindo.
     """
     sdk_client: Any = getattr(client, "_client", None)
     process = getattr(sdk_client, "_proc", None)
-    client.close()
-    if process is None:
-        return
-    # Os pipes fecham depois do `close`, que espera o fim do processo e cada
-    # thread de leitura por até 0,5 s. Fechar um pipe que a thread ainda lê
-    # esperaria a leitura dela terminar, e para sempre se outro processo
-    # segurasse a ponta de escrita; e a thread do stderr, entre duas linhas,
-    # levantaria `ValueError` ao ler o arquivo fechado. O pipe dessa thread
-    # fica para o coletor de lixo.
-    for pipe, reader in (
-        (process.stdout, sdk_client._reader_thread),  # noqa: SLF001 (ver a docstring)
-        (process.stderr, sdk_client._stderr_thread),  # noqa: SLF001 (ver a docstring)
-    ):
-        if not reader.is_alive():
-            pipe.close()
+    try:
+        client.close()
+    finally:
+        if process is not None:
+            # Os pipes fecham depois do `close`, que, quando não levanta, espera
+            # o processo por até 2 s e cada thread de leitura por até 0,5 s. Fechar
+            # um pipe que a thread ainda lê esperaria a leitura dela terminar,
+            # e para sempre se outro processo segurasse a ponta de escrita; e a
+            # thread do stderr, entre duas linhas, levantaria `ValueError` ao
+            # ler o arquivo fechado. O pipe dessa thread fica para o coletor
+            # de lixo.
+            for pipe, reader in (
+                (process.stdout, sdk_client._reader_thread),  # noqa: SLF001 (ver a docstring)
+                (process.stderr, sdk_client._stderr_thread),  # noqa: SLF001 (ver a docstring)
+            ):
+                if not reader.is_alive():
+                    pipe.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,4 +1098,17 @@ def open_codex_backend(
                 _turn_timeout=turn_timeout,
             )
         finally:
-            _close_client(client)
+            # Fora do próprio `try`, o `close` do SDK só faz E/S ao fechar o
+            # stdin, e essa escrita só falha quando o app-server já não lê o
+            # pipe, o que quer dizer que ele morreu. A morte já chega a quem
+            # usa o backend pela linha em curso, que aborta com
+            # `ProviderAbortError`. Propagar a falha do fechamento trocaria o
+            # resultado do bloco, ou a exceção que sai dele, por esse erro, e
+            # `dataframeit()` perderia as linhas já processadas. A supressão é
+            # por `OSError`, e não só por `BrokenPipeError`, porque a escrita
+            # num pipe sem leitor pode falhar com outro `OSError` conforme a
+            # plataforma, como `EINVAL` no Windows; e não é por `Exception`,
+            # para que um erro de programação, como um atributo privado do SDK
+            # que mudou de nome, continue aparecendo.
+            with contextlib.suppress(OSError):
+                _close_client(client)
