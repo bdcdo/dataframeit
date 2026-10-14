@@ -448,6 +448,39 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
             "não é tentada de novo."
         )
 
+    # Obter informações do provider dinamicamente
+    provider_data = _infer_provider_info(provider)
+    provider_name = provider_data["name"]
+    env_var = provider_data["env_var"]
+
+    # === ERROS DE RATE LIMIT ===
+    # A caixa sai quando, e só quando, a execução reduz os workers: a decisão é a
+    # mesma função que _process_rows_parallel chama, e não um padrão de texto
+    # próprio. Por isso vem antes das caixas decididas pelo texto, que não
+    # sombreiam a sobrecarga cuja mensagem cita uma chave ou um 403. Nos
+    # ProviderError, is_rate_limit_error decide pela classe; um '429' no texto,
+    # que pode ser do modelo, cai nas caixas seguintes ou na genérica.
+    if is_rate_limit_error(error):
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você fez muitas requisições em pouco tempo para o {provider_name}.          ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Aguarde alguns minutos e tente novamente                                 ║
+║  2. Use rate_limit_delay: cada worker espera esse tempo depois de cada       ║
+║     linha processada, e o teto fica em                                       ║
+║     parallel_requests * 60 / rate_limit_delay linhas por minuto:             ║
+║                                                                              ║
+║     dataframeit(..., rate_limit_delay=1.0)  # até 60 linhas/min por worker   ║
+║                                                                              ║
+║  3. Considere atualizar seu plano para limites maiores                       ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
+
     error_str = f"{type(error).__name__}: {error}".lower()
     error_name = type(error).__name__
     status = _http_error_status(error)
@@ -462,11 +495,6 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
         return any(
             _matches_error_pattern(pattern, error_str) for pattern in (*patterns, *map(str, codes))
         )
-
-    # Obter informações do provider dinamicamente
-    provider_data = _infer_provider_info(provider)
-    provider_name = provider_data["name"]
-    env_var = provider_data["env_var"]
 
     # === ERROS TAVILY ===
     if "tavily" in error_str and any(
@@ -625,30 +653,11 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    # === ERROS DE RATE LIMIT ===
-    if is_category(["ratelimit", "resourceexhausted", "toomanyrequests"], (429,)):
-        return f"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Você fez muitas requisições em pouco tempo para o {provider_name}.          ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Aguarde alguns minutos e tente novamente                                 ║
-║  2. Use rate_limit_delay: cada worker espera esse tempo depois de cada       ║
-║     linha processada, e o teto fica em                                       ║
-║     parallel_requests * 60 / rate_limit_delay linhas por minuto:             ║
-║                                                                              ║
-║     dataframeit(..., rate_limit_delay=1.0)  # até 60 linhas/min por worker   ║
-║                                                                              ║
-║  3. Considere atualizar seu plano para limites maiores                       ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
     # === ERROS DE TIMEOUT ===
-    if is_category(["timeout", "deadlineexceeded"], (408, 504)):
+    # A caixa afirma que o sistema já tentou de novo, o que só vale para o erro
+    # que is_recoverable_error deixa repetir. O timeout definitivo, como o
+    # ProviderError cujo texto cita 'timeout', cai nas caixas seguintes.
+    if is_recoverable_error(error) and is_category(["timeout", "deadlineexceeded"], (408, 504)):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  TEMPO ESGOTADO (TIMEOUT)                                                    ║
@@ -815,6 +824,9 @@ def is_recoverable_error(error: Exception) -> bool:  # noqa: PLR0911 (precedênc
 
 def is_rate_limit_error(error: Exception) -> bool:
     """Verifica se um erro é especificamente de rate limit.
+
+    É a decisão que reduz os workers na execução paralela e que escolhe a caixa
+    de limite de requisições em get_friendly_error_message.
 
     Args:
         error: Exceção a ser analisada.
