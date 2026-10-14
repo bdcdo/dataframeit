@@ -1,11 +1,12 @@
 """Testes para o provider claude_code (Claude Code SDK)."""
 
 import asyncio
+import json
 import logging
 import sys
 import types
 import warnings
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -192,6 +193,10 @@ def sdk_falso(monkeypatch):
         por_chamada = estado.get("por_chamada")
         mensagens = por_chamada.pop(0) if por_chamada else estado["mensagens_do_sdk"]
         for mensagem in mensagens:
+            # Uma exceção na lista é levantada naquele ponto do laço, como o SDK
+            # faz com a saída do CLI depois do ResultMessage de erro.
+            if isinstance(mensagem, BaseException):
+                raise mensagem
             yield mensagem
 
     modulo = types.ModuleType("claude_agent_sdk")
@@ -612,3 +617,243 @@ def test_resposta_recusada_leva_caminho_e_regra_sem_o_valor(sdk_falso):
         "Falha na validação da resposta: 1 erro(s): confianca: "
         "Input should be a valid number, unable to parse string as a number"
     )
+
+
+# =============================================================================
+# Erro da API que o SDK levanta depois do ResultMessage de erro
+# =============================================================================
+#
+# Quando a API recusa a chamada, o CLI emite o ResultMessage com is_error e sai
+# com código não zero; o SDK entrega a mensagem e depois levanta a saída do
+# processo (ResultError nas versões recentes). A exceção falsa imita o texto do
+# ResultError, que só traz o número do status quando a mensagem da API o traz.
+
+
+class _ResultErrorFalso(Exception):
+    def __init__(self, texto, status):
+        super().__init__(f"Claude Code returned an error result: {texto} (exit code: 1)")
+        self.api_error_status = status
+
+
+def _erro_da_api(status, texto, custo=None):
+    return [
+        _resultado(
+            is_error=True,
+            subtype="success",
+            api_error_status=status,
+            result=texto,
+            total_cost_usd=custo,
+        ),
+        _ResultErrorFalso(texto, status),
+    ]
+
+
+def _config_com_tentativas(max_retries):
+    return replace(_config_claude_code(), max_retries=max_retries)
+
+
+@pytest.mark.parametrize(
+    ("status", "texto"),
+    [
+        (401, "Invalid API key · Please run /login"),
+        (400, "API Error: 400 invalid_request_error"),
+    ],
+)
+def test_erro_definitivo_da_api_nao_e_repetido(sdk_falso, status, texto):
+    sdk_falso["mensagens_do_sdk"] = _erro_da_api(status, texto)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ProviderError) as erro:
+            _chamar(_config_com_tentativas(3))
+
+    assert len(sdk_falso["opcoes"]) == 1
+    assert is_recoverable_error(erro.value) is False
+    assert is_rate_limit_error(erro.value) is False
+
+
+def test_sobrecarga_da_api_e_repetida_como_rate_limit(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = _erro_da_api(529, "API Error: Overloaded")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ProviderOverloadedError) as erro:
+            _chamar(_config_com_tentativas(3))
+
+    assert len(sdk_falso["opcoes"]) == 3
+    assert is_rate_limit_error(erro.value) is True
+
+
+def test_custo_de_cada_tentativa_recusada_entra_no_total(sdk_falso):
+    sdk_falso["por_chamada"] = [
+        _erro_da_api(529, "API Error: Overloaded", custo=0.1),
+        _erro_da_api(529, "API Error: Overloaded", custo=0.2),
+        _resposta_valida(0.3),
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        resultado = _chamar(_config_com_tentativas(3))
+
+    assert resultado["usage"]["cost_usd"] == pytest.approx(0.6)
+
+
+def test_linha_recusada_pela_api_leva_o_custo_na_excecao(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = _erro_da_api(401, "Invalid API key", custo=0.05)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ProviderError) as erro:
+            _chamar(_config_com_tentativas(3))
+
+    # cost_usd é anexado à exceção pelo provider, fora da classe.
+    assert erro.value.cost_usd == pytest.approx(0.05)  # ty: ignore[unresolved-attribute]
+
+
+def test_rate_limit_da_api_reduz_os_workers(sdk_falso, monkeypatch):
+    sdk_falso["mensagens_do_sdk"] = _erro_da_api(429, "API Error: Rate limited")
+    # O evento de rate limit é limpo na hora, sem o timer de 5 s.
+    monkeypatch.setattr(
+        "dataframeit.core.threading.Timer",
+        lambda _intervalo, funcao: types.SimpleNamespace(start=funcao),
+    )
+
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(record=True) as avisos,
+    ):
+        warnings.simplefilter("always")
+        dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=SampleModel,
+            prompt="{texto}",
+            provider="claude_code",
+            parallel_requests=2,
+            max_retries=1,
+        )
+
+    assert any("Reduzindo workers de 2 para 1" in str(aviso.message) for aviso in avisos)
+
+
+@pytest.mark.parametrize(
+    "mensagens",
+    [
+        [],
+        [_ResultMessageFalso(usage=None)],
+    ],
+    ids=["sem_resultado", "depois_de_resultado_sem_erro"],
+)
+def test_falha_do_sdk_sem_resultado_de_erro_e_repassada(sdk_falso, mensagens):
+    sdk_falso["mensagens_do_sdk"] = [*mensagens, RuntimeError("Command failed (exit code: 1)")]
+
+    with pytest.raises(RuntimeError, match="Command failed"):
+        _chamar()
+
+
+@pytest.mark.parametrize("interrupcao", [KeyboardInterrupt, asyncio.CancelledError])
+def test_interrupcao_depois_do_resultado_de_erro_sobe_intacta(sdk_falso, interrupcao):
+    # Ctrl+C ou cancelamento da tarefa não é falha do SDK: mesmo com um ResultMessage
+    # de erro já recebido, a interrupção sobe como veio, sem virar erro da API.
+    sdk_falso["mensagens_do_sdk"] = [
+        _resultado(is_error=True, subtype="success", api_error_status=529),
+        interrupcao(),
+    ]
+
+    with pytest.raises(interrupcao):
+        _chamar(_config_com_tentativas(3))
+
+    assert len(sdk_falso["opcoes"]) == 1
+
+
+class _TransporteDoSdkFalso:
+    """Transporte no lugar do processo do CLI, para o laço de leitura do SDK instalado.
+
+    Responde ao initialize, entrega o frame `result` de erro da API e falha com
+    a saída do processo, a sequência que o SDK converte em exceção.
+    """
+
+    def __init__(self, erro_de_saida):
+        self.erro_de_saida = erro_de_saida
+        self.fila: asyncio.Queue = asyncio.Queue()
+
+    async def connect(self):
+        pass
+
+    async def write(self, dados):
+        mensagem = json.loads(dados)
+        if mensagem.get("type") == "control_request":
+            resposta = {"subtype": "success", "request_id": mensagem["request_id"]}
+            await self.fila.put({"type": "control_response", "response": resposta})
+        elif mensagem.get("type") == "user":
+            await self.fila.put(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 1,
+                    "duration_api_ms": 1,
+                    "is_error": True,
+                    "num_turns": 1,
+                    "session_id": "s",
+                    "total_cost_usd": 0.05,
+                    "api_error_status": 401,
+                    "result": "Invalid API key · Please run /login",
+                }
+            )
+            await self.fila.put(self.erro_de_saida)
+
+    async def read_messages(self):
+        while True:
+            item = await self.fila.get()
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+    async def end_input(self):
+        pass
+
+    async def close(self):
+        pass
+
+    def is_ready(self):
+        return True
+
+
+def _chamar_pelo_sdk_real(monkeypatch):
+    """Chama o provider com o SDK instalado e devolve a exceção e o número de chamadas."""
+    pytest.importorskip("claude_agent_sdk")
+    from claude_agent_sdk import ProcessError  # noqa: PLC0415
+    from claude_agent_sdk._internal import client as cliente_do_sdk  # noqa: PLC0415
+
+    transportes = []
+
+    def transporte(**_kwargs):
+        transportes.append(_TransporteDoSdkFalso(ProcessError("Command failed", exit_code=1)))
+        return transportes[-1]
+
+    monkeypatch.setattr(cliente_do_sdk, "SubprocessCLITransport", transporte)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ProviderError) as erro:
+            _chamar(_config_com_tentativas(3))
+    return erro.value, len(transportes)
+
+
+def test_sdk_real_classifica_pelo_resultado_de_erro_e_soma_o_custo(monkeypatch):
+    """Laço de leitura do SDK instalado sobre um transporte falso, sem processo nem rede."""
+    erro, chamadas = _chamar_pelo_sdk_real(monkeypatch)
+
+    assert erro.cost_usd == pytest.approx(0.05 * chamadas)
+
+
+def test_sdk_real_nao_repete_o_401(monkeypatch):
+    sdk = pytest.importorskip("claude_agent_sdk")
+    # As versões do SDK que não leem api_error_status entregam o ResultMessage
+    # sem status, e o erro fica transitório.
+    if "api_error_status" not in {campo.name for campo in fields(sdk.ResultMessage)}:
+        pytest.skip("ResultMessage desta versão do SDK não traz api_error_status")
+
+    erro, chamadas = _chamar_pelo_sdk_real(monkeypatch)
+
+    assert chamadas == 1
+    assert "status 401" in str(erro)

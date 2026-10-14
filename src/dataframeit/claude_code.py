@@ -81,13 +81,24 @@ async def _async_query(
     response_text = ""
     result = None
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    response_text += block.text
-        elif isinstance(message, ResultMessage):
-            result = message
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        response_text += block.text
+            elif isinstance(message, ResultMessage):
+                result = message
+    except Exception:
+        # O CLI termina a chamada recusada com um ResultMessage de erro e sai com
+        # código não zero, e o SDK levanta essa saída como exceção (ResultError
+        # nas versões recentes, Exception com o texto nas antigas) depois de
+        # entregar a mensagem. A mensagem já recebida traz o custo da tentativa
+        # e, nas versões que o informam, o status da API; quem a classifica é
+        # _raise_for_result_error, e a exceção, repassada, seria classificada
+        # pelo texto.
+        if not getattr(result, "is_error", False):
+            raise
 
     return response_text, result
 

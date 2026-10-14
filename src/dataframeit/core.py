@@ -1080,7 +1080,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Quando uma linha falha depois de todas as tentativas com erro de rate limit,
             o número de workers cai pela metade. No codex, o rate limit e a sobrecarga do
             app-server são reconhecidos pelo código ou pelo status, sem ler a mensagem;
-            nos providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela
+            no claude_code, o rate limit (429) e a sobrecarga (529), pelo status que o
+            SDK informa a partir do claude-agent-sdk 0.1.76 (do 0.1.48 ao 0.1.75, sem o
+            status, são repetidos como falha transitória e não reduzem os workers); nos
+            providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela
             classe do erro e, sem nenhum dos dois, pelo texto da mensagem.
             Dica: use track_tokens=True para ver métricas de throughput (RPM, TPM) e calibrar.
         use_search: Se True, habilita busca web antes de processar. Padrão: False.
