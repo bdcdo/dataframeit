@@ -1,8 +1,11 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError, create_model
 
+from dataframeit.claude_code import _raise_for_result_error
 from dataframeit.errors import (
     MAX_REJECTED_RULES,
     ProviderError,
@@ -201,9 +204,30 @@ def test_numero_no_resumo_da_validacao_nao_conta_como_rate_limit():
     assert is_rate_limit_error(erro) is False
 
 
-# O turno do codex que falha sem código classificável só traz o 429 no texto, e
-# a redução de workers depende de a mensagem ser lida.
-def test_erro_definitivo_com_429_na_mensagem_conta_como_rate_limit():
-    erro = ProviderError("Turno Codex falhou: 429 Too Many Requests")
+# Rate limit do pacote é só ProviderOverloadedError. O ProviderError do
+# claude_code leva na mensagem o campo result do SDK, que pode trazer texto do
+# modelo, e um "429" ali não pode reduzir os workers.
+def test_429_no_result_do_claude_code_nao_conta_como_rate_limit():
+    resultado = SimpleNamespace(
+        is_error=True,
+        subtype="error_max_turns",
+        api_error_status=None,
+        errors=None,
+        result="Fundamento: art. 429 do CPC",
+    )
+    with pytest.raises(ProviderError) as falha:
+        _raise_for_result_error(resultado)
 
-    assert is_rate_limit_error(erro) is True
+    assert type(falha.value) is ProviderError
+    assert "art. 429 do CPC" in str(falha.value)
+    assert is_rate_limit_error(falha.value) is False
+
+
+# Nenhum ProviderError é lido pelo texto, nem o turno do codex que falha só com
+# "429 Too Many Requests" na mensagem, sem código classificável.
+@pytest.mark.parametrize(
+    "mensagem",
+    ["Turno Codex falhou: 429 Too Many Requests", "Claude Code falhou: art. 429 do CPC"],
+)
+def test_provider_error_com_429_na_mensagem_nao_conta_como_rate_limit(mensagem):
+    assert is_rate_limit_error(ProviderError(mensagem)) is False
