@@ -907,6 +907,143 @@ def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
 
 
 # =============================================================================
+# Entrada polars: retomada do campo do modelo com valor inteiro
+# =============================================================================
+
+# Anotações que, sem o Optional e o Annotated, são int.
+_ANOTACOES_DE_INTEIRO = {
+    "int": int,
+    "optional": Optional[int],
+    "uniao_com_none": int | None,
+    "annotated": Annotated[int, Field(ge=0)],
+    "optional_de_annotated": Optional[Annotated[int, Field(ge=0)]],
+}
+
+
+def _rodar_sem_avisos(df, questions, llm, **opcoes):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        resultado, _ = _rodar(df, questions=questions, llm=llm, **opcoes)
+    return resultado
+
+
+@pytest.mark.parametrize("caso", _ANOTACOES_DE_INTEIRO)
+def test_retomada_de_saida_polars_devolve_o_inteiro_grande_exato(caso):
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", nota=(_ANOTACOES_DE_INTEIRO[caso], ...))
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    interrompida = _rodar_sem_avisos(
+        entrada,
+        modelo,
+        _responde_em_sequencia({"nota": _ID_GRANDE}, ProviderAbortError("limite")),
+    )
+    assert interrompida["nota"].to_list() == [_ID_GRANDE, None, None]
+
+    retomada = _rodar_sem_avisos(
+        interrompida, modelo, _responde_em_sequencia({"nota": 7}, {"nota": 8}), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(
+        entrada, modelo, _responde_em_sequencia({"nota": _ID_GRANDE}, {"nota": 7}, {"nota": 8})
+    )
+
+    assert retomada["nota"].dtype == pl.Int64
+    assert retomada["nota"].to_list() == [_ID_GRANDE, 7, 8]
+    assert retomada.equals(sem_interrupcao)
+
+
+def test_retomada_polars_de_campo_float_gravado_como_inteiro_grande():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": pl.Series([_ID_GRANDE, None], dtype=pl.Int64),
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, llm = _rodar(
+            entrada, questions=ModeloNotaDecimal, llm=_responde(nota=2.5), resume=True
+        )
+
+    assert llm.call_count == 1
+    assert resultado["nota"].dtype == pl.Float64
+    assert resultado["nota"].to_list() == [float(_ID_GRANDE), 2.5]
+
+
+# O 2**64 - 1 não cabe no Int64, e a execução sem interrupção o devolve em
+# coluna Object (ver _CAMPOS_QUE_O_ARROW_NAO_TIPA).
+@pytest.mark.parametrize("valor", [5, 2**64 - 1])
+def test_retomada_polars_de_campo_int_gravado_em_uint64(valor):
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": pl.Series([valor, None], dtype=pl.UInt64),
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    retomada = _rodar_sem_avisos(
+        entrada, ModeloNotaInteira, _responde_por_linha("nota", [7]), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(
+        entrada.select("texto"), ModeloNotaInteira, _responde_por_linha("nota", [valor, 7])
+    )
+
+    assert retomada["nota"].to_list() == [valor, 7]
+    assert retomada["nota"].dtype == sem_interrupcao["nota"].dtype
+
+
+def test_reprocessar_campo_int_de_saida_polars_com_resposta_float_e_texto():
+    # A resposta do dublê não passa pela validação do modelo, e a coluna do
+    # campo int recebe o float e o texto como vieram.
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": pl.Series([_ID_GRANDE, None], dtype=pl.Int64),
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    with pytest.warns(UserWarning, match="Object"):
+        resultado, llm = _rodar(
+            entrada,
+            questions=ModeloNotaInteira,
+            llm=_responde_por_linha("nota", [7.5, "8"]),
+            resume=True,
+            reprocess_columns=["nota"],
+        )
+
+    assert llm.call_count == 2
+    assert resultado["nota"].to_list() == [7.5, "8"]
+
+
+@pytest.mark.parametrize(
+    ("tipo", "respostas"),
+    [(Union[int, float], [7, 8.5]), (Optional[int], [_ID_GRANDE, None])],
+)
+def test_retomada_polars_interrompida_antes_da_primeira_resposta(tipo, respostas):
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", nota=(tipo, ...))
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    interrompida = _rodar_sem_avisos(
+        entrada, modelo, _responde_em_sequencia(ProviderAbortError("limite"))
+    )
+    assert interrompida["nota"].null_count() == 2
+
+    retomada = _rodar_sem_avisos(
+        interrompida, modelo, _responde_por_linha("nota", respostas), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(entrada, modelo, _responde_por_linha("nota", respostas))
+
+    assert retomada.equals(sem_interrupcao)
+    assert retomada["nota"].dtype == sem_interrupcao["nota"].dtype
+
+
+# =============================================================================
 # Entrada polars: campo do modelo que o Arrow não tipa
 # =============================================================================
 

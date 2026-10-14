@@ -131,7 +131,10 @@ def parse_json(resposta: str) -> dict:
         raise ValueError(msg) from e
 
 
-def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
+def to_pandas(
+    data: object,
+    model_columns: Mapping[str, object] = types.MappingProxyType({}),
+) -> tuple[pd.DataFrame, ConversionInfo]:
     """Converte dados para pandas DataFrame.
 
     Suporta:
@@ -144,6 +147,9 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     Args:
         data: Dados a serem convertidos.
+        model_columns: Anotação de cada campo do modelo, pelo nome. Na entrada
+            polars, a coluna de campo `int` chega ao pandas com os valores do
+            polars, como em `_python_ints`.
 
     Returns:
         Tupla (DataFrame pandas, ConversionInfo com metadados da conversão).
@@ -157,7 +163,7 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return data.to_pandas(), ConversionInfo(
+        return _python_ints(data, model_columns), ConversionInfo(
             original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
         )
 
@@ -200,6 +206,25 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
         "Use pandas.DataFrame, polars.DataFrame, pandas.Series, polars.Series, list ou dict."
     )
     raise TypeError(msg)
+
+
+def _python_ints(data: PolarsDataFrame, model_columns: Mapping[str, object]) -> pd.DataFrame:
+    """Converte o DataFrame polars para pandas, com o campo `int` em inteiros Python.
+
+    O `to_pandas()` do polars leva a coluna inteira com nulo a float64, que
+    arredonda o inteiro acima de 2**53. Na coluna de campo `int`, a execução
+    sem interrupção grava inteiros Python e None, e a coluna relida vem assim,
+    em dtype object. A troca se limita à anotação `int` porque, com outra
+    anotação, o inteiro relido não diz o mesmo que o valor validado e fica na
+    coluna: o 1 de um campo bool e o inteiro grande de um campo float saem
+    numa coluna Object ao lado das respostas novas, e o bool com strict=True
+    é acusado como incompatível.
+    """
+    df = data.to_pandas()
+    for col, annotation in model_columns.items():
+        if col in data.columns and _without_optional(annotation) is int:
+            df[col] = pd.Series(data[col].to_list(), dtype=object)
+    return df
 
 
 def from_pandas(
