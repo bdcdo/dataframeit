@@ -163,9 +163,17 @@ def to_pandas(
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return _python_ints(data, model_columns), ConversionInfo(
-            original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
-        )
+        df = _python_ints(data, model_columns)
+        # O to_pandas entrega a lista de uma coluna List ou Array, e a de dentro
+        # de um Struct, como array do numpy, que muda o valor: a data vira
+        # datetime64, o datetime com fuso passa a UTC sem o fuso, e o inteiro
+        # ao lado de um nulo vira float. A retomada validaria essa forma, e a
+        # linha processada de uma saída polars voltaria recusada ou com outra
+        # hora. O to_list do polars dá os objetos Python que o modelo devolveu.
+        for col, dtype in data.schema.items():
+            if isinstance(dtype, (pl.List, pl.Array, pl.Struct)):
+                df[col] = pd.Series(data[col].to_list())
+        return df, ConversionInfo(original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data)
 
     # pandas Series
     if isinstance(data, pd.Series):
@@ -280,10 +288,13 @@ def from_pandas(
             # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
             # pyarrow recusam, seja qual for a exceção (ValueError, TypeError,
             # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
-            # O pânico do polars não é Exception e passa por aqui.
+            # O pânico do polars, como o do Decimal acima de 38 dígitos, que o
+            # pyarrow entrega em 256 bits, herda de BaseException e é capturado
+            # pelo nome; capturar BaseException engoliria o KeyboardInterrupt. O
+            # polars ainda escreve a mensagem do pânico no stderr.
             try:
                 columns.append(_to_polars(values, model_columns.get(col)))
-            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
+            except (Exception, pl.exceptions.PanicException):  # noqa: BLE001 (a recusa muda de tipo com os valores)
                 # Há versões do polars em que o construtor de Series inspeciona os
                 # valores mesmo com dtype=pl.Object: quando o primeiro valor não nulo
                 # é membro de Enum, troca cada valor pelo `.value`, e levanta erro no
@@ -429,9 +440,10 @@ def _untouched_columns(
     São as colunas do usuário que não são campo do modelo. A saída as tira de
     `source`, o DataFrame polars de entrada: convertidas de volta do pandas,
     elas trocariam de tipo (Date por Datetime, Enum por Categorical) e trariam
-    arredondado o inteiro acima de 2**53 que tem nulo na coluna ou está dentro
-    de Struct e List, porque o `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem das de `source`, porque a
-    execução grava por rótulo e não remove nem reordena linhas.
+    arredondado o inteiro acima de 2**53 que tem nulo na coluna, porque o
+    `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem
+    das de `source`, porque a execução grava por rótulo e não remove nem
+    reordena linhas.
 
     Sem `source` (entrada polars.Series, que só traz o texto), todas as colunas
     são da execução.
