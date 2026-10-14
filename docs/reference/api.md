@@ -115,6 +115,8 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 
 Com entrada polars, as colunas de entrada que não são campo do modelo nem têm nome de uma das [colunas adicionadas](#colunas-adicionadas) voltam como entraram, com o mesmo tipo e os mesmos valores. Na saída polars, um campo `Enum` sai pelo valor do membro. Quando as respostas de um campo não cabem numa coluna tipada do polars, como um `Union[int, str]` que recebeu número numa linha e texto em outra, a coluna sai com o tipo `Object`, com os objetos Python que o modelo devolveu, exceto o membro de `Enum` fora de lista ou dict, que também nela sai pelo valor, e um aviso diz quais colunas são; converta-as antes de gravar em arquivo.
 
+Um campo anotado como `dict`, como `dict[str, int]` ou `Optional[dict[str, Any]]`, sai na saída polars como texto JSON, com nulo onde a linha não tem resposta. O texto é o mesmo que o checkpoint grava, e os valores que o JSON não representa saem nele como texto. O tipo das demais colunas do modelo vem das respostas. A coluna sem nenhum valor, toda nula ou só com listas vazias, sai com o tipo da anotação quando ela é `str`, `int`, `float`, `bool`, `date`, `datetime` ou lista de um deles: `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime` ou `List` de um desses. Com outra anotação, a coluna sem valor fica com o tipo que o polars infere. Na entrada sem linhas, a coluna do modelo que a entrada já traz mantém o tipo dela, e a que ela não traz sai `String`.
+
 ### Colunas Adicionadas
 
 | Coluna | Quando existe | Conteúdo |

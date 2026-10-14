@@ -1,12 +1,14 @@
 """Entrada e saída de dataframeit(): colunas de controle, texto ausente, índice e avisos."""
 
+import json
 import linecache
 import logging
+import typing
 import warnings
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 from unittest.mock import patch
 
 import numpy as np
@@ -16,6 +18,7 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Field,
     Strict,
     create_model,
     field_validator,
@@ -849,6 +852,27 @@ def test_entrada_polars_vazia_mantem_o_tipo_das_colunas():
     assert resultado["dia"].dtype == pl.Date
 
 
+def test_entrada_polars_vazia_mantem_o_tipo_da_coluna_do_modelo_que_ja_traz():
+    # Sem linhas não há resposta a converter, e a coluna do modelo sai da
+    # entrada; convertida de volta do pandas, ela perderia o Struct e o fuso.
+    pl = pytest.importorskip("polars")
+    modelo = create_model(
+        "ModeloDoCaso", sub=(Optional[Modelo], None), quando=(Optional[datetime], None)
+    )
+    entrada = pl.DataFrame(
+        {
+            "texto": pl.Series([], dtype=pl.Utf8),
+            "sub": pl.Series([], dtype=pl.Struct({"x": pl.Utf8})),
+            "quando": pl.Series([], dtype=pl.Datetime("us", "UTC")),
+        }
+    )
+
+    resultado, llm = _rodar(entrada, questions=modelo)
+
+    llm.assert_not_called()
+    assert dict(resultado.schema) == dict(entrada.schema)
+
+
 def test_retomada_de_saida_polars_traz_os_tokens_das_linhas_novas():
     pl = pytest.importorskip("polars")
     uso = {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
@@ -1028,7 +1052,7 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     "uniao_com_numero_primeiro": (Union[int, str], [1, "dois"]),
     "uniao_com_texto_primeiro": (Union[int, str], ["dois", 1]),
     "any_com_tipos_diferentes": (Any, [1, "x"]),
-    "dict_com_valores_de_tipos_diferentes": (dict[str, Any], [{"a": 1}, {"a": [1]}]),
+    "dict_com_chave_que_o_json_nao_aceita": (dict[Cor, int], [{Cor.AZUL: 1}, {Cor.VERDE: 2}]),
     "lista_de_uniao": (list[Union[int, str]], [[1, "a"], [2]]),
     "lista_de_enum": (list[Cor], [[Cor.AZUL], [Cor.VERDE]]),
     "inteiro_que_o_float_arredonda_com_float": (Union[int, float], [_ID_GRANDE, 2.5]),
@@ -1217,3 +1241,230 @@ def test_saida_polars_com_coluna_object_e_retomada():
 
     assert llm.call_count == 1
     assert retomada["campo"].to_list() == [1, "dois", 3]
+
+
+# =============================================================================
+# Saída polars: campo dict em texto JSON
+# =============================================================================
+
+
+def test_campo_dict_sai_como_texto_json_na_saida_polars():
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(dict[str, int], ...))
+    respostas = [{"a": 1}, {"b": 2}, {}]
+    pandas, _ = _rodar(
+        pd.DataFrame({"texto": ["a", "b", "c"]}),
+        questions=modelo,
+        llm=_responde_por_linha("campo", respostas),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=modelo,
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == pl.Utf8
+    assert resultado["campo"].to_list() == ['{"a": 1}', '{"b": 2}', "{}"]
+    assert [json.loads(texto) for texto in resultado["campo"]] == pandas["campo"].tolist()
+
+
+# Anotação de dict, as respostas de duas linhas e o texto de cada uma na saída.
+_CAMPOS_DICT = {
+    "dict_sem_parametro": (dict, [{"a": 1}, {}], ['{"a": 1}', "{}"]),
+    "optional_com_linha_nula": (Optional[dict[str, int]], [{"a": 1}, None], ['{"a": 1}', None]),
+    "uniao_com_none": (dict[str, int] | None, [{"a": 1}, None], ['{"a": 1}', None]),
+    "annotated_dentro_de_optional": (
+        Optional[Annotated[dict[str, int], Field(min_length=1)]],
+        [{"a": 1}, None],
+        ['{"a": 1}', None],
+    ),
+    "valores_de_tipos_diferentes": (
+        dict[str, Any],
+        [{"a": 1}, {"a": [1]}],
+        ['{"a": 1}', '{"a": [1]}'],
+    ),
+    "texto_acentuado": (dict[str, str], [{"órgão": "saúde"}, {}], ['{"órgão": "saúde"}', "{}"]),
+    "valor_que_o_json_nao_serializa": (
+        dict[str, date],
+        [{"a": date(2024, 1, 2)}, {}],
+        ['{"a": "2024-01-02"}', "{}"],
+    ),
+    "enum_como_valor": (dict[str, Cor], [{"a": Cor.AZUL}, {}], ['{"a": "azul"}', "{}"]),
+}
+
+
+@pytest.mark.parametrize("caso", _CAMPOS_DICT)
+def test_campo_dict_sai_como_texto_json_em_cada_forma_de_anotacao(caso):
+    pl = pytest.importorskip("polars")
+    tipo, respostas, textos = _CAMPOS_DICT[caso]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(tipo, ...)),
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == pl.Utf8
+    assert resultado["campo"].to_list() == textos
+
+
+def test_retomada_de_saida_polars_com_campo_dict_em_texto_json():
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(dict[str, int], ...))
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=modelo,
+            llm=_responde_em_sequencia({"campo": {"a": 1}}, ProviderAbortError("limite")),
+        )
+    assert interrompida["campo"].to_list() == ['{"a": 1}', None, None]
+
+    retomada, llm = _rodar(
+        interrompida,
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": {"b": 2}}, {"campo": {}}),
+        resume=True,
+    )
+
+    assert llm.call_count == 2
+    assert retomada["campo"].to_list() == ['{"a": 1}', '{"b": 2}', "{}"]
+
+
+def test_modelo_aninhado_continua_struct_na_saida_polars():
+    pl = pytest.importorskip("polars")
+
+    resultado, _ = _rodar(
+        pl.DataFrame({"texto": ["a", "b"]}),
+        questions=create_model("ModeloDoCaso", campo=(Modelo, ...)),
+        llm=_responde_por_linha("campo", [{"x": "p"}, {"x": "q"}]),
+    )
+
+    assert resultado["campo"].dtype == pl.Struct({"x": pl.Utf8})
+    assert resultado["campo"].to_list() == [{"x": "p"}, {"x": "q"}]
+
+
+def test_saida_polars_ja_concluida_mantem_o_campo_dict_em_texto_json():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {"texto": ["a"], "campo": ['{"a": 1}'], "_dataframeit_status": ["processed"]}
+    )
+
+    resultado, llm = _rodar(
+        entrada,
+        questions=create_model("ModeloDoCaso", campo=(dict[str, int], ...)),
+        resume=True,
+    )
+
+    llm.assert_not_called()
+    assert resultado["campo"].to_list() == ['{"a": 1}']
+
+
+# =============================================================================
+# Saída polars: tipo da coluna sem valor
+# =============================================================================
+
+# Anotação, um valor dela e o tipo polars da coluna, com ou sem valor.
+_TIPOS_PELA_ANOTACAO = {
+    "str": (str, "a", lambda pl: pl.Utf8),
+    "int": (int, 1, lambda pl: pl.Int64),
+    "float": (float, 1.5, lambda pl: pl.Float64),
+    "bool": (bool, True, lambda pl: pl.Boolean),
+    "date": (date, date(2024, 1, 2), lambda pl: pl.Date),
+    "datetime": (
+        datetime,
+        datetime.fromisoformat("2024-01-02T03:04"),
+        lambda pl: pl.Datetime("us"),
+    ),
+    "lista_de_str": (list[str], ["a"], lambda pl: pl.List(pl.Utf8)),
+    "lista_de_date": (list[date], [date(2024, 1, 2)], lambda pl: pl.List(pl.Date)),
+    "int_com_restricao": (Annotated[int, Field(ge=0)], 1, lambda pl: pl.Int64),
+}
+
+
+@pytest.mark.parametrize("caso", _TIPOS_PELA_ANOTACAO)
+def test_coluna_toda_nula_sai_com_o_tipo_da_anotacao(caso):
+    pl = pytest.importorskip("polars")
+    tipo, valor, esperado = _TIPOS_PELA_ANOTACAO[caso]
+    modelo = create_model("ModeloDoCaso", campo=(Optional[tipo], None))
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+
+    com_valor, _ = _rodar(
+        entrada, questions=modelo, llm=_responde_por_linha("campo", [valor, None])
+    )
+    sem_valor, _ = _rodar(entrada, questions=modelo, llm=_responde(campo=None))
+
+    assert com_valor["campo"].dtype == esperado(pl)
+    assert sem_valor["campo"].dtype == esperado(pl)
+    assert sem_valor["campo"].to_list() == [None, None]
+
+
+@pytest.mark.parametrize("respostas", [[[], []], [[], None]])
+def test_lista_so_com_listas_vazias_sai_com_o_tipo_da_anotacao(respostas):
+    pl = pytest.importorskip("polars")
+
+    resultado, _ = _rodar(
+        pl.DataFrame({"texto": ["a", "b"]}),
+        questions=create_model("ModeloDoCaso", campo=(Optional[list[str]], None)),
+        llm=_responde_por_linha("campo", respostas),
+    )
+
+    assert resultado["campo"].dtype == pl.List(pl.Utf8)
+    assert resultado["campo"].to_list() == respostas
+
+
+# A resposta do dublê não passa pela validação do modelo, e um inteiro no campo
+# float mostra que a coluna com algum valor fica com o tipo dos valores.
+@pytest.mark.parametrize(
+    ("tipo", "respostas", "esperado"),
+    [
+        (float, [7, None], lambda pl: pl.Int64),
+        (list[float], [[7], []], lambda pl: pl.List(pl.Int64)),
+    ],
+)
+def test_coluna_com_algum_valor_fica_com_o_tipo_inferido(tipo, respostas, esperado):
+    pl = pytest.importorskip("polars")
+
+    resultado, _ = _rodar(
+        pl.DataFrame({"texto": ["a", "b"]}),
+        questions=create_model("ModeloDoCaso", campo=(Optional[tipo], None)),
+        llm=_responde_por_linha("campo", respostas),
+    )
+
+    assert resultado["campo"].dtype == esperado(pl)
+    assert resultado["campo"].to_list() == respostas
+
+
+# Anotações que não dão tipo à coluna sem valor, com respostas que não trazem valor.
+_ANOTACOES_SEM_TIPO_PARA_A_COLUNA = {
+    "decimal": (Optional[Decimal], [None, None]),
+    "literal": (Optional[Literal[1, 2]], [None, None]),
+    "enum": (Optional[Cor], [None, None]),
+    "uniao_de_dois_tipos": (Union[int, str, None], [None, None]),
+    "modelo_aninhado": (Optional[Modelo], [None, None]),
+    "tupla": (Optional[tuple[int, str]], [None, None]),
+    "lista_de_decimal": (list[Decimal], [[], []]),
+    "lista_sem_item": (typing.List, [[], []]),  # noqa: UP006 (tem origem list e nenhum argumento)
+    "lista_de_item_sem_hash": (list[Annotated[int, {"unidade": "dias"}]], [[], []]),
+}
+
+
+@pytest.mark.parametrize("caso", _ANOTACOES_SEM_TIPO_PARA_A_COLUNA)
+def test_coluna_sem_valor_de_outra_anotacao_fica_com_o_tipo_inferido(caso):
+    pl = pytest.importorskip("polars")
+    tipo, respostas = _ANOTACOES_SEM_TIPO_PARA_A_COLUNA[caso]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(tipo, ...)),
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == pl.from_pandas(pd.Series(respostas, dtype=object)).dtype
+    assert resultado["campo"].to_list() == respostas
