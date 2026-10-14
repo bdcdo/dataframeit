@@ -419,26 +419,38 @@ class Inteiros(BaseModel):
     nota: Annotated[int, Field(ge=0)] | None = None
     misto: int | str | None = None
     decimal: float | None = None
+    medida: Annotated[float, Field(ge=0)] | None = None
 
 
-@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
 def test_read_df_com_modelo_rele_campo_int_como_int(tmp_path, formato):
     """O leitor devolve float64 na coluna com int e célula vazia; o campo int volta int (#223)."""
     pytest.importorskip("pyarrow")
-    if formato == "xlsx":
-        pytest.importorskip("openpyxl")
     arquivo = tmp_path / f"dados.{formato}"
-    # Com a linha toda vazia, o XLSX não a relê.
     colunas = {"texto": ["a", "b"]} | {campo: [7, None] for campo in Inteiros.model_fields}
     _save_checkpoint(pd.DataFrame(colunas, dtype=object), arquivo, structures=frozenset())
 
     lido = read_df(str(arquivo), Inteiros)
 
+    assert list(lido["nota"]) == [7, None]
     assert type(lido["nota"][0]) is int
-    assert lido["nota"][0] == 7
-    assert pd.isna(lido["nota"][1])
+    assert lido["nota"][1] is None
     assert lido["misto"].dtype == "float64"
     assert lido["decimal"].dtype == "float64"
+    assert lido["medida"].dtype == "float64"
+
+
+def test_read_df_nao_rele_campo_int_do_xlsx(tmp_path):
+    """O XLSX guarda número como double; o int dele pode vir arredondado e fica como lido."""
+    pytest.importorskip("openpyxl")
+    arquivo = tmp_path / "dados.xlsx"
+    dados = pd.DataFrame({"texto": ["a", "b"], "nota": [9007199254740993, None]}, dtype=object)
+    _save_checkpoint(dados, arquivo, structures=frozenset())
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert lido["nota"].dtype == "float64"
+    assert lido["nota"][0] == 9007199254740992.0
 
 
 def test_read_df_com_columns_do_usuario_rele_campo_int_do_parquet(tmp_path):
@@ -454,14 +466,46 @@ def test_read_df_com_columns_do_usuario_rele_campo_int_do_parquet(tmp_path):
 
 
 def test_read_df_mantem_o_float_que_o_csv_guarda_no_campo_int(tmp_path):
-    """Só a célula gravada como inteiro muda; a de um float gravado assim fica float."""
+    """Só a célula gravada como inteiro muda; a de um float ou de "+7" fica como lida."""
     arquivo = tmp_path / "dados.csv"
-    arquivo.write_text("nota\n7\n7.5\n-3\n\n", encoding="utf-8")
+    arquivo.write_text("texto,nota\na,7\nb,7.5\nc,-3\nd,+7\ne,\n", encoding="utf-8")
 
     lido = read_df(str(arquivo), Inteiros)
 
-    assert list(lido["nota"][:3]) == [7, 7.5, -3]
-    assert [type(v) for v in lido["nota"][:3]] == [int, float, int]
+    assert list(lido["nota"]) == [7, 7.5, -3, 7.0, None]
+    assert [type(v) for v in lido["nota"]] == [int, float, int, float, type(None)]
+
+
+def test_read_df_rele_do_csv_o_int_acima_do_int64(tmp_path):
+    """Com célula vazia, o leitor devolve texto na coluna com int acima do Int64."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,nota\na,9223372036854775813\nb,7\nc,\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [9223372036854775813, 7, None]
+    assert [type(v) for v in lido["nota"]] == [int, int, type(None)]
+
+
+def test_read_df_sem_o_campo_int_no_arquivo(tmp_path):
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,decimal\na,1.5\nb,\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido.columns) == ["texto", "decimal"]
+
+
+def test_read_df_rele_campo_int_do_parquet_com_indice_proprio(tmp_path):
+    """O parquet que guarda o índice o devolve, e a coluna relida fica nas linhas dele."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / "dados.parquet"
+    pd.DataFrame({"nota": [7, None]}, index=[10, 20], dtype=object).to_parquet(arquivo)
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido.index) == [10, 20]
+    assert list(lido["nota"]) == [7, None]
 
 
 @pytest.mark.parametrize("formato", ["csv", "parquet", "json"])
@@ -491,6 +535,33 @@ def test_read_df_respeita_os_tipos_do_usuario_no_campo_int(tmp_path, formato, op
         pd.DataFrame({"nota": [7.0, None]}).to_parquet(arquivo)
 
     assert read_df(str(arquivo), Inteiros, **opcao)["nota"].dtype == tipo
+
+
+@pytest.mark.parametrize(
+    "opcao",
+    [
+        {"converters": {"id": str}},
+        {"na_values": ["x"]},
+        {"keep_default_na": False},
+        {"na_filter": False},
+        {"usecols": ["id", "nota"]},
+        {"index_col": "id"},
+        {"index_col": 0},
+        {"parse_dates": ["data"]},
+        {"engine": "pyarrow"},
+    ],
+    ids=lambda opcao: next(iter(opcao)),
+)
+def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
+    """Com essas opções, read_df devolve o campo int como o pandas o lê, sem levantar."""
+    if opcao.get("engine") == "pyarrow":
+        pytest.importorskip("pyarrow")
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("id,data,nota\n10,2024-01-01,7\n20,2024-01-02,\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros, **opcao)
+
+    pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, **opcao))
 
 
 def test_estrutura_anotada_e_opcional_volta_do_checkpoint_csv(tmp_path):

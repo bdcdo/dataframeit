@@ -2060,6 +2060,30 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     return out
 
 
+_INT64_MAX = 2**63 - 1
+
+
+def _ints_beyond_int64_as_uint64(df: pd.DataFrame) -> pd.DataFrame:
+    """Passa a UInt64 a coluna de objeto com int entre 2**63 e 2**64, in-place.
+
+    O pyarrow infere int64 de uma coluna de objeto com int do Python e levanta
+    OverflowError no int acima do Int64, e o checkpoint parquet não seria
+    gravado. Na coluna UInt64, o int vai exato e a célula vazia, nula. Só muda
+    a coluna em que esse int aparece; a de ints menores continua como int64.
+    A coluna com outro valor ao lado dele fica como está, porque o UInt64
+    leria o bool como 1. O int negativo não cabe em nenhum inteiro do
+    parquet, e o UInt64 o recusa, como o pyarrow recusaria.
+    """
+    for col in df.columns:
+        values = df[col]
+        if values.dtype != object or not any(type(v) is int and v > _INT64_MAX for v in values):
+            continue
+        cells = [None if is_scalar(v) and pd.isna(v) else v for v in values]
+        if all(v is None or type(v) is int for v in cells):
+            df[col] = pd.array(cells, dtype="UInt64")
+    return df
+
+
 def _save_checkpoint(
     df: pd.DataFrame,
     path: str | Path,
@@ -2085,7 +2109,9 @@ def _save_checkpoint(
     elif ext == ".xlsx":
         _structures_as_json(df).to_excel(tmp, index=False)
     elif ext == ".parquet":
-        _structures_as_json(df, structures).to_parquet(tmp, index=False)
+        _ints_beyond_int64_as_uint64(_structures_as_json(df, structures)).to_parquet(
+            tmp, index=False
+        )
     else:
         msg = (
             f"Extensão {ext} não suportada para checkpoint. "

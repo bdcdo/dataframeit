@@ -1127,6 +1127,8 @@ def test_checkpoint_grava_enum_escalar_pelo_valor(tmp_path, formato):
 
 # 2**53 + 1, o primeiro inteiro que o float64 arredonda.
 _INTEIRO_GRANDE = 9007199254740993
+# Acima do Int64, que o pyarrow infere de uma coluna de objeto com int.
+_ACIMA_DO_INT64 = 2**63 + 5
 
 
 def _celulas_gravadas(ckpt, coluna):
@@ -1138,21 +1140,43 @@ def _celulas_gravadas(ckpt, coluna):
         return [linha[coluna] for linha in csv.DictReader(arquivo)]
 
 
+# A coluna só passa a uint64 com um int acima do Int64; até 2**63 - 1, fica int64.
+@pytest.mark.parametrize(
+    ("valor", "tipo"),
+    [(_INTEIRO_GRANDE, "int64"), (2**63 - 1, "int64"), (_ACIMA_DO_INT64, "uint64")],
+)
 @pytest.mark.parametrize("formato", ["csv", "parquet"])
-def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato):
+def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato, valor, tipo):
     """A coluna com int e None não passa por float64 antes do arquivo (#223)."""
-    pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
     ckpt = tmp_path / f"ckpt.{formato}"
 
     # O índice da entrada, que o checkpoint não grava, não precisa ser 0..n-1.
     _save_checkpoint(
-        pd.DataFrame({"nota": [_INTEIRO_GRANDE, None]}, index=[10, 20], dtype=object),
+        pd.DataFrame({"nota": [valor, None]}, index=[10, 20], dtype=object),
         ckpt,
         structures=frozenset(),
     )
 
-    esperado = [str(_INTEIRO_GRANDE), ""] if formato == "csv" else [_INTEIRO_GRANDE, None]
+    esperado = [str(valor), ""] if formato == "csv" else [valor, None]
     assert _celulas_gravadas(ckpt, "nota") == esperado
+    if formato == "parquet":
+        assert str(pq.read_schema(ckpt).field("nota").type) == tipo
+
+
+@pytest.mark.parametrize("vizinho", [True, -1])
+def test_checkpoint_parquet_nao_grava_int_acima_do_int64_ao_lado_de_bool_ou_negativo(
+    tmp_path, vizinho
+):
+    """Nenhum inteiro do parquet guarda os dois; o bool não vira 1 na coluna UInt64."""
+    pytest.importorskip("pyarrow")
+
+    with pytest.raises(OverflowError):
+        _save_checkpoint(
+            pd.DataFrame({"nota": [_ACIMA_DO_INT64, vizinho]}, dtype=object),
+            tmp_path / "ckpt.parquet",
+            structures=frozenset(),
+        )
 
 
 class NotaInteira(BaseModel):
@@ -1163,11 +1187,38 @@ class NotaOpcional(BaseModel):
     nota: int | None = None
 
 
+class NotaEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+    nota: int
+
+
+def _interrompe_depois_de_gravar(df, ckpt, modelo, valor):
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _uma_linha_por_execucao(lambda text: {"nota": valor}),
+            modelo=modelo,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+
+def _retoma(df, ckpt, modelo):
+    return _roda(
+        df,
+        lambda text, *a, **k: {"data": {"nota": 7}, "usage": None},
+        modelo=modelo,
+        batch_size=1,
+        checkpoint_path=ckpt,
+    )
+
+
+@pytest.mark.parametrize("valor", [_INTEIRO_GRANDE, _ACIMA_DO_INT64])
 @pytest.mark.parametrize("entrada", ["pandas", "polars"])
 @pytest.mark.parametrize("formato", ["csv", "parquet"])
-@pytest.mark.parametrize("modelo", [NotaInteira, NotaOpcional])
+@pytest.mark.parametrize("modelo", [NotaInteira, NotaOpcional, NotaEstrita])
 def test_inteiro_grande_com_linha_pendente_volta_exato_da_retomada(
-    tmp_path, modelo, formato, entrada
+    tmp_path, modelo, formato, entrada, valor
 ):
     """As linhas pendentes deixam célula vazia ao lado do int, na gravação e na releitura (#223)."""
     pytest.importorskip("pyarrow")
@@ -1178,25 +1229,29 @@ def test_inteiro_grande_com_linha_pendente_volta_exato_da_retomada(
         df = pd.DataFrame({"texto": ["a", "b", "c"]})
     ckpt = tmp_path / f"ckpt.{formato}"
 
-    with pytest.warns(UserWarning, match="interrompida"):
-        _roda(
-            df,
-            _uma_linha_por_execucao(lambda text: {"nota": _INTEIRO_GRANDE}),
-            modelo=modelo,
-            batch_size=1,
-            checkpoint_path=ckpt,
+    with warnings.catch_warnings():
+        # Na saída polars, o int acima do Int64 sai numa coluna Object, com aviso.
+        warnings.filterwarnings("ignore", message=".*tipo Object")
+        _interrompe_depois_de_gravar(df, ckpt, modelo, valor)
+        gravado = str(valor) if formato == "csv" else valor
+        assert _celulas_gravadas(ckpt, "nota")[0] == gravado
+        final = _retoma(df, ckpt, modelo)
+
+    assert list(final["nota"]) == [valor, 7, 7]
+    assert type(final["nota"][0]) is int
+
+
+def test_inteiro_grande_do_checkpoint_xlsx_volta_arredondado_e_strict_o_recusa(tmp_path):
+    """O XLSX guarda o número como double: sem strict, o int volta arredondado; com strict, é recusado."""
+    pytest.importorskip("openpyxl")
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    for modelo in (NotaInteira, NotaEstrita):
+        _interrompe_depois_de_gravar(
+            df, tmp_path / f"{modelo.__name__}.xlsx", modelo, _INTEIRO_GRANDE
         )
 
-    gravado = str(_INTEIRO_GRANDE) if formato == "csv" else _INTEIRO_GRANDE
-    assert _celulas_gravadas(ckpt, "nota")[0] == gravado
+    final = _retoma(df, tmp_path / "NotaInteira.xlsx", NotaInteira)
 
-    final = _roda(
-        df,
-        lambda text, *a, **k: {"data": {"nota": 7}, "usage": None},
-        modelo=modelo,
-        batch_size=1,
-        checkpoint_path=ckpt,
-    )
-
-    assert list(final["nota"]) == [_INTEIRO_GRANDE, 7, 7]
-    assert type(final["nota"][0]) is int
+    assert final["nota"][0] == _INTEIRO_GRANDE - 1
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _retoma(df, tmp_path / "NotaEstrita.xlsx", NotaEstrita)

@@ -633,6 +633,11 @@ def read_df(
         path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
+               Com ele, a coluna de campo int ou Optional[int] lida de CSV ou
+               parquet volta como object, com o int exato e None na célula
+               vazia; dtype, converters, na_values, keep_default_na,
+               na_filter, usecols, dtype_backend, index_col, parse_dates e
+               engine desligam essa releitura.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
@@ -722,25 +727,47 @@ def _accepts_only_int(field_type: object) -> bool:
 
 
 _INT_TEXT = re.compile(r"-?\d+")
+# Além dos argumentos com que o usuário controla tipos ou NA, os que mudam o
+# que a releitura acha no arquivo: index_col tira a coluna do índice do usecols
+# dela, parse_dates pede coluna que ela não lê, e o engine pyarrow ignora o
+# na_filter e devolve float na célula vazia.
+_INT_REREAD_OFF = (*_READ_CONTROLS, "dtype_backend", "index_col", "parse_dates", "engine")
+
+
+def _read_as_rereadable(column: pd.Series) -> bool:
+    """True se o leitor devolveu a coluna num tipo que não guarda o int exato.
+
+    Float64 é a coluna com int e célula vazia; texto, a do CSV com int acima
+    do Int64 e célula vazia; UInt64, a do parquet que o checkpoint grava com
+    esse int, que a releitura devolve como int e None, como as demais.
+    """
+    return (
+        is_float_dtype(column)
+        or is_string_dtype(column.dtype)
+        or isinstance(column.dtype, pd.UInt64Dtype)
+    )
 
 
 def _reread_int_columns(
     df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
 ) -> None:
-    """Relê como int exato os campos int do modelo que o leitor devolveu em float, in-place.
+    """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
 
     O leitor do pandas devolve float64 numa coluna com int e célula vazia, como
     a de um checkpoint com linha pendente, e o float arredonda o int acima de
-    2**53. Só muda a célula que o arquivo guarda como inteiro, e a coluna passa
-    a object; a vazia e a que guarda um float, como 7.5, ficam como lidas. Com
-    tipos, NA ou backend escolhidos pelo usuário, a releitura fica de fora.
+    2**53; com int acima do Int64, o CSV volta como texto. A coluna relida
+    passa a object, com o int que o arquivo guarda como inteiro e None na
+    célula vazia; a célula que guarda outra coisa, como 7.5, fica como lida. O
+    XLSX guarda número como double e fica de fora, porque o int que ele
+    devolve já pode vir arredondado. Com os argumentos de _INT_REREAD_OFF, a
+    releitura também fica de fora.
     """
-    if any(k in kwargs for k in (*_READ_CONTROLS, "dtype_backend")):
+    if any(k in kwargs for k in _INT_REREAD_OFF):
         return
     columns = [
         f
         for f, info in model.model_fields.items()
-        if f in df.columns and _accepts_only_int(info.annotation) and is_float_dtype(df[f])
+        if f in df.columns and _accepts_only_int(info.annotation) and _read_as_rereadable(df[f])
     ]
     if not columns:
         return
@@ -750,25 +777,23 @@ def _reread_int_columns(
         raw = pd.read_parquet(path, columns=columns, dtype_backend="numpy_nullable", **options)
         exact = {
             col: [None if pd.isna(v) else int(v) for v in raw[col]]
+            for col in columns
             if is_integer_dtype(raw[col])
-            else [None] * len(raw)
+        }
+    elif ext == ".csv":
+        raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False, **kwargs)
+        exact = {
+            col: [
+                int(text) if _INT_TEXT.fullmatch(text) else None if text == "" else read
+                for text, read in zip(raw[col], df[col], strict=True)
+            ]
             for col in columns
         }
     else:
-        reader = _TEXT_READERS.get(ext)
-        if reader is None:
-            return
-        raw = reader(path, usecols=columns, dtype=str, na_filter=False, **kwargs)
-        exact = {
-            col: [int(v) if _INT_TEXT.fullmatch(v) else None for v in raw[col]] for col in columns
-        }
-    for col in columns:
-        if any(v is not None for v in exact[col]):
-            df[col] = pd.Series(
-                [read if v is None else v for v, read in zip(exact[col], df[col], strict=True)],
-                index=df.index,
-                dtype=object,
-            )
+        return
+    for col, values in exact.items():
+        if any(type(v) is int for v in values):
+            df[col] = pd.Series(values, index=df.index, dtype=object)
 
 
 def _normalize_all_json_columns(df: pd.DataFrame) -> None:
