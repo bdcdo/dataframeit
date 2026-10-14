@@ -479,13 +479,12 @@ def _kind(value: object) -> object:
 
 
 def _is_null(value: object) -> bool:
-    """Se o valor é um dos nulos do pandas: None, NaN, NaT ou NA."""
-    return (
-        value is None
-        or value is pd.NaT
-        or value is pd.NA
-        or (isinstance(value, float) and math.isnan(value))
-    )
+    """Se o valor é um dos nulos que a coluna de objetos traz: None, NaN ou NaT.
+
+    O NaN e o NaT vêm da conversão da entrada polars para pandas, na linha
+    que segue pendente depois da retomada, e o NaT é instância de datetime.
+    """
+    return value is None or value is pd.NaT or (isinstance(value, float) and math.isnan(value))
 
 
 def _arrow_alters(values: pd.Series) -> bool:
@@ -499,8 +498,7 @@ def _arrow_alters(values: pd.Series) -> bool:
     convertidos: o datetime sem fuso depois de um com fuso ganharia o fuso
     dele. O valor que nenhum tipo do polars guarda também conta: o Decimal NaN,
     que o pyarrow grava nulo, e o time com fuso, que o tipo Time não tem. O
-    nulo (None, NaN, NaT ou NA) não entra no grupo, porque é nulo em qualquer
-    tipo.
+    nulo (`_is_null`) não entra no grupo, porque é nulo em qualquer tipo.
     """
     if values.dtype != object:
         return False
