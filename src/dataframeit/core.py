@@ -1077,7 +1077,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Com provider='codex', aceita somente effort.
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
             Se > 1, processa múltiplas linhas simultaneamente.
-            Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
+            Quando o provider identifica rate limit pelo status ou pelo código do erro, o
+            número de workers cai pela metade.
             Dica: use track_tokens=True para ver métricas de throughput (RPM, TPM) e calibrar.
         use_search: Se True, habilita busca web antes de processar. Padrão: False.
         search_provider: Provedor de busca web a usar. Opções:

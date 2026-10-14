@@ -25,7 +25,7 @@ result = dataframeit(
 
 ### Auto-reduction on Rate Limits
 
-When a 429 error is detected, DataFrameIt automatically reduces workers:
+When the provider identifies a rate limit by the status or the error code, DataFrameIt automatically reduces workers:
 
 ```
 Start: 10 workers

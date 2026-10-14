@@ -53,7 +53,7 @@ Com `resume=False`, se as colunas do modelo já estão no DataFrame e `reprocess
 
 ### Muitos erros 429 (rate limit)
 
-O provider recusou requisições por excesso de taxa. O dataframeit já reduz os workers pela metade a cada 429 e tenta de novo com backoff, mas a solução estável é baixar `parallel_requests` ou aumentar `rate_limit_delay`. A conta está em [Performance](performance.md#calculando-o-delay-ideal). Com busca web, o limite do provedor de busca costuma ser o mais apertado; ver [Busca Web](web-search.md#rate-limits-e-processamento-paralelo).
+O provider recusou requisições por excesso de taxa. O dataframeit tenta de novo com backoff e reduz os workers pela metade quando o provider identifica o rate limit pelo status ou pelo código do erro, mas a solução estável é baixar `parallel_requests` ou aumentar `rate_limit_delay`. A conta está em [Performance](performance.md#calculando-o-delay-ideal). Com busca web, o limite do provedor de busca costuma ser o mais apertado; ver [Busca Web](web-search.md#rate-limits-e-processamento-paralelo).
 
 ### Quanto vai custar?
 

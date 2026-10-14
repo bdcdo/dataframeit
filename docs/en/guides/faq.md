@@ -53,7 +53,7 @@ With `resume=False`, if the model columns are already in the DataFrame and `repr
 
 ### Many 429 errors (rate limit)
 
-The provider rejected requests for exceeding its rate. dataframeit already halves the workers on each 429 and retries with backoff, but the stable fix is to lower `parallel_requests` or raise `rate_limit_delay`. The calculation is in [Performance](performance.md#calculating-ideal-delay). With web search, the search provider's limit is usually the tightest; see [Web Search](web-search.md#rate-limits-and-parallel-processing).
+The provider rejected requests for exceeding its rate. dataframeit retries with backoff and halves the workers when the provider identifies the rate limit by the status or the error code, but the stable fix is to lower `parallel_requests` or raise `rate_limit_delay`. The calculation is in [Performance](performance.md#calculating-ideal-delay). With web search, the search provider's limit is usually the tightest; see [Web Search](web-search.md#rate-limits-and-parallel-processing).
 
 ### How much will it cost?
 
