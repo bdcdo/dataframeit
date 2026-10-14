@@ -5,7 +5,7 @@ import linecache
 import logging
 import typing
 import warnings
-from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
@@ -1011,12 +1011,224 @@ def test_retomada_de_lista_de_datas_guardada_como_array():
 
 
 # =============================================================================
+# Entrada polars: retomada do campo do modelo com valor inteiro
+# =============================================================================
+
+# Anotações que, sem o Optional e o Annotated, são int.
+_ANOTACOES_DE_INTEIRO = {
+    "int": int,
+    "optional": Optional[int],
+    "uniao_com_none": int | None,
+    "annotated": Annotated[int, Field(ge=0)],
+    "optional_de_annotated": Optional[Annotated[int, Field(ge=0)]],
+}
+
+
+def _rodar_sem_avisos(df, questions, llm, **opcoes):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        resultado, _ = _rodar(df, questions=questions, llm=llm, **opcoes)
+    return resultado
+
+
+@pytest.mark.parametrize("caso", _ANOTACOES_DE_INTEIRO)
+def test_retomada_de_saida_polars_devolve_o_inteiro_grande_exato(caso):
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", nota=(_ANOTACOES_DE_INTEIRO[caso], ...))
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    interrompida = _rodar_sem_avisos(
+        entrada,
+        modelo,
+        _responde_em_sequencia({"nota": _ID_GRANDE}, ProviderAbortError("limite")),
+    )
+    assert interrompida["nota"].to_list() == [_ID_GRANDE, None, None]
+
+    retomada = _rodar_sem_avisos(
+        interrompida, modelo, _responde_em_sequencia({"nota": 7}, {"nota": 8}), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(
+        entrada, modelo, _responde_em_sequencia({"nota": _ID_GRANDE}, {"nota": 7}, {"nota": 8})
+    )
+
+    assert retomada["nota"].dtype == pl.Int64
+    assert retomada["nota"].to_list() == [_ID_GRANDE, 7, 8]
+    assert retomada.equals(sem_interrupcao)
+
+
+def test_retomada_polars_de_campo_float_gravado_como_inteiro_grande():
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": pl.Series([_ID_GRANDE, None], dtype=pl.Int64),
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, llm = _rodar(
+            entrada, questions=ModeloNotaDecimal, llm=_responde(nota=2.5), resume=True
+        )
+
+    assert llm.call_count == 1
+    assert resultado["nota"].dtype == pl.Float64
+    assert resultado["nota"].to_list() == [float(_ID_GRANDE), 2.5]
+
+
+# O 2**64 - 1 não cabe no Int64, e a execução sem interrupção o devolve em
+# coluna Object (ver _CAMPOS_QUE_O_ARROW_NAO_TIPA).
+@pytest.mark.parametrize("valor", [5, 2**64 - 1])
+def test_retomada_polars_de_campo_int_gravado_em_uint64(valor):
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": pl.Series([valor, None], dtype=pl.UInt64),
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    retomada = _rodar_sem_avisos(
+        entrada, ModeloNotaInteira, _responde_por_linha("nota", [7]), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(
+        entrada.select("texto"), ModeloNotaInteira, _responde_por_linha("nota", [valor, 7])
+    )
+
+    assert retomada["nota"].to_list() == [valor, 7]
+    assert retomada["nota"].dtype == sem_interrupcao["nota"].dtype
+
+
+class ModeloNotaEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    nota: int
+    rotulo: str
+
+
+def test_retomada_polars_de_campo_int_estrito_em_coluna_sem_nulo():
+    # A coluna Int64 sem nulo também chega em inteiros Python. Pelo to_pandas()
+    # do polars ela viria em int64 do numpy, que o modelo strict recusa, e a
+    # linha processada seria acusada como incompatível.
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": [_ID_GRANDE, 3],
+            "rotulo": ["x", "y"],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+
+    resultado, llm = _rodar(
+        entrada,
+        questions=ModeloNotaEstrita,
+        llm=_responde_por_linha("rotulo", ["z", "w"]),
+        resume=True,
+        reprocess_columns=["rotulo"],
+    )
+
+    assert llm.call_count == 2
+    assert resultado["nota"].dtype == pl.Int64
+    assert resultado["nota"].to_list() == [_ID_GRANDE, 3]
+    assert resultado["rotulo"].to_list() == ["z", "w"]
+
+
+class ContagemOpcional(BaseModel):
+    n: Optional[int] = None
+
+
+class ModeloInteirosAninhados(BaseModel):
+    nota: Optional[int]
+    lista: list[Optional[int]]
+    contagem: ContagemOpcional
+
+
+def test_retomada_polars_de_inteiro_grande_em_campo_lista_e_submodelo():
+    # A coluna do campo int passa por _python_ints, e as colunas List e Struct
+    # pelo laço de to_pandas; cada uma arredondaria o inteiro grande sem a sua.
+    pl = pytest.importorskip("polars")
+    respostas = [
+        {"nota": _ID_GRANDE, "lista": [_ID_GRANDE, None], "contagem": {"n": _ID_GRANDE}},
+        {"nota": None, "lista": [None, _ID_GRANDE + 2], "contagem": {"n": None}},
+        {"nota": 7, "lista": [], "contagem": {"n": _ID_GRANDE + 4}},
+    ]
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    interrompida = _rodar_sem_avisos(
+        entrada,
+        ModeloInteirosAninhados,
+        _responde_em_sequencia(respostas[0], ProviderAbortError("limite")),
+    )
+    assert interrompida["nota"].to_list() == [_ID_GRANDE, None, None]
+
+    retomada = _rodar_sem_avisos(
+        interrompida, ModeloInteirosAninhados, _responde_em_sequencia(*respostas[1:]), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(
+        entrada, ModeloInteirosAninhados, _responde_em_sequencia(*respostas)
+    )
+
+    for campo in ("nota", "lista", "contagem"):
+        assert retomada[campo].to_list() == [resposta[campo] for resposta in respostas]
+    assert retomada.equals(sem_interrupcao)
+    assert retomada.schema == sem_interrupcao.schema
+
+
+def test_reprocessar_campo_int_de_saida_polars_com_resposta_float_e_texto():
+    # A resposta do dublê não passa pela validação do modelo, e a coluna do
+    # campo int recebe o float e o texto como vieram.
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": pl.Series([_ID_GRANDE, None], dtype=pl.Int64),
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+    with pytest.warns(UserWarning, match="Object"):
+        resultado, llm = _rodar(
+            entrada,
+            questions=ModeloNotaInteira,
+            llm=_responde_por_linha("nota", [7.5, "8"]),
+            resume=True,
+            reprocess_columns=["nota"],
+        )
+
+    assert llm.call_count == 2
+    assert resultado["nota"].to_list() == [7.5, "8"]
+
+
+@pytest.mark.parametrize(
+    ("tipo", "respostas"),
+    [(Union[int, float], [7, 8.5]), (Optional[int], [_ID_GRANDE, None])],
+)
+def test_retomada_polars_interrompida_antes_da_primeira_resposta(tipo, respostas):
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", nota=(tipo, ...))
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    interrompida = _rodar_sem_avisos(
+        entrada, modelo, _responde_em_sequencia(ProviderAbortError("limite"))
+    )
+    assert interrompida["nota"].null_count() == 2
+
+    retomada = _rodar_sem_avisos(
+        interrompida, modelo, _responde_por_linha("nota", respostas), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(entrada, modelo, _responde_por_linha("nota", respostas))
+
+    assert retomada.equals(sem_interrupcao)
+    assert retomada["nota"].dtype == sem_interrupcao["nota"].dtype
+
+
+# =============================================================================
 # Entrada polars: campo do modelo que o Arrow não tipa
 # =============================================================================
 
 _FUSO_DE_DESLOCAMENTO = timezone(timedelta(hours=5, minutes=30))
 
-# Tipo do campo e as respostas de duas linhas que o Arrow não põe na mesma coluna.
+# Tipo do campo e as respostas, uma por linha, que o Arrow não põe na mesma coluna.
 # O datetime com fuso de deslocamento é recusado pelo polars, com ComputeError,
 # que não é ValueError nem TypeError.
 _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
@@ -1039,6 +1251,37 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     # O pyarrow põe o Decimal acima de 38 dígitos numa coluna de 256 bits, que o
     # polars não lê: a conversão entra em pânico, e o pânico não é Exception.
     "decimal_acima_de_38_digitos": (Decimal, [Decimal("1E+40"), Decimal(2)]),
+    # Data ou hora com outro tipo na anotação: o Arrow tiparia a coluna pelo
+    # primeiro valor e converteria os outros, e a anotação a manda para Object.
+    "uniao_de_datetime_e_date": (
+        Union[datetime, date],
+        [date(2026, 1, 2), datetime.fromisoformat("2026-01-02T15:30")],
+    ),
+    "uniao_de_time_e_int_fora_de_um_dia": (Union[time, int], [time(1, 2), 86400000000]),
+    "uniao_de_date_e_int": (Union[date, int], [date(2026, 1, 2), 5]),
+    "tupla_de_date_e_int": (tuple[date, int], [(date(2026, 1, 2), 5), (date(2026, 1, 3), 6)]),
+    "lista_de_uniao_de_date_e_datetime": (
+        list[Union[date, datetime]],
+        [[date(2026, 1, 2), datetime.fromisoformat("2026-01-02T10:00")], [date(2026, 1, 3)]],
+    ),
+    "tupla_de_date_e_int_opcional": (Optional[tuple[date, int]], [(date(2026, 1, 2), 5), None]),
+    "uniao_de_date_anotado_e_int": (
+        Optional[Union[Annotated[date, Field(description="dia")], int]],
+        [date(2026, 1, 2), 5],
+    ),
+    "tupla_variavel_de_uniao_de_date_e_int": (
+        tuple[Union[date, int], ...],
+        [(date(2026, 1, 2), 5), (date(2026, 1, 2), 6), (date(2026, 1, 2), 7)],
+    ),
+    "uniao_com_barra_de_date_e_int": (date | int, [date(2026, 1, 2), 5, date(2026, 1, 2)]),
+    "uniao_de_datetime_e_int": (
+        Union[datetime, int],
+        [
+            datetime.fromisoformat("2026-01-02T15:30"),
+            5,
+            datetime.fromisoformat("2026-01-02T15:30"),
+        ],
+    ),
 }
 
 
@@ -1051,22 +1294,72 @@ def _responde_por_linha(campo, valores):
 def test_campo_que_o_arrow_nao_tipa_sai_como_object_com_os_valores_do_pandas(caso):
     pl = pytest.importorskip("polars")
     tipo, valores = _CAMPOS_QUE_O_ARROW_NAO_TIPA[caso]
+    textos = [f"texto {i}" for i in range(len(valores))]
     modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
     pandas, _ = _rodar(
-        pd.DataFrame({"texto": ["a", "b"]}),
+        pd.DataFrame({"texto": textos}),
         questions=modelo,
         llm=_responde_por_linha("campo", valores),
     )
 
     with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
         resultado, _ = _rodar(
-            pl.DataFrame({"texto": ["a", "b"]}),
+            pl.DataFrame({"texto": textos}),
             questions=modelo,
             llm=_responde_por_linha("campo", valores),
         )
 
     assert resultado["campo"].dtype == pl.Object
     assert resultado["campo"].to_list() == pandas["campo"].tolist() == valores
+
+
+# Anotações que não juntam data ou hora a outro tipo, as respostas, o tipo
+# polars inferido e os valores que saem dele.
+_CAMPOS_TIPADOS_PELOS_VALORES = {
+    "uniao_de_int_e_float": (Union[int, float], [1, 2.5], lambda pl: pl.Float64, [1.0, 2.5]),
+    "uniao_de_int_e_str_so_com_int": (Union[int, str], [1, 2], lambda pl: pl.Int64, [1, 2]),
+    "date_opcional": (
+        Optional[date],
+        [date(2026, 1, 2), None],
+        lambda pl: pl.Date,
+        [date(2026, 1, 2), None],
+    ),
+    "lista_de_date": (
+        list[date],
+        [[date(2026, 1, 2)], [date(2026, 1, 3)]],
+        lambda pl: pl.List(pl.Date),
+        [[date(2026, 1, 2)], [date(2026, 1, 3)]],
+    ),
+    "tupla_so_de_date": (
+        tuple[date, ...],
+        [(date(2026, 1, 2), date(2026, 1, 3)), (date(2026, 1, 4),)],
+        lambda pl: pl.List(pl.Date),
+        [[date(2026, 1, 2), date(2026, 1, 3)], [date(2026, 1, 4)]],
+    ),
+    "datetime_com_fuso": (
+        datetime,
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+        lambda pl: pl.Datetime("us", "UTC"),
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+    ),
+}
+
+
+@pytest.mark.parametrize("caso", _CAMPOS_TIPADOS_PELOS_VALORES)
+def test_campo_sem_data_ou_hora_com_outro_tipo_fica_com_o_tipo_inferido(caso):
+    pl = pytest.importorskip("polars")
+    tipo, respostas, esperado, valores = _CAMPOS_TIPADOS_PELOS_VALORES[caso]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(tipo, ...)),
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == esperado(pl)
+    assert resultado["campo"].to_list() == valores
 
 
 def test_aviso_de_object_nomeia_so_a_coluna_que_o_arrow_nao_tipa():
