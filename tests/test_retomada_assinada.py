@@ -1249,7 +1249,9 @@ def test_int_acima_do_int64_com_linha_pendente_nao_vai_ao_checkpoint_parquet(tmp
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
     ckpt = tmp_path / "ckpt.parquet"
 
-    with pytest.warns(UserWarning, match="Falha ao gravar o checkpoint.*OverflowError"):
+    # Saem dois avisos, e o pytest.warns do piso (7.0) não devolve o que não casa.
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always")
         parcial = _roda(
             df,
             _uma_linha_por_execucao(lambda text: {"nota": _ACIMA_DO_INT64}),
@@ -1258,6 +1260,9 @@ def test_int_acima_do_int64_com_linha_pendente_nao_vai_ao_checkpoint_parquet(tmp
             checkpoint_path=ckpt,
         )
 
+    mensagens = [str(aviso.message) for aviso in avisos]
+    assert any("Falha ao gravar o checkpoint" in m and "OverflowError" in m for m in mensagens)
+    assert any("Execução interrompida" in m for m in mensagens)
     assert parcial["nota"][0] == _ACIMA_DO_INT64
     assert not ckpt.exists()
 
