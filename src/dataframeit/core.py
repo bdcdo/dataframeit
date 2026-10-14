@@ -2071,15 +2071,16 @@ def _ints_beyond_int64_as_uint64(df: pd.DataFrame) -> pd.DataFrame:
     gravado. Na coluna UInt64, o int vai exato e a célula vazia, nula. Só muda
     a coluna em que esse int aparece; a de ints menores continua como int64.
     A coluna com outro valor ao lado dele fica como está, porque o UInt64
-    leria o bool como 1. O int negativo não cabe em nenhum inteiro do
-    parquet, e o UInt64 o recusa, como o pyarrow recusaria.
+    leria o bool como 1, e o pyarrow a recusa. A coluna com int negativo
+    também, porque nenhum inteiro do parquet guarda os dois, e o UInt64 do
+    pandas 2.1 troca o -1 por 2**64 - 1 em vez de recusá-lo.
     """
     for col in df.columns:
         values = df[col]
         if values.dtype != object or not any(type(v) is int and v > _INT64_MAX for v in values):
             continue
         cells = [None if is_scalar(v) and pd.isna(v) else v for v in values]
-        if all(v is None or type(v) is int for v in cells):
+        if all(v is None or (type(v) is int and v >= 0) for v in cells):
             df[col] = pd.array(cells, dtype="UInt64")
     return df
 

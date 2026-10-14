@@ -22,6 +22,7 @@ from pydantic import (
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
+    _ints_beyond_int64_as_uint64,
     _run_signature,
     _same_json,
     _save_checkpoint,
@@ -1168,15 +1169,17 @@ def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato, v
 def test_checkpoint_parquet_nao_grava_int_acima_do_int64_ao_lado_de_bool_ou_negativo(
     tmp_path, vizinho
 ):
-    """Nenhum inteiro do parquet guarda os dois; o bool não vira 1 na coluna UInt64."""
-    pytest.importorskip("pyarrow")
+    """Nenhum inteiro do parquet guarda os dois; o bool não vira 1 na coluna UInt64.
 
+    A coluna fica object, e o pyarrow a recusa. Passada a UInt64, o pandas 2.1
+    trocaria o -1 por 2**64 - 1 e gravaria o checkpoint com o valor errado.
+    """
+    pytest.importorskip("pyarrow")
+    dados = pd.DataFrame({"nota": [_ACIMA_DO_INT64, vizinho]}, dtype=object)
+
+    assert _ints_beyond_int64_as_uint64(dados.copy())["nota"].dtype == object
     with pytest.raises(OverflowError):
-        _save_checkpoint(
-            pd.DataFrame({"nota": [_ACIMA_DO_INT64, vizinho]}, dtype=object),
-            tmp_path / "ckpt.parquet",
-            structures=frozenset(),
-        )
+        _save_checkpoint(dados, tmp_path / "ckpt.parquet", structures=frozenset())
 
 
 class NotaInteira(BaseModel):
