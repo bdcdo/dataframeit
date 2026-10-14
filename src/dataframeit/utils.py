@@ -82,8 +82,6 @@ _TEXT_READERS: dict[str, Callable[..., pd.DataFrame]] = {
     ".xlsx": pd.read_excel,
     ".xls": pd.read_excel,
 }
-# Argumentos de leitura com que o usuário já controla tipos ou NA.
-_READ_CONTROLS = ("dtype", "converters", "na_values", "keep_default_na", "na_filter", "usecols")
 
 
 @dataclass
@@ -700,11 +698,16 @@ def read_df(
         path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
-               Com ele e sem kwargs, a coluna de campo int ou Optional[int]
-               que o CSV ou o parquet não devolve em tipo inteiro volta como
-               object, com o int exato e None na célula vazia. A coluna só
-               com células vazias fica como lida: float no CSV e, na coluna
-               nula que o checkpoint grava no parquet, object com None.
+               Com ele e sem kwargs, os campos de texto do .csv, do .xlsx e
+               do .xls são lidos como texto cru: "2023" não vira número,
+               "N/A" não vira ausência, e só a célula vazia vira ausência.
+               Com kwargs, o texto fica como o leitor do pandas o devolve.
+               Também com ele e sem kwargs, a coluna de campo int ou
+               Optional[int] que o CSV ou o parquet não devolve em tipo
+               inteiro volta como object, com o int exato e None na célula
+               vazia. A coluna só com células vazias fica como lida: float
+               no CSV e, na coluna nula que o checkpoint grava no parquet,
+               object com None.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
@@ -766,16 +769,21 @@ def _reread_text_columns(
     """Relê como texto cru os campos de texto do modelo, in-place.
 
     Sem isso, "2023" volta como número e "N/A" ou "NA" viram ausência, e a
-    retomada acusa ou troca o valor. Só a célula vazia vira ausência. A
-    releitura fica de fora quando o usuário já controla tipos ou NA.
+    retomada acusa ou troca o valor. Só a célula vazia vira ausência.
+    Qualquer argumento de leitura desliga a releitura, porque, somado ao
+    usecols dela, ele pode mudar as linhas que o leitor devolve: com
+    on_bad_lines, a linha malformada deixa de sê-lo quando só as colunas de
+    texto são lidas, volta na releitura e desloca o texto das seguintes; com
+    index_col, parse_dates ou names, a releitura levanta. A atribuição alinha
+    pelo índice e não acusa a diferença de tamanho.
     """
     reader = _TEXT_READERS.get(ext)
-    if reader is None or any(k in kwargs for k in _READ_CONTROLS):
+    if reader is None or kwargs:
         return
     text_columns = [f for f in get_text_fields(model) if f in df.columns]
     if not text_columns:
         return
-    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False, **kwargs)
+    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False)
     for col in text_columns:
         df[col] = raw[col].mask(raw[col] == "")
 

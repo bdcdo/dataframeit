@@ -180,7 +180,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | str | File path |
-| `model` | type[BaseModel] | Pydantic model. With it, only structured fields are normalized, and in `.csv`/`.xlsx` text fields are read as raw text: `"2023"` does not become a number and `"N/A"` does not become missing. Passing `dtype`, `converters`, `na_values`, `keep_default_na`, `na_filter` or `usecols` turns this off. |
+| `model` | type[BaseModel] | Pydantic model. With it, only structured fields are normalized, and in `.csv`, `.xlsx` and `.xls` text fields are read as raw text: `"2023"` does not become a number and `"N/A"` does not become missing. Any extra read argument, from `**kwargs`, turns this off, and text is left as pandas returns it. |
 | `normalize` | bool | If `False`, no column is converted |
 | `**kwargs` | | Arguments passed to pandas |
 

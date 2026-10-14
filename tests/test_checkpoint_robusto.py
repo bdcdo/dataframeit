@@ -604,6 +604,12 @@ def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
     pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, **opcao))
 
 
+class ComNome(BaseModel):
+    nome: str
+    n: int
+
+
+@pytest.mark.parametrize("modelo", [Inteiros, ComNome], ids=["int", "texto"])
 @pytest.mark.parametrize(
     ("formato", "opcao", "tipo"),
     [
@@ -612,22 +618,84 @@ def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
         ("xlsx", {"sheet_name": None}, "dict"),
     ],
 )
-def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(tmp_path, formato, opcao, tipo):
-    """O leitor que devolve outra coisa que um DataFrame passa direto, como sem o campo int."""
+def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(
+    tmp_path, formato, opcao, tipo, modelo
+):
+    """O leitor que devolve outra coisa que um DataFrame passa direto, com campo int ou de texto."""
     if formato == "xlsx":
         pytest.importorskip("openpyxl")
     arquivo = tmp_path / f"dados.{formato}"
-    dados = pd.DataFrame({"nota": [7, None]})
+    dados = pd.DataFrame({"nome": ["a", "b"], "nota": [7, None]})
     if formato == "csv":
         dados.to_csv(arquivo, index=False)
     else:
         dados.to_excel(arquivo, index=False)
 
-    lido = read_df(str(arquivo), Inteiros, **opcao)
+    lido = read_df(str(arquivo), modelo, **opcao)
 
     assert type(lido).__name__ == tipo
     if tipo == "TextFileReader":
         lido.close()
+
+
+_LINHA_MALFORMADA = "nome,n\na,1\nb,2,extra,mais\nc,3\nd,4\n"
+
+
+def test_read_df_com_on_bad_lines_mantem_o_texto_na_sua_linha(tmp_path):
+    """A linha pulada não leva o texto da seguinte para cima nem traz o próprio de volta."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text(_LINHA_MALFORMADA, encoding="utf-8")
+
+    lido = read_df(str(arquivo), ComNome, on_bad_lines="skip")
+
+    assert lido[["nome", "n"]].to_numpy().tolist() == [["a", 1], ["c", 3], ["d", 4]]
+
+
+@pytest.mark.filterwarnings("ignore::pandas.errors.ParserWarning")
+@pytest.mark.parametrize(
+    ("formato", "conteudo", "opcao"),
+    [
+        ("csv", _LINHA_MALFORMADA, {"on_bad_lines": "skip"}),
+        ("csv", _LINHA_MALFORMADA, {"on_bad_lines": "warn"}),
+        ("csv", _LINHA_MALFORMADA, {"on_bad_lines": lambda linha: linha[:2], "engine": "python"}),
+        ("csv", "id,nome,n\n10,a,1\n20,b,2\n", {"index_col": 0}),
+        ("csv", "nome,n\na,1\nb,2\n", {"index_col": "n"}),
+        ("csv", "nome,n,data\na,1,2024-01-01\nb,2,2024-01-02\n", {"parse_dates": ["data"]}),
+        ("csv", "nome,n\nx,a,1\ny,b,2\n", {"names": ["nome", "n"], "skiprows": 1}),
+        ("xlsx", "id,nome,n\n10,a,1\n20,b,2\n", {"index_col": 0}),
+    ],
+    ids=[
+        "on_bad_lines-skip",
+        "on_bad_lines-warn",
+        "on_bad_lines-callable",
+        "index_col-posicao",
+        "index_col-nome",
+        "parse_dates",
+        "names-com-indice-implicito",
+        "xlsx-index_col",
+    ],
+)
+def test_read_df_sem_releitura_de_texto_com_opcao_de_leitura(tmp_path, formato, conteudo, opcao):
+    """Com argumento de leitura, o campo de texto volta como o pandas o lê, sem desalinhar nem levantar.
+
+    Releitas só com as colunas de texto, essas opções devolvem outras linhas
+    (a linha malformada deixa de ser malformada) ou levantam (a coluna do
+    índice ou da data fica de fora da releitura).
+    """
+    arquivo = tmp_path / f"dados.{formato}"
+    origem = tmp_path / "origem.csv"
+    origem.write_text(conteudo, encoding="utf-8")
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+        pd.read_csv(origem).to_excel(arquivo, index=False)
+        leitor = pd.read_excel
+    else:
+        origem.rename(arquivo)
+        leitor = pd.read_csv
+
+    lido = read_df(str(arquivo), ComNome, **opcao)
+
+    pd.testing.assert_frame_equal(lido, leitor(arquivo, **opcao))
 
 
 def test_estrutura_anotada_e_opcional_volta_do_checkpoint_csv(tmp_path):
