@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import gc
 import json
 import os
 import signal
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
@@ -463,6 +465,79 @@ def test_encerramento_do_backend_fecha_os_pipes_do_app_server(tmp_path, monkeypa
                 raise saida
 
     assert _pipes_fechados(processo)
+
+
+@contextlib.contextmanager
+def _avisos_de_recurso():
+    """Registra os `ResourceWarning` do bloco e da coleta de lixo ao fim dele.
+
+    O teste solta as próprias referências ao processo antes do fim do bloco,
+    para que o `Popen` ainda sem `returncode` e o pipe aberto, se houver, avisem
+    na coleta.
+    """
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always", ResourceWarning)
+        yield avisos
+        gc.collect()
+    avisos[:] = [str(aviso.message) for aviso in avisos if aviso.category is ResourceWarning]
+
+
+def _segundo_ctrl_c_no_wait(processo):
+    """O primeiro `wait` do processo levanta `KeyboardInterrupt`, como um segundo Ctrl+C.
+
+    O sinal de verdade, mandado por um `threading.Timer`, chegaria fora do bloco
+    se o temporizador atrasasse, e o `KeyboardInterrupt` derrubaria a sessão do
+    pytest. Os `wait` seguintes são os do processo.
+    """
+    espera = processo.wait
+    chamadas = []
+
+    def interrompe_a_primeira(timeout=None):
+        chamadas.append(timeout)
+        if len(chamadas) == 1:
+            raise KeyboardInterrupt
+        return espera(timeout)
+
+    processo.wait = interrompe_a_primeira
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP só existe em POSIX")
+@pytest.mark.parametrize("segundo_ctrl_c", [False, True], ids=["sem_sair_em_2s", "segundo_ctrl_c"])
+def test_app_server_que_nao_sai_no_fechamento_e_recolhido(tmp_path, monkeypatch, segundo_ctrl_c):
+    """O app-server que não sai depois do SIGTERM é morto, esperado e tem os pipes fechados.
+
+    Com `SIGSTOP`, o processo não sai em 2 s, e o `close` do SDK faz `kill`
+    sem `wait`: o processo ficaria zumbi, sem `returncode`, e o `Popen` avisaria
+    na coleta de lixo. Com um segundo Ctrl+C durante o `wait` do SDK, o `close`
+    sai sem `kill`, e o app-server ficaria vivo, com os pipes abertos, depois
+    que o bloco já levantou `KeyboardInterrupt`.
+    """
+    esperado = pytest.raises(KeyboardInterrupt) if segundo_ctrl_c else contextlib.nullcontext()
+    with socket.socket() as closed_port, _avisos_de_recurso() as avisos:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with (
+            esperado,
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
+        ):
+            processo = backend._client._client._proc
+            assert processo is not None
+            os.kill(processo.pid, signal.SIGSTOP)
+            if segundo_ctrl_c:
+                _segundo_ctrl_c_no_wait(processo)
+                raise KeyboardInterrupt
+
+        try:
+            assert processo.returncode is not None
+            assert _pipes_fechados(processo)
+        finally:
+            # Sem a correção, o app-server segue parado, e o teste o recolhe.
+            processo.kill()
+            processo.wait(timeout=10)
+        del processo, backend
+
+    assert avisos == []
 
 
 def _evento_sse(evento):
