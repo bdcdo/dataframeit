@@ -1,8 +1,8 @@
 """A mensagem amigável da linha que falha diz o que a execução fez com ela.
 
 A caixa de limite de requisições aparece quando, e só quando, a execução
-paralela reduz os workers, e a caixa de timeout, que diz que o sistema já tentou
-de novo, só aparece para o erro que ganha nova tentativa. Os testes rodam a
+paralela reduz os workers, e a caixa de timeout, que manda aumentar
+`max_retries`, só aparece para o erro que o retry repete. Os testes rodam a
 execução de ponta a ponta, com `call_langchain` simulado e dois workers, e
 comparam o aviso de cada linha com o aviso de redução e com `_error_details`.
 
@@ -33,6 +33,7 @@ from dataframeit.errors import (
 CAIXA_RATE_LIMIT = "LIMITE DE REQUISIÇÕES ATINGIDO"
 CAIXA_TIMEOUT = "TEMPO ESGOTADO"
 REDUCAO = "Reduzindo workers"
+INTERRUPCAO = "Execução interrompida"
 
 
 class _Campo(BaseModel):
@@ -79,16 +80,32 @@ def _executar(fabrica, monkeypatch):
         caixa_rate_limit=any(CAIXA_RATE_LIMIT in falha for falha in falhas),
         caixa_timeout=any(CAIXA_TIMEOUT in falha for falha in falhas),
         reduziu=any(REDUCAO in texto for texto in textos),
+        interrompida=any(texto.startswith(INTERRUPCAO) for texto in textos),
         detalhes=saida["_error_details"].dropna().tolist() if "_error_details" in saida else [],
     )
 
 
-def _conferir_coerencia(execucao):
-    """O que a mensagem afirma bate com o que a execução decidiu."""
+def _conferir_coerencia(execucao, *, aborta=False):
+    """O que a mensagem afirma bate com o que a execução decidiu.
+
+    Antes, confere que os avisos foram lidos: sem as duas falhas, o teste que
+    espera a ausência de uma caixa passaria sem ter visto aviso nenhum. A
+    execução interrompida não avisa a falha da linha, e dela se exige o aviso
+    de interrupção.
+    """
+    if aborta:
+        assert execucao.interrompida
+        assert execucao.falhas == []
+    else:
+        assert not execucao.interrompida
+        assert len(execucao.falhas) == 2
     assert execucao.caixa_rate_limit == execucao.reduziu
     if execucao.caixa_timeout:
         assert execucao.detalhes
         assert all(detalhe.startswith("[Falhou após") for detalhe in execucao.detalhes)
+        # Com max_retries=1, nenhuma linha ganhou nova tentativa, e a caixa não
+        # pode afirmar que o sistema já tentou de novo.
+        assert not any("tentou" in falha for falha in execucao.falhas)
 
 
 # =============================================================================
@@ -141,12 +158,8 @@ def test_a_descoberta_acha_as_classes_do_pacote():
 def test_caixa_de_rate_limit_e_reducao_andam_juntas(classe, texto, monkeypatch):
     execucao = _executar(lambda: classe(texto), monkeypatch)
 
-    _conferir_coerencia(execucao)
-    if issubclass(classe, ProviderAbortError):
-        # A execução para sem gravar a linha nem avisar a falha dela.
-        assert execucao.falhas == []
-        return
-    assert len(execucao.falhas) == 2
+    # O ProviderAbortError para a execução sem gravar a linha nem avisar a falha dela.
+    _conferir_coerencia(execucao, aborta=issubclass(classe, ProviderAbortError))
     # Nos ProviderError e no ProviderOutputError, que is_rate_limit_error
     # classifica sem ler o texto, rate limit é só a sobrecarga. O
     # ProviderConfigurationError, que os providers levantam antes da primeira
@@ -185,6 +198,29 @@ def test_erro_de_fora_do_pacote(fabrica, rate_limit, monkeypatch):
 
     _conferir_coerencia(execucao)
     assert execucao.caixa_rate_limit is rate_limit
+
+
+# O langchain_tavily e o exa_py levantam ValueError com o status só no texto. A
+# caixa nomeia o serviço de busca que recusou; o ProviderError vem do provider
+# de LLM, o openai padrão do dataframeit, ainda que o texto cite o Tavily.
+@pytest.mark.parametrize(
+    ("fabrica", "servico"),
+    [
+        (
+            lambda: ValueError("Error 429: Rate limit exceeded. Please contact support@tavily.com"),
+            "Tavily",
+        ),
+        (lambda: ValueError("Request failed with status code 429: exa rate limit"), "Exa"),
+        (lambda: ProviderOverloadedError("tavily: 429 Too Many Requests"), "OpenAI"),
+    ],
+    ids=["tavily", "exa", "provider-error-cita-tavily"],
+)
+def test_rate_limit_da_busca_nomeia_o_servico(fabrica, servico, monkeypatch):
+    execucao = _executar(fabrica, monkeypatch)
+
+    _conferir_coerencia(execucao)
+    assert execucao.caixa_rate_limit
+    assert all(f"pouco tempo para o {servico}." in falha for falha in execucao.falhas)
 
 
 class _ModelErrorFalso(Exception):
@@ -333,7 +369,7 @@ def test_erro_json_rpc_do_codex_com_429_no_texto(codex_gerado, monkeypatch):
         (lambda: ProviderTransientError("request timeout while streaming"), True),
         (lambda: ProviderError("request timeout while streaming"), False),
         (lambda: TimeoutError("request timed out"), True),
-        # O 404 torna o erro definitivo, e a caixa não pode dizer que houve repetição.
+        # O 404 torna o erro definitivo, e aumentar max_retries não o repete.
         (lambda: Exception("timeout: 404 model not found"), False),
     ],
     ids=["transitorio", "definitivo", "timeout-error", "texto-404"],
