@@ -10,13 +10,15 @@ import subprocess
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pydantic import BaseModel
 
 from dataframeit import codex as codex_provider
+from dataframeit import dataframeit
 from dataframeit.codex import _CODEX_CONFIG_OVERRIDES
 from dataframeit.errors import ProviderAbortError, ProviderError, ProviderTransientError
 from dataframeit.llm import LLMConfig
@@ -138,8 +140,11 @@ def test_bundled_runtime_efforts_are_declared_by_sdk(tmp_path):
     config, workspace = _isolated_config(tmp_path)
 
     assert config.codex_bin is None
-    with openai_codex.Codex(config) as client:
+    client = openai_codex.Codex(config)
+    try:
         catalog = client.models(include_hidden=True)
+    finally:
+        codex_provider._close_client(client)
 
     declared = {member.value for member in ReasoningEffort}
     announced = {
@@ -373,6 +378,190 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
         assert b"spawn_agent" not in raw, slug
 
 
+def _pipes_fechados(processo):
+    return processo.stdout.closed and processo.stderr.closed
+
+
+def _espera_pipes_fechados(processo, prazo=10):
+    """Espera o fechamento feito pelo relógio, que roda em outra thread.
+
+    A linha acorda quando o leitor do stdout vê o fim do processo, e o relógio
+    ainda pode estar esperando as threads de leitura antes de fechar os pipes.
+    """
+    fim = time.monotonic() + prazo
+    while not _pipes_fechados(processo) and time.monotonic() < fim:
+        time.sleep(0.05)
+    return _pipes_fechados(processo)
+
+
+@pytest.mark.parametrize(
+    "saida",
+    [None, ProviderError("falha da linha"), KeyboardInterrupt()],
+    ids=["normal", "erro", "interrupcao"],
+)
+def test_encerramento_do_backend_fecha_os_pipes_do_app_server(tmp_path, monkeypatch, saida):
+    """Ao sair do backend, por qualquer caminho, stdout e stderr do app-server fecham.
+
+    O `close` do SDK fecha só o stdin, e os outros dois pipes ficariam para o
+    coletor de lixo, cada um com um `ResourceWarning`.
+    """
+    esperado = pytest.raises(type(saida)) if saida is not None else contextlib.nullcontext()
+    with socket.socket() as closed_port:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with (
+            esperado,
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
+        ):
+            processo = backend._client._client._proc
+            assert processo is not None
+            assert not _pipes_fechados(processo)
+            if saida is not None:
+                raise saida
+
+    assert _pipes_fechados(processo)
+
+
+def _evento_sse(evento):
+    return f"event: {evento['type']}\ndata: {json.dumps(evento)}\n\n".encode()
+
+
+class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
+    """Provider de modelo local: responde ao primeiro turno e mata o app-server no segundo.
+
+    O pedido do segundo turno chega enquanto a linha espera o stream, e a
+    conexão fica aberta até o teste liberá-la, sem resposta.
+    """
+
+    processos: list[subprocess.Popen]
+    pedidos: list[int]
+    morto: threading.Event
+    liberado: threading.Event
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        self.pedidos.append(1)
+        if len(self.pedidos) > 1:
+            self.processos[0].kill()
+            self.morto.set()
+            self.liberado.wait(30)
+            return
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.end_headers()
+        mensagem = {
+            "type": "message",
+            "role": "assistant",
+            "id": "msg_1",
+            "content": [{"type": "output_text", "text": json.dumps({"resposta": "ok"})}],
+        }
+        uso = {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0},
+        }
+        for evento in (
+            {"type": "response.created", "response": {"id": "resp_1"}},
+            {"type": "response.output_item.done", "item": mensagem},
+            {"type": "response.completed", "response": {"id": "resp_1", "usage": uso}},
+        ):
+            self.wfile.write(_evento_sse(evento))
+            self.wfile.flush()
+
+    def log_message(self, format, *args):  # noqa: A002 (nome do parâmetro da classe base)
+        pass
+
+
+def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, monkeypatch):
+    """O app-server que morre no meio de um turno não derruba `dataframeit()`.
+
+    A linha em curso aborta, e o `thread/unsubscribe` dela fica no buffer do
+    stdin do processo morto. O `close` do SDK descarrega o buffer ao fechar o
+    stdin e levanta `BrokenPipeError`, ou `OSError(EINVAL)` no Windows, antes
+    do `terminate`. Os pipes de saída fecham mesmo assim, e a falha do
+    fechamento não substitui o resultado: a primeira linha sai processada, e a
+    abortada e a seguinte, sem status.
+
+    O pedido de descarga sai numa thread daemon, que pode chegar ao stdin
+    depois do fechamento. O teste espera essa escrita e o fim das threads de
+    leitura antes do fechamento, para que o caso não dependa da corrida.
+    """
+    handler = type(
+        "Handler",
+        (_ProviderQueMorreNoSegundoTurno,),
+        {
+            "processos": [],
+            "pedidos": [],
+            "morto": threading.Event(),
+            "liberado": threading.Event(),
+        },
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    config = _use_local_model_provider(
+        monkeypatch, tmp_path, f"http://127.0.0.1:{server.server_address[1]}/v1"
+    )
+
+    abre_backend = codex_provider.open_codex_backend
+
+    @contextlib.contextmanager
+    def guarda_o_processo(*args, **kwargs):
+        with abre_backend(*args, **kwargs) as backend:
+            handler.processos.append(backend._client._client._proc)
+            yield backend
+
+    descarga_feita = threading.Event()
+    descarrega = codex_provider._unsubscribe_quietly
+
+    def descarrega_e_avisa(client, thread_id):
+        depois_da_morte = handler.morto.is_set()
+        descarrega(client, thread_id)
+        if depois_da_morte:
+            descarga_feita.set()
+
+    fecha = codex_provider._close_client
+
+    def fecha_depois_da_descarga(client):
+        assert descarga_feita.wait(30), "a linha abortada não descarregou a thread"
+        client._client._reader_thread.join(30)
+        client._client._stderr_thread.join(30)
+        fecha(client)
+
+    monkeypatch.setattr(codex_provider, "open_codex_backend", guarda_o_processo)
+    monkeypatch.setattr(codex_provider, "_unsubscribe_quietly", descarrega_e_avisa)
+    monkeypatch.setattr(codex_provider, "_close_client", fecha_depois_da_descarga)
+
+    try:
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.warns(UserWarning, match="Execução interrompida.*app-server do Codex encerrou"),
+        ):
+            resultado = dataframeit(
+                pd.DataFrame({"texto": ["a", "b", "c"]}),
+                _Answer,
+                "Responda: {texto}",
+                provider="codex",
+                model=config.model,
+                model_kwargs={"effort": "low"},
+                max_retries=1,
+            )
+    finally:
+        handler.liberado.set()
+        server.shutdown()
+        server.server_close()
+
+    (processo,) = handler.processos
+    assert _pipes_fechados(processo)
+    assert resultado["_dataframeit_status"].tolist() == ["processed", None, None]
+    assert resultado["resposta"].tolist() == ["ok", None, None]
+    assert len(handler.pedidos) == 2
+    assert processo.wait(timeout=10) is not None
+
+
 def test_connection_failure_fails_turn_as_transient(tmp_path, monkeypatch):
     """Sem conexão com o endpoint do modelo, a tentativa falha como transitória.
 
@@ -442,6 +631,7 @@ def test_app_server_that_stops_answering_is_closed_and_aborts(tmp_path, monkeypa
                 worker.join(deadline)
                 assert not worker.is_alive(), f"a linha não terminou em {deadline}s"
                 elapsed = time.monotonic() - start
+                assert _espera_pipes_fechados(process)
             finally:
                 # O relógio pode estar colhendo o processo em outra thread.
                 with contextlib.suppress(ProcessLookupError):
@@ -493,6 +683,7 @@ def test_turn_start_blocked_writing_to_stopped_app_server_aborts(tmp_path, monke
                 worker.start()
                 worker.join(deadline)
                 assert not worker.is_alive(), f"a linha não terminou em {deadline}s"
+                assert _espera_pipes_fechados(process)
             finally:
                 # O relógio pode estar colhendo o processo em outra thread.
                 with contextlib.suppress(ProcessLookupError):
