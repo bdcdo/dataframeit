@@ -525,6 +525,10 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
     for override in _CODEX_CONFIG_OVERRIDES:
         command += ["--config", override]
     command += ["debug", "models"]
+    # Com CODEX_API_KEY no ambiente, `debug models` baixa o catálogo da API com
+    # essa chave, que o app-server do turno ignora: o catálogo seria de uma
+    # credencial e os turnos, de outra.
+    catalog_env = {name: value for name, value in os.environ.items() if name != "CODEX_API_KEY"}
     try:
         listing = subprocess.run(  # noqa: S603 (binário empacotado, argumentos fixos)
             command,
@@ -532,7 +536,7 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
             text=True,
             encoding="utf-8",
             cwd=workspace,
-            env={**os.environ, **env},
+            env={**catalog_env, **env},
             stdin=subprocess.DEVNULL,
             check=True,
             timeout=_CATALOG_TIMEOUT,

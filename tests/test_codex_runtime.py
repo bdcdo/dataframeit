@@ -34,7 +34,9 @@ openai_codex = pytest.importorskip("openai_codex")
 # um dos dois, vai desligada em `_CODEX_CONFIG_OVERRIDES`.
 _REVIEWED_ENABLED_FEATURES = frozenset(
     {
+        "api_key_model_discovery",
         "auth_elicitation",
+        "browser_annotation_api",
         "browser_use_external",
         "browser_use_full_cdp_access",
         "code_mode_host",
@@ -51,6 +53,12 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
         "in_app_dictation",
         "in_app_local_automation",
         "in_app_updates",
+        "in_app_voice",
+        # Interrompe a amostragem quando chega entrada do usuário ao turno em
+        # curso, como a de `turn/steer`. O provider manda um turno por thread e
+        # não manda entrada depois dele, e o `turn/interrupt` do prazo cancela o
+        # turno por outro caminho.
+        "instant_interrupt",
         "item_ids",
         "mentions_v2",
         "plugin_sharing",
@@ -66,6 +74,9 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
         "tool_search_always_defer_mcp_tools",
         "tool_suggest",
         "tui_app_server",
+        # Só libera `service_tier="ultrafast"` quando a config o pede, como
+        # `fast_mode` faz com `fast`; o provider não configura `service_tier`.
+        "ultrafast_mode",
         "unified_exec",
         "unified_exec_tty",
         "unified_exec_zsh_fork",
@@ -270,13 +281,16 @@ class _Answer(BaseModel):
     resposta: str
 
 
-def _use_local_model_provider(monkeypatch, tmp_path, base_url, model="gpt-6-luna"):
+def _use_local_model_provider(
+    monkeypatch, tmp_path, base_url, model="gpt-6-luna", overrides=_CODEX_CONFIG_OVERRIDES
+):
     """Aponta o provider para um endpoint de modelo local, sem conta nem rede.
 
     O endpoint entra como provider do runtime ao lado dos demais overrides, e a
     abertura do backend é a mesma do provider. O runtime manda o request pelo
     proxy do ambiente mesmo para `127.0.0.1`, e um proxy herdado prenderia o
-    turno; por isso as variáveis de proxy saem do ambiente.
+    turno; por isso as variáveis de proxy saem do ambiente. `overrides` troca os
+    overrides do provider, para o teste que precisa de uma ferramenta oferecida.
     """
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         monkeypatch.delenv(name, raising=False)
@@ -298,7 +312,7 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url, model="gpt-6-luna
     monkeypatch.setattr(
         codex_provider,
         "_CODEX_CONFIG_OVERRIDES",
-        (*_CODEX_CONFIG_OVERRIDES, 'model_provider="mock"', f"model_providers.mock={provider}"),
+        (*overrides, 'model_provider="mock"', f"model_providers.mock={provider}"),
     )
     return LLMConfig(
         model=model,
@@ -312,7 +326,7 @@ def _use_local_model_provider(monkeypatch, tmp_path, base_url, model="gpt-6-luna
     )
 
 
-def _bundled_model_slugs(tmp_path):
+def _bundled_models(tmp_path):
     from codex_cli_bin import bundled_codex_path  # noqa: PLC0415 (extra codex opcional)
 
     home = tmp_path / "catalog-home"
@@ -326,7 +340,38 @@ def _bundled_model_slugs(tmp_path):
         check=True,
         timeout=60,
     )
-    return [model["slug"] for model in json.loads(listing.stdout)["models"]]
+    return json.loads(listing.stdout)["models"]
+
+
+def _request_to_model(tmp_path, monkeypatch, slug, overrides=_CODEX_CONFIG_OVERRIDES):
+    """Corpo, em bytes, do primeiro request que uma linha manda ao modelo `slug`."""
+    run_path = tmp_path / slug
+    run_path.mkdir()
+    handler = type("Handler", (_RecordingProvider,), {"bodies": []})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    config = _use_local_model_provider(
+        monkeypatch, run_path, f"http://127.0.0.1:{port}/v1", model=slug, overrides=overrides
+    )
+
+    try:
+        with (
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="mock"),
+        ):
+            backend.invoke("oi")
+    finally:
+        server.shutdown()
+        server.server_close()
+        monkeypatch.undo()
+
+    assert handler.bodies, slug
+    encoding, raw = handler.bodies[0]
+    assert encoding is None
+    assert json.loads(raw)["model"] == slug
+    return raw
 
 
 def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
@@ -336,46 +381,43 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     campos de ferramentas. O catálogo liga o code mode e os sub-agentes para
     modelos como o `gpt-6-luna`; o catálogo de `_write_model_catalog` desliga o
     primeiro, e `agents.enabled=false`, os segundos.
+
+    Sem ferramenta, o request dos modelos com `use_responses_lite` não traz
+    lista alguma, porque o runtime só põe o item `additional_tools` no `input`
+    quando há o que oferecer. Que a busca de `_tool_lists` alcança o lugar onde
+    o runtime põe as ferramentas, quando há, é o que prova
+    `test_tool_lists_find_tool_offered_by_runtime`.
     """
-    slugs = _bundled_model_slugs(tmp_path)
+    slugs = [model["slug"] for model in _bundled_models(tmp_path)]
     assert slugs
     for slug in slugs:
-        run_path = tmp_path / slug
-        run_path.mkdir()
-        handler = type("Handler", (_RecordingProvider,), {"bodies": []})
-        server = HTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        port = server.server_address[1]
-        config = _use_local_model_provider(
-            monkeypatch, run_path, f"http://127.0.0.1:{port}/v1", model=slug
-        )
-
-        try:
-            with (
-                codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
-                pytest.warns(UserWarning, match="não-recuperável"),
-                pytest.raises(ProviderError, match="mock"),
-            ):
-                backend.invoke("oi")
-        finally:
-            server.shutdown()
-            server.server_close()
-            monkeypatch.undo()
-
-        assert handler.bodies, slug
-        encoding, raw = handler.bodies[0]
-        assert encoding is None
-        request = json.loads(raw)
-        assert request["model"] == slug
-        # Sem nenhuma lista, o runtime mudou onde põe as ferramentas, e a
-        # igualdade com o conjunto revisado, vazio, passaria sem provar nada.
-        tool_lists = _tool_lists(request, [])
-        assert tool_lists, slug
-        assert _offered_tools(tool_lists) == _REVIEWED_MODEL_TOOLS, slug
+        raw = _request_to_model(tmp_path, monkeypatch, slug)
+        assert _offered_tools(_tool_lists(json.loads(raw), [])) == _REVIEWED_MODEL_TOOLS, slug
         # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
         # `collaboration` não serve para essa busca, porque aparece no texto das
         # instruções.
         assert b"spawn_agent" not in raw, slug
+
+
+def test_tool_lists_find_tool_offered_by_runtime(tmp_path, monkeypatch):
+    """Com uma ferramenta ligada, `_tool_lists` a acha no request.
+
+    Sem este controle, a igualdade com o conjunto revisado, vazio, passaria
+    também se o runtime mudasse o lugar onde põe as ferramentas. O controle
+    tira o override de `view_image`, que oferece uma ferramenta, e roda um
+    modelo de cada forma de request: com `use_responses_lite`, as ferramentas
+    vão num item `additional_tools` do `input`; sem, na chave `tools` do topo.
+    """
+    override = "features.view_image=false"
+    assert override in _CODEX_CONFIG_OVERRIDES
+    overrides = tuple(item for item in _CODEX_CONFIG_OVERRIDES if item != override)
+    one_per_shape = {}
+    for model in _bundled_models(tmp_path):
+        one_per_shape.setdefault(bool(model.get("use_responses_lite")), model["slug"])
+    assert one_per_shape
+    for slug in one_per_shape.values():
+        raw = _request_to_model(tmp_path, monkeypatch, slug, overrides=overrides)
+        assert "view_image" in _offered_tools(_tool_lists(json.loads(raw), [])), slug
 
 
 def _pipes_fechados(processo):
