@@ -466,14 +466,17 @@ def test_read_df_com_columns_do_usuario_rele_campo_int_do_parquet(tmp_path):
 
 
 def test_read_df_mantem_o_float_que_o_csv_guarda_no_campo_int(tmp_path):
-    """Só a célula gravada como inteiro muda; a de um float ou de "+7" fica como lida."""
+    """Só a célula gravada como inteiro muda; a de um float ou de "+7" fica como lida.
+
+    A célula que o leitor devolve ausente, vazia ou "NA", volta None, e não NaN.
+    """
     arquivo = tmp_path / "dados.csv"
-    arquivo.write_text("texto,nota\na,7\nb,7.5\nc,-3\nd,+7\ne,\n", encoding="utf-8")
+    arquivo.write_text("texto,nota\na,7\nb,7.5\nc,-3\nd,+7\ne,\nf,NA\n", encoding="utf-8")
 
     lido = read_df(str(arquivo), Inteiros)
 
-    assert list(lido["nota"]) == [7, 7.5, -3, 7.0, None]
-    assert [type(v) for v in lido["nota"]] == [int, float, int, float, type(None)]
+    assert list(lido["nota"]) == [7, 7.5, -3, 7.0, None, None]
+    assert [type(v) for v in lido["nota"]] == [int, float, int, float, type(None), type(None)]
 
 
 def test_read_df_rele_do_csv_o_int_acima_do_int64(tmp_path):
@@ -562,6 +565,32 @@ def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
     lido = read_df(str(arquivo), Inteiros, **opcao)
 
     pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, **opcao))
+
+
+@pytest.mark.parametrize(
+    ("formato", "opcao", "tipo"),
+    [
+        ("csv", {"chunksize": 1}, "TextFileReader"),
+        ("csv", {"iterator": True}, "TextFileReader"),
+        ("xlsx", {"sheet_name": None}, "dict"),
+    ],
+)
+def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(tmp_path, formato, opcao, tipo):
+    """O leitor que devolve outra coisa que um DataFrame passa direto, como sem o campo int."""
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    arquivo = tmp_path / f"dados.{formato}"
+    dados = pd.DataFrame({"nota": [7, None]})
+    if formato == "csv":
+        dados.to_csv(arquivo, index=False)
+    else:
+        dados.to_excel(arquivo, index=False)
+
+    lido = read_df(str(arquivo), Inteiros, **opcao)
+
+    assert type(lido).__name__ == tipo
+    if tipo == "TextFileReader":
+        lido.close()
 
 
 def test_estrutura_anotada_e_opcional_volta_do_checkpoint_csv(tmp_path):

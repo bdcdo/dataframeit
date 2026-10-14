@@ -748,6 +748,19 @@ def _read_as_rereadable(column: pd.Series) -> bool:
     )
 
 
+def _int_or_read(text: str, read: object) -> object:
+    """O int que o texto da célula do CSV guarda, None se ela é ausente, ou o valor lido.
+
+    O texto vazio vale como ausente também quando o leitor não o trocou por
+    NaN, como na coluna com int acima do Int64, que ele devolve em texto cru.
+    """
+    if _INT_TEXT.fullmatch(text):
+        return int(text)
+    if text == "" or pd.isna(read):
+        return None
+    return read
+
+
 def _reread_int_columns(
     df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
 ) -> None:
@@ -757,12 +770,18 @@ def _reread_int_columns(
     a de um checkpoint com linha pendente, e o float arredonda o int acima de
     2**53; com int acima do Int64, o CSV volta como texto. A coluna relida
     passa a object, com o int que o arquivo guarda como inteiro e None na
-    célula vazia; a célula que guarda outra coisa, como 7.5, fica como lida. O
-    XLSX guarda número como double e fica de fora, porque o int que ele
-    devolve já pode vir arredondado. Com os argumentos de _INT_REREAD_OFF, a
-    releitura também fica de fora.
+    célula que o leitor devolveu ausente, seja vazia ou "NA"; a célula que
+    guarda outra coisa, como 7.5, fica como lida. O XLSX guarda número como
+    double e fica de fora, porque o int que ele devolve já pode vir
+    arredondado. Também ficam de fora os argumentos de _INT_REREAD_OFF e o
+    leitor que não devolve DataFrame, como o CSV com chunksize e o XLSX com
+    sheet_name=None.
     """
-    if any(k in kwargs for k in _INT_REREAD_OFF):
+    if (
+        ext not in (".csv", ".parquet")
+        or not isinstance(df, pd.DataFrame)
+        or any(k in kwargs for k in _INT_REREAD_OFF)
+    ):
         return
     columns = [
         f
@@ -780,17 +799,12 @@ def _reread_int_columns(
             for col in columns
             if is_integer_dtype(raw[col])
         }
-    elif ext == ".csv":
+    else:
         raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False, **kwargs)
         exact = {
-            col: [
-                int(text) if _INT_TEXT.fullmatch(text) else None if text == "" else read
-                for text, read in zip(raw[col], df[col], strict=True)
-            ]
+            col: [_int_or_read(text, read) for text, read in zip(raw[col], df[col], strict=True)]
             for col in columns
         }
-    else:
-        return
     for col, values in exact.items():
         if any(type(v) is int for v in values):
             df[col] = pd.Series(values, index=df.index, dtype=object)
