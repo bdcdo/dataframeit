@@ -608,7 +608,36 @@ def _shut_down_app_server(client: Codex) -> None:
         with contextlib.suppress(OSError):
             process.kill()
     with contextlib.suppress(Exception):
-        client.close()
+        _close_client(client)
+
+
+def _close_client(client: Codex) -> None:
+    """Fecha o cliente e os pipes de stdout e stderr do app-server.
+
+    O `close` do SDK fecha só o stdin, e os outros dois pipes ficariam para o
+    coletor de lixo, com um `ResourceWarning` cada. O processo, as threads de
+    leitura e os pipes são atributos privados do SDK, fixado em versão exata no
+    extra `codex`. O `close` solta o processo do cliente, e por isso ele é lido
+    antes; o segundo fechamento, depois do encerramento pelo prazo, não acha
+    processo e só repete o `close`, que não faz nada.
+    """
+    sdk_client: Any = getattr(client, "_client", None)
+    process = getattr(sdk_client, "_proc", None)
+    client.close()
+    if process is None:
+        return
+    # Os pipes fecham depois do `close`, que espera o fim do processo e cada
+    # thread de leitura por até 0,5 s. Fechar um pipe que a thread ainda lê
+    # esperaria a leitura dela terminar, e para sempre se outro processo
+    # segurasse a ponta de escrita; e a thread do stderr, entre duas linhas,
+    # levantaria `ValueError` ao ler o arquivo fechado. O pipe dessa thread
+    # fica para o coletor de lixo.
+    for pipe, reader in (
+        (process.stdout, sdk_client._reader_thread),  # noqa: SLF001 (ver a docstring)
+        (process.stderr, sdk_client._stderr_thread),  # noqa: SLF001 (ver a docstring)
+    ):
+        if not reader.is_alive():
+            pipe.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1038,7 +1067,10 @@ def open_codex_backend(
             ),
             env=env,
         )
-        with Codex(codex_config) as client:
+        # Sem `with`: o `__exit__` do SDK chamaria só o `close`, que deixa os
+        # pipes de stdout e stderr abertos.
+        client = Codex(codex_config)
+        try:
             account = client.account()
             if account.requires_openai_auth and account.account is None:
                 msg = (
@@ -1057,3 +1089,5 @@ def open_codex_backend(
                 _workspace=workspace,
                 _turn_timeout=turn_timeout,
             )
+        finally:
+            _close_client(client)

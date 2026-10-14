@@ -27,6 +27,7 @@ from dataframeit.codex import (
     CodexBackend,
     _AppServerStop,
     _build_schema,
+    _close_client,
     _to_strict_json_schema,
     _toml_string,
     _turn_timeout,
@@ -2195,6 +2196,36 @@ class TestPrazoDosPedidos:
             backend.invoke("texto")
 
         assert ordem == ["kill", "close"]
+
+    @pytest.mark.parametrize(
+        ("leitor_do_stdout_vivo", "leitor_do_stderr_vivo", "esperado"),
+        [
+            (False, False, ["close", "stdout", "stderr"]),
+            (True, False, ["close", "stderr"]),
+            (False, True, ["close", "stdout"]),
+        ],
+    )
+    def test_pipe_fecha_depois_do_close_e_so_sem_leitor_vivo(
+        self, leitor_do_stdout_vivo, leitor_do_stderr_vivo, esperado
+    ):
+        """Os pipes de saída fecham depois do `close` do SDK, que espera o processo.
+
+        O pipe cuja thread de leitura ainda roda fica aberto: fechá-lo esperaria
+        a leitura em curso, e a thread do stderr levantaria `ValueError` ao ler
+        a linha seguinte do arquivo fechado.
+        """
+        ordem = []
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        cliente.close.side_effect = lambda: ordem.append("close")
+        processo.stdout.close.side_effect = lambda: ordem.append("stdout")
+        processo.stderr.close.side_effect = lambda: ordem.append("stderr")
+        cliente._client._reader_thread.is_alive.return_value = leitor_do_stdout_vivo
+        cliente._client._stderr_thread.is_alive.return_value = leitor_do_stderr_vivo
+
+        _close_client(cliente)
+
+        assert ordem == esperado
 
     def test_dois_estouros_mantem_a_primeira_causa(self):
         """Linhas que estouram juntas abortam todas com a causa de quem chegou primeiro."""

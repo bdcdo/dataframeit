@@ -138,8 +138,11 @@ def test_bundled_runtime_efforts_are_declared_by_sdk(tmp_path):
     config, workspace = _isolated_config(tmp_path)
 
     assert config.codex_bin is None
-    with openai_codex.Codex(config) as client:
+    client = openai_codex.Codex(config)
+    try:
         catalog = client.models(include_hidden=True)
+    finally:
+        codex_provider._close_client(client)
 
     declared = {member.value for member in ReasoningEffort}
     announced = {
@@ -373,6 +376,51 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
         assert b"spawn_agent" not in raw, slug
 
 
+def _pipes_fechados(processo):
+    return processo.stdout.closed and processo.stderr.closed
+
+
+def _espera_pipes_fechados(processo, prazo=10):
+    """Espera o fechamento feito pelo relógio, que roda em outra thread.
+
+    A linha acorda quando o leitor do stdout vê o fim do processo, e o relógio
+    ainda pode estar esperando as threads de leitura antes de fechar os pipes.
+    """
+    fim = time.monotonic() + prazo
+    while not _pipes_fechados(processo) and time.monotonic() < fim:
+        time.sleep(0.05)
+    return _pipes_fechados(processo)
+
+
+@pytest.mark.parametrize(
+    "saida",
+    [None, ProviderError("falha da linha"), KeyboardInterrupt()],
+    ids=["normal", "erro", "interrupcao"],
+)
+def test_encerramento_do_backend_fecha_os_pipes_do_app_server(tmp_path, monkeypatch, saida):
+    """Ao sair do backend, por qualquer caminho, stdout e stderr do app-server fecham.
+
+    O `close` do SDK fecha só o stdin, e os outros dois pipes ficariam para o
+    coletor de lixo, cada um com um `ResourceWarning`.
+    """
+    esperado = pytest.raises(type(saida)) if saida is not None else contextlib.nullcontext()
+    with socket.socket() as closed_port:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with (
+            esperado,
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}") as backend,
+        ):
+            processo = backend._client._client._proc
+            assert processo is not None
+            assert not _pipes_fechados(processo)
+            if saida is not None:
+                raise saida
+
+    assert _pipes_fechados(processo)
+
+
 def test_connection_failure_fails_turn_as_transient(tmp_path, monkeypatch):
     """Sem conexão com o endpoint do modelo, a tentativa falha como transitória.
 
@@ -442,6 +490,7 @@ def test_app_server_that_stops_answering_is_closed_and_aborts(tmp_path, monkeypa
                 worker.join(deadline)
                 assert not worker.is_alive(), f"a linha não terminou em {deadline}s"
                 elapsed = time.monotonic() - start
+                assert _espera_pipes_fechados(process)
             finally:
                 # O relógio pode estar colhendo o processo em outra thread.
                 with contextlib.suppress(ProcessLookupError):
@@ -493,6 +542,7 @@ def test_turn_start_blocked_writing_to_stopped_app_server_aborts(tmp_path, monke
                 worker.start()
                 worker.join(deadline)
                 assert not worker.is_alive(), f"a linha não terminou em {deadline}s"
+                assert _espera_pipes_fechados(process)
             finally:
                 # O relógio pode estar colhendo o processo em outra thread.
                 with contextlib.suppress(ProcessLookupError):
