@@ -26,6 +26,7 @@ import pytest
 from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
+from dataframeit import codex as codex_module
 from dataframeit.codex import (
     _CATALOG_TOOL_FIELDS,
     CodexBackend,
@@ -729,10 +730,9 @@ class TestBackendConfiguration:
         ],
     )
     def test_invalid_config_fails_before_client_start(self, codex_sdk, overrides, message):
-        sdk, _, _ = codex_sdk
 
         with (
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match=message),
         ):
             _validate_config(make_config(**overrides))
@@ -772,7 +772,7 @@ class TestBackendLifecycle:
                 "symlink_to",
                 side_effect=AssertionError("symlink não deve ser usado"),
             ) as symlink,
-            patch.object(sdk, "Codex", return_value=client) as codex,
+            patch.object(codex_module, "_open_client", return_value=client) as codex,
         ):
             with open_codex_backend(make_config(), SampleModel, "{texto}") as backend:
                 launch_config = codex.call_args.args[0]
@@ -839,7 +839,7 @@ class TestBackendLifecycle:
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
 
         with (
-            patch.object(sdk, "Codex", return_value=client) as codex,
+            patch.object(codex_module, "_open_client", return_value=client) as codex,
             open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
         ):
             catalog_override = codex.call_args.args[0].config_overrides[-1]
@@ -872,7 +872,7 @@ class TestBackendLifecycle:
 
         with (
             patch("dataframeit.codex.subprocess.run", return_value=listing) as run,
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
         ):
             isolated_home = backend._workspace.parent / "home"
@@ -894,7 +894,6 @@ class TestBackendLifecycle:
     def test_catalogo_ilegivel_falha_antes_do_app_server(
         self, codex_sdk, monkeypatch, tmp_path, stdout, message
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -903,7 +902,7 @@ class TestBackendLifecycle:
 
         with (
             patch("dataframeit.codex.subprocess.run", return_value=listing),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -929,7 +928,6 @@ class TestBackendLifecycle:
     def test_falha_ao_obter_ou_gravar_o_catalogo_falha_antes_do_app_server(
         self, codex_sdk, monkeypatch, tmp_path, run, message
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -938,7 +936,7 @@ class TestBackendLifecycle:
         with (
             patch("dataframeit.codex.subprocess.run", **run),
             patch.object(Path, "write_text", side_effect=OSError("disco cheio")),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -949,7 +947,6 @@ class TestBackendLifecycle:
     def test_falha_do_runtime_ao_ler_o_catalogo_traz_o_stderr(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -958,7 +955,7 @@ class TestBackendLifecycle:
 
         with (
             patch("dataframeit.codex.subprocess.run", side_effect=failure),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(
                 ProviderConfigurationError,
                 match=r"catálogo de modelos do Codex \(código 1\): sem rede$",
@@ -978,7 +975,7 @@ class TestBackendLifecycle:
         client = as_context_manager(MagicMock(spec=sdk.Codex), resolved_model=resolved)
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(**config), SampleModel, "{texto}") as backend,
         ):
             params = client._client.thread_start.call_args.args[0]
@@ -1011,7 +1008,7 @@ class TestBackendLifecycle:
         client._client.request.side_effect = RuntimeError("app-server recusou")
 
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
         ):
             assert backend.config.model == "gpt-6-luna"
@@ -1027,7 +1024,7 @@ class TestBackendLifecycle:
         client = as_context_manager(MagicMock(spec=sdk.Codex))
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
         client.close.side_effect = erro
-        return sdk, client
+        return client
 
     @pytest.mark.parametrize(
         "erro",
@@ -1047,12 +1044,12 @@ class TestBackendLifecycle:
         no buffer. Propagar a falha do fechamento faria `dataframeit()` perder
         as linhas processadas, ou trocaria o erro do bloco pelo do fechamento.
         """
-        sdk, client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
+        client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
         esperado = pytest.raises(ProviderError) if saida is not None else contextlib.nullcontext()
 
         with (
             esperado as excinfo,
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
             if saida is not None:
@@ -1082,11 +1079,11 @@ class TestBackendLifecycle:
         O conjunto é o que o `subprocess` do CPython engole ao fechar o stdin:
         `BrokenPipeError` e `OSError` com `errno.EINVAL`.
         """
-        sdk, client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
+        client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
 
         with (
             pytest.raises(type(erro)) as excinfo,
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
             pass
@@ -1106,10 +1103,9 @@ class TestBackendLifecycle:
         assert backend._turn_timeout == prazo
 
     def test_prazo_invalido_falha_antes_de_subir_o_cliente(self, codex_sdk):
-        sdk, _, _ = codex_sdk
 
         with (
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="timeout inválido"),
             open_codex_backend(make_config(model_kwargs={"timeout": 0}), SampleModel, "{texto}"),
         ):
@@ -1132,14 +1128,13 @@ class TestBackendLifecycle:
         assert params.model is None
 
     def test_missing_auth_fails_before_runtime_or_client(self, codex_sdk, monkeypatch, tmp_path):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         monkeypatch.setenv("CODEX_HOME", str(source_home))
 
         with (
             patch("dataframeit.codex.tempfile.TemporaryDirectory") as temporary_directory,
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError) as exc_info,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1162,7 +1157,7 @@ class TestBackendLifecycle:
 
         monkeypatch.setenv("CODEX_HOME", str(homes[0]))
         with (
-            patch.object(sdk, "Codex", side_effect=clients) as codex,
+            patch.object(codex_module, "_open_client", side_effect=clients) as codex,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
             monkeypatch.setenv("CODEX_HOME", str(homes[1]))
@@ -1177,7 +1172,6 @@ class TestBackendLifecycle:
     def test_hard_link_failure_is_explicit_and_cleans_runtime(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         source_auth = source_home / "auth.json"
@@ -1187,7 +1181,7 @@ class TestBackendLifecycle:
         with (
             patch("dataframeit.codex.os.link", side_effect=OSError("unsupported")),
             patch.object(Path, "symlink_to") as symlink,
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="hard link"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1214,7 +1208,7 @@ class TestBackendLifecycle:
         )
 
         with (
-            patch.object(sdk, "Codex", side_effect=[codex_result]),
+            patch.object(codex_module, "_open_client", side_effect=[codex_result]),
             pytest.raises(RuntimeError, match="failed"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1236,7 +1230,7 @@ class TestBackendLifecycle:
         client.close.side_effect = RuntimeError("close failed")
 
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             pytest.raises(RuntimeError, match="close failed"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1248,7 +1242,6 @@ class TestBackendLifecycle:
     def test_runtime_directory_failure_has_accurate_error_and_cleans_up(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -1263,7 +1256,7 @@ class TestBackendLifecycle:
 
         with (
             patch.object(Path, "mkdir", fail_runtime_directory),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="diretórios do runtime"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1277,7 +1270,6 @@ class TestBackendLifecycle:
     def test_auth_lock_failure_is_explicit_before_runtime_creation(
         self, codex_sdk, monkeypatch, tmp_path, error_type
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -1285,7 +1277,7 @@ class TestBackendLifecycle:
 
         with (
             patch("filelock.FileLock.acquire", side_effect=error_type("unsupported")),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="acesso exclusivo"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1712,7 +1704,6 @@ class TestFalhasDoRuntime:
     def test_falha_ao_criar_o_runtime_temporario_libera_o_lock(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -1723,7 +1714,7 @@ class TestFalhasDoRuntime:
                 "dataframeit.codex.tempfile.TemporaryDirectory",
                 side_effect=OSError("disco cheio"),
             ),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="runtime temporário") as exc_info,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1743,7 +1734,7 @@ class TestFalhasDoRuntime:
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=True)
 
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             pytest.raises(ProviderConfigurationError) as exc_info,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):

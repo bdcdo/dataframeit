@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import errno
+import functools
 import json
 import os
 import re
@@ -35,9 +36,10 @@ from .errors import (
 from .llm import LLMConfig, build_prompt
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
-    from openai_codex import Codex, TurnHandle
+    from openai_codex import Codex, CodexConfig, TurnHandle
+    from openai_codex.client import CodexClient
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort, ThreadTokenUsage
 
@@ -653,7 +655,7 @@ def _close_client(client: Codex) -> None:
             _reap_app_server(sdk_client, process)
 
 
-def _reap_app_server(sdk_client: Any, process: subprocess.Popen[str]) -> None:
+def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) -> None:
     """Recolhe o app-server e fecha os pipes de saída depois do `close` do SDK.
 
     Quando o app-server não sai em 2 s depois do `terminate`, o `close` do SDK
@@ -681,8 +683,61 @@ def _reap_app_server(sdk_client: Any, process: subprocess.Popen[str]) -> None:
     ):
         if reader is not None and reader.is_alive():
             reader.join(timeout=_READER_THREAD_JOIN)
-        if reader is None or not reader.is_alive():
+        if pipe is not None and (reader is None or not reader.is_alive()):
             pipe.close()
+
+
+def _open_client(codex_config: CodexConfig) -> Codex:
+    """Abre o `Codex` e, se a abertura falhar, recolhe o app-server e fecha os pipes.
+
+    O construtor do SDK abre o app-server e, quando o `start` ou o `initialize`
+    falham, chama o `close` do cliente de protocolo, que fecha só o stdin e
+    solta o processo. O objeto não chega ao backend, e stdout e stderr ficariam
+    para o coletor de lixo. Um `KeyboardInterrupt` durante a abertura passa sem
+    `close` nenhum, e o app-server seguiria vivo.
+
+    A subclasse vê o cliente de protocolo quando o construtor o atribui a
+    `_client`, antes do `start`, e troca o `close` daquela instância por um que
+    lê o processo antes de fechar e o recolhe depois, como `_close_client`. Se o
+    construtor falha, esse `close` roda de novo, o que só faz algo quando o SDK
+    não o chamou. Aberto o cliente, o `close` volta a ser o do SDK, e o
+    fechamento fica com `_close_client`. Depende de o construtor atribuir
+    `_client` antes de abrir o processo e de o processo estar em `_proc`; se o
+    SDK mudar um dos dois, o `close` não é trocado ou não acha o processo, e os
+    testes de falha na abertura veem os pipes abertos.
+    """
+    from openai_codex import Codex  # noqa: PLC0415 (extra codex opcional)
+
+    class _Codex(Codex):
+        def __init__(self, config: CodexConfig) -> None:
+            try:
+                super().__init__(config)
+            except BaseException:
+                sdk_client = vars(self).get("_client")
+                if sdk_client is not None:
+                    # A falha do fechamento não troca a da abertura, que sobe.
+                    with contextlib.suppress(Exception):
+                        sdk_client.close()
+                raise
+            opened: Any = self._client
+            del opened.close
+
+        def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 (assinatura de object.__setattr__)
+            if name == "_client":
+                value.close = functools.partial(_close_sdk_client, value, value.close)
+            super().__setattr__(name, value)
+
+    return _Codex(codex_config)
+
+
+def _close_sdk_client(sdk_client: CodexClient, close: Callable[[], None]) -> None:
+    """Chama o `close` do SDK e recolhe o processo que ele soltou."""
+    process = sdk_client._proc  # noqa: SLF001 (ver a docstring de _open_client)
+    try:
+        close()
+    finally:
+        if process is not None:
+            _reap_app_server(sdk_client, process)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1094,7 +1149,7 @@ def open_codex_backend(
     user_prompt: str,
 ) -> Iterator[CodexBackend]:
     """Abre um backend ativo e fecha seus recursos na ordem inversa."""
-    from openai_codex import Codex, CodexConfig  # noqa: PLC0415 (extra codex opcional)
+    from openai_codex import CodexConfig  # noqa: PLC0415 (extra codex opcional)
 
     schema = _build_schema(pydantic_model)
     effort = _validate_config(config)
@@ -1119,7 +1174,7 @@ def open_codex_backend(
         )
         # Sem `with`: o `__exit__` do SDK chamaria só o `close`, que deixa os
         # pipes de stdout e stderr abertos.
-        client = Codex(codex_config)
+        client = _open_client(codex_config)
         try:
             account = client.account()
             if account.requires_openai_auth and account.account is None:
