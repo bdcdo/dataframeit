@@ -384,10 +384,12 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
     series = polars.from_pandas(values)
     item = args[0] if origin is list and args else annotation
     dtype = next((dtype for python_type, dtype in scalars if item is python_type), None)
+    if dtype is None:
+        return series
     # Da lista vazia o explode tira um nulo ou nada, conforme a versão do polars,
     # e a coluna que não é lista ele devolve como está.
     leaves = series.explode()
-    if dtype is None or leaves.null_count() < len(leaves):
+    if leaves.null_count() < len(leaves):
         return series
     return series.cast(polars.List(dtype) if origin is list else dtype)
 

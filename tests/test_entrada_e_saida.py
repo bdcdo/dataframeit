@@ -844,6 +844,27 @@ def test_entrada_polars_vazia_mantem_o_tipo_das_colunas():
     assert resultado["dia"].dtype == pl.Date
 
 
+def test_entrada_polars_vazia_mantem_o_tipo_da_coluna_do_modelo_que_ja_traz():
+    # Sem linhas não há resposta a converter, e a coluna do modelo sai da
+    # entrada; convertida de volta do pandas, ela perderia o Struct e o fuso.
+    pl = pytest.importorskip("polars")
+    modelo = create_model(
+        "ModeloDoCaso", sub=(Optional[Modelo], None), quando=(Optional[datetime], None)
+    )
+    entrada = pl.DataFrame(
+        {
+            "texto": pl.Series([], dtype=pl.Utf8),
+            "sub": pl.Series([], dtype=pl.Struct({"x": pl.Utf8})),
+            "quando": pl.Series([], dtype=pl.Datetime("us", "UTC")),
+        }
+    )
+
+    resultado, llm = _rodar(entrada, questions=modelo)
+
+    llm.assert_not_called()
+    assert dict(resultado.schema) == dict(entrada.schema)
+
+
 def test_retomada_de_saida_polars_traz_os_tokens_das_linhas_novas():
     pl = pytest.importorskip("polars")
     uso = {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
@@ -1139,6 +1160,7 @@ _CAMPOS_DICT = {
         [{"a": date(2024, 1, 2)}, {}],
         ['{"a": "2024-01-02"}', "{}"],
     ),
+    "enum_como_valor": (dict[str, Cor], [{"a": Cor.AZUL}, {}], ['{"a": "azul"}', "{}"]),
 }
 
 
@@ -1314,26 +1336,3 @@ def test_coluna_sem_valor_de_outra_anotacao_fica_com_o_tipo_inferido(caso):
 
     assert resultado["campo"].dtype == pl.from_pandas(pd.Series(respostas, dtype=object)).dtype
     assert resultado["campo"].to_list() == respostas
-
-
-def test_entrada_polars_vazia_sai_com_o_schema_da_entrada_com_linhas():
-    pl = pytest.importorskip("polars")
-    modelo = create_model(
-        "ModeloDoCaso", n=(Optional[int], None), tags=(list[str], ...), campo=(dict[str, int], ...)
-    )
-    com_linhas, _ = _rodar(
-        pl.DataFrame({"texto": ["a"]}),
-        questions=modelo,
-        llm=_responde(n=1, tags=["t"], campo={"a": 1}),
-    )
-
-    vazia, llm = _rodar(pl.DataFrame({"texto": pl.Series([], dtype=pl.Utf8)}), questions=modelo)
-
-    llm.assert_not_called()
-    assert dict(vazia.schema) == dict(com_linhas.schema)
-    assert dict(vazia.schema) == {
-        "texto": pl.Utf8,
-        "n": pl.Int64,
-        "tags": pl.List(pl.Utf8),
-        "campo": pl.Utf8,
-    }

@@ -1356,7 +1356,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             trace_mode=trace_mode,
             pydantic_model=questions,
         )
-        return from_pandas(df_pandas, conversion_info, status_col, annotations)
+        return from_pandas(df_pandas, conversion_info, status_col)
 
     # Verificar conflitos de colunas
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
