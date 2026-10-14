@@ -358,8 +358,10 @@ _DATE_OR_TIME = (datetime.date, datetime.datetime, datetime.time)
 def _mixes_date_or_time(annotation: object) -> bool:
     """Se a anotação junta date, datetime ou time a outro tipo, na união ou na tupla.
 
-    Também na lista ou tupla cujo item é uma união dessas. O Optional e o
-    Annotated são desembrulhados, na anotação e em cada membro.
+    A lista ou a tupla é examinada em cada argumento, recursivamente: vale para
+    `tuple[Union[date, int], ...]`, para `list[tuple[date, int]]` e para listas
+    aninhadas. O Optional e o Annotated são desembrulhados, na anotação e em
+    cada membro.
     """
     annotation = _without_optional(annotation)
     origin, args = get_origin(annotation), get_args(annotation)
