@@ -34,7 +34,7 @@ Rate limit detectado → 2 workers
 Rate limit detectado → 1 worker
 ```
 
-No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo código ou pelo status do erro, sem ler a mensagem. No `claude_code`, o rate limit (429) e a sobrecarga (529) são reconhecidos pelo status que o SDK informa. Nos providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela classe do erro e, quando o erro não traz nenhum dos dois, pelo texto da mensagem; a sobrecarga (529, 503) não reduz os workers.
+No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo código ou pelo status do erro, sem ler a mensagem. No `claude_code`, o rate limit (429) e a sobrecarga (529) são reconhecidos pelo status que o SDK informa a partir do `claude-agent-sdk` 0.1.76; do 0.1.48 ao 0.1.75, o SDK não informa o status, e o 401, o 400, o 429 e o 529 são repetidos como falha transitória, sem reduzir os workers. Nos providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela classe do erro e, quando o erro não traz nenhum dos dois, pelo texto da mensagem; a sobrecarga (529, 503) não reduz os workers.
 
 !!! info "Segurança"
     Workers são apenas **reduzidos**, nunca aumentados automaticamente. Isso evita custos inesperados.

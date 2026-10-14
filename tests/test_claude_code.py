@@ -195,7 +195,7 @@ def sdk_falso(monkeypatch):
         for mensagem in mensagens:
             # Uma exceção na lista é levantada naquele ponto do laço, como o SDK
             # faz com a saída do CLI depois do ResultMessage de erro.
-            if isinstance(mensagem, Exception):
+            if isinstance(mensagem, BaseException):
                 raise mensagem
             yield mensagem
 
@@ -748,6 +748,21 @@ def test_falha_do_sdk_sem_resultado_de_erro_e_repassada(sdk_falso, mensagens):
 
     with pytest.raises(RuntimeError, match="Command failed"):
         _chamar()
+
+
+@pytest.mark.parametrize("interrupcao", [KeyboardInterrupt, asyncio.CancelledError])
+def test_interrupcao_depois_do_resultado_de_erro_sobe_intacta(sdk_falso, interrupcao):
+    # Ctrl+C ou cancelamento da tarefa não é falha do SDK: mesmo com um ResultMessage
+    # de erro já recebido, a interrupção sobe como veio, sem virar erro da API.
+    sdk_falso["mensagens_do_sdk"] = [
+        _resultado(is_error=True, subtype="success", api_error_status=529),
+        interrupcao(),
+    ]
+
+    with pytest.raises(interrupcao):
+        _chamar(_config_com_tentativas(3))
+
+    assert len(sdk_falso["opcoes"]) == 1
 
 
 class _TransporteDoSdkFalso:
