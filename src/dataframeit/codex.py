@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import json
 import os
 import re
@@ -614,7 +615,44 @@ def _shut_down_app_server(client: Codex) -> None:
         with contextlib.suppress(OSError):
             process.kill()
     with contextlib.suppress(Exception):
+        _close_client(client)
+
+
+def _close_client(client: Codex) -> None:
+    """Fecha o cliente e os pipes de stdout e stderr do app-server.
+
+    O `close` do SDK fecha só o stdin, e os outros dois pipes ficariam para o
+    coletor de lixo, com um `ResourceWarning` cada. O processo, as threads de
+    leitura e os pipes são atributos privados do SDK, fixado em versão exata no
+    extra `codex`. O `close` solta o processo do cliente, e por isso ele é lido
+    antes; o segundo fechamento, depois do encerramento pelo prazo, não acha
+    processo e só repete o `close`, que não faz nada.
+
+    O `close` fecha o stdin antes de sinalizar o processo, e o fechamento
+    descarrega o que ficou no buffer de escrita. Se o app-server morreu com um
+    pedido no buffer, como o `thread/unsubscribe` da linha que abortou, a
+    descarga levanta `BrokenPipeError` antes do `terminate` e do `wait`. Os
+    pipes de saída fecham mesmo assim, e a exceção continua subindo.
+    """
+    sdk_client: Any = getattr(client, "_client", None)
+    process = getattr(sdk_client, "_proc", None)
+    try:
         client.close()
+    finally:
+        if process is not None:
+            # Os pipes fecham depois do `close`, que, quando não levanta, espera
+            # o processo por até 2 s e cada thread de leitura por até 0,5 s. Fechar
+            # um pipe que a thread ainda lê esperaria a leitura dela terminar,
+            # e para sempre se outro processo segurasse a ponta de escrita; e a
+            # thread do stderr, entre duas linhas, levantaria `ValueError` ao
+            # ler o arquivo fechado. O pipe dessa thread fica para o coletor
+            # de lixo.
+            for pipe, reader in (
+                (process.stdout, sdk_client._reader_thread),  # noqa: SLF001 (ver a docstring)
+                (process.stderr, sdk_client._stderr_thread),  # noqa: SLF001 (ver a docstring)
+            ):
+                if not reader.is_alive():
+                    pipe.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1049,7 +1087,10 @@ def open_codex_backend(
             ),
             env=env,
         )
-        with Codex(codex_config) as client:
+        # Sem `with`: o `__exit__` do SDK chamaria só o `close`, que deixa os
+        # pipes de stdout e stderr abertos.
+        client = Codex(codex_config)
+        try:
             account = client.account()
             if account.requires_openai_auth and account.account is None:
                 msg = (
@@ -1068,3 +1109,28 @@ def open_codex_backend(
                 _workspace=workspace,
                 _turn_timeout=turn_timeout,
             )
+        finally:
+            # Fora do próprio `try`, o `close` do SDK faz E/S em dois pontos: ao
+            # fechar o stdin, que descarrega o buffer de escrita, e no `kill`
+            # do ramo `except`, quando o `terminate` ou o `wait` falham. A
+            # descarga falha quando o app-server já não lê o pipe, o que quer
+            # dizer que ele morreu com um pedido no buffer, como o
+            # `thread/unsubscribe` da última linha. Se ele morreu com uma linha
+            # em curso, a linha aborta com `ProviderAbortError` e a execução
+            # para; se morreu depois da última linha, os resultados já estão
+            # completos, e só o fechamento vê a morte. Nos dois casos,
+            # propagar essa falha trocaria o resultado do bloco, ou a exceção
+            # que sai dele, pelo erro do fechamento, e `dataframeit()`
+            # perderia as linhas já processadas.
+            #
+            # A supressão é a do `subprocess` do CPython ao fechar o stdin, em
+            # `Popen._stdin_write`: `BrokenPipeError` e `OSError` com
+            # `errno.EINVAL`, que é como a escrita num pipe sem leitor falha no
+            # Windows. Qualquer outra falha sobe, seja outro `OSError`, como
+            # `EIO` ou `PermissionError`, seja um erro de programação, como um
+            # atributo privado do SDK que mudou de nome.
+            try:
+                _close_client(client)
+            except OSError as erro:
+                if not isinstance(erro, BrokenPipeError) and erro.errno != errno.EINVAL:
+                    raise
