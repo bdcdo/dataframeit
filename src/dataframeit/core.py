@@ -2740,7 +2740,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     # a retomada. Como 'error', o resume=True a preservaria.
                     try:
                         futures[executor.submit(process_single_row, row)] = row
-                    except Exception as e:  # noqa: BLE001, PERF203 (ver o comentário acima)
+                    except Exception as e:  # noqa: BLE001 (ver o comentário acima)
                         with lock:
                             token_stats.setdefault("abort", _error_text(e))
                         abort_event.set()
