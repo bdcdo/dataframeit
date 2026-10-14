@@ -1165,10 +1165,10 @@ class NotaOpcional(BaseModel):
 @pytest.mark.parametrize("entrada", ["pandas", "polars"])
 @pytest.mark.parametrize("formato", ["csv", "parquet"])
 @pytest.mark.parametrize("modelo", [NotaInteira, NotaOpcional])
-def test_inteiro_grande_com_linha_pendente_chega_exato_ao_checkpoint(
+def test_inteiro_grande_com_linha_pendente_volta_exato_da_retomada(
     tmp_path, modelo, formato, entrada
 ):
-    """As linhas pendentes deixam None ao lado do int na coluna gravada (#223)."""
+    """As linhas pendentes deixam célula vazia ao lado do int, na gravação e na releitura (#223)."""
     pytest.importorskip("pyarrow")
     if entrada == "polars":
         pl = pytest.importorskip("polars")
@@ -1188,3 +1188,14 @@ def test_inteiro_grande_com_linha_pendente_chega_exato_ao_checkpoint(
 
     gravado = str(_INTEIRO_GRANDE) if formato == "csv" else _INTEIRO_GRANDE
     assert _celulas_gravadas(ckpt, "nota")[0] == gravado
+
+    final = _roda(
+        df,
+        lambda text, *a, **k: {"data": {"nota": 7}, "usage": None},
+        modelo=modelo,
+        batch_size=1,
+        checkpoint_path=ckpt,
+    )
+
+    assert list(final["nota"]) == [_INTEIRO_GRANDE, 7, 7]
+    assert type(final["nota"][0]) is int
