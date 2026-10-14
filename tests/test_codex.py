@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import json
 import os
 import subprocess
@@ -997,7 +998,7 @@ class TestBackendLifecycle:
 
     @pytest.mark.parametrize(
         "erro",
-        [BrokenPipeError(32, "Broken pipe"), OSError(22, "Invalid argument")],
+        [BrokenPipeError(errno.EPIPE, "Broken pipe"), OSError(errno.EINVAL, "Invalid argument")],
         ids=["broken-pipe", "einval"],
     )
     @pytest.mark.parametrize(
@@ -1008,8 +1009,9 @@ class TestBackendLifecycle:
     ):
         """O fechamento que falha na escrita do stdin não troca o que sai do bloco.
 
-        A escrita só falha com o app-server morto, e a morte já chega pela linha
-        em curso; propagar a falha do fechamento faria `dataframeit()` perder
+        A escrita num pipe sem leitor falha com `BrokenPipeError`, ou com
+        `OSError(EINVAL)` no Windows, quando o app-server morreu com um pedido
+        no buffer. Propagar a falha do fechamento faria `dataframeit()` perder
         as linhas processadas, ou trocaria o erro do bloco pelo do fechamento.
         """
         sdk, client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
@@ -1028,15 +1030,29 @@ class TestBackendLifecycle:
             assert excinfo is not None
             assert excinfo.value is saida
 
-    def test_erro_que_nao_e_de_e_s_ao_fechar_continua_aparecendo(
-        self, codex_sdk, monkeypatch, tmp_path
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            pytest.param(OSError(errno.EIO, "Input/output error"), id="eio"),
+            pytest.param(PermissionError(errno.EACCES, "Permission denied"), id="permissao"),
+            pytest.param(ValueError("I/O operation on closed file"), id="valor"),
+            pytest.param(
+                AttributeError("'Codex' object has no attribute '_client'"), id="atributo"
+            ),
+        ],
+    )
+    def test_falha_do_fechamento_fora_do_pipe_sem_leitor_continua_aparecendo(
+        self, codex_sdk, monkeypatch, tmp_path, erro
     ):
-        """Só a falha de E/S do fechamento é suprimida; erro de programação sobe."""
-        erro = AttributeError("'Codex' object has no attribute '_client'")
+        """Só a falha da escrita num pipe sem leitor é suprimida; as outras sobem.
+
+        O conjunto é o que o `subprocess` do CPython engole ao fechar o stdin:
+        `BrokenPipeError` e `OSError` com `errno.EINVAL`.
+        """
         sdk, client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
 
         with (
-            pytest.raises(AttributeError) as excinfo,
+            pytest.raises(type(erro)) as excinfo,
             patch.object(sdk, "Codex", return_value=client),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):

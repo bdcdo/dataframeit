@@ -475,18 +475,15 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
         pass
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="a escrita no stdin do app-server morto só foi reproduzida em POSIX",
-)
 def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, monkeypatch):
     """O app-server que morre no meio de um turno não derruba `dataframeit()`.
 
     A linha em curso aborta, e o `thread/unsubscribe` dela fica no buffer do
     stdin do processo morto. O `close` do SDK descarrega o buffer ao fechar o
-    stdin e levanta `BrokenPipeError` antes do `terminate`. Os pipes de saída
-    fecham mesmo assim, e a falha do fechamento não substitui o resultado: a
-    primeira linha sai processada, e a abortada e a seguinte, sem status.
+    stdin e levanta `BrokenPipeError`, ou `OSError(EINVAL)` no Windows, antes
+    do `terminate`. Os pipes de saída fecham mesmo assim, e a falha do
+    fechamento não substitui o resultado: a primeira linha sai processada, e a
+    abortada e a seguinte, sem status.
 
     O pedido de descarga sai numa thread daemon, que pode chegar ao stdin
     depois do fechamento. O teste espera essa escrita e o fim das threads de

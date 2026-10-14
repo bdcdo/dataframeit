@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import json
 import os
 import re
@@ -1098,17 +1099,27 @@ def open_codex_backend(
                 _turn_timeout=turn_timeout,
             )
         finally:
-            # Fora do próprio `try`, o `close` do SDK só faz E/S ao fechar o
-            # stdin, e essa escrita só falha quando o app-server já não lê o
-            # pipe, o que quer dizer que ele morreu. A morte já chega a quem
-            # usa o backend pela linha em curso, que aborta com
-            # `ProviderAbortError`. Propagar a falha do fechamento trocaria o
-            # resultado do bloco, ou a exceção que sai dele, por esse erro, e
-            # `dataframeit()` perderia as linhas já processadas. A supressão é
-            # por `OSError`, e não só por `BrokenPipeError`, porque a escrita
-            # num pipe sem leitor pode falhar com outro `OSError` conforme a
-            # plataforma, como `EINVAL` no Windows; e não é por `Exception`,
-            # para que um erro de programação, como um atributo privado do SDK
-            # que mudou de nome, continue aparecendo.
-            with contextlib.suppress(OSError):
+            # Fora do próprio `try`, o `close` do SDK faz E/S em dois pontos: ao
+            # fechar o stdin, que descarrega o buffer de escrita, e no `kill`
+            # do ramo `except`, quando o `terminate` ou o `wait` falham. A
+            # descarga falha quando o app-server já não lê o pipe, o que quer
+            # dizer que ele morreu com um pedido no buffer, como o
+            # `thread/unsubscribe` da última linha. Se ele morreu com uma linha
+            # em curso, a linha aborta com `ProviderAbortError` e a execução
+            # para; se morreu depois da última linha, os resultados já estão
+            # completos, e só o fechamento vê a morte. Nos dois casos,
+            # propagar essa falha trocaria o resultado do bloco, ou a exceção
+            # que sai dele, pelo erro do fechamento, e `dataframeit()`
+            # perderia as linhas já processadas.
+            #
+            # A supressão é a do `subprocess` do CPython ao fechar o stdin, em
+            # `Popen._stdin_write`: `BrokenPipeError` e `OSError` com
+            # `errno.EINVAL`, que é como a escrita num pipe sem leitor falha no
+            # Windows. Qualquer outra falha sobe, seja outro `OSError`, como
+            # `EIO` ou `PermissionError`, seja um erro de programação, como um
+            # atributo privado do SDK que mudou de nome.
+            try:
                 _close_client(client)
+            except OSError as erro:
+                if not isinstance(erro, BrokenPipeError) and erro.errno != errno.EINVAL:
+                    raise
