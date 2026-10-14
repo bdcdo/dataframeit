@@ -854,6 +854,35 @@ class TestBackendLifecycle:
                 assert model[field] == value
         assert not catalog_path.exists()
 
+    def test_catalogo_e_lido_sem_codex_api_key(self, codex_sdk, monkeypatch, tmp_path):
+        # O app-server do turno ignora CODEX_API_KEY; com ela, `debug models` leria
+        # o catálogo da API com essa chave, e não com a credencial dos turnos.
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-falsa")
+        monkeypatch.setenv("DATAFRAMEIT_VARIAVEL_DO_USUARIO", "mantida")
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        listing = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"models": []}', stderr=""
+        )
+
+        with (
+            patch("dataframeit.codex.subprocess.run", return_value=listing) as run,
+            patch.object(sdk, "Codex", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
+        ):
+            isolated_home = backend._workspace.parent / "home"
+
+        ambiente = run.call_args.kwargs["env"]
+        assert "CODEX_API_KEY" not in ambiente
+        assert ambiente["DATAFRAMEIT_VARIAVEL_DO_USUARIO"] == "mantida"
+        assert ambiente["CODEX_HOME"] == os.fspath(isolated_home)
+        assert run.call_args.args[0][-2:] == ["debug", "models"]
+
     @pytest.mark.parametrize(
         ("stdout", "message"),
         [
@@ -1489,6 +1518,28 @@ class TestCodexInvocation:
         with (
             pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderError, match="blocked") as exc_info,
+        ):
+            backend.invoke("texto")
+
+        assert not isinstance(exc_info.value, (ProviderTransientError, ProviderAbortError))
+        assert client.thread_start.call_count == 1
+
+    # O SDK aceita código e variante fora do protocolo que conhece: o código vira
+    # membro novo de CodexErrorInfoValue, e a variante fica como dict cru.
+    @pytest.mark.parametrize(
+        "codigo", ["codigoNovo", {"variantNova": {}}], ids=["codigo", "variante"]
+    )
+    def test_codigo_de_erro_desconhecido_falha_so_a_linha(self, codex_sdk, tmp_path, codigo):
+        _, _, generated = codex_sdk
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        info = generated.CodexErrorInfo.model_validate(codigo)
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=info, message="novidade")
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="novidade") as exc_info,
         ):
             backend.invoke("texto")
 
