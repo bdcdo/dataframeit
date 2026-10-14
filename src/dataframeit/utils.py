@@ -11,6 +11,7 @@ Este módulo contém funções utilitárias para:
 from __future__ import annotations
 
 import ast
+import datetime
 import functools
 import json
 import operator
@@ -29,7 +30,7 @@ from pandas.api.types import is_float_dtype, is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable
+    from collections.abc import Callable, Collection, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -205,7 +206,7 @@ def from_pandas(
     df: pd.DataFrame,
     conversion_info: ConversionInfo | bool,  # noqa: FBT001 (bool aceito por retrocompatibilidade)
     status_col: str = "_dataframeit_status",
-    model_columns: Collection[str] = (),
+    model_columns: Mapping[str, object] = types.MappingProxyType({}),
 ) -> pd.DataFrame | PolarsDataFrame:
     """Converte DataFrame pandas de volta para o formato original.
 
@@ -217,8 +218,9 @@ def from_pandas(
         conversion_info: ConversionInfo com metadados da conversão original,
                         ou bool para retrocompatibilidade (True = era polars).
         status_col: Nome da coluna de status (o `status_column` do usuário).
-        model_columns: Campos do modelo que a execução gravou. Na saída polars,
-                        só eles e as colunas de controle são convertidos do pandas.
+        model_columns: Anotação de cada campo do modelo que a execução gravou, pelo
+                        nome. Na saída polars, só eles e as colunas de controle são
+                        convertidos do pandas, e a anotação entra em `_to_polars`.
 
     Returns:
         Dados no formato original (DataFrame, Series, list ou dict).
@@ -253,10 +255,13 @@ def from_pandas(
             # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
             # pyarrow recusam, seja qual for a exceção (ValueError, TypeError,
             # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
-            # O pânico do polars não é Exception e passa por aqui.
+            # O pânico do polars, como o do Decimal acima de 38 dígitos, que o
+            # pyarrow entrega em 256 bits, herda de BaseException e é capturado
+            # pelo nome; capturar BaseException engoliria o KeyboardInterrupt. O
+            # polars ainda escreve a mensagem do pânico no stderr.
             try:
-                columns.append(pl.from_pandas(values))
-            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
+                columns.append(_to_polars(values, model_columns.get(col)))
+            except (Exception, pl.exceptions.PanicException):  # noqa: BLE001 (a recusa muda de tipo com os valores)
                 # Há versões do polars em que o construtor de Series inspeciona os
                 # valores mesmo com dtype=pl.Object: quando o primeiro valor não nulo
                 # é membro de Enum, troca cada valor pelo `.value`, e levanta erro no
@@ -311,6 +316,85 @@ def _enums_by_value(values: pd.Series) -> pd.Series:
         name=values.name,
         dtype=object,
     )
+
+
+def _json_default(value: object) -> object:
+    """O que json.dumps não serializa: numpy pelo tolist, Enum pelo valor, o resto texto.
+
+    O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
+    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
+    a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
+    """
+    if isinstance(value, Enum):
+        return value.value
+    tolist = getattr(value, "tolist", None)
+    return tolist() if callable(tolist) else str(value)
+
+
+def _without_optional(annotation: object) -> object:
+    """A anotação sem o Optional e sem o Annotated de dentro dele.
+
+    A união de mais de um tipo além de None fica como está.
+    """
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if get_origin(annotation) in (typing.Union, types.UnionType) and len(args) == 1:
+        annotation = args[0]
+    if get_origin(annotation) is typing.Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
+
+def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
+    """Converte a coluna para polars; `annotation` é a do campo do modelo, ou None.
+
+    O campo dict sai como texto JSON, como o checkpoint o grava. Como Struct, a
+    coluna teria em cada linha as chaves de todas, e a chave ausente não se
+    distinguiria da chave com valor nulo. O dict com chave que o JSON não
+    aceita, como um Enum, levanta TypeError, e `from_pandas` devolve a coluna
+    como Object.
+
+    A coluna sem valor, toda nula ou só com listas vazias, não dá ao polars de
+    onde inferir o tipo, e o schema da saída mudaria com as respostas. Ela
+    recebe o tipo da anotação quando esta é um dos tipos de `scalars` ou uma
+    lista de um deles. A busca em `scalars` é por identidade, e não por chave
+    de dict, porque a anotação pode não ter hash, como o item de
+    list[Annotated[int, {...}]].
+    """
+    # Só é chamada com o polars instalado; o Any dispensa conferir o None a cada uso.
+    polars: Any = pl
+    scalars = (
+        (str, polars.String),
+        (int, polars.Int64),
+        (float, polars.Float64),
+        (bool, polars.Boolean),
+        (datetime.date, polars.Date),
+        (datetime.datetime, polars.Datetime),
+    )
+    annotation = _without_optional(annotation)
+    origin, args = get_origin(annotation), get_args(annotation)
+    if (origin or annotation) is dict:
+        values = pd.Series(
+            [
+                json.dumps(value, ensure_ascii=False, default=_json_default)
+                if isinstance(value, dict)
+                else value
+                for value in values
+            ],
+            name=values.name,
+        )
+        # A coluna de texto JSON sem nenhuma resposta segue a regra do campo str.
+        annotation = str
+    series = polars.from_pandas(values)
+    item = args[0] if origin is list and args else annotation
+    dtype = next((dtype for python_type, dtype in scalars if item is python_type), None)
+    if dtype is None:
+        return series
+    # Da lista vazia o explode tira um nulo ou nada, conforme a versão do polars,
+    # e a coluna que não é lista ele devolve como está.
+    leaves = series.explode()
+    if leaves.null_count() < len(leaves):
+        return series
+    return series.cast(polars.List(dtype) if origin is list else dtype)
 
 
 def _untouched_columns(
