@@ -415,6 +415,221 @@ def test_accepts_only_text_cobre_optional_e_literal():
     assert not accepts_only_text(Numero)
 
 
+class Inteiros(BaseModel):
+    nota: Annotated[int, Field(ge=0)] | None = None
+    misto: int | str | None = None
+    decimal: float | None = None
+    medida: Annotated[float, Field(ge=0)] | None = None
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_read_df_com_modelo_rele_campo_int_como_int(tmp_path, formato):
+    """O leitor devolve float64 na coluna com int e célula vazia; o campo int volta int (#223)."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / f"dados.{formato}"
+    colunas = {"texto": ["a", "b"]} | {campo: [7, None] for campo in Inteiros.model_fields}
+    _save_checkpoint(pd.DataFrame(colunas, dtype=object), arquivo, structures=frozenset())
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [7, None]
+    assert type(lido["nota"][0]) is int
+    assert lido["nota"][1] is None
+    assert lido["misto"].dtype == "float64"
+    assert lido["decimal"].dtype == "float64"
+    assert lido["medida"].dtype == "float64"
+
+
+def test_read_df_nao_rele_campo_int_do_xlsx(tmp_path):
+    """O XLSX guarda número como double; o int dele pode vir arredondado e fica como lido."""
+    pytest.importorskip("openpyxl")
+    arquivo = tmp_path / "dados.xlsx"
+    dados = pd.DataFrame({"texto": ["a", "b"], "nota": [9007199254740993, None]}, dtype=object)
+    _save_checkpoint(dados, arquivo, structures=frozenset())
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert lido["nota"].dtype == "float64"
+    assert lido["nota"][0] == 9007199254740992.0
+
+
+def test_read_df_sem_releitura_de_int_do_parquet_com_columns(tmp_path):
+    """Qualquer argumento de leitura desliga a releitura, também no parquet."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / "dados.parquet"
+    dados = pd.DataFrame({"texto": ["a", "b"], "nota": [7, None]}, dtype=object)
+    _save_checkpoint(dados, arquivo, structures=frozenset())
+
+    lido = read_df(str(arquivo), Inteiros, columns=["nota"])
+
+    pd.testing.assert_frame_equal(lido, pd.read_parquet(arquivo, columns=["nota"]))
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_read_df_rele_ausente_e_zero_ao_lado_do_inteiro_grande(tmp_path, formato):
+    """Cada célula volta na sua linha: o 0 continua 0, e o ausente antes do int continua antes."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / f"dados.{formato}"
+    dados = pd.DataFrame(
+        {"texto": ["a", "b", "c"], "nota": [None, 0, 9007199254740993]}, dtype=object
+    )
+    _save_checkpoint(dados, arquivo, structures=frozenset())
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [None, 0, 9007199254740993]
+    assert [type(v) for v in lido["nota"]] == [type(None), int, int]
+
+
+def test_read_df_rele_float_e_int_do_csv_sem_celula_vazia(tmp_path):
+    """Sem célula vazia, a coluna com 7.5 e 8 também é relida: o 8 volta int, o 7.5 fica float."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,nota\na,7.5\nb,8\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [7.5, 8]
+    assert [type(v) for v in lido["nota"]] == [float, int]
+
+
+def test_read_df_com_on_bad_lines_devolve_o_que_o_pandas_le(tmp_path):
+    """A linha que o leitor pula não desalinha a releitura: com o argumento, ela não roda."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("nome,nota\na,9007199254740993\nb,,extra,mais\nc,\nd,7\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros, on_bad_lines="skip")
+
+    pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, on_bad_lines="skip"))
+
+
+def test_read_df_mantem_o_float_que_o_csv_guarda_no_campo_int(tmp_path):
+    """Só a célula gravada como inteiro muda; a de um float ou de "+7" fica como lida.
+
+    A célula que o leitor devolve ausente, vazia ou "NA", volta None, e não NaN.
+    """
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,nota\na,7\nb,7.5\nc,-3\nd,+7\ne,\nf,NA\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [7, 7.5, -3, 7.0, None, None]
+    assert [type(v) for v in lido["nota"]] == [int, float, int, float, type(None), type(None)]
+
+
+def test_read_df_rele_do_csv_o_int_acima_do_int64(tmp_path):
+    """Com célula vazia, o leitor devolve texto na coluna com int acima do Int64."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,nota\na,9223372036854775813\nb,7\nc,\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [9223372036854775813, 7, None]
+    assert [type(v) for v in lido["nota"]] == [int, int, type(None)]
+
+
+def test_read_df_sem_o_campo_int_no_arquivo(tmp_path):
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,decimal\na,1.5\nb,\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido.columns) == ["texto", "decimal"]
+
+
+def test_read_df_rele_campo_int_do_parquet_com_indice_proprio(tmp_path):
+    """O parquet que guarda o índice o devolve, e a coluna relida fica nas linhas dele."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / "dados.parquet"
+    pd.DataFrame({"nota": [7, None]}, index=[10, 20], dtype=object).to_parquet(arquivo)
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido.index) == [10, 20]
+    assert list(lido["nota"]) == [7, None]
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet", "json"])
+@pytest.mark.parametrize(("valores", "tipo"), [([7.5, None], "float64"), ([7, 8], "int64")])
+def test_read_df_nao_mexe_no_campo_int_sem_celula_a_reler(tmp_path, formato, valores, tipo):
+    """Coluna sem célula vazia, float no arquivo e leitor sem releitura ficam como lidos."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / f"dados.{formato}"
+    getattr(pd.DataFrame({"nota": valores}), f"to_{formato}")(arquivo, index=False)
+
+    assert read_df(str(arquivo), Inteiros)["nota"].dtype == tipo
+
+
+@pytest.mark.parametrize(
+    ("formato", "opcao", "tipo"),
+    [
+        ("csv", {"dtype": {"nota": "float64"}}, "float64"),
+        ("parquet", {"dtype_backend": "pyarrow"}, "double[pyarrow]"),
+    ],
+)
+def test_read_df_respeita_os_tipos_do_usuario_no_campo_int(tmp_path, formato, opcao, tipo):
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / f"dados.{formato}"
+    if formato == "csv":
+        arquivo.write_text("texto,nota\na,7\nb,\n", encoding="utf-8")
+    else:
+        pd.DataFrame({"nota": [7.0, None]}).to_parquet(arquivo)
+
+    assert read_df(str(arquivo), Inteiros, **opcao)["nota"].dtype == tipo
+
+
+@pytest.mark.parametrize(
+    "opcao",
+    [
+        {"converters": {"id": str}},
+        {"na_values": ["x"]},
+        {"keep_default_na": False},
+        {"na_filter": False},
+        {"usecols": ["id", "nota"]},
+        {"index_col": "id"},
+        {"index_col": 0},
+        {"parse_dates": ["data"]},
+        {"engine": "pyarrow"},
+    ],
+    ids=lambda opcao: next(iter(opcao)),
+)
+def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
+    """Com essas opções, read_df devolve o campo int como o pandas o lê, sem levantar."""
+    if opcao.get("engine") == "pyarrow":
+        pytest.importorskip("pyarrow")
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("id,data,nota\n10,2024-01-01,7\n20,2024-01-02,\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros, **opcao)
+
+    pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, **opcao))
+
+
+@pytest.mark.parametrize(
+    ("formato", "opcao", "tipo"),
+    [
+        ("csv", {"chunksize": 1}, "TextFileReader"),
+        ("csv", {"iterator": True}, "TextFileReader"),
+        ("xlsx", {"sheet_name": None}, "dict"),
+    ],
+)
+def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(tmp_path, formato, opcao, tipo):
+    """O leitor que devolve outra coisa que um DataFrame passa direto, como sem o campo int."""
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    arquivo = tmp_path / f"dados.{formato}"
+    dados = pd.DataFrame({"nota": [7, None]})
+    if formato == "csv":
+        dados.to_csv(arquivo, index=False)
+    else:
+        dados.to_excel(arquivo, index=False)
+
+    lido = read_df(str(arquivo), Inteiros, **opcao)
+
+    assert type(lido).__name__ == tipo
+    if tipo == "TextFileReader":
+        lido.close()
+
+
 def test_estrutura_anotada_e_opcional_volta_do_checkpoint_csv(tmp_path):
     """Annotated dentro de Optional: o CSV guarda JSON, e a retomada o relê como lista."""
 

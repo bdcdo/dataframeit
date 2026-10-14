@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import pandas as pd
-from pandas.api.types import is_string_dtype
+from pandas.api.types import is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -700,6 +700,11 @@ def read_df(
         path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
+               Com ele e sem kwargs, a coluna de campo int ou Optional[int]
+               que o CSV ou o parquet não devolve em tipo inteiro volta como
+               object, com o int exato e None na célula vazia. A coluna só
+               com células vazias fica como lida: float no CSV e, na coluna
+               nula que o checkpoint grava no parquet, object com None.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
@@ -737,6 +742,7 @@ def read_df(
 
     if model is not None:
         _reread_text_columns(df, path, ext, model, kwargs)
+        _reread_int_columns(df, path, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -772,6 +778,79 @@ def _reread_text_columns(
     raw = reader(path, usecols=text_columns, dtype=str, na_filter=False, **kwargs)
     for col in text_columns:
         df[col] = raw[col].mask(raw[col] == "")
+
+
+def _accepts_only_int(field_type: object) -> bool:
+    """True se o tipo é int, ou int com None."""
+    if field_type is int:
+        return True
+    origin = get_origin(field_type)
+    if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
+        return _accepts_only_int(get_args(field_type)[0])
+    if origin is typing.Union or isinstance(field_type, types.UnionType):
+        args = [arg for arg in get_args(field_type) if arg is not type(None)]
+        return all(_accepts_only_int(arg) for arg in args)
+    return False
+
+
+_INT_TEXT = re.compile(r"-?\d+")
+
+
+def _int_or_read(text: str, read: object) -> object:
+    """O int que o texto da célula do CSV guarda, None se ela é ausente, ou o valor lido.
+
+    O texto vazio vale como ausente também quando o leitor não o trocou por
+    NaN, como na coluna com int acima do Int64, que ele devolve em texto cru.
+    """
+    if _INT_TEXT.fullmatch(text):
+        return int(text)
+    if text == "" or pd.isna(read):
+        return None
+    return read
+
+
+def _reread_int_columns(
+    df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
+) -> None:
+    """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
+
+    O leitor do pandas devolve float64 numa coluna com int e célula vazia, como
+    a de um checkpoint com linha pendente, e o float arredonda o int acima de
+    2**53; com int acima do Int64, o CSV volta como texto. A coluna relida
+    passa a object, com o int que o arquivo guarda como inteiro e None na
+    célula que o leitor devolveu ausente, seja vazia ou "NA"; a célula que
+    guarda outra coisa, como 7.5, fica como lida. O XLSX guarda número como
+    double e fica de fora, porque o int que ele devolve já pode vir
+    arredondado. Qualquer argumento de leitura também desliga a releitura,
+    porque ele muda o que o leitor devolve (on_bad_lines pula linhas, dtype
+    fixa tipos, chunksize nem devolve DataFrame), e a releitura sem ele não
+    casaria com o que foi lido.
+    """
+    if ext not in (".csv", ".parquet") or kwargs:
+        return
+    columns = [
+        f
+        for f, info in model.model_fields.items()
+        if f in df.columns and _accepts_only_int(info.annotation) and not is_integer_dtype(df[f])
+    ]
+    if not columns:
+        return
+    if ext == ".parquet":
+        raw = pd.read_parquet(path, columns=columns, dtype_backend="numpy_nullable")
+        exact = {
+            col: [None if pd.isna(v) else int(v) for v in raw[col]]
+            for col in columns
+            if is_integer_dtype(raw[col])
+        }
+    else:
+        raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False)
+        exact = {
+            col: [_int_or_read(text, read) for text, read in zip(raw[col], df[col], strict=True)]
+            for col in columns
+        }
+    for col, values in exact.items():
+        if any(type(v) is int for v in values):
+            df[col] = pd.Series(values, index=df.index, dtype=object)
 
 
 def _normalize_all_json_columns(df: pd.DataFrame) -> None:

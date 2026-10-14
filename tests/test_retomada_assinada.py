@@ -1,6 +1,7 @@
 """Retomada automática pelo checkpoint: só o arquivo desta execução é retomado."""
 
 import contextlib
+import csv
 import datetime
 import warnings
 from enum import Enum
@@ -1122,3 +1123,161 @@ def test_checkpoint_grava_enum_escalar_pelo_valor(tmp_path, formato):
     _save_checkpoint(pd.DataFrame({"cor": [Cor.AZUL, None]}), ckpt, structures=frozenset())
 
     assert read_df(str(ckpt))["cor"][0] == "azul"
+
+
+# 2**53 + 1, o primeiro inteiro que o float64 arredonda.
+_INTEIRO_GRANDE = 9007199254740993
+# Acima do Int64, que o pyarrow infere de uma coluna de objeto com int.
+_ACIMA_DO_INT64 = 2**63 + 5
+
+
+def _celulas_gravadas(ckpt, coluna):
+    """A coluna como está no arquivo, sem a inferência de tipo do leitor do pandas."""
+    if ckpt.suffix == ".parquet":
+        pq = pytest.importorskip("pyarrow.parquet")
+        return pq.read_table(ckpt, columns=[coluna]).column(coluna).to_pylist()
+    with ckpt.open(encoding="utf-8", newline="") as arquivo:
+        return [linha[coluna] for linha in csv.DictReader(arquivo)]
+
+
+@pytest.mark.parametrize("valor", [_INTEIRO_GRANDE, 2**63 - 1])
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+# NaN chega, por exemplo, da entrada que já trazia a coluna do campo em float64.
+@pytest.mark.parametrize("ausente", [None, np.nan], ids=["None", "NaN"])
+def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato, valor, ausente):
+    """A coluna com int e célula ausente não passa por float64 antes do arquivo (#223)."""
+    pq = pytest.importorskip("pyarrow.parquet")
+    ckpt = tmp_path / f"ckpt.{formato}"
+
+    # O índice da entrada, que o checkpoint não grava, não precisa ser 0..n-1.
+    _save_checkpoint(
+        pd.DataFrame({"nota": [valor, ausente]}, index=[10, 20], dtype=object),
+        ckpt,
+        structures=frozenset(),
+    )
+
+    esperado = [str(valor), ""] if formato == "csv" else [valor, None]
+    assert _celulas_gravadas(ckpt, "nota") == esperado
+    if formato == "parquet":
+        assert str(pq.read_schema(ckpt).field("nota").type) == "int64"
+
+
+def test_checkpoint_parquet_grava_int_acima_do_int64_sem_celula_vazia(tmp_path):
+    """Sem célula vazia, a coluna fica no uint64 que o pandas infere, como antes (#223)."""
+    pq = pytest.importorskip("pyarrow.parquet")
+    ckpt = tmp_path / "ckpt.parquet"
+
+    _save_checkpoint(
+        pd.DataFrame({"nota": [_ACIMA_DO_INT64, 7]}, dtype=object), ckpt, structures=frozenset()
+    )
+
+    assert _celulas_gravadas(ckpt, "nota") == [_ACIMA_DO_INT64, 7]
+    assert str(pq.read_schema(ckpt).field("nota").type) == "uint64"
+
+
+class NotaInteira(BaseModel):
+    nota: int
+
+
+class NotaOpcional(BaseModel):
+    nota: int | None = None
+
+
+class NotaEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+    nota: int
+
+
+def _interrompe_depois_de_gravar(df, ckpt, modelo, valor):
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _uma_linha_por_execucao(lambda text: {"nota": valor}),
+            modelo=modelo,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+
+def _retoma(df, ckpt, modelo):
+    return _roda(
+        df,
+        lambda text, *a, **k: {"data": {"nota": 7}, "usage": None},
+        modelo=modelo,
+        batch_size=1,
+        checkpoint_path=ckpt,
+    )
+
+
+# O int acima do Int64 ao lado da célula vazia não vai ao parquet.
+@pytest.mark.parametrize(
+    ("formato", "valor"),
+    [("csv", _INTEIRO_GRANDE), ("csv", _ACIMA_DO_INT64), ("parquet", _INTEIRO_GRANDE)],
+)
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize("modelo", [NotaInteira, NotaOpcional, NotaEstrita])
+def test_inteiro_grande_com_linha_pendente_volta_exato_da_retomada(
+    tmp_path, modelo, formato, entrada, valor
+):
+    """As linhas pendentes deixam célula vazia ao lado do int, na gravação e na releitura (#223)."""
+    pytest.importorskip("pyarrow")
+    if entrada == "polars":
+        pl = pytest.importorskip("polars")
+        df = pl.DataFrame({"texto": ["a", "b", "c"]})
+    else:
+        df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    ckpt = tmp_path / f"ckpt.{formato}"
+
+    with warnings.catch_warnings():
+        # Na saída polars, o int acima do Int64 sai numa coluna Object, com aviso.
+        warnings.filterwarnings("ignore", message=".*tipo Object")
+        _interrompe_depois_de_gravar(df, ckpt, modelo, valor)
+        gravado = str(valor) if formato == "csv" else valor
+        assert _celulas_gravadas(ckpt, "nota")[0] == gravado
+        final = _retoma(df, ckpt, modelo)
+
+    assert list(final["nota"]) == [valor, 7, 7]
+    assert type(final["nota"][0]) is int
+
+
+def test_int_acima_do_int64_com_linha_pendente_nao_vai_ao_checkpoint_parquet(tmp_path):
+    """O pyarrow recusa a coluna object com esse int e célula vazia: a gravação falha com aviso.
+
+    A execução segue e devolve o int exato; sem checkpoint gravado, a retomada recomeça.
+    """
+    pytest.importorskip("pyarrow")
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    ckpt = tmp_path / "ckpt.parquet"
+
+    # Saem dois avisos, e o pytest.warns do piso (7.0) não devolve o que não casa.
+    with warnings.catch_warnings(record=True) as avisos:
+        warnings.simplefilter("always")
+        parcial = _roda(
+            df,
+            _uma_linha_por_execucao(lambda text: {"nota": _ACIMA_DO_INT64}),
+            modelo=NotaInteira,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    mensagens = [str(aviso.message) for aviso in avisos]
+    assert any("Falha ao gravar o checkpoint" in m and "OverflowError" in m for m in mensagens)
+    assert any("Execução interrompida" in m for m in mensagens)
+    assert parcial["nota"][0] == _ACIMA_DO_INT64
+    assert not ckpt.exists()
+
+
+def test_inteiro_grande_do_checkpoint_xlsx_volta_arredondado_e_strict_o_recusa(tmp_path):
+    """O XLSX guarda o número como double: sem strict, o int volta arredondado; com strict, é recusado."""
+    pytest.importorskip("openpyxl")
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    for modelo in (NotaInteira, NotaEstrita):
+        _interrompe_depois_de_gravar(
+            df, tmp_path / f"{modelo.__name__}.xlsx", modelo, _INTEIRO_GRANDE
+        )
+
+    final = _retoma(df, tmp_path / "NotaInteira.xlsx", NotaInteira)
+
+    assert final["nota"][0] == _INTEIRO_GRANDE - 1
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _retoma(df, tmp_path / "NotaEstrita.xlsx", NotaEstrita)

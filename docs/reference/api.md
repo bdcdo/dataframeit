@@ -186,6 +186,8 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 
 CSV e XLSX gravam `""` e ausência do mesmo jeito. Um campo obrigatório de texto que era `""` volta ausente, e a retomada o acusa para reprocessar; para guardar essa diferença, use checkpoint `.parquet`.
 
+Chamada com `model` e sem argumentos de leitura extras, os `**kwargs` que vão ao pandas, a função relê de `.csv` e `.parquet` a coluna de um campo `int` ou `Optional[int]` que o pandas não devolve em tipo inteiro: ela volta como `object`, com o `int` exato e `None` na célula vazia, em vez de float64 com `NaN`, que arredonda o inteiro acima de 2**53. A célula que o arquivo guarda como float, como `7.5`, fica como lida. A coluna `Int64` anulável do parquet continua `Int64`, e a coluna só com células vazias fica como lida: float no CSV e, na coluna nula que o checkpoint grava no parquet, `object` com `None`. Argumento de leitura extra desliga essa releitura; `normalize` não a desliga. O `.xlsx`, que guarda número como double, fica de fora.
+
 ### Formatos Suportados
 
 - `.xlsx`, `.xls` - Excel
