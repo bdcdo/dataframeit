@@ -932,6 +932,9 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
             datetime(2024, 1, 3, tzinfo=_FUSO_DE_DESLOCAMENTO),
         ],
     ),
+    # O pyarrow põe o Decimal acima de 38 dígitos numa coluna de 256 bits, que o
+    # polars não lê: a conversão entra em pânico, e o pânico não é Exception.
+    "decimal_acima_de_38_digitos": (Decimal, [Decimal("1E+40"), Decimal(2)]),
 }
 
 
@@ -1083,6 +1086,17 @@ def test_campo_que_o_arrow_nao_tipa_com_entrada_polars_series():
         )
 
     assert resultado["campo"].to_list() == [1, "dois"]
+
+
+def test_interrupcao_na_conversao_da_saida_polars_sobe_em_vez_de_virar_object():
+    """A saída captura a recusa da conversão e o pânico do polars, e só eles."""
+    pl = pytest.importorskip("polars")
+
+    with (
+        patch("dataframeit.utils._to_polars", side_effect=KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _rodar(pl.DataFrame({"texto": ["a", "b"]}))
 
 
 def test_saida_polars_com_coluna_object_e_retomada():
