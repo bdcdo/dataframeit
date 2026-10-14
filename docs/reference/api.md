@@ -180,7 +180,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | Parâmetro | Tipo | Descrição |
 |-----------|------|-----------|
 | `path` | str | Caminho do arquivo |
-| `model` | type[BaseModel] | Modelo Pydantic. Com ele, só os campos de estrutura são normalizados, e em `.csv`/`.xlsx` os campos de texto são lidos como texto cru: `"2023"` não vira número e `"N/A"` não vira ausência. Qualquer argumento de leitura extra, dos `**kwargs`, desliga essa leitura, e o texto fica como o pandas o devolve. |
+| `model` | type[BaseModel] | Modelo Pydantic. Com ele, só os campos de estrutura são normalizados, e em `.csv`, `.xlsx` e `.xls` os campos de texto são lidos como texto cru: `"2023"` não vira número e `"N/A"` não vira ausência. Qualquer argumento de leitura extra, dos `**kwargs`, desliga essa leitura, e o texto fica como o pandas o devolve. |
 | `normalize` | bool | Se `False`, não converte nenhuma coluna |
 | `**kwargs` | | Argumentos passados para pandas |
 
