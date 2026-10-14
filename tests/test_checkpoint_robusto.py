@@ -604,6 +604,12 @@ def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
     pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, **opcao))
 
 
+class ComNome(BaseModel):
+    nome: str
+    n: int
+
+
+@pytest.mark.parametrize("modelo", [Inteiros, ComNome], ids=["int", "texto"])
 @pytest.mark.parametrize(
     ("formato", "opcao", "tipo"),
     [
@@ -612,27 +618,24 @@ def test_read_df_sem_releitura_de_int_com_opcao_de_leitura(tmp_path, opcao):
         ("xlsx", {"sheet_name": None}, "dict"),
     ],
 )
-def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(tmp_path, formato, opcao, tipo):
-    """O leitor que devolve outra coisa que um DataFrame passa direto, como sem o campo int."""
+def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(
+    tmp_path, formato, opcao, tipo, modelo
+):
+    """O leitor que devolve outra coisa que um DataFrame passa direto, com campo int ou de texto."""
     if formato == "xlsx":
         pytest.importorskip("openpyxl")
     arquivo = tmp_path / f"dados.{formato}"
-    dados = pd.DataFrame({"nota": [7, None]})
+    dados = pd.DataFrame({"nome": ["a", "b"], "nota": [7, None]})
     if formato == "csv":
         dados.to_csv(arquivo, index=False)
     else:
         dados.to_excel(arquivo, index=False)
 
-    lido = read_df(str(arquivo), Inteiros, **opcao)
+    lido = read_df(str(arquivo), modelo, **opcao)
 
     assert type(lido).__name__ == tipo
     if tipo == "TextFileReader":
         lido.close()
-
-
-class ComNome(BaseModel):
-    nome: str
-    n: int
 
 
 _LINHA_MALFORMADA = "nome,n\na,1\nb,2,extra,mais\nc,3\nd,4\n"
