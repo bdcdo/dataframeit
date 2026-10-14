@@ -25,7 +25,7 @@ result = dataframeit(
 
 ### Auto-reduction on Rate Limits
 
-When the provider identifies a rate limit by the status or the error code, DataFrameIt automatically reduces workers:
+When a row fails after all attempts with a rate limit or overload error, DataFrameIt halves the workers:
 
 ```
 Start: 10 workers
@@ -33,6 +33,8 @@ Rate limit detected → 5 workers
 Rate limit detected → 2 workers
 Rate limit detected → 1 worker
 ```
+
+With `codex`, the rate limit is recognized by the error code or status, without reading the message. With the LangChain providers, also by the message text, when the error carries no HTTP status.
 
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.

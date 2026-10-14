@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 # Status HTTP de rate limit e início da faixa de erro do servidor.
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR_MIN = 500
+# Código JSON-RPC com que o app-server do Codex recusa um pedido quando a fila de
+# entrada está cheia, com a mensagem "Server overloaded; retry later." e sem
+# `data`. O `is_retryable_error` do SDK procura a sobrecarga só no `data` e não o
+# reconhece.
+_RPC_SERVER_OVERLOADED = -32001
 
 _ALLOWED_MODEL_KWARGS = frozenset({"effort", "timeout"})
 _AUTH_LOCK_SUFFIX = ".dataframeit.lock"
@@ -901,6 +906,10 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     """Classifica o turno que falhou pelo `codex_error_info` que o runtime enviou."""
     from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
         CodexErrorInfoValue,
+        HttpConnectionFailedCodexErrorInfo,
+        ResponseStreamConnectionFailedCodexErrorInfo,
+        ResponseStreamDisconnectedCodexErrorInfo,
+        ResponseTooManyFailedAttemptsCodexErrorInfo,
     )
 
     if error is None:
@@ -911,37 +920,21 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     root = getattr(error.codex_error_info, "root", None)
     if root is CodexErrorInfoValue.usage_limit_exceeded:
         raise ProviderUsageLimitError(message)
-    if _is_overload_info(root):
+
+    # Sobrecarga, limite de requisições e falta de capacidade do tier flex passam
+    # com o tempo: a linha é repetida com backoff, como no HTTP 429.
+    overload_codes = {
+        CodexErrorInfoValue.server_overloaded,
+        CodexErrorInfoValue.rate_limit_exceeded,
+        CodexErrorInfoValue.flex_unavailable,
+    }
+    if isinstance(root, CodexErrorInfoValue) and root in overload_codes:
         raise ProviderOverloadedError(message)
 
     transient_codes = {
         CodexErrorInfoValue.internal_server_error,
         CodexErrorInfoValue.thread_rollback_failed,
     }
-    is_http, status = _http_variant_status(root)
-    if is_http:
-        if status is None or status >= _HTTP_SERVER_ERROR_MIN:
-            raise ProviderTransientError(message)
-        raise ProviderError(message)
-
-    if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
-        raise ProviderTransientError(message)
-
-    # Os demais códigos ficam como falha da linha. Entre eles, a violação de
-    # política vem do conteúdo da requisição, e as recusas acumuladas e o
-    # orçamento da sessão contam por thread, que é própria de cada linha.
-    raise ProviderError(message)
-
-
-def _http_variant_status(root: object) -> tuple[bool, int | None]:
-    """Diz se o `codex_error_info` é variante HTTP e devolve o status dela, que pode faltar."""
-    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
-        HttpConnectionFailedCodexErrorInfo,
-        ResponseStreamConnectionFailedCodexErrorInfo,
-        ResponseStreamDisconnectedCodexErrorInfo,
-        ResponseTooManyFailedAttemptsCodexErrorInfo,
-    )
-
     http_variants = (
         (HttpConnectionFailedCodexErrorInfo, "http_connection_failed"),
         (
@@ -958,73 +951,22 @@ def _http_variant_status(root: object) -> tuple[bool, int | None]:
         ),
     )
     for variant_type, payload_field in http_variants:
-        if isinstance(root, variant_type):
-            return True, getattr(root, payload_field).http_status_code
-    return False, None
+        if not isinstance(root, variant_type):
+            continue
+        status = getattr(root, payload_field).http_status_code
+        if status == _HTTP_TOO_MANY_REQUESTS:
+            raise ProviderOverloadedError(message)
+        if status is None or status >= _HTTP_SERVER_ERROR_MIN:
+            raise ProviderTransientError(message)
+        raise ProviderError(message)
 
+    if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
+        raise ProviderTransientError(message)
 
-def _is_overload_info(root: object) -> bool:
-    """Diz se o `codex_error_info` é de sobrecarga ou de rate limit.
-
-    Sobrecarga, limite de requisições, falta de capacidade do tier flex e o
-    HTTP 429 de uma variante HTTP passam com o tempo: a linha é repetida com
-    backoff, e os workers caem.
-    """
-    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
-        CodexErrorInfoValue,
-    )
-
-    if isinstance(root, CodexErrorInfoValue):
-        return root in {
-            CodexErrorInfoValue.server_overloaded,
-            CodexErrorInfoValue.rate_limit_exceeded,
-            CodexErrorInfoValue.flex_unavailable,
-        }
-    return _http_variant_status(root) == (True, _HTTP_TOO_MANY_REQUESTS)
-
-
-# Chaves em que o `is_retryable_error` do SDK procura o `codex_error_info` no
-# `data` de um erro JSON-RPC.
-_RPC_ERROR_INFO_KEYS = ("codex_error_info", "codexErrorInfo", "errorInfo")
-
-
-def _parse_error_info(value: object) -> object:
-    """Converte o `codex_error_info` de um erro JSON-RPC na raiz do `CodexErrorInfo`.
-
-    Aceita o código nas duas grafias: camelCase, a do protocolo v2, que o
-    `CodexErrorInfo` valida, e snake_case, a que o SDK procura. Devolve `None`
-    quando o valor não é um código conhecido.
-    """
-    from openai_codex.generated.v2_all import (  # noqa: PLC0415 (extra codex opcional)
-        CodexErrorInfo,
-        CodexErrorInfoValue,
-    )
-
-    if isinstance(value, str) and value in CodexErrorInfoValue.__members__:
-        return CodexErrorInfoValue[value]
-    try:
-        return CodexErrorInfo.model_validate(value).root
-    except ValidationError:
-        return None
-
-
-def _rpc_error_is_overload(data: object) -> bool:
-    """Diz se o `data` de um erro JSON-RPC traz código de sobrecarga ou de rate limit.
-
-    Procura onde o `is_retryable_error` do SDK procura: nas chaves de
-    `_RPC_ERROR_INFO_KEYS` do `data` e de cada dict dentro dele, inclusive em
-    listas. O SDK reconhece só `server_overloaded`, e um `rate_limit_exceeded`
-    sairia como erro definitivo; aqui vale a regra de `_is_overload_info`, a
-    mesma do turno que falha. A mensagem do erro não é lida.
-    """
-    if isinstance(data, list):
-        return any(_rpc_error_is_overload(item) for item in data)
-    if not isinstance(data, dict):
-        return False
-    for key in _RPC_ERROR_INFO_KEYS:
-        if key in data and _is_overload_info(_parse_error_info(data[key])):
-            return True
-    return any(_rpc_error_is_overload(value) for value in data.values())
+    # Os demais códigos ficam como falha da linha. Entre eles, a violação de
+    # política vem do conteúdo da requisição, e as recusas acumuladas e o
+    # orçamento da sessão contam por thread, que é própria de cada linha.
+    raise ProviderError(message)
 
 
 def _raise_classified_sdk_error(error: Exception) -> NoReturn:
@@ -1040,7 +982,7 @@ def _raise_classified_sdk_error(error: Exception) -> NoReturn:
         msg = f"O app-server do Codex encerrou: {message}"
         raise ProviderAbortError(msg) from error
     if is_retryable_error(error) or (
-        isinstance(error, JsonRpcError) and _rpc_error_is_overload(error.data)
+        isinstance(error, JsonRpcError) and error.code == _RPC_SERVER_OVERLOADED
     ):
         raise ProviderOverloadedError(message) from error
     raise ProviderError(message) from error

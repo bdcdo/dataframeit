@@ -828,9 +828,9 @@ def is_rate_limit_error(error: Exception) -> bool:
     # o ProviderOutputError decidem pela classe, sem ler o texto: a mensagem deles
     # pode trazer texto do modelo, como o resumo da validação e o campo result do
     # SDK no erro do claude_code, e um '429' ali seria tomado por rate limit. O
-    # codex classifica o rate limit pelo código do turno ou do erro JSON-RPC, e o
-    # erro que traz "429 Too Many Requests" só no texto, sem código
-    # classificável, não reduz os workers.
+    # codex classifica o rate limit na origem, pelo código de erro do turno ou do
+    # JSON-RPC, e o erro que traz "429 Too Many Requests" só no texto não reduz os
+    # workers.
     if isinstance(error, (ProviderError, ProviderOutputError)):
         return False
     if _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError):
