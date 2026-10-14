@@ -648,7 +648,7 @@ def test_read_df_com_on_bad_lines_mantem_o_texto_na_sua_linha(tmp_path):
 
     lido = read_df(str(arquivo), ComNome, on_bad_lines="skip")
 
-    assert lido[["nome", "n"]].values.tolist() == [["a", 1], ["c", 3], ["d", 4]]
+    assert lido[["nome", "n"]].to_numpy().tolist() == [["a", 1], ["c", 3], ["d", 4]]
 
 
 @pytest.mark.filterwarnings("ignore::pandas.errors.ParserWarning")
