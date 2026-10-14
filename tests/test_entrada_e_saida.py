@@ -14,7 +14,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, Strict, create_model
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
@@ -904,6 +904,110 @@ def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
     assert llm.call_count == 1
     assert resultado["relevante"].dtype == pl.Boolean
     assert resultado["relevante"].to_list() == [True, False, True]
+
+
+class PeriodoComDatas(BaseModel):
+    datas: list[date]
+
+
+# Tipo do campo e as respostas das duas linhas. O to_pandas do polars entregaria
+# cada uma dessas colunas ao pandas como array do numpy, com a data em
+# datetime64, o datetime com fuso passado a UTC e sem fuso, e a lista de inteiros
+# com nulo em float, que arredonda o inteiro acima de 2**53.
+_LISTAS_DA_SAIDA_POLARS = {
+    "list_date": (list[date], [date(2026, 1, 2)], [date(2026, 3, 4)]),
+    "list_datetime": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30)],  # noqa: DTZ001
+        [datetime(2026, 3, 4, 8, 15, 1, 5)],  # noqa: DTZ001
+    ),
+    "list_datetime_utc": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30, tzinfo=UTC)],
+        [datetime(2026, 3, 4, 8, 15, tzinfo=UTC)],
+    ),
+    "list_datetime_menos_3": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30, tzinfo=timezone(timedelta(hours=-3)))],
+        [datetime(2026, 3, 4, 8, 15, tzinfo=timezone(timedelta(hours=-3)))],
+    ),
+    "optional_list_date": (Optional[list[date]], [date(2026, 1, 2), date(2026, 3, 4)], None),
+    "list_optional_date": (list[Optional[date]], [date(2026, 1, 2), None], [date(2026, 3, 4)]),
+    "list_date_strict": (Annotated[list[date], Strict()], [date(2026, 1, 2)], [date(2026, 3, 4)]),
+    "tuple_date_date": (
+        tuple[date, date],
+        (date(2026, 1, 2), date(2026, 3, 4)),
+        (date(2026, 3, 4), date(2026, 1, 2)),
+    ),
+    "submodelo_com_lista_de_datas": (
+        PeriodoComDatas,
+        {"datas": [date(2026, 1, 2)]},
+        {"datas": [date(2026, 3, 4)]},
+    ),
+    "list_optional_int_acima_de_2_53": (
+        list[Optional[int]],
+        [_ID_GRANDE, None],
+        [_ID_GRANDE + 2],
+    ),
+}
+
+
+def _interrompe_e_retoma(modelo, primeira, segunda, ajusta=lambda df: df):
+    """Saídas da execução sem interrupção e da retomada da interrompida na segunda linha.
+
+    `ajusta` muda a saída interrompida antes da retomada, como o usuário faria.
+    """
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    sem_interrupcao, _ = _rodar(
+        entrada,
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": primeira}, {"campo": segunda}),
+    )
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            entrada,
+            questions=modelo,
+            llm=_responde_em_sequencia({"campo": primeira}, ProviderAbortError("limite")),
+        )
+    assert interrompida["campo"].dtype == sem_interrupcao["campo"].dtype
+
+    retomada, llm = _rodar(
+        ajusta(interrompida),
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": segunda}),
+        resume=True,
+    )
+
+    assert llm.call_count == 1
+    return sem_interrupcao, retomada
+
+
+@pytest.mark.parametrize("caso", _LISTAS_DA_SAIDA_POLARS)
+def test_retomada_de_lista_da_saida_polars(caso):
+    """A lista da saída polars volta com os valores e o tipo de antes."""
+    tipo, primeira, segunda = _LISTAS_DA_SAIDA_POLARS[caso]
+    modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
+
+    sem_interrupcao, retomada = _interrompe_e_retoma(modelo, primeira, segunda)
+
+    assert retomada["campo"].dtype == sem_interrupcao["campo"].dtype
+    assert retomada["campo"].to_list() == sem_interrupcao["campo"].to_list()
+
+
+def test_retomada_de_lista_de_datas_guardada_como_array():
+    """A coluna do campo que o usuário passou a Array volta como a List da execução."""
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(list[date], ...))
+    sem_interrupcao, retomada = _interrompe_e_retoma(
+        modelo,
+        [date(2026, 1, 2), date(2026, 1, 3)],
+        [date(2026, 3, 4), date(2026, 3, 5)],
+        ajusta=lambda df: df.with_columns(pl.col("campo").cast(pl.Array(pl.Date, 2))),
+    )
+
+    assert retomada["campo"].dtype == sem_interrupcao["campo"].dtype
+    assert retomada["campo"].to_list() == sem_interrupcao["campo"].to_list()
 
 
 # =============================================================================
