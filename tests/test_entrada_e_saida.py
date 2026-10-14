@@ -6,13 +6,20 @@ import warnings
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Annotated, Any, Optional, Union
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Strict,
+    create_model,
+    field_validator,
+)
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
@@ -881,6 +888,130 @@ def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
     assert llm.call_count == 1
     assert resultado["relevante"].dtype == pl.Boolean
     assert resultado["relevante"].to_list() == [True, False, True]
+
+
+# Tipo do campo e as respostas das duas linhas. O datetime vai sem fuso porque
+# o to_pandas do polars tira o fuso da lista, e com ele a coluna retomada não
+# teria o tipo da que não foi interrompida.
+_LISTAS_DE_DATAS = {
+    "list_date": (list[date], [date(2026, 1, 2)], [date(2026, 3, 4)]),
+    "list_datetime": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30)],  # noqa: DTZ001
+        [datetime(2026, 3, 4, 8, 15, 1, 5)],  # noqa: DTZ001
+    ),
+    "optional_list_date": (Optional[list[date]], [date(2026, 1, 2), date(2026, 3, 4)], None),
+    "list_optional_date": (list[Optional[date]], [date(2026, 1, 2), None], [date(2026, 3, 4)]),
+    "list_date_strict": (Annotated[list[date], Strict()], [date(2026, 1, 2)], [date(2026, 3, 4)]),
+    "tuple_date_date": (
+        tuple[date, date],
+        (date(2026, 1, 2), date(2026, 3, 4)),
+        (date(2026, 3, 4), date(2026, 1, 2)),
+    ),
+}
+
+
+@pytest.mark.parametrize("caso", _LISTAS_DE_DATAS)
+def test_retomada_de_saida_polars_com_lista_de_datas(caso):
+    """A lista de datas chega do polars como array datetime64 e sai com o tipo de antes."""
+    pl = pytest.importorskip("polars")
+    tipo, primeira, segunda = _LISTAS_DE_DATAS[caso]
+    modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    sem_interrupcao, _ = _rodar(
+        entrada,
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": primeira}, {"campo": segunda}),
+    )
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            entrada,
+            questions=modelo,
+            llm=_responde_em_sequencia({"campo": primeira}, ProviderAbortError("limite")),
+        )
+    assert interrompida["campo"].dtype == sem_interrupcao["campo"].dtype
+
+    retomada, llm = _rodar(
+        interrompida,
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": segunda}),
+        resume=True,
+    )
+
+    assert llm.call_count == 1
+    assert retomada["campo"].dtype == sem_interrupcao["campo"].dtype
+    assert retomada["campo"].to_list() == sem_interrupcao["campo"].to_list()
+
+
+def _so_a_data(valor):
+    return [item.date() if isinstance(item, datetime) else item for item in valor]
+
+
+# Tipo do campo, lista relida e o valor que a retomada devolve. Conforme a
+# versão, o polars entrega a lista de datas como datetime64[D], que o tolist
+# leva a date, ou datetime64[ms], que ele leva a datetime à meia-noite; aqui a
+# lista já chega na segunda forma, sem depender do polars instalado.
+_LISTAS_COM_DATETIME_A_MEIA_NOITE = {
+    "list_date": (list[date], [datetime(2026, 1, 2)], [date(2026, 1, 2)]),  # noqa: DTZ001
+    "list_optional_date": (
+        list[Optional[date]],
+        [datetime(2026, 1, 2), None],  # noqa: DTZ001
+        [date(2026, 1, 2), None],
+    ),
+    "tuple_date_date": (
+        tuple[date, date],
+        [datetime(2026, 1, 2), datetime(2026, 3, 4)],  # noqa: DTZ001
+        (date(2026, 1, 2), date(2026, 3, 4)),
+    ),
+    # O validador corta a hora, e a volta mudaria o conteúdo: fica o relido.
+    "datetime_com_hora": (
+        Annotated[list[date], BeforeValidator(_so_a_data)],
+        [datetime(2026, 1, 2, 10, 30)],  # noqa: DTZ001
+        [datetime(2026, 1, 2, 10, 30)],  # noqa: DTZ001
+    ),
+}
+
+
+@pytest.mark.parametrize("caso", _LISTAS_COM_DATETIME_A_MEIA_NOITE)
+def test_lista_relida_com_datetime_volta_com_datas_so_a_meia_noite(caso):
+    tipo, relida, esperada = _LISTAS_COM_DATETIME_A_MEIA_NOITE[caso]
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "campo": pd.Series([relida], dtype=object),
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado, llm = _rodar(
+        df, questions=create_model("ModeloDoCaso", campo=(tipo, ...)), resume=True
+    )
+
+    llm.assert_not_called()
+    (valor,) = resultado["campo"].tolist()
+    assert valor == esperada
+    assert type(valor) is type(esperada)
+    assert [type(item) for item in valor] == [type(item) for item in esperada]
+
+
+class ModeloQueAcrescenta(BaseModel):
+    """Cada validação acrescenta um item, e a lista validada fica maior que a relida."""
+
+    numeros: list[int]
+
+    @field_validator("numeros")
+    @classmethod
+    def acrescenta(cls, valor):
+        return [*valor, 0]
+
+
+def test_lista_que_o_validador_muda_de_novo_fica_como_foi_relida():
+    df = pd.DataFrame({"texto": ["a"], "numeros": [[1, 2]], "_dataframeit_status": ["processed"]})
+
+    resultado, llm = _rodar(df, questions=ModeloQueAcrescenta, resume=True)
+
+    llm.assert_not_called()
+    assert resultado["numeros"].tolist() == [[1, 2]]
 
 
 # =============================================================================

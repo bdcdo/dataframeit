@@ -370,7 +370,9 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             if is_scalar(value) and bool(pd.isna(value)):
                 row_values[field_name] = None
             elif field_name in complex_fields:
-                row_values[field_name] = normalize_value(value)
+                # A saída polars entrega a lista de datas como array datetime64,
+                # cujo elemento o pydantic recusa; o tolist dá date ou datetime.
+                row_values[field_name] = normalize_value(_array_as_list(value))
             elif isinstance(value, pd.Timestamp):
                 # O datetime relido do XLSX ou do parquet; o pydantic devolveria
                 # o próprio Timestamp, e a coluna misturaria os dois tipos.
@@ -491,7 +493,10 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
     conteúdo, e a comparação em JSON, que distingue 1 de 1.0, não os
     reconhece: o inteiro volta como float, o bool do XLSX como 1.0 e a data
     do XLSX como datetime à meia-noite. O Enum é comparado pelo valor, que é
-    o que o checkpoint grava.
+    o que o checkpoint grava. A lista de datas de uma saída polars chega com
+    datetime à meia-noite quando o polars a entrega como datetime64[ms], e só
+    essa mudança é aceita elemento a elemento: o int e o float dentro da lista
+    continuam distintos, como no JSON.
 
     A igualdade do Python é mais larga do que essas mudanças, e fica restrita
     a elas: True == 1, mas o bool só diz o mesmo que outro bool ou que o
@@ -502,6 +507,11 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
         return _same_value(validated.value, value)
     if _same_json(validated, value):
         return True
+    if isinstance(validated, (list, tuple)) and isinstance(value, (list, tuple)):
+        return len(validated) == len(value) and all(
+            _same_json(item, relido) or _date_at_midnight(item, relido)
+            for item, relido in zip(validated, value, strict=True)
+        )
     if not (is_scalar(validated) and is_scalar(value)):
         return False
     if is_bool(validated) != is_bool(value) and not (
@@ -514,9 +524,18 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
         and abs(value) >= _EXACT_INT_IN_FLOAT
     ):
         return False
-    if type(validated) is datetime.date and isinstance(value, datetime.datetime):
-        return value == datetime.datetime.combine(validated, datetime.time())
+    if _date_at_midnight(validated, value):
+        return True
     return bool(validated == value)
+
+
+def _date_at_midnight(validated: object, value: object) -> bool:
+    """Se o relido é o datetime à meia-noite da data validada."""
+    return (
+        type(validated) is datetime.date
+        and isinstance(value, datetime.datetime)
+        and value == datetime.datetime.combine(validated, datetime.time())
+    )
 
 
 def _same_json(left: object, right: object) -> bool:
