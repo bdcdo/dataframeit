@@ -274,17 +274,18 @@ def codex_gerado():
     return pytest.importorskip("openai_codex.generated.v2_all")
 
 
+# Rate limit do pacote é a sobrecarga: a caixa sai para o ProviderOverloadedError.
 @pytest.mark.parametrize(
-    ("mensagem", "codigo", "classe", "rate_limit"),
+    ("mensagem", "codigo", "classe"),
     [
-        ("429 Too Many Requests", None, ProviderError, False),
-        ("request timeout while streaming", None, ProviderError, False),
-        ("server overloaded", "server_overloaded", ProviderOverloadedError, True),
-        ("Invalid API key: slow down", "rate_limit_exceeded", ProviderOverloadedError, True),
+        ("429 Too Many Requests", None, ProviderError),
+        ("request timeout while streaming", None, ProviderError),
+        ("server overloaded", "server_overloaded", ProviderOverloadedError),
+        ("Invalid API key: slow down", "rate_limit_exceeded", ProviderOverloadedError),
     ],
     ids=["429-no-texto", "timeout-no-texto", "sobrecarga", "rate-limit-com-chave"],
 )
-def test_turno_do_codex(codex_gerado, mensagem, codigo, classe, rate_limit, monkeypatch):
+def test_turno_do_codex(codex_gerado, mensagem, codigo, classe, monkeypatch):
     info = (
         codex_gerado.CodexErrorInfo(root=codex_gerado.CodexErrorInfoValue[codigo])
         if codigo
@@ -300,7 +301,7 @@ def test_turno_do_codex(codex_gerado, mensagem, codigo, classe, rate_limit, monk
     execucao = _executar(fabrica, monkeypatch)
 
     _conferir_coerencia(execucao)
-    assert execucao.caixa_rate_limit is rate_limit
+    assert execucao.caixa_rate_limit is (classe is ProviderOverloadedError)
     assert not execucao.caixa_timeout
 
 
