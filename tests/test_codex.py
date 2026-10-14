@@ -16,10 +16,12 @@ from datetime import date, datetime, timedelta
 from datetime import time as time_type
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, call, patch
 from uuid import UUID
 
+import pandas as pd
 import pytest
 from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
@@ -30,12 +32,14 @@ from dataframeit.codex import (
     _AppServerStop,
     _build_schema,
     _close_client,
+    _raise_classified_sdk_error,
     _to_strict_json_schema,
     _toml_string,
     _turn_timeout,
     _validate_config,
     open_codex_backend,
 )
+from dataframeit.core import dataframeit
 from dataframeit.errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
     ProviderAbortError,
@@ -1332,6 +1336,27 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 1
 
+    def test_number_in_rejected_response_is_not_a_credential_error(self, codex_sdk, tmp_path):
+        response = '{"sentimento": "Súmula 403 do STJ", "confianca": "art. 401"}'
+        backend, _, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response=response)
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderOutputError) as error,
+        ):
+            backend.invoke("texto")
+
+        message = str(error.value)
+        assert "Súmula" not in message
+        assert "art. 401" not in message
+        assert "confianca: Input should be a valid number" in message
+        friendly = get_friendly_error_message(error.value, "codex")
+        assert "AUTENTICAÇÃO" not in friendly
+        assert "PERMISSÃO" not in friendly
+        assert "login" not in friendly
+
     @pytest.mark.parametrize(
         ("response", "status", "message"),
         [
@@ -1395,24 +1420,23 @@ class TestCodexInvocation:
         assert client.thread_start.call_count == 2
         thread.read.assert_not_called()
 
-    def test_failed_turn_internal_server_error_retries_without_rate_limit(
-        self, codex_sdk, tmp_path
-    ):
+    @pytest.mark.parametrize("code", ["internal_server_error", "thread_rollback_failed"])
+    def test_failed_turn_transient_code_retries_without_rate_limit(self, codex_sdk, tmp_path, code):
         _, _, generated = codex_sdk
         backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
-        internal = generated.CodexErrorInfo(
-            root=generated.CodexErrorInfoValue.internal_server_error
+        info = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue[code])
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=info, message="internal failure")
         )
-        turn.stream.side_effect = [
-            as_stream(make_result(codex_sdk, error_info=internal, message="internal failure")),
-            as_stream(make_result(codex_sdk)),
-        ]
 
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderTransientError, match="internal failure") as exc_info,
+        ):
+            backend.invoke("texto")
 
-        assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
+        assert is_rate_limit_error(exc_info.value) is False
 
     def test_failed_turn_http_429_is_overload_and_retries(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
@@ -1706,16 +1730,18 @@ class TestClassificacaoDoTurnoQueFalhou:
                 )
             )
         )
-        turn.stream.side_effect = [
-            as_stream(make_result(codex_sdk, error_info=caiu, message="stream caiu")),
-            as_stream(make_result(codex_sdk)),
-        ]
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=caiu, message="stream caiu")
+        )
 
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderTransientError, match="stream caiu") as exc_info,
+        ):
+            backend.invoke("texto")
 
-        assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
+        assert is_rate_limit_error(exc_info.value) is False
 
     def test_codigo_de_erro_fora_dos_transitorios_e_definitivo(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
@@ -1782,6 +1808,91 @@ class TestClassificacaoDoTurnoQueFalhou:
             backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
+
+    # O app-server recusa com o código JSON-RPC -32001, sem `data`, o pedido que
+    # chega com a fila de entrada cheia. A classificação lê o código, e não a
+    # mensagem: o -32000 com o mesmo texto continua definitivo.
+    def test_fila_cheia_do_app_server_e_sobrecarga(self, codex_sdk):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            map_jsonrpc_error,
+        )
+
+        erro = map_jsonrpc_error(-32001, "Server overloaded; retry later.", None)
+
+        with pytest.raises(ProviderOverloadedError, match="Server overloaded") as exc_info:
+            _raise_classified_sdk_error(erro)
+
+        assert is_rate_limit_error(exc_info.value) is True
+
+    @pytest.mark.parametrize("codigo", [-32000, -32002])
+    def test_outro_codigo_json_rpc_com_texto_de_sobrecarga_e_definitivo(self, codex_sdk, codigo):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            map_jsonrpc_error,
+        )
+
+        erro = map_jsonrpc_error(codigo, "Server overloaded; retry later.", None)
+
+        with pytest.raises(ProviderError) as exc_info:
+            _raise_classified_sdk_error(erro)
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+        assert is_rate_limit_error(exc_info.value) is False
+
+    def test_codigo_fora_de_erro_json_rpc_nao_e_lido(self, codex_sdk):
+        class ErroComCodigo(RuntimeError):
+            code = -32001
+
+        with pytest.raises(ProviderError) as exc_info:
+            _raise_classified_sdk_error(ErroComCodigo("falhou"))
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+
+    def test_fila_cheia_reduz_workers_e_repete_a_linha(self, codex_sdk, tmp_path, monkeypatch):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            map_jsonrpc_error,
+        )
+
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        pedidos = []
+        trava = threading.Lock()
+
+        def fila_cheia(**_):
+            with trava:
+                pedidos.append(1)
+            raise map_jsonrpc_error(-32001, "Server overloaded; retry later.", None)
+
+        client.thread_start.side_effect = fila_cheia
+
+        @contextlib.contextmanager
+        def backend_falso(*_args):
+            yield backend
+
+        monkeypatch.setattr("dataframeit.codex.open_codex_backend", backend_falso)
+        # O evento de rate limit é limpo na hora, sem o timer de 5 s.
+        monkeypatch.setattr(
+            "dataframeit.core.threading.Timer",
+            lambda _intervalo, funcao: SimpleNamespace(start=funcao),
+        )
+        entrada = pd.DataFrame({"texto": ["a", "b", "c", "d"]})
+
+        with pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2") as avisos:
+            saida = dataframeit(
+                entrada, SampleModel, "Analise: {texto}", provider="codex", parallel_requests=4
+            )
+
+        mensagens = [str(aviso.message) for aviso in avisos]
+        assert [m for m in mensagens if m.startswith("Rate limit detectado")] == [
+            "Rate limit detectado! Reduzindo workers de 4 para 2.",
+            "Rate limit detectado! Reduzindo workers de 2 para 1.",
+        ]
+        # make_config dá duas tentativas a cada linha.
+        assert (
+            sum(m.startswith("Tentativa 1/2 falhou (ProviderOverloadedError)") for m in mensagens)
+            == 4
+        )
+        assert len(pedidos) == 8
+        assert saida["_dataframeit_status"].tolist() == ["error"] * 4
+        assert all("ProviderOverloadedError" in detalhe for detalhe in saida["_error_details"])
 
     def test_stream_sem_conclusao_e_transitorio(self, codex_sdk, tmp_path):
         backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)

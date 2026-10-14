@@ -25,7 +25,7 @@ result = dataframeit(
 
 ### Auto-reduction on Rate Limits
 
-When a 429 error is detected, DataFrameIt automatically reduces workers:
+When a row fails after all attempts with a rate limit error, DataFrameIt halves the workers:
 
 ```
 Start: 10 workers
@@ -33,6 +33,8 @@ Rate limit detected → 5 workers
 Rate limit detected → 2 workers
 Rate limit detected → 1 worker
 ```
+
+With `codex`, the rate limit and the app-server overload are recognized by the error code or status, without reading the message. With the LangChain providers, the rate limit is recognized by the 429 status or the error class and, when the error carries neither, by the message text; overload (529, 503) does not reduce the workers.
 
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.

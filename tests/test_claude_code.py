@@ -19,7 +19,9 @@ from dataframeit.core import _format_token_stats
 from dataframeit.errors import (
     ProviderError,
     ProviderOverloadedError,
+    ProviderRejectedOutputError,
     ProviderTransientError,
+    get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
     validate_provider_dependencies,
@@ -563,3 +565,50 @@ def test_resposta_so_com_espacos_e_erro(sdk_falso):
 
     with pytest.raises(ValueError, match="Claude Code SDK retornou resposta vazia"):
         _chamar()
+
+
+# Números como '401' ou '403' aparecem em texto jurídico ("art. 401 da CLT",
+# "Súmula 403"); a resposta recusada não pode virar erro de credencial.
+@pytest.mark.parametrize(
+    "resposta",
+    [
+        '{"sentimento": "positivo", "confianca": "art. 401 da CLT"}',
+        '{"sentimento": "Súmula 403 do STJ", "confianca": 0.9',
+    ],
+)
+def test_resposta_recusada_com_numero_no_texto_e_tentada_de_novo(sdk_falso, resposta):
+    sdk_falso["mensagens_do_sdk"] = [
+        _AssistantMessageFalso([_TextBlockFalso(resposta)]),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    with (
+        pytest.warns(UserWarning, match=r"Tentativa 1/2 falhou \(ProviderRejectedOutputError\)"),
+        pytest.raises(ProviderRejectedOutputError) as erro,
+    ):
+        _chamar(replace(_config_claude_code(), max_retries=2))
+
+    assert len(sdk_falso["opcoes"]) == 2
+    mensagem = str(erro.value)
+    assert "401" not in mensagem
+    assert "403" not in mensagem
+    amigavel = get_friendly_error_message(erro.value, "claude_code")
+    assert "AUTENTICAÇÃO" not in amigavel
+    assert "PERMISSÃO" not in amigavel
+
+
+def test_resposta_recusada_leva_caminho_e_regra_sem_o_valor(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = [
+        _AssistantMessageFalso(
+            [_TextBlockFalso('{"sentimento": "positivo", "confianca": "valor secreto"}')]
+        ),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    with pytest.raises(ProviderRejectedOutputError) as erro:
+        _chamar()
+
+    assert str(erro.value) == (
+        "Falha na validação da resposta: 1 erro(s): confianca: "
+        "Input should be a valid number, unable to parse string as a number"
+    )
