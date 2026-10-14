@@ -8,13 +8,14 @@ import warnings
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, NewType, Optional, Union
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, Strict, create_model
+from typing_extensions import TypeAliasType
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
@@ -74,6 +75,25 @@ class ModeloCor(BaseModel):
 class ModeloMisto(BaseModel):
     x: str
     campo: Union[int, str]
+
+
+# NewType e apelido `type`, que a saída e a retomada polars resolvem antes de
+# olhar a anotação. O TypeAliasType do typing_extensions roda em toda versão
+# de Python que o pacote aceita; o `type X = ...` só existe a partir da 3.12.
+_DataJudicial = NewType("_DataJudicial", date)
+_Id = NewType("_Id", int)
+_DataOuNumero = TypeAliasType("_DataOuNumero", Union[date, int])
+_MeuInt = TypeAliasType("_MeuInt", int)
+_ApelidoDeData = TypeAliasType("_ApelidoDeData", date)
+
+
+class _ValorOuFlag(BaseModel):
+    valor: Union[float, bool]
+
+
+class _DataEQuantidade(BaseModel):
+    dia: date
+    quantidade: int
 
 
 def _responde(**campos):
@@ -1014,13 +1034,19 @@ def test_retomada_de_lista_de_datas_guardada_como_array():
 # Entrada polars: retomada do campo do modelo com valor inteiro
 # =============================================================================
 
-# Anotações que, sem o Optional e o Annotated, são int.
+# Anotações que admitem int: sem o Optional, o Annotated, o NewType e o apelido,
+# são int ou uma união com int entre os membros.
 _ANOTACOES_DE_INTEIRO = {
     "int": int,
     "optional": Optional[int],
     "uniao_com_none": int | None,
     "annotated": Annotated[int, Field(ge=0)],
     "optional_de_annotated": Optional[Annotated[int, Field(ge=0)]],
+    "uniao_de_int_e_float": Union[int, float],
+    "uniao_opcional_de_int_e_str": Optional[Union[int, str]],
+    "newtype_de_int": _Id,
+    "optional_de_newtype_de_int": Optional[_Id],
+    "apelido_de_int": _MeuInt,
 }
 
 
@@ -1282,6 +1308,39 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
             datetime.fromisoformat("2026-01-02T15:30"),
         ],
     ),
+    # O NewType e o apelido `type` são resolvidos antes da regra de data ou hora.
+    "uniao_de_newtype_de_date_e_int": (Union[_DataJudicial, int], [date(2026, 1, 2), 5]),
+    "apelido_de_uniao_de_date_e_int": (_DataOuNumero, [date(2026, 1, 2), 5]),
+    # Duração com número: o 5 viraria cinco microssegundos.
+    "uniao_de_timedelta_e_int": (Union[timedelta, int], [timedelta(days=1), 5]),
+    "uniao_de_timedelta_e_decimal": (Union[timedelta, Decimal], [timedelta(days=1), Decimal(2)]),
+    "lista_de_uniao_de_timedelta_e_int": (
+        list[Union[timedelta, int]],
+        [[timedelta(days=1), 5], [timedelta(hours=1)]],
+    ),
+    # O True depois de um float viraria 1.0, e o texto depois de um bytes, bytes.
+    "uniao_de_float_e_bool": (Union[float, bool], [1.5, True]),
+    "uniao_de_bytes_e_str": (Union[bytes, str], [b"x", "a"]),
+    # Sem a anotação para avisar, são os valores que juntam float e bool.
+    "any_com_float_e_bool": (Any, [1.5, True]),
+    "submodelo_com_float_e_bool": (_ValorOuFlag, [{"valor": 1.5}, {"valor": True}]),
+    # O datetime sem fuso ganharia o fuso do primeiro, e as 10h locais virariam 10h UTC.
+    "datetime_com_e_sem_fuso": (
+        Optional[datetime],
+        [datetime(2026, 1, 2, 10, tzinfo=UTC), datetime.fromisoformat("2026-01-02T10:00")],
+    ),
+    "lista_de_datetime_com_e_sem_fuso": (
+        list[datetime],
+        [[datetime(2026, 1, 2, 10, tzinfo=UTC)], [datetime.fromisoformat("2026-01-02T10:00")]],
+    ),
+    # O tipo Time do polars não tem fuso, e o perderia.
+    "time_com_fuso": (time, [time(10, tzinfo=UTC), time(11, tzinfo=UTC)]),
+    # O pandas conta o Decimal NaN como ausente, e o pyarrow o gravaria nulo. A
+    # lista compara o NaN pela identidade, e a coluna guarda o mesmo objeto.
+    "decimal_nan": (
+        Annotated[Decimal, Field(allow_inf_nan=True)],
+        [Decimal("1.5"), Decimal("NaN")],
+    ),
 }
 
 
@@ -1341,6 +1400,27 @@ _CAMPOS_TIPADOS_PELOS_VALORES = {
         [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
         lambda pl: pl.Datetime("us", "UTC"),
         [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+    ),
+    # O nulo não conta como datetime sem fuso.
+    "datetime_com_fuso_e_nulo": (
+        Optional[datetime],
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), None],
+        lambda pl: pl.Datetime("us", "UTC"),
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), None],
+    ),
+    "timedelta": (
+        timedelta,
+        [timedelta(days=1), timedelta(seconds=5)],
+        lambda pl: pl.Duration("us"),
+        [timedelta(days=1), timedelta(seconds=5)],
+    ),
+    # Cada campo do submodelo vira um campo do Struct, com tipo próprio, e a
+    # data de um não se junta ao número do outro.
+    "submodelo_com_date_e_int": (
+        _DataEQuantidade,
+        [{"dia": date(2026, 1, 2), "quantidade": 5}, {"dia": date(2026, 1, 3), "quantidade": 6}],
+        lambda pl: pl.Struct({"dia": pl.Date, "quantidade": pl.Int64}),
+        [{"dia": date(2026, 1, 2), "quantidade": 5}, {"dia": date(2026, 1, 3), "quantidade": 6}],
     ),
 }
 
@@ -1494,6 +1574,81 @@ def test_interrupcao_na_conversao_da_saida_polars_sobe_em_vez_de_virar_object():
         pytest.raises(KeyboardInterrupt),
     ):
         _rodar(pl.DataFrame({"texto": ["a", "b"]}))
+
+
+def test_campo_any_so_com_dicts_vazios_sai_na_saida_polars():
+    pl = pytest.importorskip("polars")
+
+    resultado, llm = _rodar(
+        pl.DataFrame({"texto": ["a", "b", "c"]}),
+        questions=create_model("ModeloDoCaso", campo=(Any, ...)),
+        llm=_responde_por_linha("campo", [{}, {}, {}]),
+    )
+
+    assert llm.call_count == 3
+    assert resultado["campo"].to_list() == [{}, {}, {}]
+
+
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_retomada_de_saida_com_decimal_nan(entrada):
+    pl = pytest.importorskip("polars")
+    modelo = create_model(
+        "ModeloDoCaso", campo=(Annotated[Decimal, Field(allow_inf_nan=True)], ...)
+    )
+    textos = {"texto": ["a", "b", "c"]}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        interrompida, _ = _rodar(
+            pl.DataFrame(textos) if entrada == "polars" else pd.DataFrame(textos),
+            questions=modelo,
+            llm=_responde_em_sequencia(
+                {"campo": Decimal("1.5")}, {"campo": Decimal("NaN")}, ProviderAbortError("limite")
+            ),
+        )
+        retomada, llm = _rodar(
+            interrompida,
+            questions=modelo,
+            llm=_responde_em_sequencia({"campo": Decimal(2)}),
+            resume=True,
+        )
+
+    assert llm.call_count == 1
+    primeiro, nan, terceiro = list(retomada["campo"])
+    assert primeiro == Decimal("1.5")
+    assert isinstance(nan, Decimal)
+    assert nan.is_nan()
+    assert terceiro == Decimal(2)
+
+
+def test_segunda_interrupcao_mantem_a_coluna_datetime_com_fuso():
+    # A linha que segue pendente depois da retomada traz o NaT da conversão da
+    # entrada polars, que é datetime sem fuso e não pode contar como valor.
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(Optional[datetime], None))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        interrompida, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=modelo,
+            llm=_responde_em_sequencia(
+                {"campo": datetime(2026, 1, 2, tzinfo=UTC)}, ProviderAbortError("limite")
+            ),
+        )
+        retomada, _ = _rodar(
+            interrompida,
+            questions=modelo,
+            llm=_responde_em_sequencia(
+                {"campo": datetime(2026, 1, 3, tzinfo=UTC)}, ProviderAbortError("limite")
+            ),
+            resume=True,
+        )
+
+    assert retomada["campo"].dtype == pl.Datetime("us", "UTC")
+    assert retomada["campo"].to_list() == [
+        datetime(2026, 1, 2, tzinfo=UTC),
+        datetime(2026, 1, 3, tzinfo=UTC),
+        None,
+    ]
 
 
 def test_saida_polars_com_coluna_object_e_retomada():
@@ -1662,6 +1817,8 @@ _TIPOS_PELA_ANOTACAO = {
     "lista_de_str": (list[str], ["a"], lambda pl: pl.List(pl.Utf8)),
     "lista_de_date": (list[date], [date(2024, 1, 2)], lambda pl: pl.List(pl.Date)),
     "int_com_restricao": (Annotated[int, Field(ge=0)], 1, lambda pl: pl.Int64),
+    "newtype_de_int": (_Id, 1, lambda pl: pl.Int64),
+    "apelido_de_date": (_ApelidoDeData, date(2024, 1, 2), lambda pl: pl.Date),
 }
 
 
