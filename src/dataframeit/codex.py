@@ -30,6 +30,7 @@ from .errors import (
     ProviderTransientError,
     ProviderUsageLimitError,
     retry_with_backoff,
+    validation_error_summary,
 )
 from .llm import LLMConfig, build_prompt
 
@@ -43,6 +44,11 @@ if TYPE_CHECKING:
 # Status HTTP de rate limit e início da faixa de erro do servidor.
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR_MIN = 500
+# Código JSON-RPC com que o app-server do Codex recusa um pedido quando a fila de
+# entrada está cheia, com a mensagem "Server overloaded; retry later." e sem
+# `data`. O `is_retryable_error` do SDK procura a sobrecarga só no `data` e não o
+# reconhece.
+_RPC_SERVER_OVERLOADED = -32001
 
 _ALLOWED_MODEL_KWARGS = frozenset({"effort", "timeout"})
 _AUTH_LOCK_SUFFIX = ".dataframeit.lock"
@@ -735,7 +741,7 @@ class CodexBackend:
         try:
             validated = self._pydantic_model.model_validate_json(final_response)
         except ValidationError as err:
-            msg = f"Resposta do Codex não corresponde ao schema: {err}"
+            msg = f"Resposta do Codex não corresponde ao schema: {validation_error_summary(err)}"
             raise ProviderOutputError(msg) from err
 
         return {"data": validated.model_dump(), "usage": dict(usage_total) or None}
@@ -1003,14 +1009,19 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
 
 def _raise_classified_sdk_error(error: Exception) -> NoReturn:
     from openai_codex import is_retryable_error  # noqa: PLC0415 (extra codex opcional)
-    from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
+    from openai_codex.errors import (  # noqa: PLC0415 (extra codex opcional)
+        JsonRpcError,
+        TransportClosedError,
+    )
 
     message = f"{type(error).__name__}: {error}"
     # Com o app-server encerrado, toda linha seguinte falharia do mesmo jeito.
     if isinstance(error, (TransportClosedError, BrokenPipeError)):
         msg = f"O app-server do Codex encerrou: {message}"
         raise ProviderAbortError(msg) from error
-    if is_retryable_error(error):
+    if is_retryable_error(error) or (
+        isinstance(error, JsonRpcError) and error.code == _RPC_SERVER_OVERLOADED
+    ):
         raise ProviderOverloadedError(message) from error
     raise ProviderError(message) from error
 
