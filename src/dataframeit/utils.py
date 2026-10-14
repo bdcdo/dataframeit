@@ -222,11 +222,13 @@ def _python_ints(data: PolarsDataFrame, model_columns: Mapping[str, object]) -> 
     O `to_pandas()` do polars leva a coluna inteira com nulo a float64, que
     arredonda o inteiro acima de 2**53. Na coluna de campo `int`, a execução
     sem interrupção grava inteiros Python e None, e a coluna relida vem assim,
-    em dtype object. A troca se limita à anotação `int` porque, com outra
-    anotação, o inteiro relido não diz o mesmo que o valor validado e fica na
-    coluna: o 1 de um campo bool e o inteiro grande de um campo float saem
-    numa coluna Object ao lado das respostas novas, e o bool com strict=True
-    é acusado como incompatível.
+    em dtype object. A coluna sem nulo também é trocada, porque o int64 do
+    numpy não passa num modelo com strict=True, que acusaria a linha
+    processada como incompatível. A troca se limita à anotação `int` porque,
+    com outra anotação, o inteiro relido não diz o mesmo que o valor validado
+    e fica na coluna: o 1 de um campo bool e o inteiro grande de um campo
+    float saem numa coluna Object ao lado das respostas novas, e o bool com
+    strict=True é acusado como incompatível.
     """
     df = data.to_pandas()
     for col, annotation in model_columns.items():

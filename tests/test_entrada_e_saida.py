@@ -1100,6 +1100,81 @@ def test_retomada_polars_de_campo_int_gravado_em_uint64(valor):
     assert retomada["nota"].dtype == sem_interrupcao["nota"].dtype
 
 
+class ModeloNotaEstrita(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    nota: int
+    rotulo: str
+
+
+def test_retomada_polars_de_campo_int_estrito_em_coluna_sem_nulo():
+    # A coluna Int64 sem nulo também chega em inteiros Python. Pelo to_pandas()
+    # do polars ela viria em int64 do numpy, que o modelo strict recusa, e a
+    # linha processada seria acusada como incompatível.
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "nota": [_ID_GRANDE, 3],
+            "rotulo": ["x", "y"],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+
+    resultado, llm = _rodar(
+        entrada,
+        questions=ModeloNotaEstrita,
+        llm=_responde_por_linha("rotulo", ["z", "w"]),
+        resume=True,
+        reprocess_columns=["rotulo"],
+    )
+
+    assert llm.call_count == 2
+    assert resultado["nota"].dtype == pl.Int64
+    assert resultado["nota"].to_list() == [_ID_GRANDE, 3]
+    assert resultado["rotulo"].to_list() == ["z", "w"]
+
+
+class ContagemOpcional(BaseModel):
+    n: Optional[int] = None
+
+
+class ModeloInteirosAninhados(BaseModel):
+    nota: Optional[int]
+    lista: list[Optional[int]]
+    contagem: ContagemOpcional
+
+
+def test_retomada_polars_de_inteiro_grande_em_campo_lista_e_submodelo():
+    # A coluna do campo int passa por _python_ints, e as colunas List e Struct
+    # pelo laço de to_pandas; cada uma arredondaria o inteiro grande sem a sua.
+    pl = pytest.importorskip("polars")
+    respostas = [
+        {"nota": _ID_GRANDE, "lista": [_ID_GRANDE, None], "contagem": {"n": _ID_GRANDE}},
+        {"nota": None, "lista": [None, _ID_GRANDE + 2], "contagem": {"n": None}},
+        {"nota": 7, "lista": [], "contagem": {"n": _ID_GRANDE + 4}},
+    ]
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    interrompida = _rodar_sem_avisos(
+        entrada,
+        ModeloInteirosAninhados,
+        _responde_em_sequencia(respostas[0], ProviderAbortError("limite")),
+    )
+    assert interrompida["nota"].to_list() == [_ID_GRANDE, None, None]
+
+    retomada = _rodar_sem_avisos(
+        interrompida, ModeloInteirosAninhados, _responde_em_sequencia(*respostas[1:]), resume=True
+    )
+    sem_interrupcao = _rodar_sem_avisos(
+        entrada, ModeloInteirosAninhados, _responde_em_sequencia(*respostas)
+    )
+
+    for campo in ("nota", "lista", "contagem"):
+        assert retomada[campo].to_list() == [resposta[campo] for resposta in respostas]
+    assert retomada.equals(sem_interrupcao)
+    assert retomada.schema == sem_interrupcao.schema
+
+
 def test_reprocessar_campo_int_de_saida_polars_com_resposta_float_e_texto():
     # A resposta do dublê não passa pela validação do modelo, e a coluna do
     # campo int recebe o float e o texto como vieram.
