@@ -5,7 +5,7 @@ import linecache
 import logging
 import typing
 import warnings
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
@@ -935,6 +935,24 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     # O pyarrow põe o Decimal acima de 38 dígitos numa coluna de 256 bits, que o
     # polars não lê: a conversão entra em pânico, e o pânico não é Exception.
     "decimal_acima_de_38_digitos": (Decimal, [Decimal("1E+40"), Decimal(2)]),
+    # Data ou hora com outro tipo na anotação: o Arrow tiparia a coluna pelo
+    # primeiro valor e converteria os outros, e a anotação a manda para Object.
+    "uniao_de_datetime_e_date": (
+        Union[datetime, date],
+        [date(2026, 1, 2), datetime.fromisoformat("2026-01-02T15:30")],
+    ),
+    "uniao_de_time_e_int_fora_de_um_dia": (Union[time, int], [time(1, 2), 86400000000]),
+    "uniao_de_date_e_int": (Union[date, int], [date(2026, 1, 2), 5]),
+    "tupla_de_date_e_int": (tuple[date, int], [(date(2026, 1, 2), 5), (date(2026, 1, 3), 6)]),
+    "lista_de_uniao_de_date_e_datetime": (
+        list[Union[date, datetime]],
+        [[date(2026, 1, 2), datetime.fromisoformat("2026-01-02T10:00")], [date(2026, 1, 3)]],
+    ),
+    "tupla_de_date_e_int_opcional": (Optional[tuple[date, int]], [(date(2026, 1, 2), 5), None]),
+    "uniao_de_date_anotado_e_int": (
+        Optional[Union[Annotated[date, Field(description="dia")], int]],
+        [date(2026, 1, 2), 5],
+    ),
 }
 
 
@@ -963,6 +981,55 @@ def test_campo_que_o_arrow_nao_tipa_sai_como_object_com_os_valores_do_pandas(cas
 
     assert resultado["campo"].dtype == pl.Object
     assert resultado["campo"].to_list() == pandas["campo"].tolist() == valores
+
+
+# Anotações que não juntam data ou hora a outro tipo, as respostas, o tipo
+# polars inferido e os valores que saem dele.
+_CAMPOS_TIPADOS_PELOS_VALORES = {
+    "uniao_de_int_e_float": (Union[int, float], [1, 2.5], lambda pl: pl.Float64, [1.0, 2.5]),
+    "uniao_de_int_e_str_so_com_int": (Union[int, str], [1, 2], lambda pl: pl.Int64, [1, 2]),
+    "date_opcional": (
+        Optional[date],
+        [date(2026, 1, 2), None],
+        lambda pl: pl.Date,
+        [date(2026, 1, 2), None],
+    ),
+    "lista_de_date": (
+        list[date],
+        [[date(2026, 1, 2)], [date(2026, 1, 3)]],
+        lambda pl: pl.List(pl.Date),
+        [[date(2026, 1, 2)], [date(2026, 1, 3)]],
+    ),
+    "tupla_so_de_date": (
+        tuple[date, ...],
+        [(date(2026, 1, 2), date(2026, 1, 3)), (date(2026, 1, 4),)],
+        lambda pl: pl.List(pl.Date),
+        [[date(2026, 1, 2), date(2026, 1, 3)], [date(2026, 1, 4)]],
+    ),
+    "datetime_com_fuso": (
+        datetime,
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+        lambda pl: pl.Datetime("us", "UTC"),
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+    ),
+}
+
+
+@pytest.mark.parametrize("caso", _CAMPOS_TIPADOS_PELOS_VALORES)
+def test_campo_sem_data_ou_hora_com_outro_tipo_fica_com_o_tipo_inferido(caso):
+    pl = pytest.importorskip("polars")
+    tipo, respostas, esperado, valores = _CAMPOS_TIPADOS_PELOS_VALORES[caso]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(tipo, ...)),
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == esperado(pl)
+    assert resultado["campo"].to_list() == valores
 
 
 def test_aviso_de_object_nomeia_so_a_coluna_que_o_arrow_nao_tipa():
