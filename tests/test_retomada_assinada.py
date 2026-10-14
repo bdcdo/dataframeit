@@ -22,7 +22,6 @@ from pydantic import (
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
-    _ints_beyond_int64_as_uint64,
     _run_signature,
     _same_json,
     _save_checkpoint,
@@ -1141,17 +1140,11 @@ def _celulas_gravadas(ckpt, coluna):
         return [linha[coluna] for linha in csv.DictReader(arquivo)]
 
 
-# A coluna só passa a uint64 com um int acima do Int64; até 2**63 - 1, fica int64.
-@pytest.mark.parametrize(
-    ("valor", "tipo"),
-    [(_INTEIRO_GRANDE, "int64"), (2**63 - 1, "int64"), (_ACIMA_DO_INT64, "uint64")],
-)
+@pytest.mark.parametrize("valor", [_INTEIRO_GRANDE, 2**63 - 1])
 @pytest.mark.parametrize("formato", ["csv", "parquet"])
 # NaN chega, por exemplo, da entrada que já trazia a coluna do campo em float64.
 @pytest.mark.parametrize("ausente", [None, np.nan], ids=["None", "NaN"])
-def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(
-    tmp_path, formato, valor, tipo, ausente
-):
+def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato, valor, ausente):
     """A coluna com int e célula ausente não passa por float64 antes do arquivo (#223)."""
     pq = pytest.importorskip("pyarrow.parquet")
     ckpt = tmp_path / f"ckpt.{formato}"
@@ -1166,24 +1159,20 @@ def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(
     esperado = [str(valor), ""] if formato == "csv" else [valor, None]
     assert _celulas_gravadas(ckpt, "nota") == esperado
     if formato == "parquet":
-        assert str(pq.read_schema(ckpt).field("nota").type) == tipo
+        assert str(pq.read_schema(ckpt).field("nota").type) == "int64"
 
 
-@pytest.mark.parametrize("vizinho", [True, -1])
-def test_checkpoint_parquet_nao_grava_int_acima_do_int64_ao_lado_de_bool_ou_negativo(
-    tmp_path, vizinho
-):
-    """Nenhum inteiro do parquet guarda os dois; o bool não vira 1 na coluna UInt64.
+def test_checkpoint_parquet_grava_int_acima_do_int64_sem_celula_vazia(tmp_path):
+    """Sem célula vazia, a coluna fica no uint64 que o pandas infere, como antes (#223)."""
+    pq = pytest.importorskip("pyarrow.parquet")
+    ckpt = tmp_path / "ckpt.parquet"
 
-    A coluna fica object, e o pyarrow a recusa. Passada a UInt64, o pandas 2.1
-    trocaria o -1 por 2**64 - 1 e gravaria o checkpoint com o valor errado.
-    """
-    pytest.importorskip("pyarrow")
-    dados = pd.DataFrame({"nota": [_ACIMA_DO_INT64, vizinho]}, dtype=object)
+    _save_checkpoint(
+        pd.DataFrame({"nota": [_ACIMA_DO_INT64, 7]}, dtype=object), ckpt, structures=frozenset()
+    )
 
-    assert _ints_beyond_int64_as_uint64(dados.copy())["nota"].dtype == object
-    with pytest.raises(OverflowError):
-        _save_checkpoint(dados, tmp_path / "ckpt.parquet", structures=frozenset())
+    assert _celulas_gravadas(ckpt, "nota") == [_ACIMA_DO_INT64, 7]
+    assert str(pq.read_schema(ckpt).field("nota").type) == "uint64"
 
 
 class NotaInteira(BaseModel):
@@ -1220,9 +1209,12 @@ def _retoma(df, ckpt, modelo):
     )
 
 
-@pytest.mark.parametrize("valor", [_INTEIRO_GRANDE, _ACIMA_DO_INT64])
+# O int acima do Int64 ao lado da célula vazia não vai ao parquet.
+@pytest.mark.parametrize(
+    ("formato", "valor"),
+    [("csv", _INTEIRO_GRANDE), ("csv", _ACIMA_DO_INT64), ("parquet", _INTEIRO_GRANDE)],
+)
 @pytest.mark.parametrize("entrada", ["pandas", "polars"])
-@pytest.mark.parametrize("formato", ["csv", "parquet"])
 @pytest.mark.parametrize("modelo", [NotaInteira, NotaOpcional, NotaEstrita])
 def test_inteiro_grande_com_linha_pendente_volta_exato_da_retomada(
     tmp_path, modelo, formato, entrada, valor
@@ -1246,6 +1238,28 @@ def test_inteiro_grande_com_linha_pendente_volta_exato_da_retomada(
 
     assert list(final["nota"]) == [valor, 7, 7]
     assert type(final["nota"][0]) is int
+
+
+def test_int_acima_do_int64_com_linha_pendente_nao_vai_ao_checkpoint_parquet(tmp_path):
+    """O pyarrow recusa a coluna object com esse int e célula vazia: a gravação falha com aviso.
+
+    A execução segue e devolve o int exato; sem checkpoint gravado, a retomada recomeça.
+    """
+    pytest.importorskip("pyarrow")
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    ckpt = tmp_path / "ckpt.parquet"
+
+    with pytest.warns(UserWarning, match="Falha ao gravar o checkpoint.*OverflowError"):
+        parcial = _roda(
+            df,
+            _uma_linha_por_execucao(lambda text: {"nota": _ACIMA_DO_INT64}),
+            modelo=NotaInteira,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    assert parcial["nota"][0] == _ACIMA_DO_INT64
+    assert not ckpt.exists()
 
 
 def test_inteiro_grande_do_checkpoint_xlsx_volta_arredondado_e_strict_o_recusa(tmp_path):

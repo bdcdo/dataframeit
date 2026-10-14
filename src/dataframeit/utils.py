@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import pandas as pd
-from pandas.api.types import is_float_dtype, is_integer_dtype, is_string_dtype
+from pandas.api.types import is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -700,11 +700,10 @@ def read_df(
         path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
-               Com ele, a coluna de campo int ou Optional[int] lida de CSV ou
-               parquet volta como object, com o int exato e None na célula
-               vazia; dtype, converters, na_values, keep_default_na,
-               na_filter, usecols, dtype_backend, index_col, parse_dates e
-               engine desligam essa releitura.
+               Com ele e sem kwargs, a coluna de campo int ou Optional[int]
+               que o CSV ou o parquet não devolve em tipo inteiro volta como
+               object, com o int exato e None na célula vazia. A coluna só
+               com células vazias continua float.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
@@ -789,30 +788,11 @@ def _accepts_only_int(field_type: object) -> bool:
         return _accepts_only_int(get_args(field_type)[0])
     if origin is typing.Union or isinstance(field_type, types.UnionType):
         args = [arg for arg in get_args(field_type) if arg is not type(None)]
-        return bool(args) and all(_accepts_only_int(arg) for arg in args)
+        return all(_accepts_only_int(arg) for arg in args)
     return False
 
 
 _INT_TEXT = re.compile(r"-?\d+")
-# Além dos argumentos com que o usuário controla tipos ou NA, os que mudam o
-# que a releitura acha no arquivo: index_col tira a coluna do índice do usecols
-# dela, parse_dates pede coluna que ela não lê, e o engine pyarrow ignora o
-# na_filter e devolve float na célula vazia.
-_INT_REREAD_OFF = (*_READ_CONTROLS, "dtype_backend", "index_col", "parse_dates", "engine")
-
-
-def _read_as_rereadable(column: pd.Series) -> bool:
-    """True se o leitor devolveu a coluna num tipo que não guarda o int exato.
-
-    Float64 é a coluna com int e célula vazia; texto, a do CSV com int acima
-    do Int64 e célula vazia; UInt64, a do parquet que o checkpoint grava com
-    esse int, que a releitura devolve como int e None, como as demais.
-    """
-    return (
-        is_float_dtype(column)
-        or is_string_dtype(column.dtype)
-        or isinstance(column.dtype, pd.UInt64Dtype)
-    )
 
 
 def _int_or_read(text: str, read: object) -> object:
@@ -840,34 +820,29 @@ def _reread_int_columns(
     célula que o leitor devolveu ausente, seja vazia ou "NA"; a célula que
     guarda outra coisa, como 7.5, fica como lida. O XLSX guarda número como
     double e fica de fora, porque o int que ele devolve já pode vir
-    arredondado. Também ficam de fora os argumentos de _INT_REREAD_OFF e o
-    leitor que não devolve DataFrame, como o CSV com chunksize e o XLSX com
-    sheet_name=None.
+    arredondado. Qualquer argumento de leitura também desliga a releitura,
+    porque ele muda o que o leitor devolve (on_bad_lines pula linhas, dtype
+    fixa tipos, chunksize nem devolve DataFrame), e a releitura sem ele não
+    casaria com o que foi lido.
     """
-    if (
-        ext not in (".csv", ".parquet")
-        or not isinstance(df, pd.DataFrame)
-        or any(k in kwargs for k in _INT_REREAD_OFF)
-    ):
+    if ext not in (".csv", ".parquet") or kwargs:
         return
     columns = [
         f
         for f, info in model.model_fields.items()
-        if f in df.columns and _accepts_only_int(info.annotation) and _read_as_rereadable(df[f])
+        if f in df.columns and _accepts_only_int(info.annotation) and not is_integer_dtype(df[f])
     ]
     if not columns:
         return
     if ext == ".parquet":
-        # As colunas pedidas pelo usuário dão lugar às desta releitura.
-        options = {k: v for k, v in kwargs.items() if k != "columns"}
-        raw = pd.read_parquet(path, columns=columns, dtype_backend="numpy_nullable", **options)
+        raw = pd.read_parquet(path, columns=columns, dtype_backend="numpy_nullable")
         exact = {
             col: [None if pd.isna(v) else int(v) for v in raw[col]]
             for col in columns
             if is_integer_dtype(raw[col])
         }
     else:
-        raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False, **kwargs)
+        raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False)
         exact = {
             col: [_int_or_read(text, read) for text, read in zip(raw[col], df[col], strict=True)]
             for col in columns

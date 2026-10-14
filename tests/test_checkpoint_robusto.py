@@ -453,7 +453,8 @@ def test_read_df_nao_rele_campo_int_do_xlsx(tmp_path):
     assert lido["nota"][0] == 9007199254740992.0
 
 
-def test_read_df_com_columns_do_usuario_rele_campo_int_do_parquet(tmp_path):
+def test_read_df_sem_releitura_de_int_do_parquet_com_columns(tmp_path):
+    """Qualquer argumento de leitura desliga a releitura, também no parquet."""
     pytest.importorskip("pyarrow")
     arquivo = tmp_path / "dados.parquet"
     dados = pd.DataFrame({"texto": ["a", "b"], "nota": [7, None]}, dtype=object)
@@ -461,8 +462,44 @@ def test_read_df_com_columns_do_usuario_rele_campo_int_do_parquet(tmp_path):
 
     lido = read_df(str(arquivo), Inteiros, columns=["nota"])
 
-    assert list(lido.columns) == ["nota"]
-    assert type(lido["nota"][0]) is int
+    pd.testing.assert_frame_equal(lido, pd.read_parquet(arquivo, columns=["nota"]))
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_read_df_rele_ausente_e_zero_ao_lado_do_inteiro_grande(tmp_path, formato):
+    """Cada célula volta na sua linha: o 0 continua 0, e o ausente antes do int continua antes."""
+    pytest.importorskip("pyarrow")
+    arquivo = tmp_path / f"dados.{formato}"
+    dados = pd.DataFrame(
+        {"texto": ["a", "b", "c"], "nota": [None, 0, 9007199254740993]}, dtype=object
+    )
+    _save_checkpoint(dados, arquivo, structures=frozenset())
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [None, 0, 9007199254740993]
+    assert [type(v) for v in lido["nota"]] == [type(None), int, int]
+
+
+def test_read_df_rele_float_e_int_do_csv_sem_celula_vazia(tmp_path):
+    """Sem célula vazia, a coluna com 7.5 e 8 também é relida: o 8 volta int, o 7.5 fica float."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("texto,nota\na,7.5\nb,8\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros)
+
+    assert list(lido["nota"]) == [7.5, 8]
+    assert [type(v) for v in lido["nota"]] == [float, int]
+
+
+def test_read_df_com_on_bad_lines_devolve_o_que_o_pandas_le(tmp_path):
+    """A linha que o leitor pula não desalinha a releitura: com o argumento, ela não roda."""
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text("nome,nota\na,9007199254740993\nb,,extra,mais\nc,\nd,7\n", encoding="utf-8")
+
+    lido = read_df(str(arquivo), Inteiros, on_bad_lines="skip")
+
+    pd.testing.assert_frame_equal(lido, pd.read_csv(arquivo, on_bad_lines="skip"))
 
 
 def test_read_df_mantem_o_float_que_o_csv_guarda_no_campo_int(tmp_path):

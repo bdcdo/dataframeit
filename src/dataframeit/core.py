@@ -2051,38 +2051,17 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     for col in out.columns:
         if out[col].dtype == object:
             convert = to_json if columns is None or col in columns else enum_as_value
+            converted = out[col].map(convert)
             # Series.map infere o tipo do resultado, e uma coluna com um int e
-            # None viraria float64, que arredonda o int acima de 2**53 antes de
-            # chegar ao arquivo. A coluna refeita como object grava o int exato.
-            out[col] = pd.Series(
-                [convert(value) for value in out[col]], index=out.index, dtype=object
-            )
+            # None vira float64, que arredonda o int acima de 2**53 antes de
+            # chegar ao arquivo. Só nesse caso a coluna é refeita como object,
+            # que grava o int exato; nos demais fica o tipo inferido.
+            if converted.dtype.kind == "f":
+                converted = pd.Series(
+                    [convert(value) for value in out[col]], index=out.index, dtype=object
+                )
+            out[col] = converted
     return out
-
-
-_INT64_MAX = 2**63 - 1
-
-
-def _ints_beyond_int64_as_uint64(df: pd.DataFrame) -> pd.DataFrame:
-    """Passa a UInt64 a coluna de objeto com int entre 2**63 e 2**64, in-place.
-
-    O pyarrow infere int64 de uma coluna de objeto com int do Python e levanta
-    OverflowError no int acima do Int64, e o checkpoint parquet não seria
-    gravado. Na coluna UInt64, o int vai exato e a célula vazia, nula. Só muda
-    a coluna em que esse int aparece; a de ints menores continua como int64.
-    A coluna com outro valor ao lado dele fica como está, porque o UInt64
-    leria o bool como 1, e o pyarrow a recusa. A coluna com int negativo
-    também, porque nenhum inteiro do parquet guarda os dois, e o UInt64 do
-    pandas 2.1 troca o -1 por 2**64 - 1 em vez de recusá-lo.
-    """
-    for col in df.columns:
-        values = df[col]
-        if values.dtype != object or not any(type(v) is int and v > _INT64_MAX for v in values):
-            continue
-        cells = [None if is_scalar(v) and pd.isna(v) else v for v in values]
-        if all(v is None or (type(v) is int and v >= 0) for v in cells):
-            df[col] = pd.array(cells, dtype="UInt64")
-    return df
 
 
 def _save_checkpoint(
@@ -2110,9 +2089,7 @@ def _save_checkpoint(
     elif ext == ".xlsx":
         _structures_as_json(df).to_excel(tmp, index=False)
     elif ext == ".parquet":
-        _ints_beyond_int64_as_uint64(_structures_as_json(df, structures)).to_parquet(
-            tmp, index=False
-        )
+        _structures_as_json(df, structures).to_parquet(tmp, index=False)
     else:
         msg = (
             f"Extensão {ext} não suportada para checkpoint. "

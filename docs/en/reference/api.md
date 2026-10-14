@@ -186,7 +186,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 
 CSV and XLSX store `""` and missing values the same way. A required text field that was `""` comes back missing, and resuming flags it for reprocessing; use a `.parquet` checkpoint to keep that difference.
 
-With `model`, the column of an `int` or `Optional[int]` field read from `.csv` or `.parquet` comes back as `object`, with the exact `int` and `None` in empty cells, instead of float64 with `NaN`, which rounds integers above 2**53; a cell the file stores as a float, such as `7.5`, stays as read. `.xlsx` stores numbers as doubles and is left out. The arguments above, plus `dtype_backend`, `index_col`, `parse_dates` and `engine`, turn this off.
+Called with only `path` and `model`, the function rereads from `.csv` and `.parquet` the column of an `int` or `Optional[int]` field that pandas does not return as an integer dtype: it comes back as `object`, with the exact `int` and `None` in empty cells, instead of float64 with `NaN`, which rounds integers above 2**53. A cell the file stores as a float, such as `7.5`, stays as read. A nullable `Int64` parquet column stays `Int64`, and a column with only empty cells stays float. Any other argument turns this reread off, and `.xlsx`, which stores numbers as doubles, is left out.
 
 ### Supported Formats
 
