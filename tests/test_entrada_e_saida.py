@@ -5,7 +5,7 @@ import linecache
 import logging
 import typing
 import warnings
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
@@ -14,7 +14,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, Strict, create_model
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _format_token_stats
@@ -906,13 +906,117 @@ def test_retomada_polars_de_campo_bool_gravado_como_inteiro(modelo):
     assert resultado["relevante"].to_list() == [True, False, True]
 
 
+class PeriodoComDatas(BaseModel):
+    datas: list[date]
+
+
+# Tipo do campo e as respostas das duas linhas. O to_pandas do polars entregaria
+# cada uma dessas colunas ao pandas como array do numpy, com a data em
+# datetime64, o datetime com fuso passado a UTC e sem fuso, e a lista de inteiros
+# com nulo em float, que arredonda o inteiro acima de 2**53.
+_LISTAS_DA_SAIDA_POLARS = {
+    "list_date": (list[date], [date(2026, 1, 2)], [date(2026, 3, 4)]),
+    "list_datetime": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30)],  # noqa: DTZ001
+        [datetime(2026, 3, 4, 8, 15, 1, 5)],  # noqa: DTZ001
+    ),
+    "list_datetime_utc": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30, tzinfo=UTC)],
+        [datetime(2026, 3, 4, 8, 15, tzinfo=UTC)],
+    ),
+    "list_datetime_menos_3": (
+        list[datetime],
+        [datetime(2026, 1, 2, 10, 30, tzinfo=timezone(timedelta(hours=-3)))],
+        [datetime(2026, 3, 4, 8, 15, tzinfo=timezone(timedelta(hours=-3)))],
+    ),
+    "optional_list_date": (Optional[list[date]], [date(2026, 1, 2), date(2026, 3, 4)], None),
+    "list_optional_date": (list[Optional[date]], [date(2026, 1, 2), None], [date(2026, 3, 4)]),
+    "list_date_strict": (Annotated[list[date], Strict()], [date(2026, 1, 2)], [date(2026, 3, 4)]),
+    "tuple_date_date": (
+        tuple[date, date],
+        (date(2026, 1, 2), date(2026, 3, 4)),
+        (date(2026, 3, 4), date(2026, 1, 2)),
+    ),
+    "submodelo_com_lista_de_datas": (
+        PeriodoComDatas,
+        {"datas": [date(2026, 1, 2)]},
+        {"datas": [date(2026, 3, 4)]},
+    ),
+    "list_optional_int_acima_de_2_53": (
+        list[Optional[int]],
+        [_ID_GRANDE, None],
+        [_ID_GRANDE + 2],
+    ),
+}
+
+
+def _interrompe_e_retoma(modelo, primeira, segunda, ajusta=lambda df: df):
+    """Saídas da execução sem interrupção e da retomada da interrompida na segunda linha.
+
+    `ajusta` muda a saída interrompida antes da retomada, como o usuário faria.
+    """
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    sem_interrupcao, _ = _rodar(
+        entrada,
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": primeira}, {"campo": segunda}),
+    )
+    with pytest.warns(UserWarning, match="interrompida"):
+        interrompida, _ = _rodar(
+            entrada,
+            questions=modelo,
+            llm=_responde_em_sequencia({"campo": primeira}, ProviderAbortError("limite")),
+        )
+    assert interrompida["campo"].dtype == sem_interrupcao["campo"].dtype
+
+    retomada, llm = _rodar(
+        ajusta(interrompida),
+        questions=modelo,
+        llm=_responde_em_sequencia({"campo": segunda}),
+        resume=True,
+    )
+
+    assert llm.call_count == 1
+    return sem_interrupcao, retomada
+
+
+@pytest.mark.parametrize("caso", _LISTAS_DA_SAIDA_POLARS)
+def test_retomada_de_lista_da_saida_polars(caso):
+    """A lista da saída polars volta com os valores e o tipo de antes."""
+    tipo, primeira, segunda = _LISTAS_DA_SAIDA_POLARS[caso]
+    modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
+
+    sem_interrupcao, retomada = _interrompe_e_retoma(modelo, primeira, segunda)
+
+    assert retomada["campo"].dtype == sem_interrupcao["campo"].dtype
+    assert retomada["campo"].to_list() == sem_interrupcao["campo"].to_list()
+
+
+def test_retomada_de_lista_de_datas_guardada_como_array():
+    """A coluna do campo que o usuário passou a Array volta como a List da execução."""
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(list[date], ...))
+    sem_interrupcao, retomada = _interrompe_e_retoma(
+        modelo,
+        [date(2026, 1, 2), date(2026, 1, 3)],
+        [date(2026, 3, 4), date(2026, 3, 5)],
+        ajusta=lambda df: df.with_columns(pl.col("campo").cast(pl.Array(pl.Date, 2))),
+    )
+
+    assert retomada["campo"].dtype == sem_interrupcao["campo"].dtype
+    assert retomada["campo"].to_list() == sem_interrupcao["campo"].to_list()
+
+
 # =============================================================================
 # Entrada polars: campo do modelo que o Arrow não tipa
 # =============================================================================
 
 _FUSO_DE_DESLOCAMENTO = timezone(timedelta(hours=5, minutes=30))
 
-# Tipo do campo e as respostas de duas linhas que o Arrow não põe na mesma coluna.
+# Tipo do campo e as respostas, uma por linha, que o Arrow não põe na mesma coluna.
 # O datetime com fuso de deslocamento é recusado pelo polars, com ComputeError,
 # que não é ValueError nem TypeError.
 _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
@@ -935,6 +1039,37 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     # O pyarrow põe o Decimal acima de 38 dígitos numa coluna de 256 bits, que o
     # polars não lê: a conversão entra em pânico, e o pânico não é Exception.
     "decimal_acima_de_38_digitos": (Decimal, [Decimal("1E+40"), Decimal(2)]),
+    # Data ou hora com outro tipo na anotação: o Arrow tiparia a coluna pelo
+    # primeiro valor e converteria os outros, e a anotação a manda para Object.
+    "uniao_de_datetime_e_date": (
+        Union[datetime, date],
+        [date(2026, 1, 2), datetime.fromisoformat("2026-01-02T15:30")],
+    ),
+    "uniao_de_time_e_int_fora_de_um_dia": (Union[time, int], [time(1, 2), 86400000000]),
+    "uniao_de_date_e_int": (Union[date, int], [date(2026, 1, 2), 5]),
+    "tupla_de_date_e_int": (tuple[date, int], [(date(2026, 1, 2), 5), (date(2026, 1, 3), 6)]),
+    "lista_de_uniao_de_date_e_datetime": (
+        list[Union[date, datetime]],
+        [[date(2026, 1, 2), datetime.fromisoformat("2026-01-02T10:00")], [date(2026, 1, 3)]],
+    ),
+    "tupla_de_date_e_int_opcional": (Optional[tuple[date, int]], [(date(2026, 1, 2), 5), None]),
+    "uniao_de_date_anotado_e_int": (
+        Optional[Union[Annotated[date, Field(description="dia")], int]],
+        [date(2026, 1, 2), 5],
+    ),
+    "tupla_variavel_de_uniao_de_date_e_int": (
+        tuple[Union[date, int], ...],
+        [(date(2026, 1, 2), 5), (date(2026, 1, 2), 6), (date(2026, 1, 2), 7)],
+    ),
+    "uniao_com_barra_de_date_e_int": (date | int, [date(2026, 1, 2), 5, date(2026, 1, 2)]),
+    "uniao_de_datetime_e_int": (
+        Union[datetime, int],
+        [
+            datetime.fromisoformat("2026-01-02T15:30"),
+            5,
+            datetime.fromisoformat("2026-01-02T15:30"),
+        ],
+    ),
 }
 
 
@@ -947,22 +1082,72 @@ def _responde_por_linha(campo, valores):
 def test_campo_que_o_arrow_nao_tipa_sai_como_object_com_os_valores_do_pandas(caso):
     pl = pytest.importorskip("polars")
     tipo, valores = _CAMPOS_QUE_O_ARROW_NAO_TIPA[caso]
+    textos = [f"texto {i}" for i in range(len(valores))]
     modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
     pandas, _ = _rodar(
-        pd.DataFrame({"texto": ["a", "b"]}),
+        pd.DataFrame({"texto": textos}),
         questions=modelo,
         llm=_responde_por_linha("campo", valores),
     )
 
     with pytest.warns(UserWarning, match=r"\['campo'\].*Object"):
         resultado, _ = _rodar(
-            pl.DataFrame({"texto": ["a", "b"]}),
+            pl.DataFrame({"texto": textos}),
             questions=modelo,
             llm=_responde_por_linha("campo", valores),
         )
 
     assert resultado["campo"].dtype == pl.Object
     assert resultado["campo"].to_list() == pandas["campo"].tolist() == valores
+
+
+# Anotações que não juntam data ou hora a outro tipo, as respostas, o tipo
+# polars inferido e os valores que saem dele.
+_CAMPOS_TIPADOS_PELOS_VALORES = {
+    "uniao_de_int_e_float": (Union[int, float], [1, 2.5], lambda pl: pl.Float64, [1.0, 2.5]),
+    "uniao_de_int_e_str_so_com_int": (Union[int, str], [1, 2], lambda pl: pl.Int64, [1, 2]),
+    "date_opcional": (
+        Optional[date],
+        [date(2026, 1, 2), None],
+        lambda pl: pl.Date,
+        [date(2026, 1, 2), None],
+    ),
+    "lista_de_date": (
+        list[date],
+        [[date(2026, 1, 2)], [date(2026, 1, 3)]],
+        lambda pl: pl.List(pl.Date),
+        [[date(2026, 1, 2)], [date(2026, 1, 3)]],
+    ),
+    "tupla_so_de_date": (
+        tuple[date, ...],
+        [(date(2026, 1, 2), date(2026, 1, 3)), (date(2026, 1, 4),)],
+        lambda pl: pl.List(pl.Date),
+        [[date(2026, 1, 2), date(2026, 1, 3)], [date(2026, 1, 4)]],
+    ),
+    "datetime_com_fuso": (
+        datetime,
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+        lambda pl: pl.Datetime("us", "UTC"),
+        [datetime(2026, 1, 2, 3, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)],
+    ),
+}
+
+
+@pytest.mark.parametrize("caso", _CAMPOS_TIPADOS_PELOS_VALORES)
+def test_campo_sem_data_ou_hora_com_outro_tipo_fica_com_o_tipo_inferido(caso):
+    pl = pytest.importorskip("polars")
+    tipo, respostas, esperado, valores = _CAMPOS_TIPADOS_PELOS_VALORES[caso]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(tipo, ...)),
+            llm=_responde_por_linha("campo", respostas),
+        )
+
+    assert resultado["campo"].dtype == esperado(pl)
+    assert resultado["campo"].to_list() == valores
 
 
 def test_aviso_de_object_nomeia_so_a_coluna_que_o_arrow_nao_tipa():
