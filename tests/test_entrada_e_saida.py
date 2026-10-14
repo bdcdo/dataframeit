@@ -910,10 +910,11 @@ class PeriodoComDatas(BaseModel):
     datas: list[date]
 
 
-# Tipo do campo e as respostas das duas linhas. O polars entregaria cada uma
-# dessas colunas ao pandas como array do numpy, com a data em datetime64 e o
-# datetime com fuso passado a UTC e sem fuso.
-_LISTAS_DE_DATAS = {
+# Tipo do campo e as respostas das duas linhas. O to_pandas do polars entregaria
+# cada uma dessas colunas ao pandas como array do numpy, com a data em
+# datetime64, o datetime com fuso passado a UTC e sem fuso, e a lista de inteiros
+# com nulo em float, que arredonda o inteiro acima de 2**53.
+_LISTAS_DA_SAIDA_POLARS = {
     "list_date": (list[date], [date(2026, 1, 2)], [date(2026, 3, 4)]),
     "list_datetime": (
         list[datetime],
@@ -942,6 +943,11 @@ _LISTAS_DE_DATAS = {
         PeriodoComDatas,
         {"datas": [date(2026, 1, 2)]},
         {"datas": [date(2026, 3, 4)]},
+    ),
+    "list_optional_int_acima_de_2_53": (
+        list[Optional[int]],
+        [_ID_GRANDE, None],
+        [_ID_GRANDE + 2],
     ),
 }
 
@@ -977,10 +983,10 @@ def _interrompe_e_retoma(modelo, primeira, segunda, ajusta=lambda df: df):
     return sem_interrupcao, retomada
 
 
-@pytest.mark.parametrize("caso", _LISTAS_DE_DATAS)
-def test_retomada_de_saida_polars_com_lista_de_datas(caso):
-    """A lista de datas da saída polars volta com os valores e o tipo de antes."""
-    tipo, primeira, segunda = _LISTAS_DE_DATAS[caso]
+@pytest.mark.parametrize("caso", _LISTAS_DA_SAIDA_POLARS)
+def test_retomada_de_lista_da_saida_polars(caso):
+    """A lista da saída polars volta com os valores e o tipo de antes."""
+    tipo, primeira, segunda = _LISTAS_DA_SAIDA_POLARS[caso]
     modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
 
     sem_interrupcao, retomada = _interrompe_e_retoma(modelo, primeira, segunda)
