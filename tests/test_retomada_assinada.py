@@ -1147,14 +1147,18 @@ def _celulas_gravadas(ckpt, coluna):
     [(_INTEIRO_GRANDE, "int64"), (2**63 - 1, "int64"), (_ACIMA_DO_INT64, "uint64")],
 )
 @pytest.mark.parametrize("formato", ["csv", "parquet"])
-def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(tmp_path, formato, valor, tipo):
-    """A coluna com int e None não passa por float64 antes do arquivo (#223)."""
+# NaN chega, por exemplo, da entrada que já trazia a coluna do campo em float64.
+@pytest.mark.parametrize("ausente", [None, np.nan], ids=["None", "NaN"])
+def test_checkpoint_grava_inteiro_grande_ao_lado_de_ausente(
+    tmp_path, formato, valor, tipo, ausente
+):
+    """A coluna com int e célula ausente não passa por float64 antes do arquivo (#223)."""
     pq = pytest.importorskip("pyarrow.parquet")
     ckpt = tmp_path / f"ckpt.{formato}"
 
     # O índice da entrada, que o checkpoint não grava, não precisa ser 0..n-1.
     _save_checkpoint(
-        pd.DataFrame({"nota": [valor, None]}, index=[10, 20], dtype=object),
+        pd.DataFrame({"nota": [valor, ausente]}, index=[10, 20], dtype=object),
         ckpt,
         structures=frozenset(),
     )
