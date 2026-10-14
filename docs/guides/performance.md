@@ -34,7 +34,7 @@ Rate limit detectado → 2 workers
 Rate limit detectado → 1 worker
 ```
 
-No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo código ou pelo status do erro, sem ler a mensagem. Nos providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela classe do erro e, quando o erro não traz nenhum dos dois, pelo texto da mensagem; a sobrecarga (529, 503) não reduz os workers.
+No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo código ou pelo status do erro, sem ler a mensagem. No `claude_code`, o rate limit (429) e a sobrecarga (529) são reconhecidos pelo status que o SDK informa. Nos providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela classe do erro e, quando o erro não traz nenhum dos dois, pelo texto da mensagem; a sobrecarga (529, 503) não reduz os workers.
 
 !!! info "Segurança"
     Workers são apenas **reduzidos**, nunca aumentados automaticamente. Isso evita custos inesperados.
