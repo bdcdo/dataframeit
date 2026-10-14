@@ -60,6 +60,7 @@ from .utils import (
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _json_default,
     from_pandas,
     get_complex_fields,
     normalize_complex_columns,
@@ -1275,6 +1276,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     if not expected_columns:
         msg = "Modelo Pydantic não pode estar vazio"
         raise ValueError(msg)
+    annotations = {name: field.annotation for name, field in questions.model_fields.items()}
 
     # Cada campo extraído é gravado numa coluna de mesmo nome, que não pode ser
     # a do texto de entrada.
@@ -1425,7 +1427,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
-        return from_pandas(df_pandas, conversion_info, status_col, expected_columns)
+        return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
     # Os resultados são gravados por rótulo (df.at); com rótulo repetido, o
     # resultado de uma linha cairia em outra. Um checkpoint já concluído, que
@@ -1600,7 +1602,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
-    return from_pandas(df_pandas, conversion_info, status_col, expected_columns)
+    return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
 
 def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)
@@ -2014,19 +2016,6 @@ def _array_as_list(value: object) -> object:
     if callable(tolist) and not is_scalar(value):
         return tolist()
     return value
-
-
-def _json_default(value: object) -> object:
-    """O que json.dumps não serializa: numpy pelo tolist, Enum pelo valor, o resto texto.
-
-    O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
-    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
-    a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
-    """
-    if isinstance(value, Enum):
-        return value.value
-    tolist = getattr(value, "tolist", None)
-    return tolist() if callable(tolist) else str(value)
 
 
 def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
