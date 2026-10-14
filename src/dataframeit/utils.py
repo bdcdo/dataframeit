@@ -14,6 +14,7 @@ import ast
 import datetime
 import functools
 import json
+import math
 import operator
 import re
 import sys
@@ -21,6 +22,7 @@ import types
 import typing
 import warnings
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin
@@ -146,8 +148,8 @@ def to_pandas(
     Args:
         data: Dados a serem convertidos.
         model_columns: Anotação de cada campo do modelo, pelo nome. Na entrada
-            polars, a coluna de campo `int` chega ao pandas com os valores do
-            polars, como em `_python_ints`.
+            polars, a coluna de campo que admite `int` chega ao pandas com os
+            valores do polars, como em `_python_ints`.
 
     Returns:
         Tupla (DataFrame pandas, ConversionInfo com metadados da conversão).
@@ -215,24 +217,34 @@ def to_pandas(
 
 
 def _python_ints(data: PolarsDataFrame, model_columns: Mapping[str, object]) -> pd.DataFrame:
-    """Converte o DataFrame polars para pandas, com o campo `int` em inteiros Python.
+    """Converte o DataFrame polars para pandas, com o campo que admite `int` em objetos Python.
 
     O `to_pandas()` do polars leva a coluna inteira com nulo a float64, que
-    arredonda o inteiro acima de 2**53. Na coluna de campo `int`, a execução
-    sem interrupção grava inteiros Python e None, e a coluna relida vem assim,
-    em dtype object. A coluna sem nulo também é trocada, porque o int64 do
-    numpy não passa num modelo com strict=True, que acusaria a linha
-    processada como incompatível. A troca se limita à anotação `int` porque,
-    com outra anotação, o inteiro relido não diz o mesmo que o valor validado
-    e fica na coluna: o 1 de um campo bool e o inteiro grande de um campo
-    float saem numa coluna Object ao lado das respostas novas, e o bool com
-    strict=True é acusado como incompatível.
+    arredonda o inteiro acima de 2**53. Na coluna de campo que admite `int`, a
+    execução sem interrupção grava inteiros Python e None, e a coluna relida vem
+    assim, em dtype object. A coluna sem nulo também é trocada, porque o int64
+    do numpy não passa num modelo com strict=True, que acusaria a linha
+    processada como incompatível. Admite `int` a anotação que é `int`, ou a
+    união que tem `int` entre os membros, depois de `_without_optional`, que
+    também resolve o NewType e o apelido `type`. Com outra anotação, o inteiro
+    relido não diz o mesmo que o valor validado e fica na coluna: o 1 de um
+    campo bool e o inteiro grande de um campo float saem numa coluna Object ao
+    lado das respostas novas, e o bool com strict=True é acusado como
+    incompatível.
     """
     df = data.to_pandas()
     for col, annotation in model_columns.items():
-        if col in data.columns and _without_optional(annotation) is int:
+        if col in data.columns and _admits_int(annotation):
             df[col] = pd.Series(data[col].to_list(), dtype=object)
     return df
+
+
+def _admits_int(annotation: object) -> bool:
+    """Se a anotação é `int` ou a união com `int` entre os membros."""
+    annotation = _without_optional(annotation)
+    if get_origin(annotation) in (typing.Union, types.UnionType):
+        return any(_without_optional(arg) is int for arg in get_args(annotation))
+    return annotation is int
 
 
 def from_pandas(
@@ -364,39 +376,158 @@ def _json_default(value: object) -> object:
     return tolist() if callable(tolist) else str(value)
 
 
+def _resolved(annotation: object) -> object:
+    """A anotação sem NewType e sem apelido `type`, pelo tipo a que eles se referem.
+
+    O NewType guarda o tipo em `__supertype__`, e o apelido, em `__value__`. O
+    apelido é reconhecido pelo atributo, e não pela classe, porque o apelido
+    de `type X = ...` e o `TypeAliasType` do typing_extensions são de classes
+    diferentes, e nenhum é instância da classe do outro. A anotação que é
+    classe fica de fora, porque a classe pode ter um atributo `__value__`
+    próprio.
+    """
+    while True:
+        if isinstance(annotation, typing.NewType):
+            annotation = annotation.__supertype__
+        elif not isinstance(annotation, type) and hasattr(annotation, "__value__"):
+            annotation = annotation.__value__
+        else:
+            return annotation
+
+
 def _without_optional(annotation: object) -> object:
     """A anotação sem o Optional e sem o Annotated de dentro dele.
 
-    A união de mais de um tipo além de None fica como está.
+    A união de mais de um tipo além de None fica como está. O NewType e o
+    apelido `type` são resolvidos por `_resolved` antes de cada passo e no
+    fim, e valem também dentro do Optional e do Annotated.
     """
+    annotation = _resolved(annotation)
     args = [arg for arg in get_args(annotation) if arg is not type(None)]
     if get_origin(annotation) in (typing.Union, types.UnionType) and len(args) == 1:
-        annotation = args[0]
+        annotation = _resolved(args[0])
     if get_origin(annotation) is typing.Annotated:
-        annotation = get_args(annotation)[0]
+        annotation = _resolved(get_args(annotation)[0])
     return annotation
 
 
-_DATE_OR_TIME = (datetime.date, datetime.datetime, datetime.time)
+# Data, hora e duração: o pyarrow converte cada um destes tipos nos outros e o
+# número em cada um deles. O datetime depois de um date perde a hora, e o int
+# depois de um date ou de um timedelta vira data ou duração.
+_TEMPORAL = (datetime.date, datetime.datetime, datetime.time, datetime.timedelta)
+# Pares que o pyarrow converte um no outro quando o primeiro vem antes: o True
+# depois de um float vira 1.0, e o texto depois de um bytes vira bytes.
+_CONVERTED_PAIRS = ((float, bool), (bytes, str))
 
 
-def _mixes_date_or_time(annotation: object) -> bool:
-    """Se a anotação junta date, datetime ou time a outro tipo, na união ou na tupla.
+def _mixes_converted_types(annotation: object) -> bool:
+    """Se a anotação junta, na união ou na tupla, tipos que o pyarrow converte uns nos outros.
 
-    A lista ou a tupla é examinada em cada argumento, recursivamente: vale para
-    `tuple[Union[date, int], ...]`, para `list[tuple[date, int]]` e para listas
-    aninhadas. O Optional e o Annotated são desembrulhados, na anotação e em
-    cada membro.
+    São os de `_TEMPORAL` com qualquer outro tipo e os pares de
+    `_CONVERTED_PAIRS`. A lista ou a tupla é examinada em cada argumento,
+    recursivamente: vale para `tuple[Union[date, int], ...]`, para
+    `list[tuple[date, int]]` e para listas aninhadas. O Optional, o Annotated,
+    o NewType e o apelido `type` são desembrulhados, na anotação e em cada
+    membro. A busca é por identidade, porque o membro pode não ter hash.
     """
     annotation = _without_optional(annotation)
     origin, args = get_origin(annotation), get_args(annotation)
-    if origin in (list, tuple) and any(_mixes_date_or_time(arg) for arg in args):
+    if origin in (list, tuple) and any(_mixes_converted_types(arg) for arg in args):
         return True
     if origin not in (typing.Union, types.UnionType, tuple):
         return False
     members = [_without_optional(arg) for arg in args if arg is not Ellipsis]
-    return any(member in _DATE_OR_TIME for member in members) and any(
+    if any(member in _TEMPORAL for member in members) and any(
         member is not members[0] for member in members
+    ):
+        return True
+    return any(
+        all(any(member is kind for member in members) for kind in pair) for pair in _CONVERTED_PAIRS
+    )
+
+
+# Classe que representa, em `_kind`, o datetime com fuso.
+_AWARE_DATETIME = "datetime com fuso"
+# O bool vem antes do int, e o datetime antes do date, porque cada um é
+# subclasse do seguinte.
+_KINDS = (
+    bool,
+    int,
+    float,
+    Decimal,
+    str,
+    bytes,
+    datetime.datetime,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+)
+_NUMBERS = (int, float, Decimal)
+_TEMPORAL_KINDS = (*_TEMPORAL, _AWARE_DATETIME)
+# Marca do item de lista ou tupla no caminho de `_arrow_alters`.
+_ITEM = object()
+
+
+def _kind(value: object) -> object:
+    """A primeira classe de `_KINDS` de que o valor é instância, com o datetime com fuso à parte.
+
+    O pd.Timestamp conta como datetime. O valor de outra classe fica com a dele.
+    """
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        return _AWARE_DATETIME
+    return next((kind for kind in _KINDS if isinstance(value, kind)), type(value))
+
+
+def _is_null(value: object) -> bool:
+    """Se o valor é um dos nulos do pandas: None, NaN, NaT ou NA."""
+    return (
+        value is None
+        or value is pd.NaT
+        or value is pd.NA
+        or (isinstance(value, float) and math.isnan(value))
+    )
+
+
+def _arrow_alters(values: pd.Series) -> bool:
+    """Se o pyarrow mudaria algum dos valores ao pôr a coluna num tipo do polars.
+
+    Os valores são agrupados como o pyarrow os tipa: as células da coluna num
+    grupo, cada chave de dict, que vira campo de Struct, num grupo, e os itens
+    de cada lista ou tupla, que vira lista tipada, num grupo. O grupo que junta
+    classes de `_TEMPORAL_KINDS` entre si ou com número, ou os dois tipos de um
+    par de `_CONVERTED_PAIRS`, seria tipado pelo primeiro valor, e os outros
+    convertidos: o datetime sem fuso depois de um com fuso ganharia o fuso
+    dele. O valor que nenhum tipo do polars guarda também conta: o Decimal NaN,
+    que o pyarrow grava nulo, e o time com fuso, que o tipo Time não tem. O
+    nulo (None, NaN, NaT ou NA) não entra no grupo, porque é nulo em qualquer
+    tipo.
+    """
+    if values.dtype != object:
+        return False
+    groups: dict[tuple, set] = {}
+    pending: list[tuple[tuple, object]] = [((), value) for value in values]
+    while pending:
+        path, value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(((*path, key), item) for key, item in value.items())
+        elif isinstance(value, (list, tuple)):
+            pending.extend(((*path, _ITEM), item) for item in value)
+        elif (isinstance(value, Decimal) and value.is_nan()) or (
+            isinstance(value, datetime.time) and value.tzinfo is not None
+        ):
+            return True
+        elif not _is_null(value):
+            groups.setdefault(path, set()).add(_kind(value))
+    return any(_mixes_converted_kinds(kinds) for kinds in groups.values())
+
+
+def _mixes_converted_kinds(kinds: set) -> bool:
+    """Se as classes de um grupo de `_arrow_alters` seriam convertidas umas nas outras."""
+    temporal = kinds.intersection(_TEMPORAL_KINDS)
+    return (
+        len(temporal) > 1
+        or bool(temporal and kinds.intersection(_NUMBERS))
+        or any(kinds.issuperset(pair) for pair in _CONVERTED_PAIRS)
     )
 
 
@@ -409,10 +540,14 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
     aceita, como um Enum, levanta TypeError, e `from_pandas` devolve a coluna
     como Object.
 
-    A anotação que junta date, datetime ou time a outro tipo também levanta
-    TypeError, antes de olhar os valores. O pyarrow tiparia a coluna pelo
-    primeiro valor e converteria os outros sem erro: o datetime depois de um
-    date perderia a hora, e o int depois de um date viraria data.
+    A anotação que junta tipos que o pyarrow converte uns nos outros, como
+    date, datetime, time ou timedelta com outro tipo, float com bool e bytes
+    com str, também levanta TypeError, antes de olhar os valores. O pyarrow
+    tiparia a coluna pelo primeiro valor e converteria os outros sem erro: o
+    datetime depois de um date perderia a hora, o int depois de um date
+    viraria data, e o True depois de um float viraria 1.0. Os valores que o
+    pyarrow mudaria levantam TypeError pela mesma razão, com qualquer anotação
+    (ver `_arrow_alters`).
 
     A coluna sem valor, toda nula ou só com listas vazias, não dá ao polars de
     onde inferir o tipo, e o schema da saída mudaria com as respostas. Ela
@@ -431,8 +566,8 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
         (datetime.date, polars.Date),
         (datetime.datetime, polars.Datetime),
     )
-    if _mixes_date_or_time(annotation):
-        msg = f"A anotação {annotation} junta data ou hora a outro tipo."
+    if _mixes_converted_types(annotation):
+        msg = f"A anotação {annotation} junta tipos que o pyarrow converte uns nos outros."
         raise TypeError(msg)
     annotation = _without_optional(annotation)
     origin, args = get_origin(annotation), get_args(annotation)
@@ -448,6 +583,9 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
         )
         # A coluna de texto JSON sem nenhuma resposta segue a regra do campo str.
         annotation = str
+    if _arrow_alters(values):
+        msg = "O pyarrow mudaria valores da coluna ao tipá-la."
+        raise TypeError(msg)
     series = polars.from_pandas(values)
     item = args[0] if origin is list and args else annotation
     dtype = next((dtype for python_type, dtype in scalars if item is python_type), None)

@@ -17,6 +17,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -368,7 +369,10 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 row_values[field_name] = None
                 continue
             value = row[field_name]
-            if is_scalar(value) and bool(pd.isna(value)):
+            # O pandas conta o Decimal NaN como ausente, mas ele é um valor que o
+            # campo Decimal com allow_inf_nan aceita, e a linha que o recebeu já
+            # foi paga; sem a exceção, a retomada o acusaria como incompatível.
+            if is_scalar(value) and bool(pd.isna(value)) and not isinstance(value, Decimal):
                 row_values[field_name] = None
             elif field_name in complex_fields:
                 row_values[field_name] = normalize_value(value)
