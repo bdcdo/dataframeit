@@ -157,9 +157,17 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return data.to_pandas(), ConversionInfo(
-            original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
-        )
+        df = data.to_pandas()
+        # O to_pandas entrega a lista de uma coluna List ou Array, e a de dentro
+        # de um Struct, como array do numpy, que muda o valor: a data vira
+        # datetime64, o datetime com fuso passa a UTC sem o fuso, e o inteiro
+        # ao lado de um nulo vira float. A retomada validaria essa forma, e a
+        # linha processada de uma saída polars voltaria recusada ou com outra
+        # hora. O to_list do polars dá os objetos Python que o modelo devolveu.
+        for col, dtype in data.schema.items():
+            if isinstance(dtype, (pl.List, pl.Array, pl.Struct)):
+                df[col] = pd.Series(data[col].to_list())
+        return df, ConversionInfo(original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data)
 
     # pandas Series
     if isinstance(data, pd.Series):
@@ -407,9 +415,10 @@ def _untouched_columns(
     São as colunas do usuário que não são campo do modelo. A saída as tira de
     `source`, o DataFrame polars de entrada: convertidas de volta do pandas,
     elas trocariam de tipo (Date por Datetime, Enum por Categorical) e trariam
-    arredondado o inteiro acima de 2**53 que tem nulo na coluna ou está dentro
-    de Struct e List, porque o `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem das de `source`, porque a
-    execução grava por rótulo e não remove nem reordena linhas.
+    arredondado o inteiro acima de 2**53 que tem nulo na coluna, porque o
+    `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem
+    das de `source`, porque a execução grava por rótulo e não remove nem
+    reordena linhas.
 
     Sem `source` (entrada polars.Series, que só traz o texto), todas as colunas
     são da execução.
