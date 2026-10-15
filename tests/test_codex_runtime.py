@@ -644,20 +644,22 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
     """Provider de modelo local: responde ao primeiro turno e mata o app-server no segundo.
 
     O pedido do segundo turno chega enquanto a linha espera o stream, e a
-    conexão fica aberta até o teste liberá-la, sem resposta.
+    conexão fica aberta até o teste liberá-la, sem resposta. A thread do turno
+    derrubado, que o runtime manda no cabeçalho `thread-id`, é anotada antes do
+    `kill`.
     """
 
     processos: list[subprocess.Popen]
     pedidos: list[int]
-    morto: threading.Event
+    threads_derrubadas: list[str | None]
     liberado: threading.Event
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
         self.pedidos.append(1)
         if len(self.pedidos) > 1:
+            self.threads_derrubadas.append(self.headers.get("thread-id"))
             self.processos[0].kill()
-            self.morto.set()
             self.liberado.wait(30)
             return
         self.send_response(200)
@@ -700,7 +702,12 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
 
     O pedido de descarga sai numa thread daemon, que pode chegar ao stdin
     depois do fechamento. O teste espera essa escrita e o fim das threads de
-    leitura antes do fechamento, para que o caso não dependa da corrida.
+    leitura antes do fechamento, para que o caso não dependa da corrida. A
+    descarga esperada é reconhecida pela thread do turno que o provider
+    derrubou, que ele anota antes do `kill`. A hora em que cada descarga começa
+    não a distingue: a da linha abortada pode começar antes de o handler do
+    provider voltar a rodar depois do `kill`, e a da primeira linha pode
+    atrasar até depois dele.
     """
     handler = type(
         "Handler",
@@ -708,7 +715,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
         {
             "processos": [],
             "pedidos": [],
-            "morto": threading.Event(),
+            "threads_derrubadas": [],
             "liberado": threading.Event(),
         },
     )
@@ -731,9 +738,8 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
     descarrega = codex_provider._unsubscribe_quietly
 
     def descarrega_e_avisa(client, thread_id):
-        depois_da_morte = handler.morto.is_set()
         descarrega(client, thread_id)
-        if depois_da_morte:
+        if thread_id in handler.threads_derrubadas:
             descarga_feita.set()
 
     fecha = codex_provider._close_client
