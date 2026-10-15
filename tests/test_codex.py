@@ -2612,7 +2612,7 @@ class TestAberturaDoCliente:
     @staticmethod
     def _sdk_com(monkeypatch, construtor):
         modulo = ModuleType("openai_codex")
-        modulo.Codex = type("Codex", (), {"__init__": construtor})
+        vars(modulo)["Codex"] = type("Codex", (), {"__init__": construtor})
         monkeypatch.setitem(sys.modules, "openai_codex", modulo)
 
     @pytest.mark.parametrize(
