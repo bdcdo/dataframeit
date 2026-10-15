@@ -488,7 +488,7 @@ def _mixes_converted_types(annotation: object) -> bool:
     )
 
 
-# Classe que representa, em `_kind`, o datetime com fuso.
+# Classe que representa, em `_group_kinds`, o datetime com fuso.
 _AWARE_DATETIME = "datetime com fuso"
 # O bool vem antes do int, e o datetime antes do date, porque cada um é
 # subclasse do seguinte.
@@ -506,31 +506,43 @@ _KINDS = (
 )
 _NUMBERS = (int, float, Decimal)
 _TEMPORAL_KINDS = (*_TEMPORAL, _AWARE_DATETIME)
-# Classes cujo valor `_arrow_alters` precisa abrir ou conferir um a um, mesmo
-# quando a coluna só tem elas: a estrutura, o datetime, que pode vir com e sem
-# fuso, o time com fuso e o Decimal NaN.
-_CHECKED_ONE_BY_ONE = (dict, list, tuple, datetime.datetime, datetime.time, Decimal)
+_SEQUENCES = (list, tuple)
 
 
-def _kind(value: object) -> object:
-    """A primeira classe de `_KINDS` de que o valor é instância, com o datetime com fuso à parte.
+def _group_kinds(group: list, classes: set) -> set | None:
+    """As classes de `_KINDS` do grupo, ou None se algum valor nenhum tipo do polars guarda.
 
-    O pd.Timestamp conta como datetime. O valor de outra classe fica com a dele.
+    A classe do valor vale pela primeira de `_KINDS` de que é subclasse, e o
+    pd.Timestamp conta como datetime; a de fora delas fica com ela mesma. A
+    estrutura não entra, porque `_arrow_alters` a abre em outros grupos. O
+    nulo também não, porque é nulo em qualquer tipo: o None, o NaT e o NaN, que
+    a conversão da entrada polars para pandas põe no nulo da coluna de datas e
+    da de números. Na coluna que guarda o NaN como valor (`_keeps_nan`), o nulo
+    volta None, e o NaN que sobra ali só junta float a float. Só quatro
+    classes são conferidas valor a valor: o datetime, com e sem fuso, o float,
+    pelo NaN, o Decimal NaN, que o pyarrow grava nulo, e o time com fuso, que o
+    tipo Time não tem.
     """
-    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
-        return _AWARE_DATETIME
-    return next((kind for kind in _KINDS if isinstance(value, kind)), type(value))
-
-
-def _is_null(value: object) -> bool:
-    """Se o valor é um dos nulos que a coluna de objetos traz: None, NaN ou NaT.
-
-    O NaN e o NaT vêm da conversão da entrada polars para pandas, que os põe
-    no nulo da coluna de números e da de datas, e o NaT é instância de
-    datetime. Na coluna que guarda o NaN como valor (`_keeps_nan`), o nulo
-    volta None, e o NaN que sobra ali só junta float a float.
-    """
-    return value is None or value is pd.NaT or (isinstance(value, float) and math.isnan(value))
+    kinds = set()
+    for cls in classes:
+        if cls is type(None) or cls is type(pd.NaT) or issubclass(cls, (dict, *_SEQUENCES)):
+            continue
+        members = [value for value in group if type(value) is cls]
+        if issubclass(cls, datetime.datetime):
+            kinds.update(
+                _AWARE_DATETIME if value.tzinfo is not None else datetime.datetime
+                for value in members
+            )
+        elif issubclass(cls, float):
+            if not all(math.isnan(value) for value in members):
+                kinds.add(float)
+        elif (issubclass(cls, Decimal) and any(value.is_nan() for value in members)) or (
+            issubclass(cls, datetime.time) and any(value.tzinfo is not None for value in members)
+        ):
+            return None
+        else:
+            kinds.add(next((kind for kind in _KINDS if issubclass(cls, kind)), cls))
+    return kinds
 
 
 def _arrow_alters(values: pd.Series) -> bool:
@@ -546,40 +558,39 @@ def _arrow_alters(values: pd.Series) -> bool:
     com fuso ganharia o fuso dele. Os dicts de um grupo com conjuntos de chaves
     diferentes também contam, porque o Struct teria a união das chaves, e a
     chave ausente sairia com nulo, como `{}` ao lado de `{"a": 1}` sairia
-    `{"a": None}`. O valor que nenhum tipo do polars guarda também conta: o
-    Decimal NaN, que o pyarrow grava nulo, e o time com fuso, que o tipo Time
-    não tem. O nulo (`_is_null`) não entra no grupo, porque é nulo em qualquer
-    tipo.
+    `{"a": None}`. O valor que nenhum tipo do polars guarda também conta (ver
+    `_group_kinds`).
 
-    A coluna com uma só classe além do None, fora de `_CHECKED_ONE_BY_ONE`, não
-    tem o que mudar e sai antes de percorrer os valores, que é o caso da
-    maioria das colunas e o que pesa no tempo da saída.
+    O grupo é percorrido inteiro de uma vez, pelas classes dos valores, e só
+    as classes que pedem conferência valor a valor descem a cada um: com uma
+    chamada por valor, a conferência pesava mais que a própria conversão.
     """
     if values.dtype != object:
         return False
-    classes = set(map(type, values))
-    classes.discard(type(None))
-    if len(classes) <= 1 and not any(issubclass(cls, _CHECKED_ONE_BY_ONE) for cls in classes):
-        return False
-    groups: dict[tuple, set] = {}
-    keys: dict[tuple, set] = {}
-    pending: list[tuple[tuple, object]] = [((), value) for value in values]
+    pending: list[tuple[tuple, list]] = [((), values.tolist())]
     while pending:
-        path, value = pending.pop()
-        if isinstance(value, dict):
-            keys.setdefault(path, set()).add(frozenset(value))
-            pending.extend(((*path, key), item) for key, item in value.items())
-        elif isinstance(value, (list, tuple)):
-            pending.extend((path, item) for item in value)
-        elif (isinstance(value, Decimal) and value.is_nan()) or (
-            isinstance(value, datetime.time) and value.tzinfo is not None
-        ):
+        path, group = pending.pop()
+        classes = set(map(type, group))
+        while any(issubclass(cls, _SEQUENCES) for cls in classes):
+            group = [
+                item
+                for value in group
+                for item in (value if isinstance(value, _SEQUENCES) else (value,))
+            ]
+            classes = set(map(type, group))
+        if any(issubclass(cls, dict) for cls in classes):
+            dicts = [value for value in group if isinstance(value, dict)]
+            if len({frozenset(value) for value in dicts}) > 1:
+                return True
+            by_key: dict[object, list] = {}
+            for value in dicts:
+                for key, item in value.items():
+                    by_key.setdefault(key, []).append(item)
+            pending.extend(((*path, key), items) for key, items in by_key.items())
+        kinds = _group_kinds(group, classes)
+        if kinds is None or _mixes_converted_kinds(kinds):
             return True
-        elif not _is_null(value):
-            groups.setdefault(path, set()).add(_kind(value))
-    return any(len(sets) > 1 for sets in keys.values()) or any(
-        _mixes_converted_kinds(kinds) for kinds in groups.values()
-    )
+    return False
 
 
 def _mixes_converted_kinds(kinds: set) -> bool:
