@@ -3,13 +3,14 @@
 import datetime
 import warnings
 from enum import Enum
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, NewType, Optional, TypeVar
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel, Field, model_validator
+from typing_extensions import TypeAliasType
 
 from dataframeit import read_df
 from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
@@ -888,3 +889,100 @@ def test_retomada_com_varias_linhas_puladas_pela_mesma_condicao():
     call_agent.assert_not_called()
     assert resultado["cpf"].iloc[1] == "111"
     assert resultado["cpf"].iloc[[0, 2]].isna().all()
+
+
+# =============================================================================
+# NewType e apelido `type` contam pelo tipo a que se referem
+# =============================================================================
+
+_Codigo = NewType("_Codigo", str)
+_Processo = NewType("_Processo", int)
+_ApelidoDeTexto = TypeAliasType("_ApelidoDeTexto", str)
+_ApelidoDeInteiro = TypeAliasType("_ApelidoDeInteiro", Optional[int])
+_Metadados = NewType("_Metadados", dict[str, int])
+_ApelidoDeLista = TypeAliasType("_ApelidoDeLista", list[str])
+_T = TypeVar("_T")
+_ApelidoDeListaGenerica = TypeAliasType("_ApelidoDeListaGenerica", list[_T], type_params=(_T,))
+_ApelidoDeDictGenerico = TypeAliasType("_ApelidoDeDictGenerico", dict[str, _T], type_params=(_T,))
+
+
+class ComNewTypeEApelido(BaseModel):
+    codigo: _Codigo
+    rotulo: _ApelidoDeTexto
+    processo: Optional[_Processo] = None
+    numero: _ApelidoDeInteiro = None
+    escolha: Optional[Literal[9007199254740993, 1]] = None
+    meta: Optional[_Metadados] = None
+    etiquetas: Optional[_ApelidoDeLista] = None
+    contagens: Optional[_ApelidoDeListaGenerica[int]] = None
+    rotulos: _ApelidoDeListaGenerica[str] = []
+    pesos: Optional[_ApelidoDeDictGenerico[int]] = None
+
+
+def test_read_df_le_newtype_e_apelido_pelo_tipo_a_que_se_referem(tmp_path):
+    arquivo = tmp_path / "dados.csv"
+    arquivo.write_text(
+        "codigo,rotulo,processo,numero,escolha,meta,etiquetas\n"
+        '007,N/A,9007199254740993,9007199254740993,9007199254740993,"{""a"": 1}","[""x""]"\n'
+        "N/A,007,,,,,\n",
+        encoding="utf-8",
+    )
+
+    lido = read_df(str(arquivo), ComNewTypeEApelido)
+
+    assert list(lido["codigo"]) == ["007", "N/A"]
+    assert list(lido["rotulo"]) == ["N/A", "007"]
+    assert list(lido["processo"]) == [9007199254740993, None]
+    assert list(lido["numero"]) == [9007199254740993, None]
+    assert list(lido["escolha"]) == [9007199254740993, None]
+    assert lido["meta"][0] == {"a": 1}
+    assert lido["etiquetas"][0] == ["x"]
+
+
+def test_retomada_de_checkpoint_csv_com_newtype_e_apelido(tmp_path):
+    ckpt = tmp_path / "ckpt.csv"
+    resposta = {
+        "codigo": "007",
+        "rotulo": "N/A",
+        "processo": 9007199254740993,
+        "numero": None,
+        "escolha": 9007199254740993,
+        "meta": {"a": 1},
+        "etiquetas": ["x"],
+        "contagens": [1, 2],
+        "rotulos": ["007"],
+        "pesos": {"a": 1},
+    }
+    with (
+        patch(
+            "dataframeit.core.call_langchain",
+            return_value={"data": resposta, "usage": None},
+        ),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(
+            pd.DataFrame({"texto": ["x"]}),
+            questions=ComNewTypeEApelido,
+            prompt="Analise {texto}",
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    with (
+        patch("dataframeit.core.call_langchain") as call_langchain,
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        retomado = dataframeit(
+            read_df(str(ckpt), ComNewTypeEApelido),
+            questions=ComNewTypeEApelido,
+            prompt="Analise {texto}",
+            resume=True,
+        )
+
+    call_langchain.assert_not_called()
+    linha = retomado.iloc[0]
+    for campo, valor in resposta.items():
+        if valor is None:
+            assert pd.isna(linha[campo])
+        else:
+            assert linha[campo] == valor
