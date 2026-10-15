@@ -2641,6 +2641,27 @@ class TestAberturaDoCliente:
         assert cliente in vars(aberto).values()
         assert "close" not in vars(cliente)
 
+    def test_close_trocado_sem_processo_em_proc_fecha_como_o_do_sdk(self, monkeypatch):
+        """Com o processo fora de `_proc`, o `close` trocado chama o do SDK e não recolhe nada."""
+        fechamentos = []
+
+        class ClienteSemProc:
+            def close(self) -> None:
+                fechamentos.append(self)
+
+        cliente = ClienteSemProc()
+
+        def construtor(codex, config):
+            codex._client = cliente
+
+        self._sdk_com(monkeypatch, construtor)
+        aberto = codex_module._open_client(MagicMock())
+
+        cliente.close()
+
+        assert fechamentos == [cliente]
+        assert aberto._client is cliente
+
     def test_ctrl_c_na_abertura_sobe_quando_o_close_do_sdk_levanta(self, monkeypatch):
         """O `close` que levanta durante o Ctrl+C da abertura não troca o `KeyboardInterrupt`.
 

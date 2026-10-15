@@ -707,9 +707,11 @@ def _open_client(codex_config: CodexConfig) -> Codex:
     Depende de o construtor atribuir `_client` pelo `__setattr__` antes de abrir
     o processo e de o processo estar em `_proc`. Se o SDK atribuir `_client`
     direto no `__dict__` ou guardar o cliente com outro nome, o `close` não é
-    trocado, e a abertura que dá certo segue como a do SDK. A que falha volta a
-    deixar stdout e stderr abertos, e o Ctrl+C, com o cliente em outro nome, o
-    app-server vivo; os testes de falha na abertura reprovam.
+    trocado; se guardar o processo com outro nome, o `close` trocado não o acha
+    e fecha como o do SDK. Nos três casos, a abertura que dá certo segue como a
+    do SDK, e a que falha volta a deixar stdout e stderr abertos e, no Ctrl+C
+    com o cliente em outro nome, o app-server vivo; os testes de falha na
+    abertura reprovam.
     """
     from openai_codex import Codex  # noqa: PLC0415 (extra codex opcional)
 
@@ -734,8 +736,11 @@ def _open_client(codex_config: CodexConfig) -> Codex:
 
 
 def _close_sdk_client(sdk_client: CodexClient, close: Callable[[], None]) -> None:
-    """Chama o `close` do SDK e recolhe o processo que ele soltou."""
-    process = sdk_client._proc  # noqa: SLF001 (ver a docstring de _open_client)
+    """Chama o `close` do SDK e recolhe o processo que ele soltou.
+
+    Sem `_proc` no cliente, o `close` é só o do SDK, como em `_close_client`.
+    """
+    process = getattr(sdk_client, "_proc", None)
     try:
         close()
     finally:
