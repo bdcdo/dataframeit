@@ -700,11 +700,16 @@ def _open_client(codex_config: CodexConfig) -> Codex:
     `_client`, antes do `start`, e troca o `close` daquela instância por um que
     lê o processo antes de fechar e o recolhe depois, como `_close_client`. Se o
     construtor falha, esse `close` roda de novo, o que só faz algo quando o SDK
-    não o chamou. Aberto o cliente, o `close` volta a ser o do SDK, e o
-    fechamento fica com `_close_client`. Depende de o construtor atribuir
-    `_client` antes de abrir o processo e de o processo estar em `_proc`; se o
-    SDK mudar um dos dois, o `close` não é trocado ou não acha o processo, e os
-    testes de falha na abertura veem os pipes abertos.
+    não o chamou. Aberto o cliente, o `close` trocado fica, e o fechamento por
+    `_close_client` recolhe o processo duas vezes; a segunda não acha o que
+    fazer, porque o processo já tem `returncode` e os pipes já fecharam.
+
+    Depende de o construtor atribuir `_client` pelo `__setattr__` antes de abrir
+    o processo e de o processo estar em `_proc`. Se o SDK atribuir `_client`
+    direto no `__dict__` ou guardar o cliente com outro nome, o `close` não é
+    trocado, e a abertura que dá certo segue como a do SDK. A que falha volta a
+    deixar stdout e stderr abertos, e o Ctrl+C, com o cliente em outro nome, o
+    app-server vivo; os testes de falha na abertura reprovam.
     """
     from openai_codex import Codex  # noqa: PLC0415 (extra codex opcional)
 
@@ -719,8 +724,6 @@ def _open_client(codex_config: CodexConfig) -> Codex:
                     with contextlib.suppress(Exception):
                         sdk_client.close()
                 raise
-            opened: Any = self._client
-            del opened.close
 
         def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 (assinatura de object.__setattr__)
             if name == "_client":

@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from datetime import time as time_type
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, call, patch
 from uuid import UUID
@@ -29,6 +29,7 @@ from pydantic.errors import PydanticInvalidForJsonSchema
 from dataframeit import codex as codex_module
 from dataframeit.codex import (
     _CATALOG_TOOL_FIELDS,
+    _READER_THREAD_JOIN,
     CodexBackend,
     _AppServerStop,
     _build_schema,
@@ -2478,6 +2479,29 @@ class TestPrazoDosPedidos:
         processo.stdout.close.assert_called_once_with()
         processo.stderr.close.assert_called_once_with()
 
+    @pytest.mark.parametrize("returncode", [None, 0], ids=["sem_returncode", "ja_recolhido"])
+    def test_pipe_fecha_quando_o_leitor_termina_durante_a_espera(self, returncode):
+        """A thread de leitura que ainda roda depois do `close` é esperada antes do pipe fechar.
+
+        Depois de um Ctrl+C no `wait` do SDK, ou do `close` que levanta ao
+        descarregar o stdin, as threads de leitura não foram esperadas, e o fim
+        do processo ainda não chegou a elas. A espera deixa cada uma ver o EOF
+        e sair, e o pipe dela fecha em seguida, em vez de ficar para o coletor
+        de lixo.
+        """
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        processo.returncode = returncode
+        leitores = (_LeitorQueTerminaNaEspera(), _LeitorQueTerminaNaEspera())
+        cliente._client._reader_thread, cliente._client._stderr_thread = leitores
+
+        _close_client(cliente)
+
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
+        assert [leitor.esperas for leitor in leitores] == [[_READER_THREAD_JOIN]] * 2
+        assert processo.kill.call_count == (1 if returncode is None else 0)
+
     def test_encerramento_pelo_prazo_nao_levanta_quando_o_close_falha(self):
         """O relógio que derruba o app-server termina sem exceção.
 
@@ -2556,6 +2580,95 @@ class TestPrazoDosPedidos:
             backend.invoke("segunda")
 
         assert excinfo.value.__cause__ is erro
+
+
+class _LeitorQueTerminaNaEspera:
+    """Thread de leitura viva que vê o fim do processo durante o `join`."""
+
+    def __init__(self) -> None:
+        self.vivo = True
+        self.esperas: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return self.vivo
+
+    def join(self, timeout: float | None = None) -> None:
+        self.esperas.append(timeout)
+        self.vivo = False
+
+
+class _ClienteDoProtocolo:
+    """Cliente de protocolo com o `close` da classe, como o do SDK."""
+
+    _proc = None
+
+    def close(self) -> None:
+        pass
+
+
+class TestAberturaDoCliente:
+    """`_open_client` sobre um `Codex` falso, no lugar do construtor do SDK."""
+
+    @staticmethod
+    def _sdk_com(monkeypatch, construtor):
+        modulo = ModuleType("openai_codex")
+        modulo.Codex = type("Codex", (), {"__init__": construtor})
+        monkeypatch.setitem(sys.modules, "openai_codex", modulo)
+
+    @pytest.mark.parametrize(
+        "atribui",
+        [
+            lambda codex, cliente: codex.__dict__.__setitem__("_client", cliente),
+            lambda codex, cliente: setattr(codex, "_rpc", cliente),
+        ],
+        ids=["client_pelo_dict", "client_com_outro_nome"],
+    )
+    def test_abertura_segue_quando_o_close_nao_e_trocado(self, monkeypatch, atribui):
+        """O SDK que não atribui `_client` pelo `__setattr__` abre como abriria sem a subclasse.
+
+        Sem a troca do `close`, a subclasse não tem o que desfazer depois da
+        abertura, e o cliente sai dela com o `close` da classe.
+        """
+        cliente = _ClienteDoProtocolo()
+
+        def construtor(codex, config):
+            atribui(codex, cliente)
+
+        self._sdk_com(monkeypatch, construtor)
+
+        aberto = codex_module._open_client(MagicMock())
+
+        assert cliente in vars(aberto).values()
+        assert "close" not in vars(cliente)
+
+    def test_ctrl_c_na_abertura_sobe_quando_o_close_do_sdk_levanta(self, monkeypatch):
+        """O `close` que levanta durante o Ctrl+C da abertura não troca o `KeyboardInterrupt`.
+
+        O `close` do SDK descarrega o stdin, e a descarga levanta
+        `BrokenPipeError` quando o app-server já não lê o pipe. O processo é
+        recolhido mesmo assim, e o que sobe é a interrupção.
+        """
+        interrupcao = KeyboardInterrupt()
+        cliente = MagicMock()
+        processo = cliente._proc
+        close_do_sdk = cliente.close
+        close_do_sdk.side_effect = BrokenPipeError(32, "Broken pipe")
+        cliente._reader_thread.is_alive.return_value = False
+        cliente._stderr_thread.is_alive.return_value = False
+
+        def construtor(codex, config):
+            codex._client = cliente
+            raise interrupcao
+
+        self._sdk_com(monkeypatch, construtor)
+
+        with pytest.raises(KeyboardInterrupt) as excinfo:
+            codex_module._open_client(MagicMock())
+
+        assert excinfo.value is interrupcao
+        close_do_sdk.assert_called_once_with()
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
 
 
 class TestConfiguracaoDoPrazo:
