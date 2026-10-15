@@ -609,33 +609,66 @@ class ComNome(BaseModel):
     n: int
 
 
-@pytest.mark.parametrize("modelo", [Inteiros, ComNome], ids=["int", "texto"])
+class ComLista(BaseModel):
+    nome: str
+    itens: list[str]
+
+
+def _quadros(lido):
+    """Os DataFrames do que o leitor devolveu: as abas do dict, ou os pedaços juntados."""
+    if isinstance(lido, dict):
+        return lido
+    with lido:
+        return {"pedacos": pd.concat(list(lido))}
+
+
+@pytest.mark.parametrize("normalize", [True, False], ids=["normalize", "sem-normalize"])
+@pytest.mark.parametrize(
+    "modelo", [None, Inteiros, ComNome, ComLista], ids=["sem-modelo", "int", "texto", "lista"]
+)
 @pytest.mark.parametrize(
     ("formato", "opcao", "tipo"),
     [
         ("csv", {"chunksize": 1}, "TextFileReader"),
         ("csv", {"iterator": True}, "TextFileReader"),
         ("xlsx", {"sheet_name": None}, "dict"),
+        ("xlsx", {"sheet_name": [0]}, "dict"),
+        ("json", {"lines": True, "chunksize": 1}, "JsonReader"),
     ],
+    ids=["chunksize", "iterator", "sheet_name-None", "sheet_name-lista", "json-chunksize"],
 )
-def test_read_df_devolve_sem_releitura_o_que_nao_e_dataframe(
-    tmp_path, formato, opcao, tipo, modelo
+def test_read_df_devolve_como_o_pandas_o_que_nao_e_dataframe(
+    tmp_path, formato, opcao, tipo, modelo, normalize
 ):
-    """O leitor que devolve outra coisa que um DataFrame passa direto, com campo int ou de texto."""
+    """O leitor que devolve outra coisa que um DataFrame passa direto, sem releitura nem normalização.
+
+    Com ou sem modelo e com `normalize` ligado ou não, o objeto sai como o
+    pandas o devolve: o JSON da coluna `itens` continua texto em cada pedaço e
+    em cada aba.
+    """
     if formato == "xlsx":
         pytest.importorskip("openpyxl")
     arquivo = tmp_path / f"dados.{formato}"
-    dados = pd.DataFrame({"nome": ["a", "b"], "nota": [7, None]})
+    dados = pd.DataFrame({"nome": ["a", "b"], "nota": [7, None], "itens": ['["x"]', "[]"]})
     if formato == "csv":
         dados.to_csv(arquivo, index=False)
-    else:
+        leitor = pd.read_csv
+    elif formato == "xlsx":
         dados.to_excel(arquivo, index=False)
+        leitor = pd.read_excel
+    else:
+        dados.to_json(arquivo, orient="records", lines=True)
+        leitor = pd.read_json
 
-    lido = read_df(str(arquivo), modelo, **opcao)
+    lido = read_df(str(arquivo), modelo, normalize, **opcao)
 
     assert type(lido).__name__ == tipo
-    if tipo == "TextFileReader":
-        lido.close()
+    quadros = _quadros(lido)
+    esperados = _quadros(leitor(arquivo, **opcao))
+    assert quadros.keys() == esperados.keys()
+    for nome, quadro in quadros.items():
+        pd.testing.assert_frame_equal(quadro, esperados[nome])
+        assert quadro["itens"].tolist() == ['["x"]', "[]"]
 
 
 _LINHA_MALFORMADA = "nome,n\na,1\nb,2,extra,mais\nc,3\nd,4\n"
