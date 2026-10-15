@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import gc
 import json
 import os
 import signal
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
@@ -463,6 +465,175 @@ def test_encerramento_do_backend_fecha_os_pipes_do_app_server(tmp_path, monkeypa
                 raise saida
 
     assert _pipes_fechados(processo)
+
+
+@contextlib.contextmanager
+def _avisos_de_recurso():
+    """Registra os `ResourceWarning` do bloco e da coleta de lixo ao fim dele.
+
+    O teste solta as próprias referências ao processo antes do fim do bloco,
+    para que o `Popen` ainda sem `returncode` e o pipe aberto, se houver, avisem
+    na coleta.
+    """
+    avisos: list[str] = []
+    with warnings.catch_warnings(record=True) as registrados:
+        warnings.simplefilter("always", ResourceWarning)
+        yield avisos
+        gc.collect()
+    avisos.extend(str(aviso.message) for aviso in registrados if aviso.category is ResourceWarning)
+
+
+def _guarda_os_processos(monkeypatch):
+    """Guarda cada processo que o `start` do SDK abre, mesmo quando ele falha depois."""
+    processos: list[subprocess.Popen[str]] = []
+    start = openai_codex.client.CodexClient.start
+
+    def start_que_guarda(self):
+        try:
+            start(self)
+        finally:
+            if (processo := self._proc) is not None:
+                processos.append(processo)
+
+    monkeypatch.setattr(openai_codex.client.CodexClient, "start", start_que_guarda)
+    return processos
+
+
+def _segundo_ctrl_c_no_wait(processo):
+    """O primeiro `wait` do processo levanta `KeyboardInterrupt`, como um segundo Ctrl+C.
+
+    O sinal de verdade, mandado por um `threading.Timer`, chegaria fora do bloco
+    se o temporizador atrasasse, e o `KeyboardInterrupt` derrubaria a sessão do
+    pytest. Os `wait` seguintes são os do processo.
+    """
+    espera = processo.wait
+    chamadas = []
+
+    def interrompe_a_primeira(timeout=None):
+        chamadas.append(timeout)
+        if len(chamadas) == 1:
+            raise KeyboardInterrupt
+        return espera(timeout)
+
+    processo.wait = interrompe_a_primeira
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP só existe em POSIX")
+@pytest.mark.parametrize("segundo_ctrl_c", [False, True], ids=["sem_sair_em_2s", "segundo_ctrl_c"])
+def test_app_server_que_nao_sai_no_fechamento_e_recolhido(tmp_path, monkeypatch, segundo_ctrl_c):
+    """O app-server que não sai depois do SIGTERM é morto, esperado e tem os pipes fechados.
+
+    Com `SIGSTOP`, o processo não sai em 2 s, e o `close` do SDK faz `kill`
+    sem `wait`: o processo ficaria zumbi, sem `returncode`, e o `Popen` avisaria
+    na coleta de lixo. Com um segundo Ctrl+C durante o `wait` do SDK, o `close`
+    sai sem `kill`, e o app-server ficaria vivo, com os pipes abertos, depois
+    que o bloco já levantou `KeyboardInterrupt`.
+    """
+    processos = _guarda_os_processos(monkeypatch)
+    esperado = pytest.raises(KeyboardInterrupt) if segundo_ctrl_c else contextlib.nullcontext()
+    with socket.socket() as closed_port, _avisos_de_recurso() as avisos:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with (
+            esperado,
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}"),
+        ):
+            os.kill(processos[0].pid, signal.SIGSTOP)
+            if segundo_ctrl_c:
+                _segundo_ctrl_c_no_wait(processos[0])
+                raise KeyboardInterrupt
+
+        (processo,) = processos
+        try:
+            assert processo.returncode is not None
+            assert _pipes_fechados(processo)
+        finally:
+            # Sem a correção, o app-server segue parado, e o teste o recolhe.
+            processo.kill()
+            processo.wait(timeout=10)
+        del processo
+        processos.clear()
+
+    assert avisos == []
+
+
+@pytest.mark.parametrize(
+    ("modulo", "nome", "erro"),
+    [
+        ("client", "CodexClient._start_reader_thread", RuntimeError),
+        ("api", "validate_initialize_metadata", RuntimeError),
+        ("api", "validate_initialize_metadata", KeyboardInterrupt),
+    ],
+    ids=["start", "initialize", "ctrl_c_no_initialize"],
+)
+def test_falha_na_abertura_recolhe_o_app_server_e_fecha_os_pipes(
+    tmp_path, monkeypatch, modulo, nome, erro
+):
+    """A abertura que falha depois de abrir o app-server o recolhe e fecha os pipes.
+
+    O construtor do `Codex` chama o `close` do SDK quando o `start` ou o
+    `initialize` falham, e o `close` fecha só o stdin; o objeto não chega ao
+    backend, e stdout e stderr ficariam para o coletor de lixo. A falha do
+    `start` é a da thread de leitura, depois do `Popen`; a do `initialize`, a
+    da validação dos metadados que o runtime devolve. Um `KeyboardInterrupt`
+    durante a abertura passa sem `close`, e o app-server ficaria vivo.
+    """
+    processos = _guarda_os_processos(monkeypatch)
+
+    def falha(*args):
+        mensagem = f"falha simulada em {nome}"
+        raise erro(mensagem)
+
+    monkeypatch.setattr(f"openai_codex.{modulo}.{nome}", falha)
+    with socket.socket() as closed_port, _avisos_de_recurso() as avisos:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with (
+            pytest.raises(erro, match="falha simulada"),
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}"),
+        ):
+            pass
+
+        (processo,) = processos
+        try:
+            assert processo.returncode is not None
+            assert _pipes_fechados(processo)
+        finally:
+            # Sem a correção, o app-server pode seguir vivo, e o teste o recolhe.
+            processo.kill()
+            processo.wait(timeout=10)
+        del processo
+        processos.clear()
+
+    assert avisos == []
+
+
+def test_falha_ao_criar_o_cliente_de_protocolo_sobe_sem_processo(tmp_path, monkeypatch):
+    """O cliente de protocolo que falha ao ser criado não deixa o que fechar.
+
+    A falha vem antes do `start`, e o `Codex` ainda não tem `_client`: a
+    abertura levanta a mesma falha, sem processo aberto.
+    """
+    processos = _guarda_os_processos(monkeypatch)
+
+    def cliente_que_falha(**kwargs):
+        mensagem = "cliente de protocolo recusado"
+        raise RuntimeError(mensagem)
+
+    monkeypatch.setattr(openai_codex.api, "CodexClient", cliente_que_falha)
+    with socket.socket() as closed_port:
+        closed_port.bind(("127.0.0.1", 0))
+        port = closed_port.getsockname()[1]
+        config = _use_local_model_provider(monkeypatch, tmp_path, f"http://127.0.0.1:{port}/v1")
+        with (
+            pytest.raises(RuntimeError, match="cliente de protocolo recusado"),
+            codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}"),
+        ):
+            pass
+
+    assert processos == []
 
 
 def _evento_sse(evento):
