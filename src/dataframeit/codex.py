@@ -643,8 +643,8 @@ def _close_client(client: Codex) -> None:
     descarrega o que ficou no buffer de escrita. Se o app-server morreu com um
     pedido no buffer, como o `thread/unsubscribe` da linha que abortou, a
     descarga levanta `BrokenPipeError` antes do `terminate` e do `wait`. O
-    processo é recolhido e os pipes de saída fecham mesmo assim, e a exceção
-    continua subindo.
+    processo é recolhido, os pipes de saída fecham e os pedidos que esperam
+    resposta são acordados mesmo assim, e a exceção continua subindo.
     """
     sdk_client: Any = getattr(client, "_client", None)
     process = getattr(sdk_client, "_proc", None)
@@ -672,7 +672,18 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
     thread que segue viva depois da espera fica para o coletor de lixo. A thread
     pode não existir, ou não ter iniciado, quando o `start` do SDK falhou depois
     de abrir o processo.
+
+    Por fim, todo pedido que ainda espera resposta é acordado com
+    `TransportClosedError`. Quando o leitor do stdout vê o fim do processo, o
+    `fail_all` do roteador acorda os pedidos em voo, mas o pedido que registra a
+    espera depois disso e consegue escrever, porque o app-server morto ainda
+    aceita bytes no stdin enquanto termina, esperaria para sempre: é o
+    `thread/unsubscribe` da linha que abortou com o app-server. Depois do
+    `close` do SDK, que zera o processo antes de qualquer outra coisa, nenhum
+    pedido novo chega a escrever, e esse `fail_all` é o último que falta.
     """
+    from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
+
     if process.returncode is None:
         process.kill()
         with contextlib.suppress(subprocess.TimeoutExpired):
@@ -685,6 +696,9 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
             reader.join(timeout=_READER_THREAD_JOIN)
         if pipe is not None and (reader is None or not reader.is_alive()):
             pipe.close()
+    sdk_client._router.fail_all(  # noqa: SLF001 (ver a docstring de _close_client)
+        TransportClosedError("O app-server do Codex foi fechado")
+    )
 
 
 def _open_client(codex_config: CodexConfig) -> Codex:
@@ -864,7 +878,8 @@ def _unsubscribe_quietly(client: Codex, thread_id: str) -> None:
     O SDK não expõe o método, e o pedido vai pelo cliente de protocolo, atributo
     privado fixado em versão exata no extra `codex`. O pedido não tem prazo: a
     linha o faz numa thread daemon, porque o app-server que travou o turno a
-    prenderia; a sonda do modelo o faz direto, com a mesma exposição do
+    prenderia; quando o app-server morre, a espera termina no fechamento do
+    cliente, em `_reap_app_server`. A sonda do modelo o faz direto, com a mesma exposição do
     `thread_start` que vem antes dele. O `interrupt` que chega depois do pedido
     continua aceito, porque a thread só sai da memória depois do intervalo sem
     assinante. A falha do pedido não muda o destino da tentativa: a thread só
