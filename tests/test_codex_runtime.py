@@ -644,20 +644,22 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
     """Provider de modelo local: responde ao primeiro turno e mata o app-server no segundo.
 
     O pedido do segundo turno chega enquanto a linha espera o stream, e a
-    conexão fica aberta até o teste liberá-la, sem resposta.
+    conexão fica aberta até o teste liberá-la, sem resposta. A thread do turno
+    derrubado, que o runtime manda no cabeçalho `thread-id`, é anotada antes do
+    `kill`.
     """
 
     processos: list[subprocess.Popen]
     pedidos: list[int]
-    morto: threading.Event
+    threads_derrubadas: list[str | None]
     liberado: threading.Event
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
         self.pedidos.append(1)
         if len(self.pedidos) > 1:
+            self.threads_derrubadas.append(self.headers.get("thread-id"))
             self.processos[0].kill()
-            self.morto.set()
             self.liberado.wait(30)
             return
         self.send_response(200)
@@ -688,19 +690,46 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
         pass
 
 
+def _avisa_a_escrita_da_descarga(monkeypatch, cliente_do_protocolo, threads, escrita):
+    """Liga `escrita` depois de cada tentativa de escrever o `thread/unsubscribe` de uma das `threads`.
+
+    A tentativa conta tenha a escrita passado ou levantado.
+    """
+    escreve = cliente_do_protocolo._write_message
+
+    def escreve_e_avisa(mensagem):
+        try:
+            escreve(mensagem)
+        finally:
+            if (
+                mensagem.get("method") == "thread/unsubscribe"
+                and mensagem["params"]["threadId"] in threads
+            ):
+                escrita.set()
+
+    monkeypatch.setattr(cliente_do_protocolo, "_write_message", escreve_e_avisa)
+
+
 def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, monkeypatch):
     """O app-server que morre no meio de um turno não derruba `dataframeit()`.
 
-    A linha em curso aborta, e o `thread/unsubscribe` dela fica no buffer do
-    stdin do processo morto. O `close` do SDK descarrega o buffer ao fechar o
-    stdin e levanta `BrokenPipeError`, ou `OSError(EINVAL)` no Windows, antes
-    do `terminate`. Os pipes de saída fecham mesmo assim, e a falha do
-    fechamento não substitui o resultado: a primeira linha sai processada, e a
-    abortada e a seguinte, sem status.
+    A linha em curso aborta, e o `thread/unsubscribe` dela em geral fica no
+    buffer do stdin do processo morto. O `close` do SDK descarrega o buffer ao
+    fechar o stdin e levanta `BrokenPipeError`, ou `OSError(EINVAL)` no
+    Windows, antes do `terminate`. Os pipes de saída fecham mesmo assim, e a
+    falha do fechamento não substitui o resultado: a primeira linha sai
+    processada, e a abortada e a seguinte, sem status. Quando o processo
+    ainda aceita a escrita enquanto termina, o pedido espera uma resposta que
+    não vem, e o fechamento o acorda: a descarga termina nos dois casos.
 
     O pedido de descarga sai numa thread daemon, que pode chegar ao stdin
     depois do fechamento. O teste espera essa escrita e o fim das threads de
-    leitura antes do fechamento, para que o caso não dependa da corrida.
+    leitura antes do fechamento, para que o caso não dependa da corrida. A
+    descarga esperada é reconhecida pela thread do turno que o provider
+    derrubou, que ele anota antes do `kill`. A hora em que cada descarga começa
+    não a distingue: a da linha abortada pode começar antes de o handler do
+    provider voltar a rodar depois do `kill`, e a da primeira linha pode
+    atrasar até depois dele.
     """
     handler = type(
         "Handler",
@@ -708,7 +737,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
         {
             "processos": [],
             "pedidos": [],
-            "morto": threading.Event(),
+            "threads_derrubadas": [],
             "liberado": threading.Event(),
         },
     )
@@ -721,32 +750,36 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
 
     abre_backend = codex_provider.open_codex_backend
 
+    descarga_escrita = threading.Event()
+
     @contextlib.contextmanager
     def guarda_o_processo(*args, **kwargs):
         with abre_backend(*args, **kwargs) as backend:
             handler.processos.append(backend._client._client._proc)
+            _avisa_a_escrita_da_descarga(
+                monkeypatch, backend._client._client, handler.threads_derrubadas, descarga_escrita
+            )
             yield backend
 
     descarga_feita = threading.Event()
     descarrega = codex_provider._unsubscribe_quietly
 
     def descarrega_e_avisa(client, thread_id):
-        depois_da_morte = handler.morto.is_set()
         descarrega(client, thread_id)
-        if depois_da_morte:
+        if thread_id in handler.threads_derrubadas:
             descarga_feita.set()
 
     fecha = codex_provider._close_client
 
-    def fecha_depois_da_descarga(client):
-        assert descarga_feita.wait(30), "a linha abortada não descarregou a thread"
+    def fecha_depois_da_escrita(client):
+        assert descarga_escrita.wait(30), "a linha abortada não pediu a descarga da thread"
         client._client._reader_thread.join(30)
         client._client._stderr_thread.join(30)
         fecha(client)
 
     monkeypatch.setattr(codex_provider, "open_codex_backend", guarda_o_processo)
     monkeypatch.setattr(codex_provider, "_unsubscribe_quietly", descarrega_e_avisa)
-    monkeypatch.setattr(codex_provider, "_close_client", fecha_depois_da_descarga)
+    monkeypatch.setattr(codex_provider, "_close_client", fecha_depois_da_escrita)
 
     try:
         with (
@@ -768,6 +801,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
         server.server_close()
 
     (processo,) = handler.processos
+    assert descarga_feita.wait(30), "a descarga da linha abortada ficou presa"
     assert _pipes_fechados(processo)
     assert resultado["_dataframeit_status"].tolist() == ["processed", None, None]
     assert resultado["resposta"].tolist() == ["ok", None, None]

@@ -2925,6 +2925,48 @@ class TestDescargaDaThread:
         # As duas tentativas usam a mesma thread simulada.
         assert threads_descarregadas(client) == ["thread-1", "thread-1"]
 
+    def test_fechamento_solta_a_descarga_escrita_depois_do_fim_do_leitor(self, codex_sdk):
+        """A descarga que escreveu depois do `fail_all` do leitor termina no fechamento.
+
+        O app-server morto ainda pode aceitar a escrita enquanto termina, e o SDK
+        registra a espera da resposta sem conferir que o leitor do stdout já
+        acordou os pedidos em voo e saiu. Ninguém responde nem acorda essa
+        espera, e a thread da descarga ficaria presa para sempre.
+        """
+        from openai_codex.client import CodexClient  # noqa: PLC0415 (SDK carregado pelo fixture)
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            TransportClosedError,
+        )
+
+        cliente_do_protocolo = CodexClient()
+        processo = MagicMock()
+        processo.returncode = -9
+        escrita = threading.Event()
+        processo.stdin.write.side_effect = lambda _linha: escrita.set()
+        leitor_encerrado = threading.Thread(target=lambda: None)
+        leitor_encerrado.start()
+        leitor_encerrado.join()
+        cliente_do_protocolo._proc = processo
+        cliente_do_protocolo._reader_thread = leitor_encerrado
+        cliente_do_protocolo._stderr_thread = leitor_encerrado
+        cliente_do_protocolo._router.fail_all(TransportClosedError("stdout fechado"))
+        cliente = MagicMock()
+        cliente._client = cliente_do_protocolo
+        cliente.close.side_effect = cliente_do_protocolo.close
+
+        descarga = threading.Thread(
+            target=codex_module._unsubscribe_quietly, args=(cliente, "thread-1"), daemon=True
+        )
+        descarga.start()
+        assert escrita.wait(5)
+        descarga.join(0.2)
+        assert descarga.is_alive(), "sem o fechamento, nada acorda a espera da resposta"
+
+        _close_client(cliente)
+        descarga.join(5)
+
+        assert not descarga.is_alive()
+
     def test_turno_reroteado_tambem_descarrega_a_thread(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
         from openai_codex.models import Notification  # noqa: PLC0415 (SDK carregado pelo fixture)
