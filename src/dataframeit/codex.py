@@ -680,10 +680,9 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
     aceita bytes no stdin enquanto termina, esperaria para sempre: é o
     `thread/unsubscribe` da linha que abortou com o app-server. Depois do
     `close` do SDK, que zera o processo antes de qualquer outra coisa, nenhum
-    pedido novo chega a escrever, e esse `fail_all` é o último que falta.
+    pedido novo chega a escrever, e esse `fail_all` é o último que falta. Sem o
+    extra `codex`, o cliente só pode ser simulado, e não há roteador a acordar.
     """
-    from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
-
     if process.returncode is None:
         process.kill()
         with contextlib.suppress(subprocess.TimeoutExpired):
@@ -696,6 +695,10 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
             reader.join(timeout=_READER_THREAD_JOIN)
         if pipe is not None and (reader is None or not reader.is_alive()):
             pipe.close()
+    try:
+        from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
+    except ImportError:
+        return
     sdk_client._router.fail_all(  # noqa: SLF001 (ver a docstring de _close_client)
         TransportClosedError("O app-server do Codex foi fechado")
     )
