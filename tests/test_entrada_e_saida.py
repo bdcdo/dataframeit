@@ -3,6 +3,7 @@
 import json
 import linecache
 import logging
+import math
 import typing
 import warnings
 from datetime import UTC, date, datetime, time, timedelta, timezone
@@ -15,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, Strict, create_model
+from pydantic_core import core_schema
 from typing_extensions import TypeAliasType
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
@@ -85,6 +87,13 @@ _Id = NewType("_Id", int)
 _DataOuNumero = TypeAliasType("_DataOuNumero", Union[date, int])
 _MeuInt = TypeAliasType("_MeuInt", int)
 _ApelidoDeData = TypeAliasType("_ApelidoDeData", date)
+_Metadados = NewType("_Metadados", dict[str, int])
+_ApelidoDeDict = TypeAliasType("_ApelidoDeDict", dict[str, int])
+_Codigo = NewType("_Codigo", str)
+_ApelidoDeTexto = TypeAliasType("_ApelidoDeTexto", str)
+_Etiquetas = NewType("_Etiquetas", list[str])
+_ApelidoDeLista = TypeAliasType("_ApelidoDeLista", list[str])
+_Medida = NewType("_Medida", float)
 
 
 class _ValorOuFlag(BaseModel):
@@ -94,6 +103,10 @@ class _ValorOuFlag(BaseModel):
 class _DataEQuantidade(BaseModel):
     dia: date
     quantidade: int
+
+
+class _ComDict(BaseModel):
+    extra: dict[str, int]
 
 
 def _responde(**campos):
@@ -1046,7 +1059,10 @@ _ANOTACOES_DE_INTEIRO = {
     "uniao_opcional_de_int_e_str": Optional[Union[int, str]],
     "newtype_de_int": _Id,
     "optional_de_newtype_de_int": Optional[_Id],
+    "optional_de_annotated_de_newtype_de_int": Optional[Annotated[_Id, Field(ge=0)]],
+    "uniao_de_newtype_de_int_e_str": Union[_Id, str],
     "apelido_de_int": _MeuInt,
+    "literal_de_int": Literal[9007199254740993, 7, 8],
 }
 
 
@@ -1318,6 +1334,25 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
         list[Union[timedelta, int]],
         [[timedelta(days=1), 5], [timedelta(hours=1)]],
     ),
+    # A anotação manda para Object mesmo quando as respostas são todas do tipo
+    # temporal, porque o tipo da coluna dependeria das respostas.
+    "uniao_de_timedelta_e_int_so_com_timedelta": (
+        Union[timedelta, int],
+        [timedelta(days=1), timedelta(hours=2)],
+    ),
+    "uniao_de_date_e_int_so_com_date": (Union[date, int], [date(2026, 1, 2), date(2026, 1, 3)]),
+    # Sem a anotação para avisar, são os valores que juntam data ou duração a número.
+    "any_com_timedelta_e_int": (Any, [timedelta(days=1), 5]),
+    "any_com_date_e_int": (Any, [date(2026, 1, 2), 5]),
+    # Dicts com chaves diferentes: o Struct teria a união das chaves, e a chave
+    # ausente sairia nula.
+    "any_com_dicts_de_chaves_diferentes": (Any, [{"a": 1}, {"b": 2}]),
+    "any_com_dict_vazio_e_dict_com_chave": (Any, [{"a": 1}, {}]),
+    "lista_de_dicts_de_chaves_diferentes": (
+        list[dict[str, int]],
+        [[{"a": 1}, {"b": 2}], [{"a": 3}]],
+    ),
+    "dict_de_submodelo_com_chaves_diferentes": (_ComDict, [{"extra": {"a": 1}}, {"extra": {}}]),
     # O True depois de um float viraria 1.0, e o texto depois de um bytes, bytes.
     "uniao_de_float_e_bool": (Union[float, bool], [1.5, True]),
     "uniao_de_bytes_e_str": (Union[bytes, str], [b"x", "a"]),
@@ -1413,6 +1448,13 @@ _CAMPOS_TIPADOS_PELOS_VALORES = {
         [timedelta(days=1), timedelta(seconds=5)],
         lambda pl: pl.Duration("us"),
         [timedelta(days=1), timedelta(seconds=5)],
+    ),
+    # Dicts com as mesmas chaves cabem num Struct sem trocar valor.
+    "any_com_dicts_de_mesmas_chaves": (
+        Any,
+        [{"a": 1, "b": "x"}, {"b": "y", "a": 2}],
+        lambda pl: pl.Struct({"a": pl.Int64, "b": pl.Utf8}),
+        [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}],
     ),
     # Cada campo do submodelo vira um campo do Struct, com tipo próprio, e a
     # data de um não se junta ao número do outro.
@@ -1904,3 +1946,294 @@ def test_coluna_sem_valor_de_outra_anotacao_fica_com_o_tipo_inferido(caso):
 
     assert resultado["campo"].dtype == pl.from_pandas(pd.Series(respostas, dtype=object)).dtype
     assert resultado["campo"].to_list() == respostas
+
+
+# =============================================================================
+# NewType e apelido `type` contam pelo tipo a que se referem
+# =============================================================================
+
+# Anotação, respostas, tipo polars da saída e valores dela. O campo dict sai
+# em texto JSON, como o anotado `dict` (ver test_campo_dict_sai_como_texto_json_na_saida_polars).
+_NEWTYPE_E_APELIDO = {
+    "newtype_de_dict": (
+        _Metadados,
+        [{"a": 1}, {"b": 2}, {}],
+        lambda pl: pl.Utf8,
+        ['{"a": 1}', '{"b": 2}', "{}"],
+    ),
+    "optional_de_newtype_de_dict": (
+        Optional[_Metadados],
+        [{"a": 1}, None, {}],
+        lambda pl: pl.Utf8,
+        ['{"a": 1}', None, "{}"],
+    ),
+    "apelido_de_dict": (
+        _ApelidoDeDict,
+        [{"a": 1}, {"b": 2}, {}],
+        lambda pl: pl.Utf8,
+        ['{"a": 1}', '{"b": 2}', "{}"],
+    ),
+    "newtype_de_str": (_Codigo, ["007", "N/A", "x"], lambda pl: pl.Utf8, ["007", "N/A", "x"]),
+    "apelido_de_str": (
+        _ApelidoDeTexto,
+        ["007", "N/A", "x"],
+        lambda pl: pl.Utf8,
+        ["007", "N/A", "x"],
+    ),
+    "newtype_de_int": (_Id, [_ID_GRANDE, 7, 8], lambda pl: pl.Int64, [_ID_GRANDE, 7, 8]),
+    "newtype_de_list": (
+        _Etiquetas,
+        [["a"], ["b", "c"], []],
+        lambda pl: pl.List(pl.Utf8),
+        [["a"], ["b", "c"], []],
+    ),
+    "apelido_de_list": (
+        _ApelidoDeLista,
+        [["a"], ["b", "c"], []],
+        lambda pl: pl.List(pl.Utf8),
+        [["a"], ["b", "c"], []],
+    ),
+}
+
+
+class _Placa(str):
+    """Texto com um atributo `__value__` próprio, que não faz dele um apelido."""
+
+    __slots__ = ()
+    __value__ = Union[date, int]
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source, handler):
+        return core_schema.no_info_after_validator_function(cls, core_schema.str_schema())
+
+
+def test_classe_com_atributo_value_nao_e_apelido_na_saida_polars():
+    # Como apelido, a anotação juntaria date a int e mandaria a coluna para Object.
+    pl = pytest.importorskip("polars")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        resultado, _ = _rodar(
+            pl.DataFrame({"texto": ["a", "b"]}),
+            questions=create_model("ModeloDoCaso", campo=(_Placa, ...)),
+            llm=_responde_por_linha("campo", ["ABC1234", "XYZ9876"]),
+        )
+
+    assert resultado["campo"].dtype == pl.Utf8
+    assert resultado["campo"].to_list() == ["ABC1234", "XYZ9876"]
+
+
+@pytest.mark.parametrize("caso", _NEWTYPE_E_APELIDO)
+def test_newtype_e_apelido_saem_e_retomam_na_saida_polars(caso):
+    pl = pytest.importorskip("polars")
+    tipo, respostas, esperado, valores = _NEWTYPE_E_APELIDO[caso]
+    modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
+    entrada = pl.DataFrame({"texto": ["a", "b", "c"]})
+    interrompida = _rodar_sem_avisos(
+        entrada,
+        modelo,
+        _responde_em_sequencia({"campo": respostas[0]}, ProviderAbortError("limite")),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        retomada, llm = _rodar(
+            interrompida,
+            questions=modelo,
+            llm=_responde_por_linha("campo", respostas[1:]),
+            resume=True,
+        )
+        sem_interrupcao, _ = _rodar(
+            entrada, questions=modelo, llm=_responde_por_linha("campo", respostas)
+        )
+
+    assert llm.call_count == 2
+    assert retomada["campo"].dtype == esperado(pl)
+    assert retomada["campo"].to_list() == valores
+    assert retomada.equals(sem_interrupcao)
+
+
+# =============================================================================
+# NaN de campo float
+# =============================================================================
+
+# Anotações cuja coluna guarda o NaN como valor: admitem float e não são estrutura.
+_ANOTACOES_COM_FLOAT = {
+    "float": float,
+    "optional": Optional[float],
+    "annotated": Annotated[float, Field(allow_inf_nan=True)],
+    "uniao_de_float_e_str": Union[float, str],
+    "newtype_de_float": _Medida,
+}
+
+
+def _nan_na_posicao(valores, posicao):
+    valor = valores[posicao]
+    return isinstance(valor, float) and math.isnan(valor)
+
+
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize("caso", _ANOTACOES_COM_FLOAT)
+def test_nan_de_campo_float_sai_nan_e_retoma(caso, entrada):
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(_ANOTACOES_COM_FLOAT[caso], ...))
+    textos = {"texto": ["a", "b", "c"]}
+    interrompida = _rodar_sem_avisos(
+        pl.DataFrame(textos) if entrada == "polars" else pd.DataFrame(textos),
+        modelo,
+        _responde_em_sequencia(
+            {"campo": 1.5}, {"campo": float("nan")}, ProviderAbortError("limite")
+        ),
+    )
+    valores = list(interrompida["campo"])
+    assert valores[0] == 1.5
+    assert _nan_na_posicao(valores, 1)
+    assert valores[2] is None
+
+    retomada, llm = _rodar(
+        interrompida, questions=modelo, llm=_responde_em_sequencia({"campo": 2.0}), resume=True
+    )
+
+    assert llm.call_count == 1
+    valores = list(retomada["campo"])
+    assert valores[0] == 1.5
+    assert _nan_na_posicao(valores, 1)
+    assert valores[2] == 2.0
+    if entrada == "polars":
+        assert retomada["campo"].dtype == pl.Float64
+
+
+def test_nan_e_none_de_campo_float_opcional_seguem_distintos_na_retomada_polars():
+    # A linha da resposta None e a pendente voltam None da entrada polars, e o
+    # NaN volta NaN; com o to_pandas, as três seriam NaN.
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(Optional[float], ...))
+    interrompida = _rodar_sem_avisos(
+        pl.DataFrame({"texto": ["a", "b", "c", "d"]}),
+        modelo,
+        _responde_em_sequencia(
+            {"campo": float("nan")}, {"campo": None}, ProviderAbortError("limite")
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="interrompida"):
+        retomada, llm = _rodar(
+            interrompida,
+            questions=modelo,
+            llm=_responde_em_sequencia({"campo": 2.0}, ProviderAbortError("limite")),
+            resume=True,
+        )
+
+    assert llm.call_count == 2
+    valores = retomada["campo"].to_list()
+    assert _nan_na_posicao(valores, 0)
+    assert valores[1:] == [None, 2.0, None]
+    assert retomada["campo"].null_count() == 2
+
+
+def test_nulo_de_estrutura_com_float_segue_nulo_na_retomada_polars():
+    # A retomada normaliza a coluna de estrutura com Series.apply, que leva o
+    # None de uma coluna só de números a NaN; nela o NaN não é valor.
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(Optional[Union[float, list[float]]], ...))
+    interrompida = _rodar_sem_avisos(
+        pl.DataFrame({"texto": ["a", "b", "c"]}),
+        modelo,
+        _responde_em_sequencia({"campo": 1.5}, {"campo": None}, ProviderAbortError("limite")),
+    )
+
+    retomada, llm = _rodar(
+        interrompida, questions=modelo, llm=_responde_em_sequencia({"campo": 2.0}), resume=True
+    )
+
+    assert llm.call_count == 1
+    assert retomada["campo"].to_list() == [1.5, None, 2.0]
+
+
+def test_nan_de_coluna_float64_conta_como_ausente_na_retomada():
+    # Na coluna float64, como a do CSV relido, o NaN é também a resposta None e
+    # não se distingue dela; como valor, ele seria recusado pelo gt=0.
+    modelo = create_model("ModeloDoCaso", campo=(Optional[Annotated[float, Field(gt=0)]], None))
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo": [1.5, np.nan],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+
+    retomada, llm = _rodar(entrada, questions=modelo, llm=_responde(campo=2.0), resume=True)
+
+    assert llm.call_count == 0
+    assert retomada["campo"].iloc[0] == 1.5
+    assert pd.isna(retomada["campo"].iloc[1])
+
+
+def test_nan_de_campo_any_vindo_da_entrada_polars_conta_como_nulo():
+    # A coluna Float64 toda nula de um campo Any chega ao pandas com NaN, e a
+    # linha sem texto o mantém. Ao lado do True, o NaN contado como float
+    # juntaria os dois tipos e mandaria a coluna para Object.
+    pl = pytest.importorskip("polars")
+    entrada = pl.DataFrame(
+        {"texto": ["a", None], "campo": pl.Series([None, None], dtype=pl.Float64)}
+    )
+
+    resultado = _rodar_sem_avisos(
+        entrada,
+        create_model("ModeloDoCaso", campo=(Any, ...)),
+        _responde(campo=True),
+        resume=True,
+    )
+
+    assert resultado["campo"].dtype == pl.Boolean
+    assert resultado["campo"].to_list() == [True, None]
+
+
+def test_reprocessamento_por_campo_recebe_o_nan_gravado_como_valor():
+    # O backend campo a campo recebe os campos que não reprocessa com o valor
+    # gravado, que alimenta as condições; o NaN que a validação aceitou como
+    # valor vai como NaN, e não como None.
+    conhecidos = []
+
+    def fabrica(modelo, prompt, config, trace_mode):
+        def por_campo(text, only_fields=None, known=None):
+            conhecidos.append(known)
+            return {"data": {"rotulo": "novo"}, "usage": None}
+
+        return por_campo
+
+    modelo = create_model(
+        "ModeloDoCaso",
+        valor=(Annotated[Decimal, Field(allow_inf_nan=True)], ...),
+        medida=(float, ...),
+        rotulo=(str, ...),
+    )
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "valor": pd.Series([Decimal("NaN")], dtype=object),
+            "medida": pd.Series([float("nan")], dtype=object),
+            "rotulo": ["antigo"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+    with (
+        patch("dataframeit.agent.field_extractor", side_effect=fabrica),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        saida = dataframeit(
+            entrada,
+            questions=modelo,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+            reprocess_columns=["rotulo"],
+            track_tokens=False,
+        )
+
+    [conhecido] = conhecidos
+    assert isinstance(conhecido["valor"], Decimal)
+    assert conhecido["valor"].is_nan()
+    assert _nan_na_posicao([conhecido["medida"]], 0)
+    assert saida["rotulo"].tolist() == ["novo"]
