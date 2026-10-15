@@ -217,16 +217,27 @@ def _missing_text_detail(
     return _MISSING_TEXT_DETAIL
 
 
-def _as_object_columns(df: pd.DataFrame, columns: list) -> None:
+def _as_object_columns(df: pd.DataFrame, columns: list, nan_columns: Collection[str] = ()) -> None:
     """Converte para object as colunas que vão receber texto, lista ou None.
 
     Uma coluna lida de CSV ou XLSX toda vazia volta como float, e gravar texto
     nela levanta TypeError no pandas 3. Vale para as colunas do modelo e para
     as de controle (status e detalhe de erro).
+
+    Nas colunas de `nan_columns`, cujo NaN é valor (`_keeps_nan`), o NaN de uma
+    coluna que não é object vira None. Numa coluna float64, como a do
+    checkpoint CSV ou parquet relido, o NaN é também a linha pendente e a
+    resposta None, e a validação da retomada já o conta como ausente
+    (`_validate_processed_rows`). Sem a troca, ele chegaria à coluna object
+    como NaN, que dali em diante é valor: a saída polars, que guarda o NaN
+    dessas colunas, mostraria NaN na linha pendente e na de erro.
     """
     for col in columns:
         if col in df.columns and df[col].dtype != object:
-            df[col] = df[col].astype(object)
+            values = df[col].astype(object)
+            if col in nan_columns:
+                values = values.where(df[col].notna(), None)
+            df[col] = values
 
 
 def _is_missing_text(value: object) -> bool:
@@ -1351,6 +1362,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
 
     status_col = status_column or "_dataframeit_status"
     complex_fields = get_complex_fields(questions)
+    # Campos cujo NaN é valor, separado do nulo (`_keeps_nan`).
+    nan_columns = frozenset(
+        field_name
+        for field_name, field in questions.model_fields.items()
+        if _keeps_nan(field.annotation)
+    )
 
     # Entrada sem coluna de status é entrada nova; se o checkpoint já existe e
     # é desta execução, ela continua dele. Quem carrega o checkpoint à mão e o
@@ -1460,7 +1477,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             trace_mode=trace_mode,
             pydantic_model=questions,
         )
-        _as_object_columns(df_pandas, expected_columns)
+        _as_object_columns(df_pandas, expected_columns, nan_columns)
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
@@ -1537,7 +1554,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             pydantic_model=questions,
         )
         control_columns = [status_col, "_error_details"]
-        _as_object_columns(df_pandas, expected_columns + control_columns)
+        _as_object_columns(df_pandas, expected_columns + control_columns, nan_columns)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -1546,7 +1563,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             normalize_complex_columns(df_pandas, complex_fields)
 
         # De novo depois da normalização, cujo apply volta a inferir float; sem
-        # isso, gravar lista ou texto falharia depois da chamada paga.
+        # isso, gravar lista ou texto falharia depois da chamada paga. A coluna
+        # de estrutura não guarda o NaN como valor, e `nan_columns` não muda nada.
         _as_object_columns(df_pandas, expected_columns)
 
         is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume=resume)
@@ -1560,11 +1578,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             ],
         )
 
-        nan_columns = frozenset(
-            field_name
-            for field_name, field in questions.model_fields.items()
-            if _keeps_nan(field.annotation)
-        )
         if parallel_requests > 1:
             token_stats = _process_rows_parallel(
                 df_pandas,

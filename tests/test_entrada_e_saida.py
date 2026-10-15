@@ -94,6 +94,17 @@ _ApelidoDeTexto = TypeAliasType("_ApelidoDeTexto", str)
 _Etiquetas = NewType("_Etiquetas", list[str])
 _ApelidoDeLista = TypeAliasType("_ApelidoDeLista", list[str])
 _Medida = NewType("_Medida", float)
+# Apelido genérico, que só vale pelo tipo depois de trocar os parâmetros pelos
+# argumentos: `_ApelidoOpcional[int]` é o `type _ApelidoOpcional[T] = T | None`
+# usado com int.
+_T = typing.TypeVar("_T")
+_K = typing.TypeVar("_K")
+_ApelidoOpcional = TypeAliasType("_ApelidoOpcional", Optional[_T], type_params=(_T,))
+_ApelidoProprio = TypeAliasType("_ApelidoProprio", _T, type_params=(_T,))
+_ApelidoFixo = TypeAliasType("_ApelidoFixo", int, type_params=(_T,))
+_ApelidoDoSegundo = TypeAliasType("_ApelidoDoSegundo", Optional[_T], type_params=(_K, _T))
+_ApelidoDeDictGenerico = TypeAliasType("_ApelidoDeDictGenerico", dict[str, _T], type_params=(_T,))
+_ApelidoDeListaGenerica = TypeAliasType("_ApelidoDeListaGenerica", list[_T], type_params=(_T,))
 
 
 class _ValorOuFlag(BaseModel):
@@ -1063,6 +1074,11 @@ _ANOTACOES_DE_INTEIRO = {
     "uniao_de_newtype_de_int_e_str": Union[_Id, str],
     "apelido_de_int": _MeuInt,
     "literal_de_int": Literal[9007199254740993, 7, 8],
+    "apelido_generico_opcional": _ApelidoOpcional[int],
+    "apelido_generico_do_proprio_parametro": _ApelidoProprio[int],
+    "apelido_generico_sem_parametro_no_valor": _ApelidoFixo[str],
+    "apelido_generico_na_ordem_do_valor": _ApelidoDoSegundo[str, int],
+    "optional_de_apelido_generico": Optional[_ApelidoProprio[int]],
 }
 
 
@@ -1356,8 +1372,15 @@ _CAMPOS_QUE_O_ARROW_NAO_TIPA = {
     # O True depois de um float viraria 1.0, e o texto depois de um bytes, bytes.
     "uniao_de_float_e_bool": (Union[float, bool], [1.5, True]),
     "uniao_de_bytes_e_str": (Union[bytes, str], [b"x", "a"]),
+    # Pela anotação, mesmo quando as respostas são todas de um dos dois tipos.
+    "uniao_de_float_e_bool_so_com_float": (Union[float, bool], [1.5, 2.5]),
+    "uniao_de_bytes_e_str_so_com_str": (Union[bytes, str], ["a", "b"]),
     # Sem a anotação para avisar, são os valores que juntam float e bool.
     "any_com_float_e_bool": (Any, [1.5, True]),
+    # O escalar do numpy conta pelo número do Python: o np.int64 depois de um
+    # date viraria 1970-01-06, e o True depois de um np.float32, 1.0.
+    "any_com_date_e_int64_do_numpy": (Any, [date(2026, 1, 2), np.int64(5)]),
+    "any_com_float32_do_numpy_e_bool": (Any, [np.float32(1.5), True]),
     "submodelo_com_float_e_bool": (_ValorOuFlag, [{"valor": 1.5}, {"valor": True}]),
     # O datetime sem fuso ganharia o fuso do primeiro, e as 10h locais virariam 10h UTC.
     "datetime_com_e_sem_fuso": (
@@ -1993,6 +2016,18 @@ _NEWTYPE_E_APELIDO = {
         lambda pl: pl.List(pl.Utf8),
         [["a"], ["b", "c"], []],
     ),
+    "apelido_generico_de_dict": (
+        _ApelidoDeDictGenerico[int],
+        [{"a": 1}, {"b": 2}, {}],
+        lambda pl: pl.Utf8,
+        ['{"a": 1}', '{"b": 2}', "{}"],
+    ),
+    "apelido_generico_de_list": (
+        _ApelidoDeListaGenerica[str],
+        [["a"], ["b", "c"], []],
+        lambda pl: pl.List(pl.Utf8),
+        [["a"], ["b", "c"], []],
+    ),
 }
 
 
@@ -2064,6 +2099,7 @@ _ANOTACOES_COM_FLOAT = {
     "annotated": Annotated[float, Field(allow_inf_nan=True)],
     "uniao_de_float_e_str": Union[float, str],
     "newtype_de_float": _Medida,
+    "apelido_generico_de_float": _ApelidoOpcional[float],
 }
 
 
@@ -2150,6 +2186,46 @@ def test_nulo_de_estrutura_com_float_segue_nulo_na_retomada_polars():
     assert retomada["campo"].to_list() == [1.5, None, 2.0]
 
 
+class _ComMedida(BaseModel):
+    medida: float
+
+
+@pytest.mark.parametrize(
+    ("tipo", "resposta", "saida"),
+    [
+        (list[float], [1.5, float("nan")], [1.5, None]),
+        (_ComMedida, {"medida": float("nan")}, {"medida": None}),
+    ],
+    ids=["lista_de_float", "submodelo_com_float"],
+)
+def test_nan_dentro_de_estrutura_sai_nulo_e_a_retomada_polars_pede_reprocessamento(
+    tmp_path, tipo, resposta, saida
+):
+    # Dentro de estrutura, a saída polars põe o NaN no nulo, que o campo float
+    # recusa; a retomada dessa saída pede reprocess_columns. O checkpoint grava
+    # a estrutura em JSON com o NaN e retoma sem nova chamada.
+    pl = pytest.importorskip("polars")
+    modelo = create_model("ModeloDoCaso", campo=(tipo, ...))
+    entrada = pl.DataFrame({"texto": ["a", "b"]})
+    checkpoint = {"batch_size": 1, "checkpoint_path": tmp_path / "ckpt.csv"}
+    interrompida = _rodar_sem_avisos(
+        entrada,
+        modelo,
+        _responde_em_sequencia({"campo": resposta}, ProviderAbortError("limite")),
+        **checkpoint,
+    )
+    assert interrompida["campo"].to_list()[0] == saida
+
+    with pytest.raises(ValueError, match="reprocess_columns"):
+        _rodar(interrompida, questions=modelo, llm=_responde(campo=resposta), resume=True)
+
+    retomada, llm = _rodar(
+        entrada, questions=modelo, llm=_responde(campo=resposta), resume=True, **checkpoint
+    )
+    assert llm.call_count == 1
+    assert retomada["campo"].to_list() == [saida, saida]
+
+
 def test_nan_de_coluna_float64_conta_como_ausente_na_retomada():
     # Na coluna float64, como a do CSV relido, o NaN é também a resposta None e
     # não se distingue dela; como valor, ele seria recusado pelo gt=0.
@@ -2167,6 +2243,96 @@ def test_nan_de_coluna_float64_conta_como_ausente_na_retomada():
     assert llm.call_count == 0
     assert retomada["campo"].iloc[0] == 1.5
     assert pd.isna(retomada["campo"].iloc[1])
+
+
+@pytest.mark.parametrize("formato", ["parquet", "csv"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize(
+    ("segunda_rodada", "esperado"),
+    [
+        ([RuntimeError("falha"), {"campo": 2.5}], [1.5, None, 2.5, None]),
+        ([{"campo": 2.5}, {"campo": 3.0}], [1.5, 2.5, 3.0, None]),
+    ],
+    ids=["com_linha_de_erro", "sem_linha_de_erro"],
+)
+def test_linha_pendente_relida_de_checkpoint_float64_sai_nula(
+    tmp_path, formato, entrada, segunda_rodada, esperado
+):
+    # O checkpoint relido traz o campo float numa coluna float64, em que a
+    # linha pendente é NaN. Ela sai nula, como sem o checkpoint, e não NaN,
+    # que na coluna desse campo é valor.
+    pl = pytest.importorskip("polars")
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    modelo = create_model("ModeloDoCaso", campo=(Optional[float], None))
+    textos = {"texto": ["a", "b", "c", "d"]}
+    df = pl.DataFrame(textos) if entrada == "polars" else pd.DataFrame(textos)
+    opcoes = {"batch_size": 1, "checkpoint_path": tmp_path / f"ckpt.{formato}", "max_retries": 1}
+    _rodar_sem_avisos(
+        df, modelo, _responde_em_sequencia({"campo": 1.5}, ProviderAbortError("limite")), **opcoes
+    )
+
+    retomada = _rodar_sem_avisos(
+        df,
+        modelo,
+        _responde_em_sequencia(*segunda_rodada, ProviderAbortError("limite")),
+        resume=True,
+        **opcoes,
+    )
+
+    assert list(retomada["campo"]) == esperado
+    if entrada == "polars":
+        assert retomada["campo"].dtype == pl.Float64
+        assert retomada["campo"].null_count() == esperado.count(None)
+
+
+@pytest.mark.parametrize("formato", ["parquet", "csv"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_linha_de_erro_relida_de_checkpoint_concluido_sai_nula(tmp_path, formato, entrada):
+    # O checkpoint sem linha pendente sai sem nova chamada, e a linha de erro,
+    # que a validação não percorre, sai nula, e não com o NaN da coluna float64.
+    pl = pytest.importorskip("polars")
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    modelo = create_model("ModeloDoCaso", campo=(Optional[float], None))
+    textos = {"texto": ["a", "b", "c"]}
+    df = pl.DataFrame(textos) if entrada == "polars" else pd.DataFrame(textos)
+    opcoes = {"batch_size": 1, "checkpoint_path": tmp_path / f"ckpt.{formato}", "max_retries": 1}
+    _rodar_sem_avisos(
+        df,
+        modelo,
+        _responde_em_sequencia({"campo": 1.5}, RuntimeError("falha"), {"campo": None}),
+        **opcoes,
+    )
+
+    retomada, llm = _rodar(df, questions=modelo, resume=True, **opcoes)
+
+    assert llm.call_count == 0
+    assert list(retomada["_dataframeit_status"]) == ["processed", "error", "processed"]
+    assert list(retomada["campo"]) == [1.5, None, None]
+
+
+@pytest.mark.parametrize("formato", ["parquet", "csv"])
+def test_nan_de_execucao_sem_interrupcao_com_checkpoint_sai_nan(tmp_path, formato):
+    # Sem releitura, a coluna do campo float é object, e o NaN que o modelo
+    # devolveu segue valor, separado do None.
+    pl = pytest.importorskip("polars")
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    modelo = create_model("ModeloDoCaso", campo=(Optional[float], None))
+
+    resultado = _rodar_sem_avisos(
+        pl.DataFrame({"texto": ["a", "b", "c"]}),
+        modelo,
+        _responde_em_sequencia({"campo": 1.5}, {"campo": float("nan")}, {"campo": None}),
+        batch_size=1,
+        checkpoint_path=tmp_path / f"ckpt.{formato}",
+    )
+
+    valores = resultado["campo"].to_list()
+    assert valores[0] == 1.5
+    assert _nan_na_posicao(valores, 1)
+    assert valores[2] is None
 
 
 def test_nan_de_campo_any_vindo_da_entrada_polars_conta_como_nulo():
@@ -2189,10 +2355,12 @@ def test_nan_de_campo_any_vindo_da_entrada_polars_conta_como_nulo():
     assert resultado["campo"].to_list() == [True, None]
 
 
-def test_reprocessamento_por_campo_recebe_o_nan_gravado_como_valor():
+@pytest.mark.filterwarnings("ignore:Configuração pode exceder rate limits")
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_reprocessamento_por_campo_recebe_o_nan_gravado_como_valor(parallel_requests):
     # O backend campo a campo recebe os campos que não reprocessa com o valor
     # gravado, que alimenta as condições; o NaN que a validação aceitou como
-    # valor vai como NaN, e não como None.
+    # valor vai como NaN, e não como None. Vale no caminho serial e no paralelo.
     conhecidos = []
 
     def fabrica(modelo, prompt, config, trace_mode):
@@ -2229,6 +2397,7 @@ def test_reprocessamento_por_campo_recebe_o_nan_gravado_como_valor():
             use_search=True,
             search_per_field=True,
             reprocess_columns=["rotulo"],
+            parallel_requests=parallel_requests,
             track_tokens=False,
         )
 

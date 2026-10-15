@@ -3,7 +3,7 @@
 import datetime
 import warnings
 from enum import Enum
-from typing import Annotated, Literal, NewType, Optional
+from typing import Annotated, Literal, NewType, Optional, TypeVar
 from unittest.mock import patch
 
 import numpy as np
@@ -864,6 +864,9 @@ _ApelidoDeTexto = TypeAliasType("_ApelidoDeTexto", str)
 _ApelidoDeInteiro = TypeAliasType("_ApelidoDeInteiro", Optional[int])
 _Metadados = NewType("_Metadados", dict[str, int])
 _ApelidoDeLista = TypeAliasType("_ApelidoDeLista", list[str])
+_T = TypeVar("_T")
+_ApelidoDeListaGenerica = TypeAliasType("_ApelidoDeListaGenerica", list[_T], type_params=(_T,))
+_ApelidoDeDictGenerico = TypeAliasType("_ApelidoDeDictGenerico", dict[str, _T], type_params=(_T,))
 
 
 class ComNewTypeEApelido(BaseModel):
@@ -874,6 +877,9 @@ class ComNewTypeEApelido(BaseModel):
     escolha: Optional[Literal[9007199254740993, 1]] = None
     meta: Optional[_Metadados] = None
     etiquetas: Optional[_ApelidoDeLista] = None
+    contagens: Optional[_ApelidoDeListaGenerica[int]] = None
+    rotulos: _ApelidoDeListaGenerica[str] = []
+    pesos: Optional[_ApelidoDeDictGenerico[int]] = None
 
 
 def test_read_df_le_newtype_e_apelido_pelo_tipo_a_que_se_referem(tmp_path):
@@ -906,6 +912,9 @@ def test_retomada_de_checkpoint_csv_com_newtype_e_apelido(tmp_path):
         "escolha": 9007199254740993,
         "meta": {"a": 1},
         "etiquetas": ["x"],
+        "contagens": [1, 2],
+        "rotulos": ["007"],
+        "pesos": {"a": 1},
     }
     with (
         patch(

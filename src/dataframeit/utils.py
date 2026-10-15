@@ -15,6 +15,7 @@ import datetime
 import functools
 import json
 import math
+import numbers
 import operator
 import re
 import sys
@@ -427,14 +428,40 @@ def _resolved(annotation: object) -> object:
     `TypeAliasType` do typing_extensions são classes diferentes com esse mesmo
     nome, e nenhum é instância da classe do outro. O atributo `__value__` não
     basta, porque uma classe qualquer pode ter um com esse nome.
+
+    O apelido genérico usado com argumentos, como `Opcional[int]` de
+    `type Opcional[T] = T | None`, tem o apelido como origem, e o `__value__`
+    dele traz os parâmetros por substituir (ver `_alias_applied`).
     """
     while True:
         if isinstance(annotation, typing.NewType):
             annotation = annotation.__supertype__
         elif type(annotation).__name__ == "TypeAliasType":
             annotation = annotation.__value__  # ty: ignore[unresolved-attribute]
+        elif type(get_origin(annotation)).__name__ == "TypeAliasType":
+            annotation = _alias_applied(get_origin(annotation), get_args(annotation))
         else:
             return annotation
+
+
+def _alias_applied(alias: object, args: tuple) -> object:
+    """O `__value__` do apelido genérico com cada parâmetro trocado pelo argumento.
+
+    Cada parâmetro de `__type_params__` vale o argumento na mesma posição. A
+    substituição segue a ordem de `__parameters__` do valor, que é a ordem em
+    que os parâmetros aparecem nele e pode não ser a da declaração: em
+    `type Par[K, V] = dict[V, K]`, `Par[int, str]` é `dict[str, int]`. O valor
+    que é o próprio parâmetro não tem `__parameters__` e é trocado direto; o
+    que não usa parâmetro nenhum fica como está.
+    """
+    value = alias.__value__  # ty: ignore[unresolved-attribute]
+    by_param = dict(zip(alias.__type_params__, args, strict=False))  # ty: ignore[unresolved-attribute]
+    if isinstance(value, typing.TypeVar):
+        return by_param.get(value, value)
+    parameters = getattr(value, "__parameters__", ())
+    if not parameters:
+        return value
+    return value[tuple(by_param.get(param, param) for param in parameters)]
 
 
 def _without_optional(annotation: object) -> object:
@@ -505,6 +532,13 @@ _KINDS = (
     datetime.timedelta,
 )
 _NUMBERS = (int, float, Decimal)
+# A classe de `_KINDS` do número que não é subclasse de nenhuma delas, como o
+# np.int64, que não é int, e o np.float32, que não é float, pela ABC de
+# `numbers` em que o numpy o registra. O pyarrow os converte como os do
+# Python: o np.int64 depois de um date vira data. O bool é Integral, mas
+# chega aqui já contado como bool, primeiro de `_KINDS`; o np.bool_ não é
+# registrado em nenhuma ABC e fica com a própria classe.
+_NUMBER_ABCS = ((numbers.Integral, int), (numbers.Real, float))
 _TEMPORAL_KINDS = (*_TEMPORAL, _AWARE_DATETIME)
 _SEQUENCES = (list, tuple)
 
@@ -513,7 +547,8 @@ def _group_kinds(group: list, classes: set) -> set | None:
     """As classes de `_KINDS` do grupo, ou None se algum valor nenhum tipo do polars guarda.
 
     A classe do valor vale pela primeira de `_KINDS` de que é subclasse, e o
-    pd.Timestamp conta como datetime; a de fora delas fica com ela mesma. A
+    pd.Timestamp conta como datetime; o número do numpy fora delas vale pela
+    ABC de `numbers` (`_NUMBER_ABCS`), e a classe restante fica com ela mesma. A
     estrutura não entra, porque `_arrow_alters` a abre em outros grupos. O
     nulo também não, porque é nulo em qualquer tipo: o None, o NaT e o NaN, que
     a conversão da entrada polars para pandas põe no nulo da coluna de datas e
@@ -541,7 +576,8 @@ def _group_kinds(group: list, classes: set) -> set | None:
         ):
             return None
         else:
-            kinds.add(next((kind for kind in _KINDS if issubclass(cls, kind)), cls))
+            kind = next((kind for kind in _KINDS if issubclass(cls, kind)), None)
+            kinds.add(kind or next((k for abc, k in _NUMBER_ABCS if issubclass(cls, abc)), cls))
     return kinds
 
 
