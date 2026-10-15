@@ -622,23 +622,27 @@ def _quadros(lido):
         return {"pedacos": pd.concat(list(lido))}
 
 
+# O que o leitor do pandas devolve, por formato, com as opções do teste abaixo.
+_TIPO_DO_LEITOR = {"csv": "TextFileReader", "xlsx": "dict", "json": "JsonReader"}
+
+
 @pytest.mark.parametrize("normalize", [True, False], ids=["normalize", "sem-normalize"])
 @pytest.mark.parametrize(
     "modelo", [None, Inteiros, ComNome, ComLista], ids=["sem-modelo", "int", "texto", "lista"]
 )
 @pytest.mark.parametrize(
-    ("formato", "opcao", "tipo"),
+    ("formato", "opcao"),
     [
-        ("csv", {"chunksize": 1}, "TextFileReader"),
-        ("csv", {"iterator": True}, "TextFileReader"),
-        ("xlsx", {"sheet_name": None}, "dict"),
-        ("xlsx", {"sheet_name": [0]}, "dict"),
-        ("json", {"lines": True, "chunksize": 1}, "JsonReader"),
+        ("csv", {"chunksize": 1}),
+        ("csv", {"iterator": True}),
+        ("xlsx", {"sheet_name": None}),
+        ("xlsx", {"sheet_name": [0]}),
+        ("json", {"lines": True, "chunksize": 1}),
     ],
     ids=["chunksize", "iterator", "sheet_name-None", "sheet_name-lista", "json-chunksize"],
 )
 def test_read_df_devolve_como_o_pandas_o_que_nao_e_dataframe(
-    tmp_path, formato, opcao, tipo, modelo, normalize
+    tmp_path, formato, opcao, modelo, normalize
 ):
     """O leitor que devolve outra coisa que um DataFrame passa direto, sem releitura nem normalização.
 
@@ -662,7 +666,7 @@ def test_read_df_devolve_como_o_pandas_o_que_nao_e_dataframe(
 
     lido = read_df(str(arquivo), modelo, normalize, **opcao)
 
-    assert type(lido).__name__ == tipo
+    assert type(lido).__name__ == _TIPO_DO_LEITOR[formato]
     quadros = _quadros(lido)
     esperados = _quadros(leitor(arquivo, **opcao))
     assert quadros.keys() == esperados.keys()
