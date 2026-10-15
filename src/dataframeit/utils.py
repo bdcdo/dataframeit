@@ -711,9 +711,14 @@ def read_df(
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
+                  Com o argumento que faz o leitor devolver outra coisa que
+                  um DataFrame, como chunksize, iterator ou sheet_name=None
+                  ou lista, a função devolve o que o pandas devolve, sem
+                  normalizar nem reler nada, mesmo com model e normalize=True.
 
     Returns:
-        DataFrame com estruturas Python normalizadas.
+        DataFrame com estruturas Python normalizadas, ou o objeto do leitor do
+        pandas quando ele não devolve DataFrame (ver **kwargs).
 
     Raises:
         ValueError: Se o formato do arquivo não for suportado.
@@ -742,6 +747,11 @@ def read_df(
         msg = f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
         raise ValueError(msg)
     df = reader(path, **kwargs)
+    if not isinstance(df, pd.DataFrame):
+        # Leitor de pedaços ou dict de abas: a normalização e as releituras
+        # trabalham sobre as colunas de um DataFrame, e o objeto sai como o
+        # pandas o devolve.
+        return df
 
     if model is not None:
         _reread_text_columns(df, path, ext, model, kwargs)

@@ -182,7 +182,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | `path` | str | File path |
 | `model` | type[BaseModel] | Pydantic model. With it, only structured fields are normalized, and in `.csv`, `.xlsx` and `.xls` text fields are read as raw text: `"2023"` does not become a number and `"N/A"` does not become missing. Any extra read argument, from `**kwargs`, turns this off, and text is left as pandas returns it. |
 | `normalize` | bool | If `False`, no column is converted |
-| `**kwargs` | | Arguments passed to pandas |
+| `**kwargs` | | Arguments passed to pandas. With one that makes the reader return something other than a DataFrame, such as `chunksize`, `iterator` or `sheet_name=None` or a list, the function returns the pandas object (`TextFileReader`, `JsonReader` or a dict of sheets) without normalizing or rereading any column, even with `model` and `normalize=True` |
 
 CSV and XLSX store `""` and missing values the same way. A required text field that was `""` comes back missing, and resuming flags it for reprocessing; use a `.parquet` checkpoint to keep that difference.
 

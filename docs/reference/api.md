@@ -182,7 +182,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | `path` | str | Caminho do arquivo |
 | `model` | type[BaseModel] | Modelo Pydantic. Com ele, só os campos de estrutura são normalizados, e em `.csv`, `.xlsx` e `.xls` os campos de texto são lidos como texto cru: `"2023"` não vira número e `"N/A"` não vira ausência. Qualquer argumento de leitura extra, dos `**kwargs`, desliga essa leitura, e o texto fica como o pandas o devolve. |
 | `normalize` | bool | Se `False`, não converte nenhuma coluna |
-| `**kwargs` | | Argumentos passados para pandas |
+| `**kwargs` | | Argumentos passados para pandas. Com o que faz o leitor devolver outra coisa que um DataFrame, como `chunksize`, `iterator` ou `sheet_name=None` ou lista, a função devolve o objeto do pandas (`TextFileReader`, `JsonReader` ou dict de abas) sem normalizar nem reler nenhuma coluna, mesmo com `model` e `normalize=True` |
 
 CSV e XLSX gravam `""` e ausência do mesmo jeito. Um campo obrigatório de texto que era `""` volta ausente, e a retomada o acusa para reprocessar; para guardar essa diferença, use checkpoint `.parquet`.
 
