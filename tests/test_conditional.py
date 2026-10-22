@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from enum import Enum
 from typing import Annotated, Any, Optional, Union
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from dataframeit.conditional import (
     should_skip_field,
     topological_sort,
 )
+from dataframeit.core import _validate_processed_rows
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -1390,3 +1392,64 @@ def test_caminho_aninhado_inexistente_falha_antes_de_processar():
             search_per_field=True,
         )
     call_agent.assert_not_called()
+
+
+# =============================================================================
+# Condição sobre campo Enum: a execução e a retomada comparam pelo valor
+# =============================================================================
+
+
+class _Tipo(Enum):
+    PF = "pf"
+    PJ = "pj"
+
+
+# Cada condição com o resultado esperado para tipo 'pf', com o operando escrito
+# como valor e como membro do Enum.
+_CONDICOES_SOBRE_ENUM = [
+    ({"field": "tipo", "equals": "pf"}, True),
+    ({"field": "tipo", "equals": _Tipo.PF}, True),
+    ({"field": "tipo", "equals": "pj"}, False),
+    ({"field": "tipo", "not_equals": "pf"}, False),
+    ({"field": "tipo", "not_equals": _Tipo.PJ}, True),
+    ({"field": "tipo", "in": ["pf", "pj"]}, True),
+    ({"field": "tipo", "in": {_Tipo.PF}}, True),
+    ({"field": "tipo", "not_in": ("pf",)}, False),
+    ({"field": "tipo", "not_in": frozenset({_Tipo.PJ})}, True),
+]
+
+
+@pytest.mark.parametrize(("condicao", "verdadeira"), _CONDICOES_SOBRE_ENUM)
+def test_condicao_sobre_enum_na_execucao_compara_o_valor_do_membro(condicao, verdadeira):
+    """O call_agent devolve o model_dump da resposta, que guarda o membro do Enum."""
+
+    class Pessoa(BaseModel):
+        tipo: _Tipo
+        cpf: str | None = Field(None, json_schema_extra={"condition": condicao})
+
+    linha, chamadas = _executar_por_campo(Pessoa, Pessoa(tipo="pf", cpf="111").model_dump())
+
+    assert chamadas == ([["tipo"], ["cpf"]] if verdadeira else [["tipo"]])
+    assert linha["cpf"] == ("111" if verdadeira else None)
+
+
+@pytest.mark.parametrize("tipo_relido", ["pf", _Tipo.PF], ids=["texto", "membro"])
+@pytest.mark.parametrize(("condicao", "verdadeira"), _CONDICOES_SOBRE_ENUM)
+def test_condicao_sobre_enum_na_retomada_da_o_resultado_da_execucao(
+    condicao, verdadeira, tipo_relido
+):
+    """O checkpoint relido traz o Enum como texto, e a saída em memória, como membro.
+
+    Com a condição verdadeira, o cpf obrigatório ausente é acusado; com a falsa,
+    ele foi pulado, e a linha passa.
+    """
+
+    class Pessoa(BaseModel):
+        tipo: _Tipo
+        cpf: str = Field(json_schema_extra={"condition": condicao})
+
+    df = pd.DataFrame({"tipo": [tipo_relido], "cpf": [None], "_dataframeit_status": ["processed"]})
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", Pessoa, set())
+
+    assert incompativeis == (["cpf"] if verdadeira else [])

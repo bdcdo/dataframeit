@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import operator
+from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
 from .utils import get_nested_pydantic_models, list_layers, resolve_forward_refs, submodels
@@ -214,6 +215,17 @@ def get_nested_value(data: dict[str, Any], field_path: str) -> Any:  # noqa: ANN
     return current
 
 
+def _by_value(value: object) -> object:
+    """O membro de Enum pelo valor dele; o resto como está.
+
+    Na execução, o campo Enum chega à condição como membro, porque o
+    `model_dump` da resposta o guarda assim; relido do checkpoint, chega como o
+    valor. Comparados os dois lados pelo valor, a condição dá o mesmo resultado
+    nos dois caminhos, com o operando escrito como valor ou como membro.
+    """
+    return value.value if isinstance(value, Enum) else value
+
+
 def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
     condition: object, field_data: dict[str, Any], field_name: str
 ) -> bool:
@@ -226,6 +238,9 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
             - None (sempre True)
         field_data: Dados dos campos já processados.
         field_name: Nome do campo atual (para logging).
+
+    O membro de Enum, no valor do campo e no operando, é comparado pelo valor
+    (ver `_by_value`).
 
     Returns:
         True se a condição é satisfeita, False caso contrário.
@@ -258,10 +273,16 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
             return False
 
         value = get_nested_value(field_data, field_path)
+        compared = _by_value(value)
 
         for key, (symbol, compare) in _CONDITION_OPERATORS.items():
             if key in condition:
-                result = compare(value, condition[key])
+                operand = condition[key]
+                if key in ("in", "not_in") and isinstance(operand, _MEMBERSHIP_OPERAND_TYPES):
+                    operand = [_by_value(option) for option in operand]
+                else:
+                    operand = _by_value(operand)
+                result = compare(compared, operand)
                 logger.debug(
                     "Campo '%s': %s=%s %s %s -> %s",
                     field_name,
