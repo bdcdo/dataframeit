@@ -723,27 +723,81 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
         pass
 
 
-def _avisa_a_escrita_da_descarga(monkeypatch, cliente_do_protocolo, threads, escrita):
-    """Liga `escrita` depois de cada tentativa de escrever o `thread/unsubscribe` de uma das `threads`.
+@dataclasses.dataclass
+class _DescargaDaLinhaAbortada:
+    """O `thread/unsubscribe` das `threads` que o provider derrubou, visto pelo cliente do protocolo.
 
-    A tentativa conta tenha a escrita passado ou levantado.
+    `escrita` liga depois de cada tentativa de escrever o pedido, tenha ela
+    passado ou levantado. `soltos` guarda o erro de cada `fail_all` do
+    roteador, com a origem: o leitor do stdout, quando a chamada roda na
+    thread dele, ou o recolhimento, no fechamento do cliente.
     """
-    escreve = cliente_do_protocolo._write_message
 
-    def escreve_e_avisa(mensagem):
-        try:
-            escreve(mensagem)
-        finally:
-            if (
+    threads: list[str | None]
+    escrita: threading.Event = dataclasses.field(default_factory=threading.Event)
+    erro_da_escrita: BaseException | None = None
+    erro_do_pedido: BaseException | None = None
+    soltos: list[tuple[str, BaseException]] = dataclasses.field(default_factory=list)
+
+    def caminho(self):
+        """Diz por qual caminho a descarga terminou.
+
+        A escrita levanta quando o stdin do processo morto já não tem leitor,
+        com `BrokenPipeError`, ou `OSError(EINVAL)` no Windows, e o pedido nem
+        espera resposta. Quando ela passa, a resposta não vem, e o pedido sai
+        pelo `fail_all` que acordou a espera: o do recolhimento, quando ela foi
+        registrada depois do `fail_all` do leitor do stdout, ou o do leitor,
+        quando foi registrada antes.
+        """
+        if self.erro_da_escrita is not None:
+            return "escrita_levantou"
+        for origem, erro in self.soltos:
+            if erro is self.erro_do_pedido:
+                return f"fail_all_do_{origem}"
+        return f"outro: {self.erro_do_pedido!r}"
+
+    def instala(self, monkeypatch, cliente_do_protocolo):
+        escreve = cliente_do_protocolo._write_message
+        pede = cliente_do_protocolo.request
+        roteador = cliente_do_protocolo._router
+        solta = roteador.fail_all
+
+        def escreve_e_registra(mensagem):
+            da_descarga = (
                 mensagem.get("method") == "thread/unsubscribe"
-                and mensagem["params"]["threadId"] in threads
-            ):
-                escrita.set()
+                and mensagem["params"]["threadId"] in self.threads
+            )
+            try:
+                escreve(mensagem)
+            except BaseException as erro:
+                if da_descarga:
+                    self.erro_da_escrita = erro
+                raise
+            finally:
+                if da_descarga:
+                    self.escrita.set()
 
-    monkeypatch.setattr(cliente_do_protocolo, "_write_message", escreve_e_avisa)
+        def pede_e_registra(metodo, params, **kwargs):
+            try:
+                return pede(metodo, params, **kwargs)
+            except BaseException as erro:
+                if metodo == "thread/unsubscribe" and params["threadId"] in self.threads:
+                    self.erro_do_pedido = erro
+                raise
+
+        def solta_e_registra(erro):
+            leitor = threading.current_thread() is cliente_do_protocolo._reader_thread
+            self.soltos.append(("leitor" if leitor else "recolhimento", erro))
+            solta(erro)
+
+        monkeypatch.setattr(cliente_do_protocolo, "_write_message", escreve_e_registra)
+        monkeypatch.setattr(cliente_do_protocolo, "request", pede_e_registra)
+        monkeypatch.setattr(roteador, "fail_all", solta_e_registra)
 
 
-def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, monkeypatch):
+def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(
+    tmp_path, monkeypatch, record_property
+):
     """O app-server que morre no meio de um turno não derruba `dataframeit()`.
 
     A linha em curso aborta, e o `thread/unsubscribe` dela em geral fica no
@@ -763,6 +817,12 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
     não a distingue: a da linha abortada pode começar antes de o handler do
     provider voltar a rodar depois do `kill`, e a da primeira linha pode
     atrasar até depois dele.
+
+    O caminho por que a descarga da linha abortada terminou vai ao relatório
+    JUnit na propriedade `caminho_da_descarga`, com os valores de
+    `_DescargaDaLinhaAbortada.caminho`. Ele depende da ordem entre a morte do
+    processo e a escrita, que o teste não controla, e o teste passa em todos.
+    O job `codex-windows` roda o teste várias vezes e conta os caminhos.
     """
     handler = type(
         "Handler",
@@ -783,15 +843,13 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
 
     abre_backend = codex_provider.open_codex_backend
 
-    descarga_escrita = threading.Event()
+    descarga = _DescargaDaLinhaAbortada(handler.threads_derrubadas)
 
     @contextlib.contextmanager
     def guarda_o_processo(*args, **kwargs):
         with abre_backend(*args, **kwargs) as backend:
             handler.processos.append(backend._client._client._proc)
-            _avisa_a_escrita_da_descarga(
-                monkeypatch, backend._client._client, handler.threads_derrubadas, descarga_escrita
-            )
+            descarga.instala(monkeypatch, backend._client._client)
             yield backend
 
     descarga_feita = threading.Event()
@@ -805,7 +863,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
     fecha = codex_provider._close_client
 
     def fecha_depois_da_escrita(client):
-        assert descarga_escrita.wait(30), "a linha abortada não pediu a descarga da thread"
+        assert descarga.escrita.wait(30), "a linha abortada não pediu a descarga da thread"
         client._client._reader_thread.join(30)
         client._client._stderr_thread.join(30)
         fecha(client)
@@ -835,6 +893,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
 
     (processo,) = handler.processos
     assert descarga_feita.wait(30), "a descarga da linha abortada ficou presa"
+    record_property("caminho_da_descarga", descarga.caminho())
     assert _pipes_fechados(processo)
     assert resultado["_dataframeit_status"].tolist() == ["processed", None, None]
     assert resultado["resposta"].tolist() == ["ok", None, None]
