@@ -47,24 +47,18 @@ def test_hierarquia_documentada_das_excecoes():
     assert not issubclass(dataframeit.ProviderAbortError, dataframeit.ProviderTransientError)
 
 
-def _assinatura_documentada(texto):
-    """Parâmetros, na ordem, do `def dataframeit(...)` da referência da API."""
+@pytest.mark.parametrize("pasta", IDIOMAS, ids=["pt", "en"])
+def test_assinatura_da_referencia_segue_a_ordem_do_codigo(pasta):
+    # Quem passa um parâmetro por posição conta com a ordem que a referência mostra.
+    texto = (pasta / "reference" / "api.md").read_text(encoding="utf-8")
     bloco = re.search(
         r"^```python\n(def dataframeit\(.*?\) -> [^\n]+)$", texto, re.DOTALL | re.MULTILINE
     )
     assert bloco, "a referência da API não traz o def de dataframeit()"
     funcao = ast.parse(bloco.group(1) + ": ...").body[0]
     assert isinstance(funcao, ast.FunctionDef)
-    return [argumento.arg for argumento in funcao.args.args + funcao.args.kwonlyargs]
-
-
-@pytest.mark.parametrize("pasta", IDIOMAS, ids=["pt", "en"])
-def test_assinatura_da_referencia_segue_a_ordem_do_codigo(pasta):
-    # Quem passa um parâmetro por posição conta com a ordem que a referência mostra.
-    texto = (pasta / "reference" / "api.md").read_text(encoding="utf-8")
-    assert _assinatura_documentada(texto) == list(
-        inspect.signature(dataframeit.dataframeit).parameters
-    )
+    documentados = [argumento.arg for argumento in funcao.args.args + funcao.args.kwonlyargs]
+    assert documentados == list(inspect.signature(dataframeit.dataframeit).parameters)
 
 
 @pytest.mark.parametrize("pasta", IDIOMAS, ids=["pt", "en"])
