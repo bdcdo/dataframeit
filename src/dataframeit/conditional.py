@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import operator
-from typing import TYPE_CHECKING, Any, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, cast
 
-from .utils import get_nested_pydantic_models, resolve_forward_refs
+from .utils import get_nested_pydantic_models, list_layers, resolve_forward_refs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -147,24 +147,6 @@ def _collect_configured_fields(
     return results
 
 
-def _list_layers(annotation: object, target: type) -> int | None:
-    """Quantas listas envolvem `target` na anotação: list[list[X]] dá 2.
-
-    Só conta os ramos que chegam ao modelo; em Union[list[str], X], a lista
-    de strings não envolve X. Devolve None quando `target` não aparece.
-    """
-    if annotation is target:
-        return 0
-    depths = [
-        depth
-        for depth in (_list_layers(arg, target) for arg in get_args(annotation))
-        if depth is not None
-    ]
-    if not depths:
-        return None
-    return max(depths) + (1 if get_origin(annotation) is list else 0)
-
-
 def _walk_fields(
     pydantic_model: type[BaseModel],
     prefix: str = "",
@@ -192,7 +174,7 @@ def _walk_fields(
             yield from _walk_fields(
                 nested_model,
                 path,
-                list_depth + (_list_layers(annotation, nested_model) or 0),
+                list_depth + (list_layers(annotation, nested_model) or 0),
                 _visited,
             )
 

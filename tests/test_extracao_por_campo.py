@@ -1,14 +1,15 @@
 """Contrato da extração por campo e por grupo com busca, com o agente simulado."""
 
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 from unittest.mock import patch
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from dataframeit import field_condition
 from dataframeit.agent import field_extractor
+from dataframeit.conditional import _walk_fields
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 PROMPT = "Analise {texto}"
@@ -374,3 +375,54 @@ def test_campo_anulado_depois_da_resposta_anula_quem_depende_dele_no_grupo():
     )
 
     assert resultado["data"] == {"a": "nao", "b": None, "c": None}
+
+
+# =============================================================================
+# lista de modelo
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [
+        list[Item],
+        Optional[list[Item]],
+        Optional[Annotated[list[Item], Field(min_length=1)]],
+        Annotated[list[Item], "lista"] | None,
+        list[Optional[Item]],
+        list[Item | None],
+        list[Annotated[Item, "item"]],
+        list[Optional[Annotated[Item, "item"]]],
+    ],
+    ids=[
+        "lista",
+        "lista_opcional",
+        "lista_anotada_opcional",
+        "lista_anotada_ou_none",
+        "item_opcional",
+        "item_ou_none",
+        "item_anotado",
+        "item_anotado_opcional",
+    ],
+)
+def test_lista_de_modelo_e_buscada_item_a_item_e_conta_uma_camada_na_validacao(anotacao):
+    """O Optional e o Annotated em volta da lista ou do item não tiram a busca por item.
+
+    A validação conta a mesma camada de lista que a extração percorre: com uma
+    camada, a configuração do item é aceita, e cada item tem a sua busca.
+    """
+    modelo = create_model("Pedido", itens=(anotacao, None))
+    agente = _Agente({"itens": [{"nome": "A"}, {"nome": "B"}], "preco": "R$ 1"})
+
+    resultado = _rodar(agente, modelo, _config())
+
+    assert {caminho: camadas for caminho, _, camadas in _walk_fields(modelo)} == {
+        "itens": 0,
+        "itens.nome": 1,
+        "itens.preco": 1,
+    }
+    assert agente.nomes == ["Pedido_itens", "ItemSearch_0_preco", "ItemSearch_1_preco"]
+    assert resultado["data"]["itens"] == [
+        {"nome": "A", "preco": "R$ 1"},
+        {"nome": "B", "preco": "R$ 1"},
+    ]

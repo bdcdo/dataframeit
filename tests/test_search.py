@@ -7,7 +7,12 @@ import os
 import sys
 import types
 import warnings as _warnings
-from typing import List, Literal, Optional  # noqa: UP035 (List usado de propósito, ver NodoArvore)
+from typing import (  # noqa: UP035 (List usado de propósito, ver NodoArvore)
+    Annotated,
+    List,
+    Literal,
+    Optional,
+)
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -1846,6 +1851,26 @@ def test_is_list_of_pydantic_model_list_of_primitives():
 
     assert is_list is False
     assert inner is None
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "esperado"),
+    [
+        (Optional[Annotated[list[PedidoItem], Field(min_length=1)]], (True, PedidoItem)),
+        (list[Optional[PedidoItem]], (True, PedidoItem)),
+        (list[Annotated[PedidoItem, "item"]] | None, (True, PedidoItem)),
+        (list[str] | list[PedidoItem], (True, PedidoItem)),
+        # Nenhum destes é lista cujo item é o modelo: o dict e a tupla não têm
+        # itens onde gravar a busca, e a lista de listas é recusada na validação.
+        (dict[str, list[PedidoItem]], (False, None)),
+        (tuple[PedidoItem, ...], (False, None)),
+        (list[list[PedidoItem]], (False, None)),
+        (Optional[Annotated[PedidoItem, "item"]], (False, None)),
+        (list, (False, None)),
+    ],
+)
+def test_is_list_of_pydantic_model_tira_optional_e_annotated_em_todo_nivel(anotacao, esperado):
+    assert is_list_of_pydantic_model(anotacao) == esperado
 
 
 def test_get_list_fields_with_nested_search():
