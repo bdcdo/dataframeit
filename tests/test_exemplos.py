@@ -85,7 +85,7 @@ def dataframes_reusados(codigos):
     do comando, depois da chamada que ela recebe: em `df = dataframeit(df, ...)`,
     o `df` seguinte já é a saída.
     """
-    eventos = []
+    eventos: list[tuple[tuple[int, int | None, int | None], str, str, bool]] = []
     for celula, codigo in enumerate(codigos):
         for no in ast.walk(ast.parse(codigo)):
             if isinstance(no, ast.Assign):
