@@ -119,6 +119,7 @@ all = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "pytest-repeat>=0.9.4",
     "ruff>=0.16,<0.17",
     "ty==0.0.84",
     "vulture>=2.16,<3",

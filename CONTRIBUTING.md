@@ -12,6 +12,7 @@ cd dataframeit
 
 uv run --extra dev pytest                     # suíte de testes
 uv run --extra dev --extra all --extra search-all --extra codex pytest --cov  # cobertura de ramos, exige 100%
+uv run --extra dev pytest --count=2 --repeat-scope=session  # suíte duas vezes no mesmo processo
 uv run --extra dev ruff check src tests       # lint
 uv run --extra docs mkdocs serve              # documentação em http://127.0.0.1:8000
 ```
@@ -23,7 +24,7 @@ Os testes não chamam nenhum provider de verdade e não precisam de chave de API
 1. Abra uma issue antes de uma mudança grande, para combinar o desenho.
 2. Crie uma branch a partir da `main` com o prefixo do tipo de mudança: `feature/`, `fix/`, `docs/` ou `refactor/`.
 3. Escreva o teste junto com a mudança. Uma correção de bug vem com o teste que falhava antes dela.
-4. Abra o PR contra a `main`. O CI roda lint, testes em Python 3.11 e 3.13, os testes com as versões mínimas das dependências e o build da documentação.
+4. Abra o PR contra a `main`. O CI roda lint, testes em Python 3.11 e 3.13, a suíte duas vezes no mesmo processo, que reprova o teste que só passa na primeira execução, os testes com as versões mínimas das dependências e o build da documentação.
 
 ## Convenções
 

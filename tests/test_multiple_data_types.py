@@ -147,6 +147,8 @@ class TestFromPandas:
         result = from_pandas(df, info)
 
         assert isinstance(result, pl.DataFrame)
+        assert dict(result.schema) == {"texto": pl.String, "resultado": pl.Int64}
+        assert result.to_dict(as_series=False) == {"texto": ["a", "b"], "resultado": [1, 2]}
 
     def test_pandas_series_returns_dataframe(self):
         """Testa que pandas Series retorna DataFrame com resultados."""
