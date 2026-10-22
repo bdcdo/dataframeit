@@ -254,7 +254,7 @@ def _is_missing_text(value: object) -> bool:
 
 def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list) -> None:
     """Avisa uma vez quantas linhas a processar não têm texto."""
-    missing = sum(1 for idx in rows if _is_missing_text(df.loc[idx, text_column]))
+    missing = sum(1 for idx in rows if _is_missing_text(_get_cell(df, idx, text_column)))
     if missing:
         warnings.warn(
             f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
@@ -2244,11 +2244,21 @@ def _mark_unreached(
     as encontre.
     """
     for idx in indices:
-        if reprocess_columns and df.loc[idx, status_col] == "processed":
+        if reprocess_columns and _get_cell(df, idx, status_col) == "processed":
             _set_cell(df, idx, "_error_details", _INTERRUPTED_REPROCESS_DETAIL)
         else:
             _set_cell(df, idx, status_col, None)
             _set_cell(df, idx, "_error_details", None)
+
+
+def _get_cell(df: pd.DataFrame, idx: Hashable, column: str) -> object:
+    """Lê uma célula por rótulo.
+
+    `.at` lê também o rótulo-tupla da entrada dict, que `to_pandas` guarda num
+    Index simples; `.loc` toma a tupla por chave de vários níveis e levanta
+    AssertionError.
+    """
+    return df.at[idx, column]  # noqa: PD008 (ver a docstring)
 
 
 def _set_cell(df: pd.DataFrame, idx: Hashable, column: str, value: object) -> None:
