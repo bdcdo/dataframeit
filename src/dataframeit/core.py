@@ -2456,7 +2456,7 @@ def _progress_suffix(
     return ""
 
 
-def _process_rows(  # noqa: PLR0913 (estado da execução repassado por dataframeit)
+def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por dataframeit, e um ramo por desfecho da linha)
     df: pd.DataFrame,
     *,
     text_column: str,
@@ -2507,14 +2507,10 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     rows_processed_this_run = 0
     rows_saved = 0
 
-    # Processar cada linha
-    for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
+    def process_row(i: int, idx: Hashable, row: pd.Series) -> bool:
+        """Registra o desfecho da linha e devolve se a chamada deu certo."""
         # Verificar se linha já foi processada
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
-
-        # Com reprocess_columns, todas as linhas são processadas.
-        if not reprocess_columns and not is_pending[i]:
-            continue
 
         success = False
         if _is_missing_text(row[text_column]):
@@ -2557,7 +2553,6 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     status_col=status_col,
                     reprocess_columns=reprocess_columns,
                 )
-                break
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
                 _record_error_safely(
                     df,
@@ -2569,17 +2564,38 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     reprocess_columns=reprocess_columns,
                     token_stats=token_stats,
                 )
+        return success
 
-        rows_processed_this_run += 1
-        if (
-            checkpoint
-            and rows_processed_this_run % checkpoint.batch_size == 0
-            and _try_save_checkpoint(df, checkpoint)
-        ):
-            rows_saved = rows_processed_this_run
+    # Processar cada linha. A gravação do checkpoint fica neste laço, e não em
+    # process_row, para que o aviso de falha aponte a chamada do usuário (ver o
+    # stacklevel de _try_save_checkpoint).
+    try:
+        for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
+            # Com reprocess_columns, todas as linhas são processadas.
+            if not reprocess_columns and not is_pending[i]:
+                continue
+            success = process_row(i, idx, row)
+            if "abort" in token_stats:
+                break
 
-        if success and config.rate_limit_delay > 0:
-            time.sleep(config.rate_limit_delay)
+            rows_processed_this_run += 1
+            if (
+                checkpoint
+                and rows_processed_this_run % checkpoint.batch_size == 0
+                and _try_save_checkpoint(df, checkpoint)
+            ):
+                rows_saved = rows_processed_this_run
+
+            if success and config.rate_limit_delay > 0:
+                time.sleep(config.rate_limit_delay)
+    except KeyboardInterrupt:
+        # Ctrl-C: grava as linhas registradas desde a última gravação, que a
+        # retomada pagaria de novo, e relança a interrupção. A linha cuja chamada
+        # foi cortada não chegou a ser registrada e fica pendente. A falha de
+        # gravação vira aviso em _try_save_checkpoint e não troca a interrupção.
+        if checkpoint and rows_processed_this_run > rows_saved:
+            _try_save_checkpoint(df, checkpoint)
+        raise
 
     # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
     # fora e as marcas de uma interrupção, que não contam como linha processada.
@@ -2587,6 +2603,16 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
         _try_save_checkpoint(df, checkpoint)
 
     return token_stats
+
+
+@contextmanager
+def _on_ctrl_c(callback: Callable[[], None]) -> Iterator[None]:
+    """Chama `callback` quando um KeyboardInterrupt atravessa o bloco, e o relança."""
+    try:
+        yield
+    except KeyboardInterrupt:
+        callback()
+        raise
 
 
 def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
@@ -2785,8 +2811,22 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             time.sleep(config.rate_limit_delay)
         return {"success": True, "idx": idx}
 
+    def save_registered_rows() -> None:
+        """Grava o checkpoint no Ctrl-C.
+
+        A saída do executor espera as linhas em andamento, e elas chegam aqui
+        registradas. Um segundo Ctrl-C durante essa espera deixa threads
+        rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
+        demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
+        não regrava o arquivo sem linha contada desde o último snapshot gravado.
+        """
+        if writer:
+            with lock:
+                frame, label = df.copy(), checkpoint_counter
+            writer.save(frame, label)
+
     # Processar com ThreadPoolExecutor
-    with tqdm(total=len(rows_to_process), desc=desc) as pbar:
+    with _on_ctrl_c(save_registered_rows), tqdm(total=len(rows_to_process), desc=desc) as pbar:
         # Usar abordagem iterativa para permitir ajuste dinâmico de workers
         pending_rows = list(rows_to_process)
 

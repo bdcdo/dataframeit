@@ -1,5 +1,7 @@
 """Falha que impede as linhas seguintes interrompe a execução sem gastá-las."""
 
+import signal
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -206,3 +208,215 @@ def test_interrupcao_com_texto_ilegivel_ainda_interrompe(paralelo):
         saida = _roda(df, llm, parallel_requests=paralelo)
 
     assert saida["_dataframeit_status"].isna().all()
+
+
+# =============================================================================
+# Ctrl-C
+# =============================================================================
+
+
+def _ctrl_c():
+    """Manda SIGINT ao thread principal, como o Ctrl-C do terminal.
+
+    No modo sequencial a chamada roda no thread principal, e o
+    `KeyboardInterrupt` sai do próprio `pthread_kill`, antes de a chamada
+    terminar. No paralelo, ele chega ao thread principal enquanto este espera as
+    linhas, e a chamada do worker termina e é paga.
+    """
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    principal = threading.main_thread().ident
+    assert principal is not None
+    signal.pthread_kill(principal, signal.SIGINT)
+
+
+def _llm_com_ctrl_c(na_chamada: int | None = None):
+    """Devolve a lista dos textos cujas chamadas terminaram (pagas) e o falso LLM."""
+    trava = threading.Lock()
+    iniciadas: list[str] = []
+    pagas: list[str] = []
+
+    def llm(texto, *args, **kwargs):
+        with trava:
+            iniciadas.append(texto)
+            vez = len(iniciadas)
+        if vez == na_chamada:
+            _ctrl_c()
+        with trava:
+            pagas.append(texto)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
+
+    return pagas, llm
+
+
+def _entrada(biblioteca: str, textos: list[str]):
+    if biblioteca == "polars":
+        pl = pytest.importorskip("polars")
+        return pl.DataFrame({"texto": textos})
+    return pd.DataFrame({"texto": textos})
+
+
+requer_pthread_kill = pytest.mark.skipif(
+    not hasattr(signal, "pthread_kill"), reason="Ctrl-C simulado com signal.pthread_kill"
+)
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+@pytest.mark.parametrize("biblioteca", ["pandas", "polars"])
+def test_ctrl_c_grava_as_linhas_pagas_e_a_retomada_nao_as_chama_de_novo(
+    tmp_path, biblioteca, paralelo
+):
+    """12 linhas, batch_size=5 e Ctrl-C durante a 9ª chamada.
+
+    No sequencial, a 9ª chamada não termina, e 8 linhas estão pagas. Com 3
+    workers, a 9ª é a última do terceiro lote, e as três do lote terminam
+    enquanto o executor as espera. A gravação a cada 5 linhas deixaria as
+    últimas 3 ou 4 de fora.
+    """
+    textos = [f"t{i:02d}" for i in range(1, 13)]
+    entrada = _entrada(biblioteca, textos)
+    ckpt = tmp_path / "ckpt.csv"
+    pagas, llm = _llm_com_ctrl_c(na_chamada=9)
+
+    with pytest.raises(KeyboardInterrupt):
+        _roda(
+            entrada,
+            llm,
+            parallel_requests=paralelo,
+            batch_size=5,
+            checkpoint_path=ckpt,
+        )
+
+    assert len(pagas) == (8 if paralelo == 1 else 9)
+    gravado = pd.read_csv(ckpt)
+    processadas = gravado.loc[gravado["_dataframeit_status"].eq("processed"), "texto"]
+    assert sorted(processadas) == sorted(pagas)
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    saida = _roda(
+        _entrada(biblioteca, textos),
+        llm_ok,
+        parallel_requests=paralelo,
+        batch_size=5,
+        checkpoint_path=ckpt,
+    )
+
+    assert sorted(retomada) == sorted(set(textos) - set(pagas))
+    assert list(saida["campo1"]) == [f"r-{texto}" for texto in textos]
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path, paralelo):
+    """A falha vira aviso, como nas gravações a cada batch_size."""
+    _, llm = _llm_com_ctrl_c(na_chamada=5)
+
+    with (
+        patch("dataframeit.core._save_checkpoint", side_effect=OSError("disco cheio")) as grava,
+        pytest.warns(UserWarning, match="Falha ao gravar o checkpoint.*OSError: disco cheio"),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": [f"t{i}" for i in range(9)]}),
+            llm,
+            parallel_requests=paralelo,
+            batch_size=100,
+            checkpoint_path=tmp_path / "ckpt.csv",
+        )
+
+    assert grava.call_count == 1
+
+
+@requer_pthread_kill
+def test_segundo_ctrl_c_grava_so_as_linhas_concluidas(tmp_path):
+    """O segundo Ctrl-C corta a espera do executor, e a chamada que não terminou fica pendente."""
+    textos = ["lenta", "ctrl-c"]
+    ckpt = tmp_path / "ckpt.csv"
+    liberada = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto == "lenta":
+            liberada.wait(timeout=10)
+        else:
+            _ctrl_c()
+        return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
+
+    saida_do_executor = ThreadPoolExecutor.__exit__
+
+    def segundo_ctrl_c_na_espera(self, tipo, valor, rastro):
+        # A saída por Ctrl-C espera as threads; o segundo Ctrl-C chega nessa
+        # espera, depois de o executor ter sido encerrado sem esperar.
+        if tipo is KeyboardInterrupt:
+            self.shutdown(wait=False)
+            _ctrl_c()
+        return saida_do_executor(self, tipo, valor, rastro)
+
+    try:
+        with (
+            patch.object(ThreadPoolExecutor, "__exit__", segundo_ctrl_c_na_espera),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _roda(
+                pd.DataFrame({"texto": textos}),
+                llm,
+                parallel_requests=2,
+                batch_size=100,
+                checkpoint_path=ckpt,
+            )
+        gravado = pd.read_csv(ckpt)
+    finally:
+        liberada.set()
+
+    processadas = set(gravado.loc[gravado["_dataframeit_status"].eq("processed"), "texto"])
+    assert "lenta" not in processadas
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    _roda(
+        pd.DataFrame({"texto": textos}),
+        llm_ok,
+        parallel_requests=2,
+        batch_size=100,
+        checkpoint_path=ckpt,
+    )
+    assert sorted(retomada) == sorted(set(textos) - processadas)
+
+
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_antes_de_terminar_uma_linha_nao_reescreve_o_checkpoint(tmp_path, paralelo):
+    """Sem linha registrada desde a última gravação, o arquivo fica como estava."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    _roda(
+        df.copy(),
+        _llm_com_ctrl_c()[1],
+        model_kwargs={"temperature": 0.5},
+        batch_size=10,
+        checkpoint_path=ckpt,
+    )
+    anterior = ckpt.read_bytes()
+
+    def interrompe(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    with pytest.warns(UserWarning, match="outra configuração"), pytest.raises(KeyboardInterrupt):
+        _roda(
+            df.copy(),
+            interrompe,
+            parallel_requests=paralelo,
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
+
+    assert ckpt.read_bytes() == anterior
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_sem_checkpoint_deixa_as_linhas_pagas_na_entrada_pandas(paralelo):
+    df = pd.DataFrame({"texto": [f"t{i}" for i in range(9)]})
+    pagas, llm = _llm_com_ctrl_c(na_chamada=5)
+
+    with pytest.raises(KeyboardInterrupt):
+        _roda(df, llm, parallel_requests=paralelo)
+
+    assert sorted(df.loc[df["_dataframeit_status"].eq("processed"), "texto"]) == sorted(pagas)
