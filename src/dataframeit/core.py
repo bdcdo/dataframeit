@@ -2507,73 +2507,76 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
     rows_processed_this_run = 0
     rows_saved = 0
 
-    # Processar cada linha
+    def process_row(i: int, idx: Hashable, row: pd.Series) -> bool:
+        """Registra o desfecho da linha e devolve se a chamada deu certo."""
+        # Verificar se linha já foi processada
+        row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
+
+        success = False
+        if _is_missing_text(row[text_column]):
+            _record_missing_text(
+                df,
+                idx,
+                status_col=status_col,
+                row_already_processed=row_already_processed,
+                reprocess_columns=reprocess_columns,
+            )
+        else:
+            try:
+                result = _invoke_row(
+                    backend,
+                    str(row[text_column]),
+                    row,
+                    reprocess_columns if row_already_processed else None,
+                    expected_columns,
+                    nan_columns=nan_columns,
+                )
+                _record_success(
+                    df,
+                    idx,
+                    result,
+                    status_col=status_col,
+                    expected_columns=expected_columns,
+                    config=config,
+                    track_tokens=track_tokens,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
+                    trace_mode=trace_mode,
+                    token_stats=token_stats,
+                )
+                success = True
+            except ProviderAbortError as e:
+                token_stats["abort"] = _error_text(e)
+                _mark_unreached(
+                    df,
+                    [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]],
+                    status_col=status_col,
+                    reprocess_columns=reprocess_columns,
+                )
+            except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
+                _record_error_safely(
+                    df,
+                    idx,
+                    e,
+                    status_col=status_col,
+                    config=config,
+                    row_already_processed=row_already_processed,
+                    reprocess_columns=reprocess_columns,
+                    token_stats=token_stats,
+                )
+        return success
+
+    # Processar cada linha. A gravação do checkpoint fica neste laço, e não em
+    # process_row, para que o aviso de falha aponte a chamada do usuário (ver o
+    # stacklevel de _try_save_checkpoint).
     try:
         for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-            # Verificar se linha já foi processada
-            row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
-
             # Com reprocess_columns, todas as linhas são processadas.
             if not reprocess_columns and not is_pending[i]:
                 continue
-
-            success = False
-            if _is_missing_text(row[text_column]):
-                _record_missing_text(
-                    df,
-                    idx,
-                    status_col=status_col,
-                    row_already_processed=row_already_processed,
-                    reprocess_columns=reprocess_columns,
-                )
-            else:
-                try:
-                    result = _invoke_row(
-                        backend,
-                        str(row[text_column]),
-                        row,
-                        reprocess_columns if row_already_processed else None,
-                        expected_columns,
-                        nan_columns=nan_columns,
-                    )
-                    _record_success(
-                        df,
-                        idx,
-                        result,
-                        status_col=status_col,
-                        expected_columns=expected_columns,
-                        config=config,
-                        track_tokens=track_tokens,
-                        row_already_processed=row_already_processed,
-                        reprocess_columns=reprocess_columns,
-                        trace_mode=trace_mode,
-                        token_stats=token_stats,
-                    )
-                    success = True
-                except ProviderAbortError as e:
-                    token_stats["abort"] = _error_text(e)
-                    _mark_unreached(
-                        df,
-                        [
-                            df.index[j]
-                            for j in range(i, len(df))
-                            if reprocess_columns or is_pending[j]
-                        ],
-                        status_col=status_col,
-                        reprocess_columns=reprocess_columns,
-                    )
-                    break
-                except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
-                    _record_error_safely(
-                        df,
-                        idx,
-                        e,
-                        status_col=status_col,
-                        config=config,
-                        row_already_processed=row_already_processed,
-                        reprocess_columns=reprocess_columns,
-                        token_stats=token_stats,
-                    )
+            success = process_row(i, idx, row)
+            if "abort" in token_stats:
+                break
 
             rows_processed_this_run += 1
             if (
