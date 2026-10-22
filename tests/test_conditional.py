@@ -5,12 +5,13 @@ import os
 import re
 import subprocess
 import sys
-from typing import Any
+from enum import Enum
+from typing import Annotated, Any, Optional, Union
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 from pydantic.json_schema import JsonDict
 
 from dataframeit import dataframeit, field_condition
@@ -25,6 +26,7 @@ from dataframeit.conditional import (
     should_skip_field,
     topological_sort,
 )
+from dataframeit.core import _validate_processed_rows
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -178,21 +180,38 @@ class TestDependencies:
 
     def test_check_dependencies_exist_all_valid(self):
         """Testa verificação de dependências válidas."""
-        all_fields = {"a", "b", "c"}
-        missing = check_dependencies_exist(["a", "b"], all_fields)
+
+        class M(BaseModel):
+            a: str
+            b: str
+            c: str
+
+        missing = check_dependencies_exist(["a", "b"], M)
         assert missing == []
 
     def test_check_dependencies_exist_some_invalid(self):
         """Testa verificação com dependências inválidas."""
-        all_fields = {"a", "b", "c"}
-        missing = check_dependencies_exist(["a", "x", "y"], all_fields)
+
+        class M(BaseModel):
+            a: str
+            b: str
+            c: str
+
+        missing = check_dependencies_exist(["a", "x", "y"], M)
         assert set(missing) == {"x", "y"}
 
     def test_check_dependencies_nested_field(self):
         """Testa verificação de dependência com campo aninhado."""
-        all_fields = {"endereco", "nome"}
-        missing = check_dependencies_exist(["endereco.cidade"], all_fields)
-        assert missing == []
+
+        class Endereco(BaseModel):
+            cidade: str
+
+        class M(BaseModel):
+            endereco: Endereco
+            nome: str
+
+        missing = check_dependencies_exist(["endereco.cidade", "endereco.cidadee"], M)
+        assert missing == ["endereco.cidadee"]
 
     def test_detect_circular_dependencies_no_cycle(self):
         """Testa detecção sem ciclos."""
@@ -1277,3 +1296,160 @@ def test_field_condition_recusa_condicao_que_nao_e_funcao(condicao):
 def test_field_condition_recusa_depends_on_vazio_ou_de_outra_forma(depends_on):
     with pytest.raises(ValueError, match="declare os campos lidos pela condição"):
         field_condition(_tipo_pj, depends_on=depends_on)
+
+
+# =============================================================================
+# Caminho aninhado conferido inteiro contra o modelo
+# =============================================================================
+
+
+class _EnderecoDeEntrega(BaseModel):
+    cidade: str
+    uf: str | None = None
+
+
+class _Filial(BaseModel):
+    endereco: _EnderecoDeEntrega
+
+
+def _sempre(_dados):
+    return True
+
+
+def _entrega(anotacao, configuracao):
+    return create_model(
+        "Entrega",
+        endereco=(anotacao, None),
+        taxa=(Optional[float], Field(None, json_schema_extra=configuracao)),
+    )
+
+
+_SUBMODELOS_DE_ENDERECO = [
+    _EnderecoDeEntrega,
+    Optional[_EnderecoDeEntrega],
+    Optional[Annotated[_EnderecoDeEntrega, "endereço"]],
+    Union[_EnderecoDeEntrega, _Filial],
+]
+
+
+@pytest.mark.parametrize("anotacao", _SUBMODELOS_DE_ENDERECO)
+@pytest.mark.parametrize(
+    "configuracao",
+    [
+        {"condition": {"field": "endereco.cidadee", "equals": "SP"}},
+        field_condition(_sempre, depends_on="endereco.cidadee"),
+    ],
+    ids=["condicao_dict", "depends_on"],
+)
+def test_caminho_aninhado_com_campo_inexistente_e_recusado(anotacao, configuracao):
+    """O erro de digitação depois da raiz é recusado como a raiz inexistente."""
+    modelo = _entrega(anotacao, configuracao)
+
+    mensagem = "Campo 'taxa' depende de campos inexistentes: ['endereco.cidadee']"
+    with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+        get_field_execution_order(modelo, {"taxa": configuracao})
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "caminho"),
+    [
+        (_EnderecoDeEntrega, "endereco.cidade"),
+        (Optional[Annotated[_EnderecoDeEntrega, "endereço"]], "endereco.uf"),
+        # O segmento vale quando é campo de um dos modelos da união.
+        (Union[_EnderecoDeEntrega, _Filial], "endereco.endereco.cidade"),
+        # Sem campos declarados para conferir, o resto do caminho é aceito.
+        (dict[str, str], "endereco.cidade"),
+        (Any, "endereco.cidade.nome"),
+        (Union[_EnderecoDeEntrega, dict[str, str]], "endereco.bairro"),
+    ],
+)
+def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
+    configuracao = {"condition": {"field": caminho, "equals": "SP"}}
+
+    _, dependencias = get_field_execution_order(
+        _entrega(anotacao, configuracao), {"taxa": configuracao}
+    )
+
+    assert dependencias["taxa"] == ["endereco"]
+
+
+def test_caminho_aninhado_inexistente_falha_antes_de_processar():
+    modelo = _entrega(
+        _EnderecoDeEntrega, {"condition": {"field": "endereco.cidadee", "equals": "SP"}}
+    )
+
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent") as call_agent,
+        pytest.raises(ValueError, match=re.escape("inexistentes: ['endereco.cidadee']")),
+    ):
+        dataframeit(
+            pd.DataFrame({"texto": ["x"]}),
+            questions=modelo,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+        )
+    call_agent.assert_not_called()
+
+
+# =============================================================================
+# Condição sobre campo Enum: a execução e a retomada comparam pelo valor
+# =============================================================================
+
+
+class _Tipo(Enum):
+    PF = "pf"
+    PJ = "pj"
+
+
+# Cada condição com o resultado esperado para tipo 'pf', com o operando escrito
+# como valor e como membro do Enum.
+_CONDICOES_SOBRE_ENUM = [
+    ({"field": "tipo", "equals": "pf"}, True),
+    ({"field": "tipo", "equals": _Tipo.PF}, True),
+    ({"field": "tipo", "equals": "pj"}, False),
+    ({"field": "tipo", "not_equals": "pf"}, False),
+    ({"field": "tipo", "not_equals": _Tipo.PJ}, True),
+    ({"field": "tipo", "in": ["pf", "pj"]}, True),
+    ({"field": "tipo", "in": {_Tipo.PF}}, True),
+    ({"field": "tipo", "not_in": ("pf",)}, False),
+    ({"field": "tipo", "not_in": frozenset({_Tipo.PJ})}, True),
+]
+
+
+@pytest.mark.parametrize(("condicao", "verdadeira"), _CONDICOES_SOBRE_ENUM)
+def test_condicao_sobre_enum_na_execucao_compara_o_valor_do_membro(condicao, verdadeira):
+    """O call_agent devolve o model_dump da resposta, que guarda o membro do Enum."""
+
+    class Pessoa(BaseModel):
+        tipo: _Tipo
+        cpf: str | None = Field(None, json_schema_extra={"condition": condicao})
+
+    linha, chamadas = _executar_por_campo(Pessoa, Pessoa(tipo="pf", cpf="111").model_dump())
+
+    assert chamadas == ([["tipo"], ["cpf"]] if verdadeira else [["tipo"]])
+    assert linha["cpf"] == ("111" if verdadeira else None)
+
+
+@pytest.mark.parametrize("tipo_relido", ["pf", _Tipo.PF], ids=["texto", "membro"])
+@pytest.mark.parametrize(("condicao", "verdadeira"), _CONDICOES_SOBRE_ENUM)
+def test_condicao_sobre_enum_na_retomada_da_o_resultado_da_execucao(
+    condicao, verdadeira, tipo_relido
+):
+    """O checkpoint relido traz o Enum como texto, e a saída em memória, como membro.
+
+    Com a condição verdadeira, o cpf obrigatório ausente é acusado; com a falsa,
+    ele foi pulado, e a linha passa.
+    """
+
+    class Pessoa(BaseModel):
+        tipo: _Tipo
+        cpf: str = Field(json_schema_extra={"condition": condicao})
+
+    df = pd.DataFrame({"tipo": [tipo_relido], "cpf": [None], "_dataframeit_status": ["processed"]})
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", Pessoa, set())
+
+    assert incompativeis == (["cpf"] if verdadeira else [])

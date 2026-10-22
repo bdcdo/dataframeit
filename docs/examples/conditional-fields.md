@@ -127,6 +127,8 @@ Para somar outras chaves por campo, desempacote o dict: `json_schema_extra={**fi
 {'field': 'campo_opcional', 'exists': True}
 ```
 
+Num campo `Enum`, a comparação é pelo valor do membro: com `tipo: Tipo` e `Tipo.PF = 'pf'`, tanto `{'field': 'tipo', 'equals': 'pf'}` quanto `{'field': 'tipo', 'equals': Tipo.PF}` valem para `Tipo.PF`, na execução e na retomada. Em `in` e `not_in`, cada valor aceito é comparado do mesmo jeito.
+
 Sem `depends_on`, a ordem de um callable não é garantida.
 
 ## Campos Aninhados em Condições
@@ -148,6 +150,8 @@ class Entrega(BaseModel):
         },
     )
 ```
+
+O caminho é conferido inteiro antes de processar, em `condition` e em `depends_on`: enquanto atravessa submodelos, cada parte tem de ser campo do modelo anterior, e `endereco.cidadee` levanta `ValueError`, como uma raiz inexistente. Depois de um campo que não é modelo, como `dict`, o resto do caminho não é conferido.
 
 A condição fica no campo de nível superior. `condition` ou `depends_on` num campo de modelo aninhado, ou de item de lista, levanta `ValueError` antes de processar.
 
@@ -197,7 +201,7 @@ class InfoCompleta(BaseModel):
 
 1. Condicionais só funcionam com `use_search=True` e `search_per_field=True`; sem isso, `condition` ou `depends_on` no modelo levanta `ValueError`.
 2. Com `search_groups`, a condição de um campo agrupado é avaliada antes da chamada do grupo, e o campo com condição falsa fica fora dela; se a condição depende de outro campo do mesmo grupo, ela é avaliada com a resposta do grupo, e o campo com condição falsa fica `None`.
-3. A condição só pode ler campos que existem no modelo.
+3. A condição só pode ler campos que existem no modelo, inclusive no caminho aninhado.
 4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele.
 5. Cada condição é avaliada uma vez: antes da chamada do campo, ou depois da resposta do grupo quando depende de outro campo do mesmo grupo.
 6. Os campos com condição são processados em sequência, na ordem das dependências; um campo pulado não consome busca.

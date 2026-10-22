@@ -127,6 +127,8 @@ To add other per-field keys, unpack the dict: `json_schema_extra={**field_condit
 {'field': 'campo_opcional', 'exists': True}
 ```
 
+On an `Enum` field, the comparison uses the member's value: with `tipo: Tipo` and `Tipo.PF = 'pf'`, both `{'field': 'tipo', 'equals': 'pf'}` and `{'field': 'tipo', 'equals': Tipo.PF}` hold for `Tipo.PF`, during execution and when resuming. In `in` and `not_in`, each accepted value is compared the same way.
+
 Without `depends_on`, the order of a callable is not guaranteed.
 
 ## Nested Fields in Conditions
@@ -148,6 +150,8 @@ class Entrega(BaseModel):
         },
     )
 ```
+
+The whole path is checked before processing, in `condition` and in `depends_on`: while it goes through nested models, each part must be a field of the previous model, and `endereco.cidadee` raises `ValueError`, like a root that does not exist. After a field that is not a model, such as a `dict`, the rest of the path is not checked.
 
 The condition belongs to a top-level field. `condition` or `depends_on` on a field of a nested model, or of a list item, raises `ValueError` before processing.
 
@@ -197,7 +201,7 @@ class InfoCompleta(BaseModel):
 
 1. Conditions only work with `use_search=True` and `search_per_field=True`; otherwise, `condition` or `depends_on` in the model raises `ValueError`.
 2. With `search_groups`, a grouped field's condition is evaluated before the group call, and a field whose condition is false is left out of it; if the condition depends on another field of the same group, it is evaluated with the group's answer, and a field whose condition is false stays `None`.
-3. A condition can only read fields that exist in the model.
+3. A condition can only read fields that exist in the model, including along a nested path.
 4. Circular dependencies are not allowed, including between a group and fields outside it.
 5. Each condition is evaluated once: before the field's call, or after the group's answer when it depends on another field of the same group.
 6. Fields with conditions are processed in sequence, in dependency order; a skipped field spends no search.
