@@ -2456,7 +2456,7 @@ def _progress_suffix(
     return ""
 
 
-def _process_rows(  # noqa: PLR0913 (estado da execução repassado por dataframeit)
+def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por dataframeit, e um ramo por desfecho da linha)
     df: pd.DataFrame,
     *,
     text_column: str,
@@ -2508,78 +2508,91 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     rows_saved = 0
 
     # Processar cada linha
-    for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-        # Verificar se linha já foi processada
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
+    try:
+        for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
+            # Verificar se linha já foi processada
+            row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
 
-        # Com reprocess_columns, todas as linhas são processadas.
-        if not reprocess_columns and not is_pending[i]:
-            continue
+            # Com reprocess_columns, todas as linhas são processadas.
+            if not reprocess_columns and not is_pending[i]:
+                continue
 
-        success = False
-        if _is_missing_text(row[text_column]):
-            _record_missing_text(
-                df,
-                idx,
-                status_col=status_col,
-                row_already_processed=row_already_processed,
-                reprocess_columns=reprocess_columns,
-            )
-        else:
-            try:
-                result = _invoke_row(
-                    backend,
-                    str(row[text_column]),
-                    row,
-                    reprocess_columns if row_already_processed else None,
-                    expected_columns,
-                    nan_columns=nan_columns,
-                )
-                _record_success(
+            success = False
+            if _is_missing_text(row[text_column]):
+                _record_missing_text(
                     df,
                     idx,
-                    result,
                     status_col=status_col,
-                    expected_columns=expected_columns,
-                    config=config,
-                    track_tokens=track_tokens,
                     row_already_processed=row_already_processed,
                     reprocess_columns=reprocess_columns,
-                    trace_mode=trace_mode,
-                    token_stats=token_stats,
                 )
-                success = True
-            except ProviderAbortError as e:
-                token_stats["abort"] = _error_text(e)
-                _mark_unreached(
-                    df,
-                    [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]],
-                    status_col=status_col,
-                    reprocess_columns=reprocess_columns,
-                )
-                break
-            except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
-                _record_error_safely(
-                    df,
-                    idx,
-                    e,
-                    status_col=status_col,
-                    config=config,
-                    row_already_processed=row_already_processed,
-                    reprocess_columns=reprocess_columns,
-                    token_stats=token_stats,
-                )
+            else:
+                try:
+                    result = _invoke_row(
+                        backend,
+                        str(row[text_column]),
+                        row,
+                        reprocess_columns if row_already_processed else None,
+                        expected_columns,
+                        nan_columns=nan_columns,
+                    )
+                    _record_success(
+                        df,
+                        idx,
+                        result,
+                        status_col=status_col,
+                        expected_columns=expected_columns,
+                        config=config,
+                        track_tokens=track_tokens,
+                        row_already_processed=row_already_processed,
+                        reprocess_columns=reprocess_columns,
+                        trace_mode=trace_mode,
+                        token_stats=token_stats,
+                    )
+                    success = True
+                except ProviderAbortError as e:
+                    token_stats["abort"] = _error_text(e)
+                    _mark_unreached(
+                        df,
+                        [
+                            df.index[j]
+                            for j in range(i, len(df))
+                            if reprocess_columns or is_pending[j]
+                        ],
+                        status_col=status_col,
+                        reprocess_columns=reprocess_columns,
+                    )
+                    break
+                except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
+                    _record_error_safely(
+                        df,
+                        idx,
+                        e,
+                        status_col=status_col,
+                        config=config,
+                        row_already_processed=row_already_processed,
+                        reprocess_columns=reprocess_columns,
+                        token_stats=token_stats,
+                    )
 
-        rows_processed_this_run += 1
-        if (
-            checkpoint
-            and rows_processed_this_run % checkpoint.batch_size == 0
-            and _try_save_checkpoint(df, checkpoint)
-        ):
-            rows_saved = rows_processed_this_run
+            rows_processed_this_run += 1
+            if (
+                checkpoint
+                and rows_processed_this_run % checkpoint.batch_size == 0
+                and _try_save_checkpoint(df, checkpoint)
+            ):
+                rows_saved = rows_processed_this_run
 
-        if success and config.rate_limit_delay > 0:
-            time.sleep(config.rate_limit_delay)
+            if success and config.rate_limit_delay > 0:
+                time.sleep(config.rate_limit_delay)
+    except KeyboardInterrupt:
+        # Ctrl-C: grava as linhas registradas desde a última gravação, que a
+        # retomada pagaria de novo, e relança a interrupção. A linha cuja chamada
+        # foi cortada não chegou a ser registrada e fica pendente. A falha de
+        # gravação vira aviso em _try_save_checkpoint e não troca a interrupção.
+        if checkpoint and rows_processed_this_run > rows_saved:
+            _try_save_checkpoint(df, checkpoint)
+        raise
 
     # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
     # fora e as marcas de uma interrupção, que não contam como linha processada.
@@ -2589,7 +2602,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     return token_stats
 
 
-def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
+def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado compartilhado entre threads)
     df: pd.DataFrame,
     *,
     text_column: str,
@@ -2786,54 +2799,66 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         return {"success": True, "idx": idx}
 
     # Processar com ThreadPoolExecutor
-    with tqdm(total=len(rows_to_process), desc=desc) as pbar:
-        # Usar abordagem iterativa para permitir ajuste dinâmico de workers
-        pending_rows = list(rows_to_process)
+    try:
+        with tqdm(total=len(rows_to_process), desc=desc) as pbar:
+            # Usar abordagem iterativa para permitir ajuste dinâmico de workers
+            pending_rows = list(rows_to_process)
 
-        while pending_rows and not abort_event.is_set():
-            # Pegar batch com número atual de workers
-            with lock:
-                worker_batch = min(current_workers, len(pending_rows))
-            batch = pending_rows[:worker_batch]
-            pending_rows = pending_rows[worker_batch:]
+            while pending_rows and not abort_event.is_set():
+                # Pegar batch com número atual de workers
+                with lock:
+                    worker_batch = min(current_workers, len(pending_rows))
+                batch = pending_rows[:worker_batch]
+                pending_rows = pending_rows[worker_batch:]
 
-            with ThreadPoolExecutor(max_workers=worker_batch) as executor:
-                futures = {}
-                for row in batch:
-                    # A linha que não foi despachada nunca rodou: falhar ao
-                    # despachar interrompe a execução e a deixa sem status, para
-                    # a retomada. Como 'error', o resume=True a preservaria.
-                    try:
-                        futures[executor.submit(process_single_row, row)] = row
-                    except Exception as e:  # noqa: BLE001 (ver o comentário acima)
-                        with lock:
-                            token_stats.setdefault("abort", _error_text(e))
-                        abort_event.set()
-                        break
-
-                for future in as_completed(futures):
-                    try:
-                        outcome = future.result()
-                    except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
-                        # Escapou do tratamento da própria linha; sem isto ela
-                        # ficaria sem status e sumiria da saída.
-                        _i, idx, _row = futures[future]
-                        if idx in counted:
-                            warnings.warn(
-                                f"Erro inesperado no executor depois de registrar a linha "
-                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                                stacklevel=1,
-                            )
-                        else:
+                with ThreadPoolExecutor(max_workers=worker_batch) as executor:
+                    futures = {}
+                    for row in batch:
+                        # A linha que não foi despachada nunca rodou: falhar ao
+                        # despachar interrompe a execução e a deixa sem status, para
+                        # a retomada. Como 'error', o resume=True a preservaria.
+                        try:
+                            futures[executor.submit(process_single_row, row)] = row
+                        except Exception as e:  # noqa: BLE001 (ver o comentário acima)
                             with lock:
-                                _record_unrecorded_error(df, idx, e, status_col=status_col)
-                                snapshot = _count_row(idx)
-                            _save_snapshot(snapshot)
-                        recorded.add(idx)
-                    else:
-                        if outcome["success"] or outcome["error"] is not None:
-                            recorded.add(outcome["idx"])
-                    pbar.update(1)
+                                token_stats.setdefault("abort", _error_text(e))
+                            abort_event.set()
+                            break
+
+                    for future in as_completed(futures):
+                        try:
+                            outcome = future.result()
+                        except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
+                            # Escapou do tratamento da própria linha; sem isto ela
+                            # ficaria sem status e sumiria da saída.
+                            _i, idx, _row = futures[future]
+                            if idx in counted:
+                                warnings.warn(
+                                    f"Erro inesperado no executor depois de registrar a linha "
+                                    f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                                    stacklevel=1,
+                                )
+                            else:
+                                with lock:
+                                    _record_unrecorded_error(df, idx, e, status_col=status_col)
+                                    snapshot = _count_row(idx)
+                                _save_snapshot(snapshot)
+                            recorded.add(idx)
+                        else:
+                            if outcome["success"] or outcome["error"] is not None:
+                                recorded.add(outcome["idx"])
+                        pbar.update(1)
+    except KeyboardInterrupt:
+        # Ctrl-C: a saída do executor espera as linhas em andamento, e elas chegam
+        # aqui registradas. Um segundo Ctrl-C durante essa espera deixa threads
+        # rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
+        # demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
+        # não regrava o arquivo sem linha contada desde o último snapshot gravado.
+        if writer:
+            with lock:
+                frame, label = df.copy(), checkpoint_counter
+            writer.save(frame, label)
+        raise
 
     if abort_event.is_set():
         _mark_unreached(
