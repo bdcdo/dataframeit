@@ -294,15 +294,18 @@ def test_lista_em_coluna_existente_float():
 # =============================================================================
 
 
-def test_reexecucao_sobre_a_propria_saida_avisa():
-    primeira, _ = _rodar(pd.DataFrame({"texto": ["a", "b"]}))
-    assert "_dataframeit_status" not in primeira.columns
+@pytest.mark.parametrize("status_column", [None, "st"])
+def test_reexecucao_sobre_a_propria_saida_levanta_e_diz_como_retomar(status_column):
+    primeira, _ = _rodar(pd.DataFrame({"texto": ["a", "b"]}), status_column=status_column)
+    nome = status_column or "_dataframeit_status"
+    assert nome not in primeira.columns
 
-    with warnings.catch_warnings(record=True) as avisos:
-        warnings.simplefilter("always")
-        _rodar(primeira, resume=True)
-
-    assert any("já estão preenchidas" in str(a.message) for a in avisos)
+    _recusa(
+        primeira,
+        rf"\['x'\] já existem .* df\['{nome}'\] = 'processed'",
+        questions=Modelo,
+        status_column=status_column,
+    )
 
 
 # =============================================================================
@@ -341,7 +344,8 @@ def _recusa(entrada, match, questions=ModeloCategoria, **opcoes):
 def test_coluna_com_nome_de_campo_sem_status_levanta(resume):
     _recusa(
         _rotulos_humanos(),
-        r"As colunas \['categoria'\] já existem .* Renomeie ou remova",
+        r"As colunas \['categoria'\] já existem .* Renomeie ou remova essas colunas, ou passe "
+        r"reprocess_columns=\['categoria'\] para sobrescrevê-las de propósito\.",
         resume=resume,
     )
 
@@ -373,20 +377,6 @@ def test_coluna_de_campo_sem_valor_nenhum_recebe_a_resposta():
     assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
 
 
-@pytest.mark.parametrize("status_column", [None, "st"])
-def test_saida_completa_sem_status_levanta_e_diz_como_retomar(status_column):
-    primeira, _ = _rodar(pd.DataFrame({"texto": ["a", "b"]}), status_column=status_column)
-    nome = status_column or "_dataframeit_status"
-    assert nome not in primeira.columns
-
-    _recusa(
-        primeira,
-        rf"\['x'\] já existem .* df\['{nome}'\] = 'processed'",
-        questions=Modelo,
-        status_column=status_column,
-    )
-
-
 def test_reprocess_columns_sem_status_refaz_a_coluna_pedida():
     df = pd.DataFrame({"texto": ["a", "b"], "categoria": ["humano a", "humano b"]})
 
@@ -403,7 +393,12 @@ def test_reprocess_columns_sem_status_refaz_a_coluna_pedida():
 
 def test_reprocess_columns_sem_status_nao_cobre_outra_coluna_existente():
     df = _rotulos_humanos().assign(nota=[7, 8])
-    _recusa(df, r"As colunas \['categoria'\] já existem", reprocess_columns=["nota"])
+    _recusa(
+        df,
+        r"As colunas \['categoria'\] já existem .* reprocess_columns=\['categoria', 'nota'\] "
+        "para sobrescrevê-las",
+        reprocess_columns=["nota"],
+    )
 
 
 def test_dataframe_vazio_com_coluna_de_campo_sem_status_nao_levanta():
@@ -559,7 +554,7 @@ def test_padroes_do_modelo_em_coluna_float_na_retomada():
     assert resultado["tags"].tolist() == [[], ["t"]]
 
 
-def test_reexecucao_avisa_mesmo_com_linha_toda_nula():
+def test_reexecucao_levanta_mesmo_com_linha_toda_nula():
     primeira, _ = _rodar(
         pd.DataFrame({"texto": ["a", "b"]}),
         questions=ModeloOpcional,
@@ -567,11 +562,7 @@ def test_reexecucao_avisa_mesmo_com_linha_toda_nula():
     )
     assert primeira["x"].tolist() == ["x", None]
 
-    with warnings.catch_warnings(record=True) as avisos:
-        warnings.simplefilter("always")
-        _rodar(primeira, questions=ModeloOpcional, resume=True)
-
-    assert any("já estão preenchidas" in str(a.message) for a in avisos)
+    _recusa(primeira, r"As colunas \['x'\] já existem", questions=ModeloOpcional)
 
 
 @pytest.mark.parametrize(

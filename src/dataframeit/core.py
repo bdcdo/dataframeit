@@ -1496,13 +1496,18 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         if col not in reprocessed_columns and df_pandas[col].notna().to_numpy().any()
     ]
     if overwritten and status_col not in df_pandas.columns:
+        # A sugestão soma as colunas já pedidas, para não tirá-las do reprocessamento.
+        suggested = [
+            col for col in expected_columns if col in reprocessed_columns or col in overwritten
+        ]
         msg = (
             f"As colunas {overwritten} já existem no DataFrame com o nome de campos do "
             f"modelo, e sem a coluna de status '{status_col}' a resposta do LLM as "
-            "sobrescreveria. Renomeie ou remova essas colunas. Se o DataFrame é uma saída "
-            f"do dataframeit, devolva a ele a coluna de status com df['{status_col}'] = "
-            "'processed': a execução o retoma, e reprocess_columns refaz só as colunas "
-            "indicadas."
+            "sobrescreveria. Renomeie ou remova essas colunas, ou passe "
+            f"reprocess_columns={suggested!r} para sobrescrevê-las de propósito. Se o "
+            "DataFrame é uma saída do dataframeit, devolva a ele a coluna de status com "
+            f"df['{status_col}'] = 'processed': a execução o retoma, e reprocess_columns "
+            "refaz só as colunas indicadas."
         )
         raise ValueError(msg)
     if existing_cols and not resume and not reprocess_columns:
@@ -2082,8 +2087,8 @@ def _resume_from_checkpoint(
 
     Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
     execução acrescenta e os campos do modelo, sobre o que a entrada trazia
-    neles. Na linha com sucesso é o que a execução sem interrupção daria, porque
-    ela grava a resposta por cima; na linha com erro, são as respostas anteriores
+    neles. Na linha com sucesso, é a resposta paga que o checkpoint gravou; na
+    linha com erro, são as respostas anteriores
     que um reprocessamento guardou, ou o que a entrada daquela execução trazia.
     A entrada não tem
     como dizer se um valor ali é correção à mão ou resposta de outra execução,

@@ -217,9 +217,9 @@ def _llm_dois(limite, erro):
     return chamadas, llm
 
 
-@pytest.mark.parametrize("reprocessar", [None, ["campo1", "campo2"]])
-def test_retomada_da_o_mesmo_resultado_que_a_execucao_sem_interrupcao(tmp_path, reprocessar):
+def test_retomada_da_o_mesmo_resultado_que_a_execucao_sem_interrupcao(tmp_path):
     """Valor que a entrada já trazia antes da execução não vence a resposta paga."""
+    reprocessar = ["campo1", "campo2"]
     ckpt = tmp_path / "ckpt.csv"
     df = pd.DataFrame({"texto": ["a", "b"], "campo1": ["humano", None]})
     with warnings.catch_warnings():
@@ -478,7 +478,15 @@ def test_linha_com_erro_no_checkpoint_tambem_vem_dele(tmp_path):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        _roda(df, falha_em_b, batch_size=1, checkpoint_path=ckpt, max_retries=1, base_delay=0)
+        _roda(
+            df,
+            falha_em_b,
+            batch_size=1,
+            checkpoint_path=ckpt,
+            max_retries=1,
+            base_delay=0,
+            reprocess_columns=["campo1"],
+        )
     corrigida = df.copy()
     corrigida.loc[1, "campo1"] = "à mão"
 
