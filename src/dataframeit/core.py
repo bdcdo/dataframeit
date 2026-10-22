@@ -21,7 +21,8 @@ from decimal import Decimal
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from types import CodeType
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, overload
 
 import pandas as pd
 from pandas.api.types import is_bool, is_scalar
@@ -1870,10 +1871,13 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
     linhas dele às desta execução misturaria respostas a perguntas diferentes.
     """
-    try:
-        schema = questions.model_json_schema()
-    except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
-        schema = repr(questions.model_fields)
+    if _has_unstable_extra(questions):
+        schema = _schema_form(questions)
+    else:
+        try:
+            schema = questions.model_json_schema()
+        except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
+            schema = repr(questions.model_fields)
     payload = json.dumps(
         {
             "prompt": prompt,
@@ -1897,20 +1901,141 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _stable(value: object) -> object:
+def _has_unstable_extra(questions: type[BaseModel]) -> bool:
+    """Se o json_schema_extra de algum campo, inclusive aninhado, tem função ou conjunto.
+
+    Com eles, o JSON Schema não serve de assinatura: a função faz
+    model_json_schema() falhar, e o fallback leva o endereço dela; o conjunto vira
+    lista na ordem de iteração, que muda com a semente de hash do processo. Os
+    outros modelos ficam com o JSON Schema, e a assinatura deles é a mesma do
+    checkpoint já gravado com eles.
+    """
+    return any(
+        isinstance(field_info.json_schema_extra, dict)
+        and _outside_json(field_info.json_schema_extra)
+        for _, field_info, _ in _walk_fields(questions)
+    )
+
+
+def _outside_json(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_outside_json(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_outside_json(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        # O hash do inteiro é o próprio valor: o conjunto só de inteiros itera na
+        # mesma ordem em todo processo, e o JSON Schema dele é estável.
+        return not all(isinstance(item, int) for item in value)
+    return callable(value)
+
+
+# Atributos do campo na forma canônica: os que o JSON Schema levaria ao LLM e a
+# configuração da biblioteca em json_schema_extra.
+_SIGNED_FIELD_ATTRIBUTES = (
+    "annotation",
+    "default",
+    "default_factory",
+    "alias",
+    "validation_alias",
+    "title",
+    "description",
+    "examples",
+    "deprecated",
+    "discriminator",
+    "json_schema_extra",
+    "metadata",
+)
+
+
+def _schema_form(questions: type[BaseModel]) -> object:
+    """Forma canônica do modelo, para o lugar do JSON Schema na assinatura.
+
+    Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
+    e a função entram pelo que `_schema_leaf` tira deles.
+    """
+    return _stable(
+        {
+            "model": questions,
+            "fields": {
+                path: {
+                    attribute: getattr(field_info, attribute)
+                    for attribute in _SIGNED_FIELD_ATTRIBUTES
+                }
+                for path, field_info, _ in _walk_fields(questions)
+            },
+        },
+        _schema_leaf,
+    )
+
+
+def _schema_leaf(value: object) -> object:
+    """Folha da forma canônica: tipo pelo nome e conteúdo, função pelo código.
+
+    O resto fica para o `default` do json.dumps em `_run_signature`, que tira o
+    endereço do repr.
+    """
+    if get_origin(value) is not None:
+        return {
+            "origin": _schema_leaf(get_origin(value)),
+            "args": _stable(get_args(value), _schema_leaf),
+        }
+    if isinstance(value, type) and issubclass(value, BaseModel):
+        # Os campos dele já entram pelo caminho; aqui, o que o JSON Schema tiraria
+        # da classe: o título, a descrição e o model_config.
+        return {
+            "model": value.__name__,
+            "doc": value.__doc__,
+            "config": _stable(value.model_config, _schema_leaf),
+        }
+    if isinstance(value, type) and issubclass(value, Enum):
+        return {
+            "enum": value.__name__,
+            "members": _stable({member.name: member.value for member in value}, _schema_leaf),
+        }
+    if isinstance(value, type):
+        return value.__name__
+    code = getattr(value, "__code__", None)
+    if isinstance(code, CodeType):
+        return {"function": getattr(value, "__qualname__", None), "code": _code_form(code)}
+    return value
+
+
+def _code_form(code: CodeType) -> list[object]:
+    """Bytecode, constantes e nomes lidos pela função, sem o arquivo nem a linha.
+
+    Duas funções com o mesmo nome qualificado, como a lambda editada entre uma
+    execução e outra, só assinam igual com o mesmo código. O que a função lê de
+    fora dele (variável global ou do escopo de fora, valor padrão de argumento, o
+    corpo de outra função que ela chama) não entra. O bytecode muda de uma versão
+    menor do Python para outra (3.11, 3.12), e o checkpoint de um modelo com função
+    não é retomado depois dessa troca. A constante frozenset, que o compilador gera
+    para `x in {"a", "b"}`, é ordenada pelo `_stable`.
+    """
+    return [
+        code.co_code.hex(),
+        [
+            _code_form(constant) if isinstance(constant, CodeType) else _stable(constant)
+            for constant in code.co_consts
+        ],
+        list(code.co_names),
+    ]
+
+
+def _stable(value: object, leaf: Callable[[object], object] | None = None) -> object:
     """Forma que serializa igual em qualquer processo.
 
     Chaves de dict viram texto, para ordenar dict com chaves int e str juntas, e
     conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
-    semente de hash do processo.
+    semente de hash do processo. `leaf` converte o que não é dict, lista, tupla
+    nem conjunto; sem ele, o valor fica como está.
     """
     if isinstance(value, dict):
-        return {str(key): _stable(item) for key, item in value.items()}
+        return {str(key): _stable(item, leaf) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_stable(item) for item in value]
+        return [_stable(item, leaf) for item in value]
     if isinstance(value, (set, frozenset)):
-        return sorted((_stable(item) for item in value), key=_stable_repr)
-    return value
+        return sorted((_stable(item, leaf) for item in value), key=_stable_repr)
+    return value if leaf is None else leaf(value)
 
 
 def _stable_repr(value: object) -> str:
