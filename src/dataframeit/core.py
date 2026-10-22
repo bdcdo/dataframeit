@@ -2605,7 +2605,17 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
     return token_stats
 
 
-def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado compartilhado entre threads)
+@contextmanager
+def _on_ctrl_c(callback: Callable[[], None]) -> Iterator[None]:
+    """Chama `callback` quando um KeyboardInterrupt atravessa o bloco, e o relança."""
+    try:
+        yield
+    except KeyboardInterrupt:
+        callback()
+        raise
+
+
+def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
     df: pd.DataFrame,
     *,
     text_column: str,
@@ -2801,67 +2811,69 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
             time.sleep(config.rate_limit_delay)
         return {"success": True, "idx": idx}
 
-    # Processar com ThreadPoolExecutor
-    try:
-        with tqdm(total=len(rows_to_process), desc=desc) as pbar:
-            # Usar abordagem iterativa para permitir ajuste dinâmico de workers
-            pending_rows = list(rows_to_process)
+    def save_registered_rows() -> None:
+        """Grava o checkpoint no Ctrl-C.
 
-            while pending_rows and not abort_event.is_set():
-                # Pegar batch com número atual de workers
-                with lock:
-                    worker_batch = min(current_workers, len(pending_rows))
-                batch = pending_rows[:worker_batch]
-                pending_rows = pending_rows[worker_batch:]
-
-                with ThreadPoolExecutor(max_workers=worker_batch) as executor:
-                    futures = {}
-                    for row in batch:
-                        # A linha que não foi despachada nunca rodou: falhar ao
-                        # despachar interrompe a execução e a deixa sem status, para
-                        # a retomada. Como 'error', o resume=True a preservaria.
-                        try:
-                            futures[executor.submit(process_single_row, row)] = row
-                        except Exception as e:  # noqa: BLE001 (ver o comentário acima)
-                            with lock:
-                                token_stats.setdefault("abort", _error_text(e))
-                            abort_event.set()
-                            break
-
-                    for future in as_completed(futures):
-                        try:
-                            outcome = future.result()
-                        except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
-                            # Escapou do tratamento da própria linha; sem isto ela
-                            # ficaria sem status e sumiria da saída.
-                            _i, idx, _row = futures[future]
-                            if idx in counted:
-                                warnings.warn(
-                                    f"Erro inesperado no executor depois de registrar a linha "
-                                    f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                                    stacklevel=1,
-                                )
-                            else:
-                                with lock:
-                                    _record_unrecorded_error(df, idx, e, status_col=status_col)
-                                    snapshot = _count_row(idx)
-                                _save_snapshot(snapshot)
-                            recorded.add(idx)
-                        else:
-                            if outcome["success"] or outcome["error"] is not None:
-                                recorded.add(outcome["idx"])
-                        pbar.update(1)
-    except KeyboardInterrupt:
-        # Ctrl-C: a saída do executor espera as linhas em andamento, e elas chegam
-        # aqui registradas. Um segundo Ctrl-C durante essa espera deixa threads
-        # rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
-        # demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
-        # não regrava o arquivo sem linha contada desde o último snapshot gravado.
+        A saída do executor espera as linhas em andamento, e elas chegam aqui
+        registradas. Um segundo Ctrl-C durante essa espera deixa threads
+        rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
+        demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
+        não regrava o arquivo sem linha contada desde o último snapshot gravado.
+        """
         if writer:
             with lock:
                 frame, label = df.copy(), checkpoint_counter
             writer.save(frame, label)
-        raise
+
+    # Processar com ThreadPoolExecutor
+    with _on_ctrl_c(save_registered_rows), tqdm(total=len(rows_to_process), desc=desc) as pbar:
+        # Usar abordagem iterativa para permitir ajuste dinâmico de workers
+        pending_rows = list(rows_to_process)
+
+        while pending_rows and not abort_event.is_set():
+            # Pegar batch com número atual de workers
+            with lock:
+                worker_batch = min(current_workers, len(pending_rows))
+            batch = pending_rows[:worker_batch]
+            pending_rows = pending_rows[worker_batch:]
+
+            with ThreadPoolExecutor(max_workers=worker_batch) as executor:
+                futures = {}
+                for row in batch:
+                    # A linha que não foi despachada nunca rodou: falhar ao
+                    # despachar interrompe a execução e a deixa sem status, para
+                    # a retomada. Como 'error', o resume=True a preservaria.
+                    try:
+                        futures[executor.submit(process_single_row, row)] = row
+                    except Exception as e:  # noqa: BLE001 (ver o comentário acima)
+                        with lock:
+                            token_stats.setdefault("abort", _error_text(e))
+                        abort_event.set()
+                        break
+
+                for future in as_completed(futures):
+                    try:
+                        outcome = future.result()
+                    except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
+                        # Escapou do tratamento da própria linha; sem isto ela
+                        # ficaria sem status e sumiria da saída.
+                        _i, idx, _row = futures[future]
+                        if idx in counted:
+                            warnings.warn(
+                                f"Erro inesperado no executor depois de registrar a linha "
+                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                                stacklevel=1,
+                            )
+                        else:
+                            with lock:
+                                _record_unrecorded_error(df, idx, e, status_col=status_col)
+                                snapshot = _count_row(idx)
+                            _save_snapshot(snapshot)
+                        recorded.add(idx)
+                    else:
+                        if outcome["success"] or outcome["error"] is not None:
+                            recorded.add(outcome["idx"])
+                    pbar.update(1)
 
     if abort_event.is_set():
         _mark_unreached(
