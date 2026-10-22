@@ -61,8 +61,10 @@ from .utils import (
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _admits_none,
     _json_default,
     _keeps_nan,
+    accepts_only_text,
     from_pandas,
     get_complex_fields,
     normalize_complex_columns,
@@ -318,8 +320,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     status_col: str,
     pydantic_model: type[BaseModel],
     complex_fields: set[str],
+    *,
+    empty_text_fields: Collection[str] = frozenset(),
 ) -> tuple[list[str], dict[tuple[int, str], Any]]:
-    """Valida linhas concluídas sem alterar o checkpoint recebido."""
+    """Valida linhas concluídas sem alterar o checkpoint recebido.
+
+    Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
+    CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
+    quando a condição do campo é falsa na linha, que o deixa None.
+    """
     incompatible_fields: set[str] = set()
     values_to_fill: dict[tuple[int, str], Any] = {}
     expected_columns = list(pydantic_model.model_fields)
@@ -432,6 +441,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         for field_name, field in pydantic_model.model_fields.items():
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
+                if field_name in empty_text_fields and field_name not in skipped:
+                    # Gravado também quando a linha é recusada por outro campo:
+                    # com esse campo em reprocess_columns, a linha fica, e este
+                    # mantém o valor que tinha.
+                    projected[field_name] = ""
+                    values_to_fill[(position, field_name)] = ""
+                    continue
                 missing_values.add(field_name)
                 if not field.is_required() or field_name in skipped:
                     continue
@@ -1373,6 +1389,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # é desta execução, ela continua dele. Quem carrega o checkpoint à mão e o
     # passa como entrada já traz a coluna, e o arquivo não é lido de novo.
     signature = None
+    empty_text_fields: frozenset[str] = frozenset()
     if checkpoint is not None:
         signature = _run_signature(
             questions,
@@ -1391,7 +1408,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             structures=frozenset(complex_fields),
         )
         if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
-            _resume_from_checkpoint(
+            empty_text_fields = _resume_from_checkpoint(
                 df_pandas,
                 checkpoint,
                 questions,
@@ -1449,6 +1466,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             status_col,
             questions,
             complex_fields,
+            empty_text_fields=empty_text_fields,
         )
     uncovered_columns = [
         column for column in incompatible_columns if column not in reprocessed_columns
@@ -1621,7 +1639,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         if kept:
             summary += (
                 f", e {kept} não foram reprocessadas e mantêm os valores anteriores "
-                "(marcadas em _error_details); para elas, repita a chamada com reprocess_columns"
+                "(marcadas em _error_details); repetir a chamada com reprocess_columns "
+                "refaz todas as linhas, inclusive as já reprocessadas"
             )
         if checkpoint is not None:
             how = "rode de novo com o mesmo checkpoint_path, ou com resume=True sobre esta saída"
@@ -2001,7 +2020,7 @@ def _resume_from_checkpoint(
     *,
     text_column: str,
     status_col: str,
-) -> None:
+) -> frozenset[str]:
     """Traz para a entrada, in-place, o que um checkpoint desta execução já processou.
 
     O checkpoint é retomado só quando a assinatura gravada ao lado dele é a
@@ -2020,6 +2039,19 @@ def _resume_from_checkpoint(
     checkpoint não relê. As demais colunas de entrada ficam como o usuário as
     passou, porque o CSV e o XLSX não preservam o tipo delas. As colunas se
     casam pelo nome em texto, que é como o CSV as devolve.
+
+    Devolve os campos cuja célula vazia, numa linha processada, é o texto
+    vazio, para a validação da retomada (`_validate_processed_rows`); sem
+    retomar, nenhum. O CSV e o XLSX gravam o texto vazio e o None na mesma
+    célula vazia, que o leitor devolve ausente. A assinatura garante que o
+    checkpoint foi gravado com este modelo, e nele o campo que só aceita texto,
+    não admite None e não tem None por padrão só fica None quando a condição
+    dele é falsa. O campo com exclude=True fica de fora, porque o model_dump
+    não o traz e a célula dele guarda o None que a execução pôs ao criar a
+    coluna. Sem essa garantia, como no checkpoint carregado à mão, a
+    célula vazia continua ausente, porque com outro modelo ela pode ser o None
+    de um campo que o admitia. No campo que admite None, ela volta None, e o
+    texto vazio só sobrevive no parquet.
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
     if reason is not None or saved is None:
@@ -2030,7 +2062,7 @@ def _resume_from_checkpoint(
             UserWarning,
             stacklevel=3,
         )
-        return
+        return frozenset()
 
     concluded = saved[status_col].notna().to_numpy()
     by_name = {str(column): column for column in df.columns}
@@ -2045,6 +2077,14 @@ def _resume_from_checkpoint(
             values = df[target].to_numpy(dtype=object).copy()
             values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
             df[target] = values
+    return frozenset(
+        field_name
+        for field_name, field in questions.model_fields.items()
+        if accepts_only_text(field.annotation)
+        and not _admits_none(field.annotation)
+        and field.default is not None
+        and not field.exclude
+    )
 
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
@@ -2076,7 +2116,7 @@ def _array_as_list(value: object) -> object:
 
 
 def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
-    """Cópia com listas, dicts, tuplas e arrays do numpy serializados como JSON.
+    """Cópia com listas, dicts, tuplas, conjuntos e arrays do numpy serializados como JSON.
 
     CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
     de volta, e o de um array ("['a' 'b']") o literal_eval lê como ['ab']. O
@@ -2100,7 +2140,7 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 
     def to_json(value: object) -> object:
         value = _array_as_list(value)
-        if isinstance(value, (list, dict, tuple)):
+        if isinstance(value, (list, dict, tuple, set, frozenset)):
             return json.dumps(value, ensure_ascii=False, default=_json_default)
         return enum_as_value(value)
 
@@ -2147,7 +2187,7 @@ def _save_checkpoint(
     if ext == ".csv":
         _structures_as_json(df).to_csv(tmp, index=False)
     elif ext == ".xlsx":
-        _structures_as_json(df).to_excel(tmp, index=False)
+        _to_excel_as_text(_structures_as_json(df), tmp)
     elif ext == ".parquet":
         _structures_as_json(df, structures).to_parquet(tmp, index=False)
     else:
@@ -2159,6 +2199,23 @@ def _save_checkpoint(
     tmp.replace(path)
     if meta is not None:
         _write_checkpoint_signature(path, meta)
+
+
+def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
+    """Grava o XLSX com o texto que começa com "=" como texto, e não como fórmula.
+
+    O openpyxl toma por fórmula todo texto que começa com "=", e o leitor do
+    pandas devolve vazia a célula de fórmula, que nunca foi calculada. O
+    checkpoint não grava fórmula: toda célula que o openpyxl marcou assim é
+    texto da execução ou da entrada, e volta a ser texto. O engine é fixado
+    porque a marca é do openpyxl, que o checkpoint .xlsx já exige.
+    """
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+        for row in next(iter(writer.sheets.values())).iter_rows():
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
 
 
 def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
