@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort, ThreadTokenUsage
 
-# Status HTTP de rate limit e início da faixa de erro do servidor.
+# Status HTTP de credencial recusada, de rate limit e início da faixa de erro do
+# servidor.
+_HTTP_UNAUTHORIZED = 401
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR_MIN = 500
 # Código JSON-RPC com que o app-server do Codex recusa um pedido quando a fila de
@@ -1104,13 +1106,23 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
             continue
         status = getattr(root, payload_field).http_status_code
         if status == _HTTP_TOO_MANY_REQUESTS:
-            raise ProviderOverloadedError(message)
-        if status is None or status >= _HTTP_SERVER_ERROR_MIN:
-            raise ProviderTransientError(message)
-        raise ProviderError(message)
+            error_class = ProviderOverloadedError
+        elif status is None or status >= _HTTP_SERVER_ERROR_MIN:
+            error_class = ProviderTransientError
+        else:
+            error_class = ProviderError
+        # A mensagem do turno pode trazer texto da conversa com o modelo, e a
+        # caixa amigável sai do status, que vai no status_code da exceção.
+        raise error_class(message, status_code=status)
 
     if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
         raise ProviderTransientError(message)
+
+    # O código unauthorized é a recusa da credencial do Codex. Sem status HTTP no
+    # turno, ele vai como 401 para que a caixa de autenticação, que manda refazer
+    # o login, saia do código, e não do texto.
+    if root is CodexErrorInfoValue.unauthorized:
+        raise ProviderError(message, status_code=_HTTP_UNAUTHORIZED)
 
     # Os demais códigos ficam como falha da linha. Entre eles, a violação de
     # política vem do conteúdo da requisição, e as recusas acumuladas e o
