@@ -157,7 +157,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
+A seção de throughput só aparece com `parallel_requests > 1`. Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
 
 Para silenciar o resumo e manter as colunas de uso, suba o nível do logger:
 

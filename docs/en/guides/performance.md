@@ -155,7 +155,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
+The throughput section appears only with `parallel_requests > 1`. Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
 
 To silence the summary and keep the usage columns, raise the logger level:
 
