@@ -44,6 +44,16 @@ except ImportError:
 class ProviderError(RuntimeError):
     """Falha de execução reportada por um provider."""
 
+    def __init__(self, *args: object, status_code: int | None = None) -> None:
+        """Guarda, além da mensagem, o status HTTP que o provider informou como dado.
+
+        A mensagem pode trazer texto do modelo, e por isso get_friendly_error_message
+        escolhe a caixa pela classe e por `status_code`, e nunca pelo texto. Sem
+        status informado, fica None.
+        """
+        super().__init__(*args)
+        self.status_code = status_code
+
 
 class ProviderTransientError(ProviderError):
     """Falha transitória que pode ser repetida sem reduzir o paralelismo."""
@@ -453,7 +463,17 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     provider_name = provider_data["name"]
     env_var = provider_data["env_var"]
 
-    error_str = f"{type(error).__name__}: {error}".lower()
+    # A mensagem de um ProviderError pode trazer texto do modelo: o result do SDK
+    # no claude_code, a mensagem do turno no codex. Um "API key", um "art. 403" ou
+    # um "timeout" ali é conteúdo, e não diz nada de credencial, permissão ou
+    # rede. Por isso, para ele, os padrões abaixo leem um texto vazio, e a caixa
+    # sai da classe e do status estruturado (o status_code que o provider
+    # preenche); sem status, cai na genérica, que mostra o tipo e o começo da
+    # mensagem. Os demais erros, como os do LangChain, que embrulham os SDKs de
+    # vários providers, ainda são lidos pelo texto quando não há status.
+    error_str = (
+        "" if isinstance(error, ProviderError) else f"{type(error).__name__}: {error}".lower()
+    )
     error_name = type(error).__name__
     status = _http_error_status(error)
     # 'exa' como palavra, contando '_' como separador: casa 'EXA_API_KEY' e
@@ -473,22 +493,15 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # mesma função que _process_rows_parallel chama, e não um padrão de texto
     # próprio. Por isso vem antes das caixas decididas pelo texto, que não
     # sombreiam a sobrecarga cuja mensagem cita uma chave ou um 403. Nos
-    # ProviderError, is_rate_limit_error decide pela classe; um '429' no texto,
-    # que pode ser do modelo, cai nas caixas seguintes ou na genérica.
+    # ProviderError, is_rate_limit_error decide pela classe, e um '429' no texto,
+    # que pode ser do modelo, não muda a caixa.
     if is_rate_limit_error(error):
         # O 429 do Tavily e do Exa chega como erro da ferramenta de busca, com o
         # serviço só no texto, e a caixa nomeia o serviço que recusou. As caixas
         # de limite de uso, mais abaixo, ficam para a cota do plano, que não é
         # rate limit nem reduz os workers. O ProviderError vem do provider de
-        # LLM, e o texto dele não muda o nome.
-        may_be_search = not isinstance(error, ProviderError)
-        service = (
-            "Tavily"
-            if may_be_search and "tavily" in error_str
-            else "Exa"
-            if may_be_search and is_exa
-            else provider_name
-        )
+        # LLM, e o texto vazio dele mantém o nome do provider.
+        service = "Tavily" if "tavily" in error_str else "Exa" if is_exa else provider_name
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
@@ -585,7 +598,8 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 
     # === ERROS DE AUTENTICAÇÃO ===
     # Chave inválida decide pelo texto mesmo com status: o Google a devolve
-    # como 400 INVALID_ARGUMENT, que o status sozinho não distingue.
+    # como 400 INVALID_ARGUMENT, que o status sozinho não distingue. No
+    # ProviderError, o texto vazio deixa a decisão só para o 401.
     invalid_key = any(marker in error_str for marker in _INVALID_KEY_MARKERS)
     if invalid_key or is_category(
         ["authenticationerror", "invalidapikey", "api_key", "api key"], (401,)
@@ -670,8 +684,8 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # A caixa sai só para o erro que is_recoverable_error classifica como
     # recuperável, o que retry_with_backoff repete enquanto houver tentativas, e
     # por isso manda aumentar max_retries. Ela não afirma que houve repetição,
-    # porque com max_retries=1 não há. O timeout definitivo, como o
-    # ProviderError cujo texto cita 'timeout', cai nas caixas seguintes.
+    # porque com max_retries=1 não há. No ProviderError, recuperável é o
+    # ProviderTransientError, e o timeout é só o status 408 ou 504.
     if is_recoverable_error(error) and is_category(["timeout", "deadlineexceeded"], (408, 504)):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
