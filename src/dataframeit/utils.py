@@ -816,9 +816,8 @@ def is_complex_type(field_type: object) -> bool:
         True se o tipo, direto ou dentro de Optional/Union, é uma das classes
         de `_STRUCTURE_CLASSES` ou subclasse dela, como o TypedDict e o
         NamedTuple, ou um genérico com uma delas ou com uma das origens de
-        `_ABSTRACT_STRUCTURES` (Sequence, AbstractSet, Mapping e as mutáveis).
-        É o que decide quais campos o checkpoint grava em JSON e a retomada
-        normaliza de volta.
+        `_ABSTRACT_STRUCTURES`. É o que decide quais campos o checkpoint grava
+        em JSON e a retomada normaliza de volta.
     """
     field_type = _resolved(field_type)
     origin = get_origin(field_type)
