@@ -6,12 +6,15 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 
 import importlib.util
 import tempfile
+from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet, Sequence
+from collections.abc import Set as AbstractSet
 from pathlib import Path
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, NamedTuple, Optional
 
 import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 
 from dataframeit.utils import (
     _normalize_all_json_columns,
@@ -120,6 +123,46 @@ def test_is_complex_type_annotated_dentro_de_optional():
     assert is_complex_type(Annotated[list[str], Field(min_length=1)] | None) is True
     assert is_complex_type(Optional[Annotated[dict, Field(description="x")]]) is True
     assert is_complex_type(Annotated[str, Field(min_length=1)] | None) is False
+
+
+class Autoria(TypedDict):
+    autor: str
+    ano: int
+
+
+class Ponto(NamedTuple):
+    x: int
+    y: int
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [
+        Sequence[str],
+        MutableSequence[str],
+        set[str],
+        frozenset[str],
+        AbstractSet[str],
+        MutableSet[str],
+        Mapping[str, int],
+        MutableMapping[str, int],
+        set,
+        frozenset,
+        Autoria,
+        Ponto,
+        Optional[set[str]],
+        Annotated[Sequence[str], Field(min_length=1)] | None,
+    ],
+)
+def test_is_complex_type_colecao_que_o_model_dump_devolve_como_estrutura(anotacao):
+    """O model_dump devolve cada uma como lista, conjunto, dict ou tupla, que a célula guarda."""
+    assert is_complex_type(anotacao) is True
+
+
+@pytest.mark.parametrize("anotacao", [bytes, Literal["a", "b"], Optional[Literal["a"]]])
+def test_is_complex_type_texto_e_bytes_nao_sao_estrutura(anotacao):
+    """O str e o bytes são Sequence para o collections.abc, mas a célula guarda o valor inteiro."""
+    assert is_complex_type(anotacao) is False
 
 
 # =============================================================================
