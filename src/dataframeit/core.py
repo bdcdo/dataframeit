@@ -56,11 +56,13 @@ from .llm import (
 )
 from .search import get_available_providers, get_provider
 from .utils import (
+    _USER_COLUMN,
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_PANDAS_DF,
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _column_rank,
     _json_default,
     _keeps_nan,
     from_pandas,
@@ -966,6 +968,64 @@ def _has_field_config(pydantic_model: type[BaseModel]) -> bool:
     return bool(_collect_configured_fields(pydantic_model))
 
 
+# O que a execução grava na coluna de status; a célula vazia marca a linha pendente.
+_STATUS_VALUES = ("processed", "error")
+
+
+def _validate_status_column(
+    df: pd.DataFrame, status_col: str, *, text_column: str, expected_columns: list[str]
+) -> None:
+    """Recusa a coluna de status que ocuparia uma coluna de entrada, de resposta ou de controle.
+
+    A execução grava o status de cada linha por cima do que houver na coluna e,
+    na saída sem erro, a remove. Uma coluna existente só serve de status quando
+    traz apenas o que a própria execução grava nela, e aí é a de uma execução
+    anterior, que se retoma.
+    """
+    if status_col == text_column:
+        msg = (
+            f"status_column='{status_col}' é a coluna de texto, e a coluna de status "
+            "ocuparia o texto de entrada. Escolha outro nome."
+        )
+        raise ValueError(msg)
+    if status_col in expected_columns:
+        msg = (
+            f"status_column='{status_col}' é um campo do modelo, e a coluna de status "
+            "ocuparia a resposta dele. Escolha outro nome."
+        )
+        raise ValueError(msg)
+    # _column_rank diz quais colunas a execução acrescenta; o status padrão é a
+    # única delas que pode ser a coluna de status, e com o nome de outra cada
+    # linha teria dois valores numa célula. O nome fica recusado mesmo com a
+    # opção que cria a coluna desligada, porque uma retomada com ela ligada
+    # (track_tokens é o padrão) gravaria por cima do status.
+    if (
+        status_col != "_dataframeit_status"
+        and _column_rank(status_col, "_dataframeit_status") != _USER_COLUMN
+    ):
+        msg = (
+            f"status_column='{status_col}' é o nome de uma coluna de controle do dataframeit, "
+            "gravada na mesma linha que o status, e um dos dois valores se perderia. "
+            "Escolha outro nome."
+        )
+        raise ValueError(msg)
+    if status_col in df.columns:
+        status = df[status_col]
+        foreign = status[status.notna() & ~status.isin(_STATUS_VALUES)]
+        if not foreign.empty:
+            # tolist() devolve escalares Python, cujo repr não traz o tipo do numpy.
+            value, label = foreign.tolist()[0], foreign.index.tolist()[0]
+            allowed = ", ".join(repr(status_value) for status_value in _STATUS_VALUES)
+            msg = (
+                f"A coluna de status '{status_col}' já existe no DataFrame com valores que não "
+                f"são de status do dataframeit ({value!r} na linha {label!r}), e a execução os "
+                f"leria como status e sobrescreveria a coluna. A coluna de status só guarda "
+                f"{allowed} ou vazio: passe em status_column outro nome, ou renomeie a coluna "
+                "existente."
+            )
+            raise ValueError(msg)
+
+
 # Os overloads ligam o tipo da entrada ao da saída. O de pandas vem primeiro:
 # sem polars instalado, PolarsDataFrame não resolve e casaria com qualquer
 # entrada se fosse o primeiro.
@@ -1085,9 +1145,13 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         perguntas: (Deprecated) Use 'questions'.
         resume: Se True (padrão), continua de onde parou: só as linhas sem status
             são processadas, e as marcadas 'processed' ou 'error' ficam como estão.
-            Se False, processa toda linha que não esteja 'processed'. Com False, se
-            alguma coluna do modelo já existe no DataFrame e reprocess_columns não
-            foi passado, emite um aviso e devolve a entrada sem processar.
+            Se False, processa toda linha que não esteja 'processed'. Com False e a
+            coluna de status presente, se alguma coluna do modelo já existe no
+            DataFrame e reprocess_columns não foi passado, emite um aviso e devolve
+            a entrada sem processar. Sem a coluna de status, com True ou False, toda
+            linha conta como nova, e uma coluna com algum valor e com o nome de um
+            campo do modelo levanta ValueError antes de qualquer chamada, a menos
+            que esteja em reprocess_columns.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM. Se None, usa o default do provider em
@@ -1095,7 +1159,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         provider: Provider do LangChain ('openai', 'google_genai', 'anthropic', etc),
             'claude_code' ou 'codex'. Codex usa o SDK Python oficial.
         status_column: Coluna para rastrear progresso. Se None, usa
-            "_dataframeit_status".
+            "_dataframeit_status". Não pode ser a coluna de texto, um campo do
+            modelo nem outra coluna de controle do dataframeit, e a coluna
+            existente com esse nome só serve se trouxer apenas 'processed',
+            'error' ou vazio; fora disso, levanta ValueError.
         text_column: Nome da coluna com textos. Se None em um DataFrame, a lib
                     infere dentre TEXT_COLUMN_CANDIDATES ('texto', 'text',
                     'decisao', 'content', 'content_text'); DataFrames com uma
@@ -1361,6 +1428,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             raise ValueError(msg)
 
     status_col = status_column or "_dataframeit_status"
+    _validate_status_column(
+        df_pandas, status_col, text_column=text_column, expected_columns=expected_columns
+    )
     complex_fields = get_complex_fields(questions)
     # Campos cujo NaN é valor, separado do nulo (`_keeps_nan`).
     nan_columns = frozenset(
@@ -1412,8 +1482,34 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
-    # Verificar conflitos de colunas
+    # Sem coluna de status, toda linha conta como nova e recebe a resposta em
+    # todos os campos, e a coluna de entrada com o nome de um deles seria
+    # sobrescrita; só a de reprocess_columns foi pedida, e a coluna sem valor
+    # nenhum não tem o que perder. Vem depois da releitura do checkpoint, que
+    # traz a coluna de status da execução que se retoma, e da entrada vazia,
+    # que não tem linha a sobrescrever.
+    reprocessed_columns = set(reprocess_columns or [])
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
+    overwritten = [
+        col
+        for col in existing_cols
+        if col not in reprocessed_columns and df_pandas[col].notna().to_numpy().any()
+    ]
+    if overwritten and status_col not in df_pandas.columns:
+        # A sugestão soma as colunas já pedidas, para não tirá-las do reprocessamento.
+        suggested = [
+            col for col in expected_columns if col in reprocessed_columns or col in overwritten
+        ]
+        msg = (
+            f"As colunas {overwritten} já existem no DataFrame com o nome de campos do "
+            f"modelo, e sem a coluna de status '{status_col}' a resposta do LLM as "
+            "sobrescreveria. Renomeie ou remova essas colunas, ou passe "
+            f"reprocess_columns={suggested!r} para sobrescrevê-las de propósito. Se o "
+            "DataFrame é uma saída do dataframeit, devolva a ele a coluna de status com "
+            f"df['{status_col}'] = 'processed': a execução o retoma, e reprocess_columns "
+            "refaz só as colunas indicadas."
+        )
+        raise ValueError(msg)
     if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
@@ -1421,26 +1517,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
-    # Sem coluna de status, resume=True trata toda linha como pendente. Numa
-    # saída anterior sem erros a coluna foi removida, e rodar de novo refaria
-    # todas as chamadas.
-    if (
-        resume
-        and not reprocess_columns
-        and status_col not in df_pandas.columns
-        and existing_cols == expected_columns
-        and df_pandas[expected_columns].notna().to_numpy().any()
-    ):
-        warnings.warn(
-            f"As colunas {expected_columns} já estão preenchidas e não há coluna "
-            f"'{status_col}': todas as linhas serão processadas de novo. Se o "
-            "DataFrame já é uma saída do dataframeit, não é preciso rodar outra vez; "
-            "para refazer só algumas colunas, use reprocess_columns.",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    reprocessed_columns = set(reprocess_columns or [])
     incompatible_columns = []
     processed_values = {}
     if resume or reprocess_columns:
@@ -2011,8 +2087,8 @@ def _resume_from_checkpoint(
 
     Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
     execução acrescenta e os campos do modelo, sobre o que a entrada trazia
-    neles. Na linha com sucesso é o que a execução sem interrupção daria, porque
-    ela grava a resposta por cima; na linha com erro, são as respostas anteriores
+    neles. Na linha com sucesso, é a resposta paga que o checkpoint gravou; na
+    linha com erro, são as respostas anteriores
     que um reprocessamento guardou, ou o que a entrada daquela execução trazia.
     A entrada não tem
     como dizer se um valor ali é correção à mão ou resposta de outra execução,

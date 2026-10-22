@@ -263,6 +263,7 @@ def test_reprocess_columns_with_existing_columns_no_warning():
             "texto": ["a"],
             "campo1": ["valor_existente"],
             "campo2": ["outro_existente"],
+            "_dataframeit_status": ["processed"],
         }
     )
 
@@ -278,7 +279,7 @@ def test_reprocess_columns_with_existing_columns_no_warning():
     ):
         warnings.simplefilter("always")
 
-        dataframeit(
+        result = dataframeit(
             df,
             questions=SimpleModel,
             prompt="Teste {texto}",
@@ -289,6 +290,8 @@ def test_reprocess_columns_with_existing_columns_no_warning():
         # Não deve ter warning sobre conflito de colunas
         conflict_warnings = [warning for warning in w if "já existem" in str(warning.message)]
         assert len(conflict_warnings) == 0
+    assert result["campo1"].tolist() == ["novo"]
+    assert result["campo2"].tolist() == ["outro_existente"]
 
 
 def test_reprocess_columns_resume_after_interrupt():

@@ -47,7 +47,11 @@ With `resume=True` (default), only rows without status are processed. To redo th
 
 ### The model columns already exist and nothing was processed
 
-With `resume=False`, if the model columns are already in the DataFrame and `reprocess_columns` was not passed, dataframeit emits a warning and returns the data unprocessed, so as not to overwrite results. Use `resume=True` to continue, or `reprocess_columns=[...]` to redo specific columns.
+With `resume=False` and the status column in the DataFrame, if the model columns are already in it and `reprocess_columns` was not passed, dataframeit emits a warning and returns the data unprocessed, so as not to overwrite results. Use `resume=True` to continue, or `reprocess_columns=[...]` to redo specific columns.
+
+### `ValueError` because a column already exists with the name of a model field
+
+Without the status column, every row counts as new, and the model's answer would overwrite the input column that has the name of a field, such as a classification made by hand. dataframeit refuses the run before any call, with `resume=True` or `resume=False`; a column without any value and a column in `reprocess_columns` do not count. Rename or drop the column, or pass it in `reprocess_columns` to overwrite it on purpose. If the DataFrame is a dataframeit output, which comes without the status column when no row had an error, put the column back with `df["_dataframeit_status"] = "processed"` (or the name passed in `status_column`): the run resumes from it, and `reprocess_columns` redoes only the columns listed.
 
 ## Limits and costs
 

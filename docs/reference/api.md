@@ -54,9 +54,9 @@ def dataframeit(
 
 | Parâmetro | Tipo | Padrão | Descrição |
 |-----------|------|--------|-----------|
-| `resume` | bool | `True` | Com `True`, continua de onde parou: processa só as linhas sem status e preserva as que têm `'processed'` ou `'error'`. Com `False`, processa toda linha que não esteja `'processed'`; se as colunas do modelo já existirem e `reprocess_columns` não for passado, emite um aviso e devolve os dados sem processar |
+| `resume` | bool | `True` | Com `True`, continua de onde parou: processa só as linhas sem status e preserva as que têm `'processed'` ou `'error'`. Com `False`, processa toda linha que não esteja `'processed'`; com a coluna de status presente, se as colunas do modelo já existirem e `reprocess_columns` não for passado, emite um aviso e devolve os dados sem processar. Sem a coluna de status, com `True` ou `False`, toda linha conta como nova, e uma coluna da entrada com algum valor e com o nome de um campo do modelo levanta `ValueError` antes de qualquer chamada, a menos que esteja em `reprocess_columns` |
 | `reprocess_columns` | list | `None` | Lista de colunas para forçar reprocessamento; ao retomar com modelo alterado, deve cobrir os campos incompatíveis das linhas já processadas |
-| `status_column` | str | `None` | Nome da coluna de status; `None` usa `_dataframeit_status` |
+| `status_column` | str | `None` | Nome da coluna de status; `None` usa `_dataframeit_status`. Não pode ser a coluna de texto, um campo do modelo nem outra das [colunas adicionadas](#colunas-adicionadas), e a coluna existente com esse nome só serve se trouxer apenas `'processed'`, `'error'` ou vazio; fora disso, levanta `ValueError` |
 
 #### Modelo
 
