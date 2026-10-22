@@ -1871,7 +1871,6 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
     linhas dele às desta execução misturaria respostas a perguntas diferentes.
     """
-    schema: object
     if _has_unstable_extra(questions):
         schema = _schema_form(questions)
     else:
