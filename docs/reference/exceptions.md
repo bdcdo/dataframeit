@@ -53,4 +53,6 @@ ValueError
 | `ProviderRejectedOutputError` | Sim | A resposta não passou na validação do modelo Pydantic. Nos providers do LangChain, a nova tentativa leva ao modelo a resposta recusada e o erro; no `claude_code`, repete o pedido |
 | `ProviderOutputError` | Não | O provider terminou sem resposta utilizável, como um turno do `codex` sem conteúdo ou com resposta que não passa na validação do modelo Pydantic |
 
+O `ProviderError` e as subclasses trazem em `status_code` o status HTTP que o provider informou fora da mensagem, ou `None` quando ele não informou: no `claude_code`, o `api_error_status` do SDK; no `codex`, o status HTTP do turno que falhou, e 401 no código `unauthorized`. A caixa do aviso de falha da linha sai da classe e desse status, e não da mensagem, que pode trazer texto do modelo; sem status, a caixa é a genérica, com o tipo e o começo da mensagem.
+
 Erros dos providers via LangChain não usam essas classes. Eles são classificados pelo tipo que a própria LangChain declara, pelo status HTTP e pela mensagem. Os detalhes estão em [Tratamento de Erros](../guides/error-handling.md).
