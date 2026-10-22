@@ -51,7 +51,7 @@ With `resume=False` and the status column in the DataFrame, if the model columns
 
 ### `ValueError` because a column already exists with the name of a model field
 
-Without the status column, every row counts as new, and the model's answer would overwrite the input column that has the name of a field, such as a classification made by hand. dataframeit refuses the run before any call, with `resume=True` or `resume=False`; a column without any value and a column in `reprocess_columns` do not count. Rename or drop the column. If the DataFrame is a dataframeit output, which comes without the status column when no row had an error, put the column back with `df["_dataframeit_status"] = "processed"` (or the name passed in `status_column`): the run resumes from it, and `reprocess_columns` redoes only the columns listed.
+Without the status column, every row counts as new, and the model's answer would overwrite the input column that has the name of a field, such as a classification made by hand. dataframeit refuses the run before any call, with `resume=True` or `resume=False`; a column without any value and a column in `reprocess_columns` do not count. Rename or drop the column, or pass it in `reprocess_columns` to overwrite it on purpose. If the DataFrame is a dataframeit output, which comes without the status column when no row had an error, put the column back with `df["_dataframeit_status"] = "processed"` (or the name passed in `status_column`): the run resumes from it, and `reprocess_columns` redoes only the columns listed.
 
 ## Limits and costs
 

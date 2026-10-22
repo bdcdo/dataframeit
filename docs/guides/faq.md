@@ -51,7 +51,7 @@ Com `resume=False` e a coluna de status no DataFrame, se as colunas do modelo j�
 
 ### `ValueError` porque uma coluna já existe com o nome de um campo do modelo
 
-Sem a coluna de status, toda linha conta como nova, e a resposta do modelo sobrescreveria a coluna da entrada que tem o nome de um campo, como uma classificação feita à mão. O dataframeit recusa a execução antes de qualquer chamada, com `resume=True` ou `resume=False`; a coluna sem nenhum valor e a que está em `reprocess_columns` não contam. Renomeie ou remova a coluna. Se o DataFrame é uma saída do dataframeit, que sai sem a coluna de status quando nenhuma linha teve erro, devolva a coluna com `df["_dataframeit_status"] = "processed"` (ou o nome passado em `status_column`): a execução retoma dela, e `reprocess_columns` refaz só as colunas indicadas.
+Sem a coluna de status, toda linha conta como nova, e a resposta do modelo sobrescreveria a coluna da entrada que tem o nome de um campo, como uma classificação feita à mão. O dataframeit recusa a execução antes de qualquer chamada, com `resume=True` ou `resume=False`; a coluna sem nenhum valor e a que está em `reprocess_columns` não contam. Renomeie ou remova a coluna, ou passe-a em `reprocess_columns` para sobrescrevê-la de propósito. Se o DataFrame é uma saída do dataframeit, que sai sem a coluna de status quando nenhuma linha teve erro, devolva a coluna com `df["_dataframeit_status"] = "processed"` (ou o nome passado em `status_column`): a execução retoma dela, e `reprocess_columns` refaz só as colunas indicadas.
 
 ## Limites e custos
 
