@@ -73,21 +73,31 @@ def test_execucao_recusada_e_interrompida_nao_adota_o_checkpoint_antigo(tmp_path
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
     _roda(df, _llm(100, SystemExit())[1], prompt="P1 {texto}", batch_size=10, checkpoint_path=ckpt)
 
+    aviso_do_limite = (
+        contextlib.nullcontext()
+        if isinstance(interrupcao, KeyboardInterrupt)
+        else pytest.warns(UserWarning, match="Execução interrompida")
+    )
     with (
         pytest.warns(UserWarning, match="outra configuração"),
+        aviso_do_limite,
         contextlib.suppress(KeyboardInterrupt),
     ):
-        _roda(df, _llm(0, interrupcao)[1], prompt="P2 {texto}", batch_size=10, checkpoint_path=ckpt)
+        _roda(
+            df,
+            _llm(1, interrupcao, prefixo="B")[1],
+            prompt="P2 {texto}",
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
 
-    # Com o limite de uso, B grava o próprio checkpoint, com as linhas pendentes,
-    # e C retoma dele; com Ctrl-C, o arquivo ainda é o de A, e C recomeça.
-    chamadas, llm = _llm(100, SystemExit(), prefixo="P2-")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        saida = _roda(df, llm, prompt="P2 {texto}", batch_size=10, checkpoint_path=ckpt)
+    # Nas duas interrupções, B grava o próprio checkpoint, com a linha que pagou e
+    # as pendentes, e C retoma dele, sem nenhuma resposta de A.
+    chamadas, llm = _llm(100, SystemExit(), prefixo="C")
+    saida = _roda(df, llm, prompt="P2 {texto}", batch_size=10, checkpoint_path=ckpt)
 
-    assert len(chamadas) == 3
-    assert saida["campo1"].tolist() == ["P2-1", "P2-2", "P2-3"]
+    assert len(chamadas) == 2
+    assert saida["campo1"].tolist() == ["B1", "C1", "C2"]
 
 
 @pytest.mark.parametrize("outra", [["x", "y", "z"], ["x", "y"]])
