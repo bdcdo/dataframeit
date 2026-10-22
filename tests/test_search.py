@@ -2287,3 +2287,68 @@ def test_warn_search_rate_limit_nao_sugere_delay_ja_suficiente():
         )
 
     assert str(record[0].message).endswith("Para evitar HTTP 429, use: parallel_requests=2.")
+
+
+def _aviso_de_busca(**kwargs) -> str | None:
+    """Mensagem do aviso de rate limit da busca, ou None quando ele não sai."""
+    with _warnings.catch_warnings(record=True) as avisos:
+        _warnings.simplefilter("always")
+        _warn_search_rate_limit(**kwargs)
+    return str(avisos[0].message) if avisos else None
+
+
+def test_pausa_entre_linhas_nao_faz_o_aviso_de_busca_aparecer():
+    """Com Exa, três campos e um worker, 0,5 s de pausa não pode estimar mais buscas."""
+    configuracao = {
+        "num_rows": 40,
+        "num_fields": 3,
+        "parallel_requests": 1,
+        "search_per_field": True,
+        "search_provider": "exa",
+    }
+
+    assert _aviso_de_busca(**configuracao, rate_limit_delay=0.0) is None
+    assert _aviso_de_busca(**configuracao, rate_limit_delay=0.5) is None
+
+
+def test_aviso_por_campo_nao_recomenda_mais_workers_que_os_atuais():
+    """Com um worker e três campos, a dica mantém um worker e pede pausa."""
+    mensagem = _aviso_de_busca(
+        num_rows=40,
+        num_fields=3,
+        parallel_requests=1,
+        search_per_field=True,
+        rate_limit_delay=0.0,
+    )
+
+    assert mensagem is not None
+    assert mensagem.endswith(
+        "Para evitar HTTP 429, use: parallel_requests=1, rate_limit_delay=2.6."
+    )
+
+
+@pytest.mark.parametrize("search_per_field", [False, True])
+@pytest.mark.parametrize("provedor", ["tavily", "exa"])
+def test_aviso_de_busca_cai_com_a_pausa_e_nunca_pede_mais_workers(provedor, search_per_field):
+    """Mais pausa nunca faz o aviso aparecer, e a dica nunca sobe parallel_requests."""
+    pausas = [0.0, 0.5, 1.0, 2.0, 10.0]
+    for workers in [1, 2, 3, 5, 10, 20]:
+        for campos in [1, 2, 3, 4, 11]:
+            mensagens = [
+                _aviso_de_busca(
+                    num_rows=40,
+                    num_fields=campos,
+                    parallel_requests=workers,
+                    search_per_field=search_per_field,
+                    rate_limit_delay=pausa,
+                    search_provider=provedor,
+                )
+                for pausa in pausas
+            ]
+            avisou = [mensagem is not None for mensagem in mensagens]
+            assert avisou == sorted(avisou, reverse=True), (workers, campos, avisou)
+            for mensagem in filter(None, mensagens):
+                recomendado = int(
+                    mensagem.split("use: parallel_requests=")[1].split(",")[0].rstrip(".")
+                )
+                assert recomendado <= workers, (workers, campos, mensagem)
