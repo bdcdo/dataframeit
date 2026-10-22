@@ -243,12 +243,14 @@ To debug and audit agent reasoning, use the `save_trace` parameter.
 
 ### Example: Full Trace
 
+With one agent per row, the trace goes to `_trace`. The example uses `CompanyInfo` from [Basic Usage](#basic-usage), which has no per-field configuration:
+
 ```python
 import json
 
 result = dataframeit(
     df,
-    MedicationInfo,
+    CompanyInfo,
     PROMPT,
     use_search=True,
     save_trace=True  # or "full"
