@@ -79,7 +79,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Segurança
 
-- Os workflows do CI fixam cada action pelo SHA do commit, com a versão em comentário; o `actions/checkout` deixa de gravar o token do GitHub no `.git/config` do runner (`persist-credentials: false`); e, no `docs.yml`, só o job que publica tem `pages: write` e `id-token: write`. O job `quality` roda o `zizmor`, que reprova o workflow que volte a ter um desses problemas (#209).
+- Os workflows do CI fixam cada action pelo SHA do commit, com a versão em comentário; o `actions/checkout` deixa de gravar o token do GitHub no `.git/config` do runner (`persist-credentials: false`); e, no `docs.yml`, só o job que publica tem `pages: write` e `id-token: write`. O job `quality` roda o `zizmor`, que reprova a action referida por tag ou branch no lugar do SHA, o `actions/checkout` sem a chave `persist-credentials` e a permissão de escrita no nível do workflow (#209).
 
 ## [0.10.0] - 2026-09-24
 

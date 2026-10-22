@@ -33,7 +33,7 @@ As regras de versionamento, de `CHANGELOG.md` e de escrita de documentação est
 - A documentação descreve o estado atual. O histórico fica no `CHANGELOG.md` e no git, sem notas do tipo "desde a versão X".
 - O número de versão só muda na preparação de um release.
 
-Os workflows de `.github/workflows/` fixam cada action pelo SHA do commit, com a versão em comentário (`uses: dono/action@<sha> # v1.2.3`), e o `actions/checkout` leva `persist-credentials: false`. O passo `zizmor` do job `quality`, em `tests.yml`, reprova a action que entrar sem isso, e o mesmo comando roda na máquina local.
+Os workflows de `.github/workflows/` fixam cada action pelo SHA do commit, com a versão em comentário (`uses: dono/action@<sha> # v1.2.3`), e o `actions/checkout` leva `persist-credentials: false`. O passo `zizmor` do job `quality`, em `tests.yml`, reprova a action referida por tag ou branch no lugar do SHA, o `actions/checkout` sem a chave `persist-credentials` e a permissão de escrita no nível do workflow. O `zizmor --offline` não confere o comentário de versão e aceita `persist-credentials: true`, e essas duas partes da convenção ficam a cargo da revisão do PR. O mesmo comando do passo roda na máquina local.
 
 A documentação tem duas árvores com o mesmo conteúdo: `docs/` em português, que é o idioma padrão do site, e `docs/en/` em inglês. Uma mudança numa página vale para as duas.
 
