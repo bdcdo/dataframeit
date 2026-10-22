@@ -73,16 +73,10 @@ def test_execucao_recusada_e_interrompida_nao_adota_o_checkpoint_antigo(tmp_path
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
     _roda(df, _llm(100, SystemExit())[1], prompt="P1 {texto}", batch_size=10, checkpoint_path=ckpt)
 
-    aviso_do_limite = (
-        contextlib.nullcontext()
-        if isinstance(interrupcao, KeyboardInterrupt)
-        else pytest.warns(UserWarning, match="Execução interrompida")
-    )
-    with (
-        pytest.warns(UserWarning, match="outra configuração"),
-        aviso_do_limite,
-        contextlib.suppress(KeyboardInterrupt),
-    ):
+    # Os avisos se conferem pelo registro: um pytest.warns dentro do outro engole
+    # os avisos do de fora no pytest 7, e o pytest 8 reemite o que não casa.
+    with warnings.catch_warnings(record=True) as avisos, contextlib.suppress(KeyboardInterrupt):
+        warnings.simplefilter("always")
         _roda(
             df,
             _llm(1, interrupcao, prefixo="B")[1],
@@ -90,6 +84,11 @@ def test_execucao_recusada_e_interrompida_nao_adota_o_checkpoint_antigo(tmp_path
             batch_size=10,
             checkpoint_path=ckpt,
         )
+    mensagens = [str(aviso.message) for aviso in avisos]
+    assert any("outra configuração" in mensagem for mensagem in mensagens)
+    assert any("Execução interrompida" in mensagem for mensagem in mensagens) == isinstance(
+        interrupcao, ProviderUsageLimitError
+    )
 
     # Nas duas interrupções, B grava o próprio checkpoint, com a linha que pagou e
     # as pendentes, e C retoma dele, sem nenhuma resposta de A.
