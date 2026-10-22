@@ -285,6 +285,7 @@ class TestEventLoopAtivo:
 
         assert resultado["data"]["sentimento"] == "positivo"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="pthread_kill só existe em POSIX")
     def test_ctrl_c_chega_ao_chamador_sem_esperar_a_query(self, sdk_falso, monkeypatch):
         """No Jupyter, o Ctrl-C sai do loop ativo com a query ainda rodando no outro thread."""
         principal = threading.get_ident()
