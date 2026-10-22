@@ -2070,7 +2070,7 @@ def test_warn_search_rate_limit_exa_higher_threshold():
 
     # Configuração: 10 queries concorrentes está no limite (10), não dispara.
     # A diferença que exercitamos é a taxa estimada:
-    # rate_limit_delay=2.0, parallel=5 => 5 * 30 = 150 rpm
+    # rate_limit_delay=2.0, parallel=5 => 5 * 60 / (1 + 2) = 100 rpm
     # Tavily 80% = 80 -> dispara. Exa 80% = 240 -> não dispara.
     with _warnings.catch_warnings(record=True) as w:
         _warnings.simplefilter("always")
