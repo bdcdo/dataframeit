@@ -2,6 +2,8 @@
 
 Exemplos práticos para casos de uso comuns.
 
+O `dataframeit()` grava os resultados e o status no próprio DataFrame pandas que recebe; ver [Entrada modificada no lugar](../reference/api.md#entrada-modificada-no-lugar). Por isso os exemplos desta página passam `df.copy()`: sem a cópia, cada exemplo encontraria o `df` já processado pelo anterior.
+
 ## Análise de Sentimento
 
 ```python
@@ -22,7 +24,7 @@ df = pd.DataFrame({
     ]
 })
 
-resultado = dataframeit(df, Sentimento, "Analise o sentimento do texto.")
+resultado = dataframeit(df.copy(), Sentimento, "Analise o sentimento do texto.")
 ```
 
 ## Classificação de Categorias
@@ -36,7 +38,7 @@ class Categoria(BaseModel):
     subcategoria: str = Field(description="Subcategoria mais específica")
 
 resultado = dataframeit(
-    df,
+    df.copy(),
     Categoria,
     "Classifique o texto na categoria mais apropriada."
 )
@@ -59,7 +61,7 @@ Extraia todas as entidades nomeadas do texto.
 Se não houver entidades de algum tipo, retorne lista vazia.
 """
 
-resultado = dataframeit(df, Entidades, PROMPT)
+resultado = dataframeit(df.copy(), Entidades, PROMPT)
 ```
 
 ## Resumo de Texto
@@ -77,7 +79,7 @@ Analise o texto e extraia um resumo conciso.
 Identifique os pontos principais e o tema central.
 """
 
-resultado = dataframeit(df, Resumo, PROMPT)
+resultado = dataframeit(df.copy(), Resumo, PROMPT)
 ```
 
 ## Usando Diferentes Tipos de Entrada
@@ -113,18 +115,18 @@ resultado = dataframeit(series, Sentimento, PROMPT)
 
 ```python
 # OpenAI com gpt-6-luna (padrão)
-resultado = dataframeit(df, Model, PROMPT)
+resultado = dataframeit(df.copy(), Model, PROMPT)
 
 # Google Gemini
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     provider='google_genai',
     model='gemini-3.8-flash'
 )
 
 # Anthropic Claude
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     provider='anthropic',
     model='claude-sonnet-5'
 )

@@ -11,6 +11,7 @@ def dataframeit(
     data,
     questions,
     prompt,
+    perguntas=None,  # nome obsoleto de questions
     resume=True,
     reprocess_columns=None,
     model=None,
@@ -102,7 +103,7 @@ Com `use_search=True` e `search_per_field=True`, os campos do modelo aceitam con
 
 ### Retorno
 
-Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
+Retorna um DataFrame com as colunas extraídas: polars para entrada polars e pandas para as demais.
 
 | Entrada | Saída |
 |---------|-------|
@@ -135,6 +136,19 @@ if '_dataframeit_status' in resultado.columns:
 ```
 
 Linhas com texto vazio ou ausente não vão ao modelo: recebem status `'error'` e o detalhe `"Texto ausente"`.
+
+### Entrada modificada no lugar
+
+Com entrada `pd.DataFrame`, o `dataframeit()` grava no próprio DataFrame que recebe as colunas do modelo e as [colunas adicionadas](#colunas-adicionadas), inclusive `_dataframeit_status`, que fica nele mesmo quando a saída a remove. Por isso uma interrupção deixa no DataFrame as linhas já processadas, e `resume=True` continua delas.
+
+Pela mesma razão, uma segunda chamada com o mesmo DataFrame, ou com uma cópia feita depois da primeira, não manda ao modelo as linhas com status `'processed'`: com um modelo de mesmos campos, devolve os resultados da primeira chamada; com `resume=True`, o padrão, e um modelo de outros campos, levanta `ValueError` por campos incompatíveis. Para aplicar outro modelo ou outro prompt aos mesmos textos, passe a cada chamada uma cópia feita antes da primeira:
+
+```python
+resultado_a = dataframeit(df.copy(), ModeloA, PROMPT_A)
+resultado_b = dataframeit(df.copy(), ModeloB, PROMPT_B)
+```
+
+A entrada polars, `pd.Series`, `list` e `dict` não é alterada.
 
 ### Exemplos
 

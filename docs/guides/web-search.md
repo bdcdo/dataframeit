@@ -243,12 +243,14 @@ Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
 
 ### Exemplo: Trace Completo
 
+Com um agente por linha, o trace fica em `_trace`. O exemplo usa o `EmpresaInfo` de [Uso Básico](#uso-basico), que não tem configuração por campo:
+
 ```python
 import json
 
 resultado = dataframeit(
     df,
-    MedicamentoInfo,
+    EmpresaInfo,
     PROMPT,
     use_search=True,
     save_trace=True  # ou "full"
