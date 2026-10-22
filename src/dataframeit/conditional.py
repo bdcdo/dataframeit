@@ -6,7 +6,7 @@ import logging
 import operator
 from typing import TYPE_CHECKING, Any, cast
 
-from .utils import get_nested_pydantic_models, list_layers, resolve_forward_refs
+from .utils import get_nested_pydantic_models, list_layers, resolve_forward_refs, submodels
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -298,25 +298,39 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
     return False
 
 
-def check_dependencies_exist(depends_on: list[str], all_fields: set[str]) -> list[str]:
-    """Verifica se todas as dependências existem no modelo.
+def check_dependencies_exist(depends_on: list[str], pydantic_model: type[BaseModel]) -> list[str]:
+    """Verifica se todas as dependências existem no modelo, com o caminho aninhado inteiro.
 
     Args:
-        depends_on: Lista de campos dos quais este campo depende.
-        all_fields: Set com todos os nomes de campos do modelo.
+        depends_on: Lista de campos dos quais este campo depende. Campo de
+            modelo aninhado usa notação de ponto (`endereco.cidade`).
+        pydantic_model: Modelo Pydantic contra o qual os caminhos são conferidos.
 
     Returns:
         Lista de dependências inexistentes (vazia se todas existem).
     """
-    missing = []
-    for dep in depends_on:
-        # Suporta campos aninhados (ex: 'endereco.cidade')
-        # Verifica apenas o campo raiz
-        root_field = dep.split(".")[0]
-        if root_field not in all_fields:
-            missing.append(dep)
+    return [dep for dep in depends_on if not _path_exists(dep, pydantic_model)]
 
-    return missing
+
+def _path_exists(path: str, pydantic_model: type[BaseModel]) -> bool:
+    """Se cada segmento do caminho é campo do modelo a que o segmento anterior leva.
+
+    O caminho é conferido enquanto o valor do segmento só pode ser modelo
+    (`submodels`): o seguinte tem de ser campo de um deles. Depois de um campo
+    que pode não ser modelo, como `dict`, `Any` ou a lista, não há campo
+    declarado contra o qual conferir o resto, e ele é aceito. Na avaliação,
+    `get_nested_value` segue esse resto pelas chaves do dict, e o caminho que
+    atravessa a lista fica sem valor.
+    """
+    models = [pydantic_model]
+    for part in path.split("."):
+        owner = next((model for model in models if part in model.model_fields), None)
+        if owner is None:
+            return False
+        models = submodels(resolve_forward_refs(owner.model_fields[part].annotation, owner))
+        if not models:
+            return True
+    return True
 
 
 # Estado de cada nó na busca em profundidade de detect_circular_dependencies.
@@ -547,16 +561,22 @@ def get_field_execution_order(
     Raises:
         ValueError: Se há dependências inválidas ou circulares.
     """
-    all_fields = set(pydantic_model.model_fields.keys())
     dependencies = {}
 
-    # A ordem do modelo, e não a do set, fixa a ordem entre campos
-    # independentes: topological_sort segue a ordem de inserção do dict.
+    # A ordem do modelo fixa a ordem entre campos independentes:
+    # topological_sort segue a ordem de inserção do dict.
     for field_name in pydantic_model.model_fields:
         config = field_configs.get(field_name, {})
         depends_on = _resolve_depends_on(field_name, config)
 
-        missing = check_dependencies_exist(depends_on, all_fields)
+        missing = check_dependencies_exist(depends_on, pydantic_model)
+        condition = config.get("condition")
+        if not missing and isinstance(condition, dict):
+            # Da condição dict, a dependência é a raiz do caminho, que basta à
+            # ordem; o caminho inteiro, que é o que a condição lê, é conferido
+            # aqui, para que o erro de digitação depois da raiz não deixe a
+            # condição sempre falsa.
+            missing = check_dependencies_exist([condition["field"]], pydantic_model)
         if missing:
             msg = f"Campo '{field_name}' depende de campos inexistentes: {missing}"
             raise ValueError(msg)

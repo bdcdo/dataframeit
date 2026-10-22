@@ -1258,6 +1258,18 @@ def list_layers(annotation: object, target: type) -> int | None:
     return max(depths, default=None)
 
 
+def submodels(annotation: object) -> list[type[BaseModel]]:
+    """Os modelos Pydantic que o valor pode ser, quando ele só pode ser modelo.
+
+    `Optional[Endereco]` dá `[Endereco]`, e `Union[A, B]`, `[A, B]`. Vazio
+    quando algum tipo do valor não é modelo, como `dict`, `Any`, `str`, a lista
+    ou `Union[Endereco, dict[str, str]]`: o valor pode ter chaves que nenhum
+    modelo declara.
+    """
+    value_types = _value_types(annotation)
+    return value_types if all(_is_pydantic_model(t) for t in value_types) else []
+
+
 def _lookup_forward_ref(name: str, owner: type[BaseModel]) -> type | None:
     """Resolve o nome de uma referência adiantada no contexto do modelo dono.
 
