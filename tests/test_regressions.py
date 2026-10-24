@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import pandas as pd
 import pytest
 
@@ -57,3 +59,24 @@ def test_build_prompt_preserves_other_placeholders():
     assert "TEXTO" in formatted
     assert "{texto}" not in formatted
     assert "{outro}" in formatted  # Preserva outros placeholders
+
+
+@pytest.mark.parametrize("legacy_warning", [False, True])
+def test_setup_columns_uses_option_only_with_legacy_warning(monkeypatch, legacy_warning):
+    calls = []
+
+    def option_context(*args):
+        calls.append(args)
+        return nullcontext()
+
+    monkeypatch.setattr(pd, "option_context", option_context)
+    if legacy_warning:
+        monkeypatch.setattr(pd.errors, "SettingWithCopyWarning", UserWarning, raising=False)
+    else:
+        monkeypatch.delattr(pd.errors, "SettingWithCopyWarning", raising=False)
+
+    df = pd.DataFrame({"texto": ["a"]})
+    _setup_columns(df, ["resposta"], None, track_tokens=False)
+
+    assert calls == ([("mode.chained_assignment", None)] if legacy_warning else [])
+    assert df["resposta"].isna().all()
