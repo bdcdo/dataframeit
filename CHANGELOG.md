@@ -16,6 +16,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- O extra `codex` fixa `openai-codex==0.163.0`; as flags `api_key_cyber_access_programs`, `cli_daybreak` e `code_mode_interrupt` ficam desligadas no provider (#270).
+
 - `read_df(path, modelo)`, chamada sem argumentos de leitura extras, relê como `int` a célula que o CSV ou o parquet guarda como inteiro num campo `int` ou `Optional[int]`, e a coluna sai como `object`, com `None` na célula vazia, em vez de float64 com `NaN`. É o que faz a retomada devolver exato o inteiro acima de 2**53. A coluna que o leitor já devolve em tipo inteiro, como a `Int64` anulável do parquet, e a coluna só com células vazias ficam como lidas. Com argumento de leitura extra, que vai ao pandas, a função devolve o que ele lê, e o XLSX fica de fora, porque guarda número como double (#223).
 - O resumo de uso do fim da execução deixa de sair por `print` no stdout e passa ao logger `dataframeit.stats`, em nível INFO. Sem logging configurado, ele sai em stderr; `logging.getLogger("dataframeit.stats").setLevel(logging.WARNING)` o silencia e mantém as colunas de tokens. O aviso de workers reduzidos por rate limit vira `UserWarning`, e a mensagem amigável do provider passa a fazer parte do aviso de falha da linha, ambos filtráveis por `warnings` e `pytest -W` (#181).
 - `dataframeit()` declara o tipo de retorno pelo tipo da entrada: DataFrame ou Series do polars devolve DataFrame do polars, e DataFrame ou Series do pandas, `list` e `dict` devolvem DataFrame do pandas. Antes, o retorno era a união dos dois, e o checker de tipos recusava `resultado["coluna"].tolist()` (#155).
@@ -39,6 +41,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Na saída polars, um campo `dict` sai como texto JSON, como no checkpoint. Antes, saía `Struct` com as chaves de todas as linhas: a chave ausente ficava igual à chave com valor nulo, e o dict vazio deixava de ser vazio. A coluna de um campo sem nenhum valor, toda nula ou só com listas vazias, sai com o tipo da anotação quando ela é `str`, `int`, `float`, `bool`, `date`, `datetime` ou lista de um deles. Antes, o tipo vinha só das respostas: um `Optional[int]` todo nulo saía `String`, e um `list[str]` só com listas vazias, `List(Null)` (#219).
 
 ### Corrigido
+
+- As anotações dos geradores usados como context managers são verificadas pelo ty 0.0.88 (#270).
 
 - A criação das colunas de saída usa a opção `mode.chained_assignment` só no pandas 2, preservando entradas fatiadas sem emitir aviso de depreciação no pandas 3.1 (#269).
 

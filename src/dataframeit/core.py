@@ -72,7 +72,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Hashable, Sequence
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -606,7 +606,7 @@ def _provider_backend(
     pydantic_model: type[BaseModel],
     user_prompt: str,
     trace_mode: str | None,
-) -> Iterator[ProviderBackend]:
+) -> Generator[ProviderBackend, None, None]:
     """Seleciona e vincula uma única implementação para toda a execução.
 
     Os módulos de backend (agent, codex, claude_code) são importados na
