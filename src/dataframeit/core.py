@@ -1723,20 +1723,19 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
         return
 
     # Criar colunas
-    with pd.option_context("mode.chained_assignment", None):
-        for col in new_cols:
+    for col in new_cols:
+        df[col] = None
+    if needs_status:
+        df[status_col] = None
+    if needs_error:
+        df[error_col] = None
+    if track_tokens:
+        for col in needs_tokens:
             df[col] = None
-        if needs_status:
-            df[status_col] = None
-        if needs_error:
-            df[error_col] = None
-        if track_tokens:
-            for col in needs_tokens:
-                df[col] = None
-        for col in needs_search:
-            df[col] = None
-        for col in needs_trace:
-            df[col] = None
+    for col in needs_search:
+        df[col] = None
+    for col in needs_trace:
+        df[col] = None
 
 
 def _get_processing_indices(

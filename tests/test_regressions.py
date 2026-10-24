@@ -1,9 +1,11 @@
 import pandas as pd
+import pytest
 
 from dataframeit import llm as llm_module
 from dataframeit.core import _setup_columns
 
 
+@pytest.mark.filterwarnings("error")
 def test_setup_columns_mutates_independent_copy_only():
     df = pd.DataFrame(
         {
