@@ -40,7 +40,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-- A criação das colunas de saída não altera a opção global `mode.chained_assignment`, removida do fluxo para não emitir aviso de depreciação no pandas 3.1 (#269).
+- A criação das colunas de saída usa a opção `mode.chained_assignment` só no pandas 2, preservando entradas fatiadas sem emitir aviso de depreciação no pandas 3.1 (#269).
 
 - No provider `codex`, a thread daemon que pede o `thread/unsubscribe` da linha abortada pela morte do app-server deixa de ficar presa para sempre. O processo morto ainda aceita a escrita enquanto termina, e o SDK registra a espera da resposta depois de o leitor do stdout ter acordado os pedidos em voo; agora o fechamento do cliente acorda essa espera (#250).
 - `read_df` com argumento de leitura que faz o pandas devolver outra coisa que um DataFrame, como `chunksize`, `iterator`, `sheet_name=None` ou lista e o `chunksize` do JSON em linhas, devolve o `TextFileReader`, o `JsonReader` ou o dict de abas como o pandas o devolve, sem normalizar, com ou sem modelo. Antes, sem modelo, ou com modelo que tem campo de lista, dict ou modelo aninhado, e com `normalize=True`, o padrão, a função levantava `AttributeError` ao procurar as colunas no objeto do leitor (#249).

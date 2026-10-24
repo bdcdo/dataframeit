@@ -6,14 +6,17 @@ from dataframeit.core import _setup_columns
 
 
 @pytest.mark.filterwarnings("error")
-def test_setup_columns_mutates_independent_copy_only():
+@pytest.mark.parametrize("copy_input", [False, True])
+def test_setup_columns_mutates_slice_without_warnings(copy_input):
     df = pd.DataFrame(
         {
             "texto": ["a", "b", "c"],
             "x": [1, 2, 3],
         }
     )
-    df_copy = df.iloc[:2].copy()
+    df_copy = df.iloc[:2]
+    if copy_input:
+        df_copy = df_copy.copy()
 
     _setup_columns(
         df_copy,

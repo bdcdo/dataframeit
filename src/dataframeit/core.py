@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -1722,20 +1722,27 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    # Criar colunas
-    for col in new_cols:
-        df[col] = None
-    if needs_status:
-        df[status_col] = None
-    if needs_error:
-        df[error_col] = None
-    if track_tokens:
-        for col in needs_tokens:
+    # O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
+    # escrita substitui esse aviso e a opção que o controla não se aplica.
+    context = (
+        pd.option_context("mode.chained_assignment", None)
+        if hasattr(pd.errors, "SettingWithCopyWarning")
+        else nullcontext()
+    )
+    with context:
+        for col in new_cols:
             df[col] = None
-    for col in needs_search:
-        df[col] = None
-    for col in needs_trace:
-        df[col] = None
+        if needs_status:
+            df[status_col] = None
+        if needs_error:
+            df[error_col] = None
+        if track_tokens:
+            for col in needs_tokens:
+                df[col] = None
+        for col in needs_search:
+            df[col] = None
+        for col in needs_trace:
+            df[col] = None
 
 
 def _get_processing_indices(
