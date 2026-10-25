@@ -377,6 +377,26 @@ def test_coluna_de_campo_sem_valor_nenhum_recebe_a_resposta():
     assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
 
 
+@pytest.mark.parametrize("resume", [True, False])
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [(float, float("nan")), (Decimal, Decimal("NaN"))],
+)
+def test_coluna_com_nan_que_e_valor_sem_status_levanta(annotation, value, resume):
+    modelo = create_model(
+        "ModeloNaN", __config__=ConfigDict(allow_inf_nan=True), nota=(annotation, ...)
+    )
+    entrada = pd.DataFrame({"texto": ["a"], "nota": pd.Series([value], dtype=object)})
+    _recusa(entrada, r"As colunas \['nota'\] já existem", questions=modelo, resume=resume)
+
+
+def test_coluna_float64_so_com_nan_continua_ausente():
+    entrada = pd.DataFrame({"texto": ["a"], "nota": [float("nan")]})
+    resultado, llm = _rodar(entrada, questions=ModeloNotaDecimal, llm=_responde(nota=2.5))
+    assert llm.call_count == 1
+    assert resultado["nota"].tolist() == [2.5]
+
+
 def test_reprocess_columns_sem_status_refaz_a_coluna_pedida():
     df = pd.DataFrame({"texto": ["a", "b"], "categoria": ["humano a", "humano b"]})
 

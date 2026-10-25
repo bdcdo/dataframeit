@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -74,7 +74,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Hashable, Sequence
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -608,7 +608,7 @@ def _provider_backend(
     pydantic_model: type[BaseModel],
     user_prompt: str,
     trace_mode: str | None,
-) -> Iterator[ProviderBackend]:
+) -> Generator[ProviderBackend, None, None]:
     """Seleciona e vincula uma única implementação para toda a execução.
 
     Os módulos de backend (agent, codex, claude_code) são importados na
@@ -1493,9 +1493,16 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     overwritten = [
         col
         for col in existing_cols
-        if col not in reprocessed_columns and df_pandas[col].notna().to_numpy().any()
+        if status_col not in df_pandas.columns
+        and col not in reprocessed_columns
+        and any(
+            not _is_absent(
+                value, nan_is_value=col in nan_columns and df_pandas[col].dtype == object
+            )
+            for value in df_pandas[col]
+        )
     ]
-    if overwritten and status_col not in df_pandas.columns:
+    if overwritten:
         # A sugestão soma as colunas já pedidas, para não tirá-las do reprocessamento.
         suggested = [
             col for col in expected_columns if col in reprocessed_columns or col in overwritten
@@ -1798,8 +1805,14 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    # Criar colunas
-    with pd.option_context("mode.chained_assignment", None):
+    # O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
+    # escrita substitui esse aviso e a opção que o controla não se aplica.
+    context = (
+        pd.option_context("mode.chained_assignment", None)
+        if hasattr(pd.errors, "SettingWithCopyWarning")
+        else nullcontext()
+    )
+    with context:
         for col in new_cols:
             df[col] = None
         if needs_status:
