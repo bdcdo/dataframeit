@@ -2320,10 +2320,17 @@ def _default_may_be_none(field: FieldInfo) -> bool:
     dar None em alguma linha. Por isso o campo dela não é restaurado: na
     retomada do CSV e do XLSX, a célula vazia conta como ausente e a fábrica a
     preenche, mesmo onde a execução gravou "".
+
+    A fábrica que falha aqui, com qualquer exceção, recebe a mesma resposta. A
+    que lê os outros campos levanta ValueError quando chamada sem eles, e a que
+    lê o ambiente, como os.environ["VARIAVEL"], levanta KeyError quando a
+    variável falta, embora a execução nunca a chame se o LLM respondeu o campo.
+    A pergunta só decide como a célula vazia volta, e a falha da fábrica não
+    pode derrubar a retomada das linhas que têm valor.
     """
     try:
         return field.get_default(call_default_factory=True) is None
-    except ValueError:
+    except Exception:  # noqa: BLE001 (a fábrica é do usuário e pode levantar qualquer erro; ver a docstring)
         return True
 
 
