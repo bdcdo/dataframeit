@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dataframeit"
-version = "0.10.0"
+version = "0.11.0"
 description = "Enrich DataFrames with LLM-based text analysis. Extract structured information from text with Pydantic."
 readme = "README.md"
 license = "MIT"
@@ -174,6 +174,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# `values` é campo do RowResult, parte do contrato de on_row_done, e não o
+# atributo do pandas que a regra pede para trocar por to_numpy().
+"tests/test_on_row_done.py" = ["PD011"]
 # __all__ segue a ordem da API pública: a função dataframeit, os utilitários e
 # as exceções, e não a ordem alfabética.
 "src/dataframeit/__init__.py" = ["RUF022"]

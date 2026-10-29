@@ -7,8 +7,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-29
+
 ### Adicionado
 
+- `on_row_done`, função chamada uma vez por linha processada nesta chamada, inclusive em erro, depois de a linha estar gravada no DataFrame, com um `RowResult`, exportado por `dataframeit`: rótulo do índice, posição entre as linhas processadas, sucesso, texto de `_error_details`, campos gravados e segundos decorridos. A linha pulada por `resume` não é entregue. Com `parallel_requests` > 1, a chamada vem da thread do worker que processou a linha; uma exceção dentro dela vira aviso, e a execução segue.
 - `field_condition(condition, depends_on=...)`, exportado por `dataframeit`, monta o `json_schema_extra` de um campo com condição callable. O dict escrito à mão era recusado pelo checker de tipos, porque o Pydantic tipa `json_schema_extra` como JSON; o helper devolve o mesmo dict com tipo que o `Field` aceita, e recusa `depends_on` vazio (#171).
 - As exceções `ProviderError`, `ProviderTransientError`, `ProviderOverloadedError`, `ProviderRejectedOutputError`, `ProviderConfigurationError` e `ProviderOutputError` e o `__version__` passam a ser exportados por `dataframeit`.
 - `ProviderAbortError` e a subclasse `ProviderUsageLimitError`, também exportadas, marcam a falha que impede qualquer linha seguinte. A execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status; a linha que recebeu o erro e as que faltam ficam pendentes para `resume=True`, e as colunas de controle ficam na saída enquanto houver linha pendente. Com `reprocess_columns`, a linha que ficou sem reprocessar mantém os valores anteriores e é marcada em `_error_details`, e as marcas vão ao checkpoint.
@@ -17,6 +20,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- Com `parallel_requests` > 1, as linhas são despachadas em fila contínua: até `parallel_requests` linhas ficam em voo, e uma nova entra assim que outra termina. Antes, cada onda de linhas esperava a mais lenta terminar para a seguinte começar, e o worker que acabava cedo ficava parado. A redução pela metade a cada rate limit passa a baixar o teto de linhas em voo, sem cancelar as que já estão em voo, e segue valendo até o fim da execução, como antes.
 - Em `is_complex_type` e `resolve_forward_refs`, `typing.Union` e `X | Y` passam por um ramo só, escolhido pela origem da anotação, porque no 3.14 os dois são o mesmo objeto e o ramo de cada forma deixava código sem rodar. `resolve_forward_refs` remonta as duas formas com `typing.Union[...]`: antes do 3.14, um `X | Y` com referência resolvida volta na forma de `typing.Union`, igual a ele por `==` (#231).
 - O extra `codex` fixa `openai-codex==0.163.0`; as flags `api_key_cyber_access_programs`, `cli_daybreak` e `code_mode_interrupt` ficam desligadas no provider (#270).
 
@@ -403,7 +407,8 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 
 ---
 
-[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/bdcdo/dataframeit/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bdcdo/dataframeit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/bdcdo/dataframeit/compare/v0.8.0...v0.8.1

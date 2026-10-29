@@ -4,7 +4,7 @@ Otimize o processamento com paralelismo, rate limiting e tracking de tokens.
 
 ## Processamento Paralelo
 
-Use `parallel_requests` para acelerar o processamento:
+Use `parallel_requests` para acelerar o processamento. Até `parallel_requests` linhas ficam em voo ao mesmo tempo, e uma linha nova é despachada assim que outra termina: o worker que acabou cedo não espera o mais lento.
 
 ```python
 resultado = dataframeit(
@@ -25,7 +25,7 @@ resultado = dataframeit(
 
 ### Auto-redução em Rate Limits
 
-Quando uma linha falha depois de todas as tentativas com erro de rate limit, o DataFrameIt reduz os workers pela metade:
+Quando uma linha falha depois de todas as tentativas com erro de rate limit, o DataFrameIt reduz pela metade o teto de linhas em voo; as que já estão em voo terminam:
 
 ```
 Início: 10 workers
@@ -38,6 +38,30 @@ No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo có
 
 !!! info "Segurança"
     Workers são apenas **reduzidos**, nunca aumentados automaticamente. Isso evita custos inesperados.
+
+### Callback por Linha
+
+`on_row_done` recebe um `RowResult` a cada linha processada nesta chamada, inclusive em erro, depois de a linha estar gravada no DataFrame. A linha pulada por `resume` não é entregue.
+
+```python
+from dataframeit import RowResult, dataframeit
+
+def ao_concluir(linha: RowResult) -> None:
+    print(linha.position, linha.index, linha.success, linha.values)
+
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    parallel_requests=5,
+    on_row_done=ao_concluir,
+)
+```
+
+Os campos do `RowResult` estão na [referência da API](../reference/api.md#rowresult).
+
+!!! warning "Thread do worker"
+    Com `parallel_requests` > 1, o callback roda na thread do worker que processou a linha, enquanto as outras seguem gravando. O que ele compartilha (contador, fila, tela) precisa de sincronização própria, e o que ele precisa da linha vem do `RowResult`, não do DataFrame. Uma exceção dentro dele vira aviso, e a execução segue.
 
 No fim da execução, um `UserWarning` informa os workers do início e do fim e sugere usar o número final em `parallel_requests`.
 

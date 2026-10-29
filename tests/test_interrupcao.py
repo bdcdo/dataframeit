@@ -1,5 +1,6 @@
 """Falha que impede as linhas seguintes interrompe a execução sem gastá-las."""
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -175,7 +176,16 @@ def test_aviso_com_checkpoint_manda_usar_o_mesmo_arquivo(tmp_path):
 def test_falha_ao_despachar_a_linha_interrompe_e_grava_o_checkpoint(tmp_path):
     df = pd.DataFrame({"texto": [f"linha{i}" for i in range(6)]})
     ckpt = tmp_path / "ckpt.csv"
-    _, llm = _llm_que_esgota(100, ProviderAbortError("nunca"))
+    _, llm_base = _llm_que_esgota(100, ProviderAbortError("nunca"))
+    # As duas primeiras linhas entram no provider juntas: a terceira só é
+    # despachada quando uma delas termina, e a outra já passou pela checagem
+    # de interrupção, então as duas terminam processadas.
+    barreira = threading.Barrier(2)
+
+    def llm(*args, **kwargs):
+        barreira.wait(timeout=5)
+        return llm_base(*args, **kwargs)
+
     submit = ThreadPoolExecutor.submit
     despachos = []
 
