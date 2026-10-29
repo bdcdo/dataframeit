@@ -220,7 +220,7 @@ class RowResult:
 
 def _recorded_error(df: pd.DataFrame, idx: Hashable) -> str | None:
     """Texto gravado em `_error_details` da linha, ou None com a célula vazia."""
-    value = df.at[idx, "_error_details"]  # noqa: PD008 (leitura de uma célula por rótulo)
+    value = _get_cell(df, idx, "_error_details")
     return None if value is None or pd.isna(value) else str(value)
 
 
@@ -2704,8 +2704,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     """Processa linhas do DataFrame em paralelo, com fila contínua e auto-redução.
 
     Até `parallel_requests` linhas ficam em voo ao mesmo tempo, e uma linha
-    nova é despachada assim que outra termina; o teto cai pela metade a cada
-    rate limit e não volta a subir até o fim da execução.
+    nova é despachada assim que outra termina.
 
     Args:
         df: DataFrame de trabalho, alterado in-place sob lock.

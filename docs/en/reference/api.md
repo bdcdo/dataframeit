@@ -133,7 +133,7 @@ Frozen dataclass that `on_row_done` receives for each row processed in this call
 | `values` | dict | Model fields this call wrote to the row, only those in `reprocess_columns` on a reprocessed row; empty on error |
 | `elapsed_seconds` | float | Seconds since the row started processing, including retries and rate-limit pauses |
 
-With `parallel_requests` > 1, the call comes from the worker thread that processed the row while the others keep writing; the callback synchronizes whatever it shares and reads what it needs from the `RowResult`, not from the DataFrame. An exception inside it becomes a warning, and the run continues. See [Performance](../guides/performance.md#per-row-callback).
+The call on the worker thread, with `parallel_requests` > 1, and an exception inside the callback are covered in [Performance](../guides/performance.md#per-row-callback).
 
 ### Added Columns
 

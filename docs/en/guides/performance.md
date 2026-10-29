@@ -58,7 +58,7 @@ result = dataframeit(
 )
 ```
 
-The `RowResult` fields are in the [API reference](../reference/api.md#rowresult): `index`, `position` (0-based order among the rows processed in this call), `success`, `error` (the `_error_details` text), `values` (model fields written; empty on error) and `elapsed_seconds`.
+The `RowResult` fields are in the [API reference](../reference/api.md#rowresult).
 
 !!! warning "Worker thread"
     With `parallel_requests` > 1, the callback runs on the worker thread that processed the row while the others keep writing. Whatever it shares (a counter, a queue, a screen) needs its own synchronization, and what it needs from the row comes from the `RowResult`, not from the DataFrame. An exception inside it becomes a warning, and the run continues.

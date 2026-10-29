@@ -58,7 +58,7 @@ resultado = dataframeit(
 )
 ```
 
-Os campos do `RowResult` estão na [referência da API](../reference/api.md#rowresult): `index`, `position` (ordem, de 0, entre as linhas processadas nesta chamada), `success`, `error` (texto de `_error_details`), `values` (campos do modelo gravados; vazio em erro) e `elapsed_seconds`.
+Os campos do `RowResult` estão na [referência da API](../reference/api.md#rowresult).
 
 !!! warning "Thread do worker"
     Com `parallel_requests` > 1, o callback roda na thread do worker que processou a linha, enquanto as outras seguem gravando. O que ele compartilha (contador, fila, tela) precisa de sincronização própria, e o que ele precisa da linha vem do `RowResult`, não do DataFrame. Uma exceção dentro dele vira aviso, e a execução segue.

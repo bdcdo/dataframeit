@@ -133,7 +133,7 @@ Dataclass imutável que `on_row_done` recebe a cada linha processada nesta chama
 | `values` | dict | Campos do modelo que esta chamada gravou na linha, só os de `reprocess_columns` numa linha reprocessada; vazio em erro |
 | `elapsed_seconds` | float | Segundos do início do processamento da linha, com as tentativas repetidas e as pausas de rate limit |
 
-Com `parallel_requests` > 1, a chamada vem da thread do worker que processou a linha, enquanto as outras seguem gravando; o callback sincroniza o que compartilhar e lê o que precisa do `RowResult`, não do DataFrame. Uma exceção dentro dele vira aviso, e a execução segue. Ver [Performance](../guides/performance.md#callback-por-linha).
+A chamada na thread do worker, com `parallel_requests` > 1, e a exceção dentro do callback estão em [Performance](../guides/performance.md#callback-por-linha).
 
 ### Colunas Adicionadas
 
