@@ -328,11 +328,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
 
     Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
     CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
-    quando a condição do campo é falsa na linha, que o deixa None, e quando a
-    validação da linha não devolve o texto vazio como ele é. A execução grava o
-    model_dump, e o texto vazio que o validador troca por outro valor não é o
-    que ela gravou: a célula é o None que o validador deu, que o tipo do campo
-    recusa, e o campo é acusado.
+    na linha em que a condição do campo é falsa ou a fábrica que lê os outros
+    campos dá None, que o deixam None. A execução grava o model_dump, e o texto
+    vazio restaurado que a validação da linha não devolve como "" não é o que
+    ela gravou: a célula é o None que um validador deu ao texto vazio, que o
+    tipo do campo recusa, e o campo é acusado. O None que um validador dá a
+    outra resposta não se separa do texto vazio na célula: o "" restaurado
+    passa pelo validador como é, e o campo volta "", sem acusação.
     """
     incompatible_fields: set[str] = set()
     values_to_fill: dict[tuple[int, str], Any] = {}
@@ -2110,13 +2112,18 @@ def _resume_from_checkpoint(
     assinatura garante que o checkpoint foi gravado com este modelo, e nele o
     campo que só aceita texto, não admite None e cujo default não é None
     (`_default_may_be_none`; a fábrica que lê os outros campos se decide por
-    linha, em `_validate_processed_rows`) só fica None quando a condição dele é falsa ou
-    quando um validador troca a resposta por None. A validação da retomada
-    separa os dois casos do texto vazio. O campo com exclude=True fica de fora, porque o model_dump
-    não o traz e a célula dele guarda o None que a execução pôs ao criar a
-    coluna. Sem essa garantia, como no checkpoint carregado à mão, a
-    célula vazia continua ausente, porque com outro modelo ela pode ser o None
-    de um campo que o admitia. No campo que admite None, ela volta None, e o
+    linha, em `_validate_processed_rows`) só fica None quando a condição dele é
+    falsa ou quando um validador troca uma resposta por None, que o tipo do
+    campo recusa. A validação da retomada lê a condição na linha, e do
+    validador só pega o que troca o próprio texto vazio: o "" restaurado que
+    ela não devolve como "" é acusado. O None que o validador dá a outra
+    resposta, como "N/A", fica na mesma célula vazia, e a retomada do CSV e do
+    XLSX o devolve como ""; o parquet guarda o None, e a retomada o acusa. Quem
+    quer guardar esse None declara o campo Optional[str]. O campo com
+    exclude=True fica de fora, porque o model_dump não o traz e a célula dele
+    guarda o None que a execução pôs ao criar a coluna. Sem essa garantia,
+    como no checkpoint carregado à mão, a célula vazia continua ausente,
+    porque com outro modelo ela pode ser o None de um campo que o admitia. No campo que admite None, ela volta None, e o
     texto vazio só sobrevive no parquet.
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
