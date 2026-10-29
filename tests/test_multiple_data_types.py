@@ -11,9 +11,11 @@ import datetime
 import importlib.util
 import sys
 import warnings
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
+from pydantic import BaseModel
 
 # Import opcional de polars
 try:
@@ -23,6 +25,7 @@ try:
 except ImportError:
     HAS_POLARS = False
 
+from dataframeit import dataframeit
 from dataframeit.utils import (
     DEFAULT_TEXT_COLUMN,
     ORIGINAL_TYPE_DICT,
@@ -428,6 +431,32 @@ def test_dict_com_chaves_tupla_mantem_indice_simples():
     assert isinstance(resultado, pd.DataFrame)
     assert not isinstance(resultado.index, pd.MultiIndex)
     assert list(resultado.index) == [("sp", 2020), ("rj", 2021)]
+
+
+class _Resumo(BaseModel):
+    resumo: str
+
+
+def test_dataframeit_processa_dict_com_chaves_tupla():
+    """A entrada dict com chaves-tupla vai ao LLM e conta a linha sem texto pelo rótulo."""
+    entrada = {("sp", 2020): "texto a", ("rj", 2021): None, ("mg", 2022): "texto c"}
+
+    def llm(texto, *args, **kwargs):
+        return {
+            "data": {"resumo": f"resumo de {texto}"},
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.warns(UserWarning, match=r"^1 linha\(s\) sem texto"),
+    ):
+        resultado = dataframeit(entrada, questions=_Resumo, prompt="{texto}")
+
+    assert list(resultado.index) == list(entrada)
+    assert resultado["resumo"].tolist()[0] == "resumo de texto a"
+    assert resultado["resumo"].tolist()[2] == "resumo de texto c"
 
 
 def test_sem_polars_a_entrada_pandas_continua_funcionando(monkeypatch):

@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
+import signal
 import sys
+import threading
 import types
 import warnings
 from dataclasses import fields, replace
@@ -284,6 +286,45 @@ class TestEventLoopAtivo:
         resultado = _chamar()
 
         assert resultado["data"]["sentimento"] == "positivo"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="pthread_kill só existe em POSIX")
+    def test_ctrl_c_chega_ao_chamador_sem_esperar_a_query(self, sdk_falso, monkeypatch):
+        """No Jupyter, o Ctrl-C sai do loop ativo com a query ainda rodando no outro thread."""
+        principal = threading.get_ident()
+        liberada = threading.Event()
+        terminou = threading.Event()
+
+        async def query_lenta(prompt, options):
+            # O Ctrl-C chega ao thread principal com a query em andamento, que
+            # só termina quando o teste a libera ou 5 s depois.
+            signal.pthread_kill(principal, signal.SIGINT)
+            for _ in range(500):
+                if liberada.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            terminou.set()
+            for mensagem in sdk_falso["mensagens_do_sdk"]:
+                yield mensagem
+
+        def ctrl_c(signum, frame):
+            # O kernel do Jupyter transforma o SIGINT em KeyboardInterrupt.
+            raise KeyboardInterrupt
+
+        async def main():
+            return _chamar()
+
+        monkeypatch.setattr(sys.modules["claude_agent_sdk"], "query", query_lenta)
+        anterior = signal.signal(signal.SIGINT, ctrl_c)
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                asyncio.run(main())
+            query_em_andamento = not terminou.is_set()
+        finally:
+            signal.signal(signal.SIGINT, anterior)
+            liberada.set()
+            terminou.wait(5)
+
+        assert query_em_andamento
 
 
 class TestUsageReal:
