@@ -115,18 +115,18 @@ result = dataframeit(series, Sentiment, PROMPT)
 
 ```python
 # OpenAI with gpt-6-luna (default)
-result = dataframeit(df.copy(), Model, PROMPT)
+result = dataframeit(df.copy(), Sentiment, PROMPT)
 
 # Google Gemini
 result = dataframeit(
-    df.copy(), Model, PROMPT,
+    df.copy(), Sentiment, PROMPT,
     provider='google_genai',
     model='gemini-3.8-flash'
 )
 
 # Anthropic Claude
 result = dataframeit(
-    df.copy(), Model, PROMPT,
+    df.copy(), Sentiment, PROMPT,
     provider='anthropic',
     model='claude-sonnet-5'
 )
