@@ -1854,6 +1854,10 @@ def _format_token_stats(
 
 _SUPPORTED_CHECKPOINT_EXTS = (".csv", ".xlsx", ".parquet")
 
+# Formatos que gravam o texto vazio e o None na mesma célula vazia. O parquet
+# guarda os dois à parte, e a célula nula dele é o None que a execução gravou.
+_EMPTY_TEXT_AS_ABSENT_EXTS = frozenset({".csv", ".xlsx"})
+
 # Extensões que exigem dependência opcional para pandas serializar.
 # Validamos antes do loop para falhar rápido — um ModuleNotFoundError no primeiro
 # save (após N linhas de LLM) desperdiça horas de trabalho.
@@ -2043,7 +2047,8 @@ def _resume_from_checkpoint(
     Devolve os campos cuja célula vazia, numa linha processada, é o texto
     vazio, para a validação da retomada (`_validate_processed_rows`); sem
     retomar, nenhum. O CSV e o XLSX gravam o texto vazio e o None na mesma
-    célula vazia, que o leitor devolve ausente. A assinatura garante que o
+    célula vazia, que o leitor devolve ausente. O parquet guarda os dois à
+    parte, e dele também não vem nenhum: a célula nula é o None gravado. A assinatura garante que o
     checkpoint foi gravado com este modelo, e nele o campo que só aceita texto,
     não admite None e não tem None por padrão só fica None quando a condição
     dele é falsa. O campo com exclude=True fica de fora, porque o model_dump
@@ -2077,6 +2082,8 @@ def _resume_from_checkpoint(
             values = df[target].to_numpy(dtype=object).copy()
             values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
             df[target] = values
+    if Path(checkpoint.path).suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
+        return frozenset()
     return frozenset(
         field_name
         for field_name, field in questions.model_fields.items()

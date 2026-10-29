@@ -1391,6 +1391,49 @@ def test_texto_do_checkpoint_textual_volta_como_a_execucao_o_gravou(
     assert lidos(direta)[0] == valor
 
 
+class ComFabricaNone(BaseModel):
+    # A fábrica, como o default, não passa pela validação do tipo.
+    campo1: str = Field(default_factory=lambda: None)  # ty: ignore[invalid-assignment]
+
+
+class VazioViraNone(BaseModel):
+    campo1: str
+
+    @field_validator("campo1")
+    @classmethod
+    def vazio_vira_none(cls, valor):
+        return valor or None
+
+
+def test_none_do_campo_textual_volta_none_do_checkpoint_parquet(tmp_path):
+    """O parquet grava o texto vazio e o None à parte, e o None não volta como texto vazio."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        "parquet",
+        ComFabricaNone,
+        lambda text: {} if text == "a" else {"campo1": "deferido"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["campo1"]) == list(direta["campo1"]) == [None, "deferido"]
+
+
+@pytest.mark.parametrize("formato", ["parquet"])
+def test_none_do_validador_em_campo_textual_continua_acusado(tmp_path, formato):
+    """O None que o validador põe no campo str é um valor que o tipo do campo recusa.
+
+    A retomada o acusa, como acusa qualquer valor que o modelo não valida, e
+    não o troca pelo texto vazio.
+    """
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _direta_e_retomada(
+            tmp_path,
+            formato,
+            VazioViraNone,
+            lambda text: {"campo1": "" if text == "a" else "deferido"},
+        )
+
+
 class Autoria(TypedDict):
     autor: str
     ano: int
