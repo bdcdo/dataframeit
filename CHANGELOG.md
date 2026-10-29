@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-29
+
 ### Corrigido
 
 - A retomada pelo checkpoint em CSV e em XLSX não cai quando a `default_factory` de um campo `str` que não admite `None` levanta uma exceção, como a fábrica que lê `os.environ` e dá `KeyError` sem a variável. A retomada chama a fábrica para saber se o default pode ser `None`, e só tratava o `ValueError`: as outras exceções saíam cruas de `dataframeit()`, mesmo com o campo respondido pelo LLM em todas as linhas, e com o `ValueError` a célula vazia contava como ausente, e a validação da linha chamava a fábrica, que levantava quando o LLM tinha respondido `""`. Agora a célula vazia do campo cuja fábrica levanta volta `""`, como a execução a gravou, e a validação da linha não a chama. O campo cuja fábrica lê os outros campos continua não restaurado, e a retomada preenche a célula vazia dele com o valor da fábrica (#288, #293).
@@ -418,7 +420,8 @@ Primeira versão publicada no PyPI depois da 0.6.0; a 0.7.0 e a 0.7.1 não foram
 
 ---
 
-[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/bdcdo/dataframeit/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/bdcdo/dataframeit/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/bdcdo/dataframeit/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bdcdo/dataframeit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/bdcdo/dataframeit/compare/v0.8.1...v0.9.0
