@@ -13,6 +13,7 @@ import importlib
 import os
 import random
 import re
+import textwrap
 import time
 import warnings
 from typing import TYPE_CHECKING
@@ -741,9 +742,9 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ║  ERRO NO PROCESSAMENTO                                                       ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
-║  Tipo: {error_name:<70} ║
+║  Tipo: {error_name:<69} ║
 ║                                                                              ║
-║  Detalhes: {str(error)[:66]:<66} ║
+{_generic_box_details(str(error))}
 ║                                                                              ║
 ║  Se este erro persistir, você pode:                                          ║
 ║  1. Verificar se suas credenciais estão corretas                             ║
@@ -755,12 +756,53 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 """.strip()
 
 
+# Largura do texto na linha 'Detalhes' da caixa genérica, que cabe entre o
+# rótulo e a borda direita da moldura, e o teto de linhas que a mensagem ocupa.
+_GENERIC_BOX_DETAIL_WIDTH = 65
+_GENERIC_BOX_DETAIL_MAX_LINES = 3
+_GENERIC_BOX_DETAIL_LABEL = "Detalhes: "
+
+
+def _generic_box_details(message: str) -> str:
+    """Linhas 'Detalhes' da caixa genérica, com a mensagem em até três linhas.
+
+    Numa linha só, o prefixo que o provider põe na mensagem ocuparia a largura
+    inteira: o do claude_code, com subtipo e status, passa de 65 caracteres, e a
+    caixa não mostraria nada do texto que o SDK devolveu. O textwrap troca quebra
+    de linha e tabulação por espaço, que desalinhariam a moldura, quebra palavra
+    maior que a largura e marca com reticências a mensagem cortada no teto.
+    """
+    lines = textwrap.wrap(
+        message,
+        width=_GENERIC_BOX_DETAIL_WIDTH,
+        max_lines=_GENERIC_BOX_DETAIL_MAX_LINES,
+        placeholder=" ...",
+    ) or [""]
+    indent = " " * len(_GENERIC_BOX_DETAIL_LABEL)
+    labels = [_GENERIC_BOX_DETAIL_LABEL] + [indent] * (len(lines) - 1)
+    return "\n".join(
+        f"║  {label}{line:<{_GENERIC_BOX_DETAIL_WIDTH}} ║"
+        for label, line in zip(labels, lines, strict=True)
+    )
+
+
 # Status HTTP 4xx que indicam falha transitória; os demais 4xx são definitivos.
 _RECOVERABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
 _HTTP_ERROR_MIN = 400
 _HTTP_SERVER_ERROR_MIN = 500
 _HTTP_ERROR_MAX = 599
 _HTTP_TOO_MANY_REQUESTS = 429
+
+
+def _is_recoverable_http_status(status: int) -> bool:
+    """Diz se o status HTTP indica falha que vale repetir: 5xx e os 4xx transitórios.
+
+    É a regra única dos três caminhos: o erro de SDK que chega pelo LangChain,
+    classificado em is_recoverable_error, e os status que o claude_code e o codex
+    recebem do próprio runtime e convertem nas classes Provider*Error.
+    """
+    return status >= _HTTP_SERVER_ERROR_MIN or status in _RECOVERABLE_CLIENT_STATUSES
+
 
 # Atributos em que SDKs e clientes HTTP expõem o status da resposta:
 # status_code (openai, anthropic, groq, mistral, cohere), code (google.genai,
@@ -837,7 +879,7 @@ def is_recoverable_error(error: Exception) -> bool:  # noqa: PLR0911 (precedênc
 
     status = _http_error_status(error)
     if status is not None:
-        return status >= _HTTP_SERVER_ERROR_MIN or status in _RECOVERABLE_CLIENT_STATUSES
+        return _is_recoverable_http_status(status)
 
     error_str = f"{type(error).__name__}: {error}".lower()
 
