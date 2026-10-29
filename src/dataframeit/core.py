@@ -1515,8 +1515,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             "sobrescreveria. Renomeie ou remova essas colunas, ou passe "
             f"reprocess_columns={suggested!r} para sobrescrevê-las de propósito. Se o "
             "DataFrame é uma saída do dataframeit, devolva a ele a coluna de status com "
-            f"df['{status_col}'] = 'processed': a execução o retoma, e reprocess_columns "
-            "refaz só as colunas indicadas."
+            f"df['{status_col}'] = 'processed' no pandas ou "
+            f"df = df.with_columns(pl.lit('processed').alias('{status_col}')) no polars: "
+            "a execução o retoma, e reprocess_columns refaz só as colunas indicadas."
         )
         raise ValueError(msg)
     if existing_cols and not resume and not reprocess_columns:

@@ -302,7 +302,8 @@ def test_reexecucao_sobre_a_propria_saida_levanta_e_diz_como_retomar(status_colu
 
     _recusa(
         primeira,
-        rf"\['x'\] já existem .* df\['{nome}'\] = 'processed'",
+        rf"\['x'\] já existem .* df\['{nome}'\] = 'processed' no pandas ou "
+        rf"df = df\.with_columns\(pl\.lit\('processed'\)\.alias\('{nome}'\)\) no polars",
         questions=Modelo,
         status_column=status_column,
     )
