@@ -10,6 +10,7 @@ Este módulo contém funções para:
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import os
 import random
 import re
@@ -274,6 +275,39 @@ def _infer_provider_info(provider: str | None) -> dict:
     }
 
 
+_EXTRA_ALL_MARKER = re.compile(r"""extra\s*==\s*["']all["']""")
+_REQUIREMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _normalize_distribution_name(name: str) -> str:
+    # Normalização da PEP 503: "langchain_openai" e "LangChain-OpenAI" são o
+    # mesmo pacote, e é assim que o nome de instalação se compara ao requisito.
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _all_extra_packages() -> frozenset[str]:
+    """Nomes normalizados dos pacotes que o extra ``all`` instala.
+
+    Lidos dos metadados do dataframeit instalado, que o build gera do
+    ``pyproject.toml``, para que a dica de ``dataframeit[all]`` não divirja do
+    extra. Sem os metadados, como ao rodar o código fonte sem instalar o
+    pacote, devolve vazio: não há como saber o que o extra traz, e sugeri-lo
+    poderia mandar instalar algo que não resolve.
+    """
+    try:
+        requirements = importlib.metadata.requires("dataframeit") or []
+    except importlib.metadata.PackageNotFoundError:
+        return frozenset()
+    packages = set()
+    for requirement in requirements:
+        # O marcador de ambiente vem depois do ";", e é nele que o extra aparece.
+        name_part, _, marker = requirement.partition(";")
+        match = _REQUIREMENT_NAME.match(name_part.strip())
+        if match and _EXTRA_ALL_MARKER.search(marker):
+            packages.add(_normalize_distribution_name(match.group()))
+    return frozenset(packages)
+
+
 def _get_missing_package_message(
     package: str,
     install_name: str,
@@ -359,8 +393,15 @@ def validate_provider_dependencies(provider: str | None) -> None:
         try:
             importlib.import_module(package)
         except ImportError as err:
+            # O extra all só traz os providers que têm extra próprio; para os
+            # demais, como mistralai e cohere, sugeri-lo não resolveria.
+            alternative = (
+                "dataframeit[all]"
+                if _normalize_distribution_name(install) in _all_extra_packages()
+                else None
+            )
             raise ImportError(
-                _get_missing_package_message(package, install, name, "dataframeit[all]")
+                _get_missing_package_message(package, install, name, alternative)
             ) from err
 
 

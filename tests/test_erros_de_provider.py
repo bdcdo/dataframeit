@@ -1,9 +1,14 @@
 """Classificação e mensagens de erro dos providers."""
 
 import importlib
+import importlib.metadata
 import importlib.util
+import tomllib
+from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from dataframeit import errors
 from dataframeit.errors import (
@@ -207,6 +212,64 @@ def test_langchain_ausente_pede_a_instalacao(monkeypatch, ausente, pacote_na_men
         validate_provider_dependencies("openai")
 
     assert "dataframeit[all]" in str(exc_info.value)
+
+
+def _sem_o_pacote(monkeypatch, pacote):
+    import_module = importlib.import_module
+
+    def importar(nome):
+        if nome == pacote:
+            raise ImportError(nome)
+        return import_module(nome)
+
+    monkeypatch.setattr(importlib, "import_module", importar)
+
+
+@pytest.mark.parametrize(
+    ("provider", "pacote", "instalar", "sugere_all"),
+    [
+        ("openai", "langchain_openai", "langchain-openai", True),
+        ("azure_openai", "langchain_openai", "langchain-openai", True),
+        ("mistralai", "langchain_mistralai", "langchain-mistralai", False),
+        ("cohere", "langchain_cohere", "langchain-cohere", False),
+        ("bedrock", "langchain_aws", "langchain-aws", False),
+    ],
+)
+def test_dica_do_extra_all_so_para_provider_cujo_pacote_esta_nele(
+    monkeypatch, provider, pacote, instalar, sugere_all
+):
+    _sem_o_pacote(monkeypatch, pacote)
+
+    with pytest.raises(ImportError, match=f"pip install {instalar} ") as exc_info:
+        validate_provider_dependencies(provider)
+
+    assert ("dataframeit[all]" in str(exc_info.value)) is sugere_all
+
+
+def test_sem_metadados_do_pacote_a_dica_do_extra_all_some(monkeypatch):
+    """Sem os metadados, não há como saber o que o extra traz, e a dica não sai."""
+
+    def sem_metadados(nome):
+        raise importlib.metadata.PackageNotFoundError(nome)
+
+    monkeypatch.setattr(importlib.metadata, "requires", sem_metadados)
+    _sem_o_pacote(monkeypatch, "langchain_openai")
+
+    with pytest.raises(ImportError, match="pip install langchain-openai ") as exc_info:
+        validate_provider_dependencies("openai")
+
+    assert "dataframeit[all]" not in str(exc_info.value)
+
+
+def test_pacotes_do_extra_all_lidos_dos_metadados_batem_com_o_pyproject():
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declarados = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]["all"]
+
+    assert errors._all_extra_packages() == {
+        canonicalize_name(Requirement(r).name) for r in declarados
+    }
 
 
 def test_sem_provider_valida_so_o_langchain(monkeypatch):
