@@ -1131,7 +1131,6 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
         if status == _HTTP_TOO_MANY_REQUESTS:
             error_class = ProviderOverloadedError
         elif status is None or _is_recoverable_http_status(status):
-            # A mesma regra dos erros que chegam pelo LangChain: 5xx, 408 e 409.
             error_class = ProviderTransientError
         else:
             error_class = ProviderError
