@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Adicionado
+
+- Um teste confere as permissões do `docs.yml`, que nenhum check de PR executa: o workflow só concede `contents: read`, o job `deploy` tem exatamente `pages: write` e `id-token: write`, e nenhum outro job escreve. O PR que mexer nelas reprova no job de testes, antes do merge (#268).
+
 ### Alterado
 
 - O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
