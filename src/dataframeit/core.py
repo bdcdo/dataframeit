@@ -1968,15 +1968,17 @@ def _schema_form(questions: type[BaseModel]) -> object:
     )
 
 
-def _schema_leaf(value: object) -> object:
+def _schema_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
     """Folha da forma canônica: tipo pelo nome e conteúdo, chamável pelo código.
 
-    O que não é tipo vai a `_callable_leaf`.
+    O que não é tipo vai a `_callable_leaf`. `path` traz o `id` dos objetos de
+    cujo estado o valor faz parte, para a guarda de ciclo de `_instance_state`.
     """
+    leaf = partial(_schema_leaf, path=path)
     if get_origin(value) is not None:
         return {
-            "origin": _schema_leaf(get_origin(value)),
-            "args": _stable(get_args(value), _schema_leaf),
+            "origin": leaf(get_origin(value)),
+            "args": _stable(get_args(value), leaf),
         }
     if isinstance(value, type) and issubclass(value, BaseModel):
         # Os campos dele já entram pelo caminho; aqui, o que o JSON Schema tiraria
@@ -1984,19 +1986,19 @@ def _schema_leaf(value: object) -> object:
         return {
             "model": value.__name__,
             "doc": value.__doc__,
-            "config": _stable(value.model_config, _schema_leaf),
+            "config": _stable(value.model_config, leaf),
         }
     if isinstance(value, type) and issubclass(value, Enum):
         return {
             "enum": value.__name__,
-            "members": _stable({member.name: member.value for member in value}, _schema_leaf),
+            "members": _stable({member.name: member.value for member in value}, leaf),
         }
     if isinstance(value, type):
         return value.__name__
-    return _callable_leaf(value)
+    return _callable_leaf(value, path)
 
 
-def _callable_leaf(value: object) -> object:
+def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
     """Chamável pelo código e pelo que ele fixa; o que não é chamável, como veio.
 
     A função entra pelo nome qualificado e pelo código; o `partial`, pela função
@@ -2006,11 +2008,12 @@ def _callable_leaf(value: object) -> object:
     para o `default` do json.dumps em `_run_signature`, que tira o endereço do
     repr.
     """
+    leaf = partial(_schema_leaf, path=path)
     if isinstance(value, partial):
         return {
-            "partial": _schema_leaf(value.func),
-            "args": _stable(value.args, _schema_leaf),
-            "keywords": _stable(value.keywords, _schema_leaf),
+            "partial": leaf(value.func),
+            "args": _stable(value.args, leaf),
+            "keywords": _stable(value.keywords, leaf),
         }
     code = getattr(value, "__code__", None)
     if isinstance(code, CodeType):
@@ -2019,11 +2022,22 @@ def _callable_leaf(value: object) -> object:
     # código, e descer nele não terminaria.
     call = type(value).__call__ if callable(value) else None
     if isinstance(getattr(call, "__code__", None), CodeType):
-        return {
-            "callable": _callable_leaf(call),
-            "state": _stable(getattr(value, "__dict__", {}), _schema_leaf),
-        }
+        return {"callable": _callable_leaf(call, path), "state": _instance_state(value, path)}
     return value
+
+
+def _instance_state(value: object, path: frozenset[int]) -> object:
+    """Atributos da instância, pela folha da forma canônica.
+
+    O atributo pode voltar ao próprio objeto, direto ou por outro objeto. O
+    objeto que já está em `path` entra por um marcador com o nome da classe, sem
+    o endereço, que muda a cada processo. `path` é só o caminho da descida, e não
+    tudo o que já foi visto: o mesmo objeto em dois atributos entra pelos dois,
+    como entrariam dois objetos iguais.
+    """
+    if id(value) in path:
+        return {"cycle": type(value).__name__}
+    return _stable(getattr(value, "__dict__", {}), partial(_schema_leaf, path=path | {id(value)}))
 
 
 def _code_form(code: CodeType) -> list[object]:

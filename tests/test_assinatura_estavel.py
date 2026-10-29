@@ -31,15 +31,19 @@ def _assinatura(modelo):
 
 
 def _roda_python(codigo, *argumentos, semente, cwd=None):
-    """Roda `codigo` num interpretador novo, com a semente de hash dada."""
+    """Roda `codigo` num interpretador novo, com a semente de hash dada.
+
+    A falha traz o fim do stderr, para que a exceção do processo filho apareça.
+    """
     saida = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
         [sys.executable, "-c", codigo, *argumentos],
         env={**os.environ, "PYTHONHASHSEED": semente},
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    assert saida.returncode == 0, saida.stderr[-1000:]
     return json.loads(saida.stdout)
 
 
@@ -527,3 +531,99 @@ def test_atributo_do_campo_que_o_json_schema_levaria_muda_a_assinatura(atributo)
     setattr(modelo.model_fields["frete"], atributo, "outro")
 
     assert _assinatura(modelo) != antes
+
+
+# Cabeçalho do processo filho que assina condições chamáveis: o Pedido com a
+# condição dada e a assinatura dele, pelo mesmo `_run_signature` do teste.
+_ASSINA_CONDICOES = textwrap.dedent(
+    """
+    import functools
+    import json
+
+    from pydantic import BaseModel, Field
+
+    from dataframeit import field_condition
+    from dataframeit.core import _run_signature
+
+
+    def assinatura(condicao):
+        class Pedido(BaseModel):
+            tipo: str
+            desconto: float | None = Field(
+                default=None, json_schema_extra=field_condition(condicao, depends_on="tipo")
+            )
+
+        return _run_signature(
+            Pedido, "{texto}", provider="openai", model="m", model_kwargs=None,
+            search_config=None, text_column="texto", status_col="_dataframeit_status",
+        )
+    """
+)
+
+
+def _assinaturas_em_tres_sementes(definicoes, condicoes):
+    """Assinatura de cada condição em três processos; exige que elas não mudem entre eles.
+
+    `definicoes` é o código que monta as condições, e `condicoes`, a expressão
+    do dict de nome para condição, avaliada depois dele.
+    """
+    codigo = (
+        _ASSINA_CONDICOES
+        + textwrap.dedent(definicoes)
+        + "\nprint(json.dumps({nome: assinatura(condicao)"
+        + f" for nome, condicao in ({condicoes}).items()}}))\n"
+    )
+
+    por_semente = [_roda_python(codigo, semente=semente) for semente in ("0", "1", "2")]
+
+    assert por_semente[0] == por_semente[1] == por_semente[2]
+    return por_semente[0]
+
+
+# Objeto chamável cujo estado volta a ele: o atributo que aponta para o próprio
+# objeto e o ciclo entre dois objetos. A descida no estado não pode recursar sem
+# fim, e o que marca o ciclo não pode levar o endereço do objeto.
+_CICLOS = """
+class Regra:
+    def __init__(self, alvo):
+        self.alvo = alvo
+
+    def __call__(self, d):
+        return d.get("tipo") == self.alvo
+
+
+def auto_referente(alvo):
+    regra = Regra(alvo)
+    regra.eu = regra
+    return regra
+
+
+def ciclo(alvo):
+    primeira, segunda = Regra(alvo), Regra("ouro")
+    primeira.outra, segunda.outra = segunda, primeira
+    return primeira
+"""
+
+
+def test_objeto_chamavel_com_ciclo_no_estado_assina_sem_recursao_e_igual_entre_sementes():
+    """O ciclo entra por um marcador sem o endereço do objeto."""
+    _assinaturas_em_tres_sementes(_CICLOS, "{'auto': auto_referente('vip'), 'ciclo': ciclo('vip')}")
+
+
+@pytest.mark.parametrize("construtor", ["auto_referente", "ciclo"])
+def test_mudanca_no_estado_do_objeto_com_ciclo_muda_a_assinatura(construtor):
+    """O marcador fica no lugar do objeto reencontrado, e o resto do estado continua contando."""
+    montar = _funcao(_CICLOS, construtor)
+
+    assert _assinatura(_pedido(montar("vip"))) != _assinatura(_pedido(montar("comum")))
+
+
+def test_mesmo_objeto_em_dois_atributos_assina_como_dois_objetos_iguais():
+    """Só o objeto que já está no caminho vira marcador; o repetido em outro ramo entra inteiro."""
+    regra = _funcao(_REGRA_CHAMAVEL, "Regra")
+    repetido, outro, igual = regra("vip"), regra("vip"), regra("vip")
+    repetido.a = repetido.b = outro
+    igual.a, igual.b = outro, regra("vip")
+
+    assert _assinatura(_pedido(repetido)) == _assinatura(_pedido(igual))
+
