@@ -331,6 +331,55 @@ def test_texto_vazio_do_checkpoint_respeita_a_condicao_do_campo():
     assert valores[(1, "cpf")] is None
 
 
+@pytest.mark.parametrize(
+    "condicao", [{"field": "motivo", "exists": True}, {"field": "motivo", "equals": ""}]
+)
+def test_condicao_le_o_texto_vazio_restaurado_de_outro_campo(condicao):
+    """A condição vê o texto vazio do campo de que depende, como a execução o viu."""
+
+    class Pedido(BaseModel):
+        motivo: str
+        obs: str = Field(json_schema_extra={"condition": condicao})
+
+    df = pd.DataFrame({"motivo": [None], "obs": [None], "_dataframeit_status": ["processed"]})
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", Pedido, set(), empty_text_fields={"motivo", "obs"}
+    )
+
+    assert incompativeis == []
+    assert valores[(0, "motivo")] == ""
+    assert valores[(0, "obs")] == ""
+
+
+def test_condicao_le_o_none_do_campo_pulado_antes_dela():
+    """O campo pulado fica None para as condições que dependem dele, em qualquer ordem do modelo.
+
+    O obs vem antes do motivo, de que depende, e o motivo só existe quando o
+    tipo é "pf". Na linha "pj", o motivo pulado é None, e o obs também é pulado.
+    """
+
+    class Pedido(BaseModel):
+        obs: str = Field(json_schema_extra={"condition": {"field": "motivo", "exists": True}})
+        motivo: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
+        tipo: str
+
+    df = pd.DataFrame(
+        {
+            "obs": [None, None],
+            "motivo": [None, None],
+            "tipo": ["pf", "pj"],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", Pedido, set(), empty_text_fields={"motivo", "obs"}
+    )
+
+    assert incompativeis == []
+    assert [valores[(0, "motivo")], valores[(0, "obs")]] == ["", ""]
+    assert [valores[(1, "motivo")], valores[(1, "obs")]] == [None, None]
+
+
 @pytest.mark.parametrize("parallel_requests", [1, 3])
 def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, parallel_requests):
     gravacoes = []

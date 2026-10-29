@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -388,6 +388,24 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         for field_name, field in pydantic_model.model_fields.items()
         if isinstance(field.json_schema_extra, dict) and "condition" in field.json_schema_extra
     }
+    # Na ordem das dependências, como na execução: a condição lê o None do
+    # campo que outra condição pulou antes dela. A configuração que não tem
+    # ordem é recusada antes de processar, e aqui fica a ordem do modelo.
+    if conditions:
+        with suppress(ValueError):
+            execution_order, _ = get_field_execution_order(
+                pydantic_model,
+                {
+                    field_name: field.json_schema_extra
+                    for field_name, field in pydantic_model.model_fields.items()
+                    if isinstance(field.json_schema_extra, dict)
+                },
+            )
+            conditions = {
+                field_name: conditions[field_name]
+                for field_name in execution_order
+                if field_name in conditions
+            }
     skipping_models: dict[frozenset, Any] = {}
 
     def model_skipping(skipped: frozenset) -> type[BaseModel]:
@@ -434,12 +452,22 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             else:
                 row_values[field_name] = value
 
-        skipped = frozenset(
+        empty_cells = {
             field_name
-            for field_name, condition in conditions.items()
+            for field_name in empty_text_fields
             if row_values[field_name] is None
-            and not _condition_holds(condition, row_values, field_name)
-        )
+            and (field_name not in df.columns or pd.isna(row[field_name]))
+        }
+        # A condição vê o texto vazio de outro campo como a execução o viu.
+        condition_values = {**row_values, **dict.fromkeys(empty_cells, "")}
+        skipped_fields = set()
+        for field_name, condition in conditions.items():
+            if row_values[field_name] is None and not _condition_holds(
+                condition, condition_values, field_name
+            ):
+                skipped_fields.add(field_name)
+                condition_values[field_name] = None
+        skipped = frozenset(skipped_fields)
 
         projected = {}
         missing_values = set()
@@ -447,7 +475,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         for field_name, field in pydantic_model.model_fields.items():
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
-                if field_name in empty_text_fields and field_name not in skipped:
+                if field_name in empty_cells and field_name not in skipped:
                     # Gravado também quando a linha é recusada por outro campo:
                     # com esse campo em reprocess_columns, a linha fica, e este
                     # mantém o valor que tinha.
