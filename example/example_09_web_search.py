@@ -28,9 +28,11 @@ pode, portanto, consumir várias buscas. No Tavily:
 Os créditos gastos ficam na coluna _search_credits e no resumo ao fim da execução.
 """
 
-from pydantic import BaseModel, Field
 from typing import Literal
+
 import pandas as pd
+from pydantic import BaseModel, Field
+
 from dataframeit import dataframeit
 
 # ============================================================================
