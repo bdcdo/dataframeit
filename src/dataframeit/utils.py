@@ -12,11 +12,9 @@ from __future__ import annotations
 
 import ast
 import datetime
-import functools
 import json
 import math
 import numbers
-import operator
 import re
 import sys
 import types
@@ -802,14 +800,10 @@ def is_complex_type(field_type: object) -> bool:
     if origin in (list, dict, tuple):
         return True
 
-    # Union types (Optional, Union) - verificar os argumentos internos
-    # typing.Union para sintaxe Union[X, Y] e Optional[X]
-    if origin is typing.Union:
-        args = get_args(field_type)
-        return any(is_complex_type(arg) for arg in args if arg is not type(None))
-
-    # types.UnionType para sintaxe X | Y
-    if isinstance(field_type, types.UnionType):
+    # Union[X, Y], Optional[X] e X | Y: verificar os argumentos internos.
+    # Antes do 3.14, get_origin de X | Y é types.UnionType; a partir dele, os
+    # dois nomes são o mesmo objeto, e a tupla cobre as duas versões.
+    if origin in (typing.Union, types.UnionType):
         args = get_args(field_type)
         return any(is_complex_type(arg) for arg in args if arg is not type(None))
 
@@ -1237,10 +1231,11 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
 ) -> Any:  # noqa: ANN401
     """Devolve a anotação com as referências adiantadas trocadas pelas classes.
 
-    Referência que não se resolve fica como está. A forma de cada tipo é
-    preservada: `typing.Union` continua `typing.Union` e `X | Y` continua
-    `types.UnionType`, porque os helpers deste módulo tratam os dois em ramos
-    distintos.
+    Referência que não se resolve fica como está. Uma união resolvida volta
+    montada por `typing.Union[...]`, tenha sido escrita com `typing.Union` ou
+    com `X | Y`. Antes do 3.14, isso leva `X | Y` à forma de `typing.Union`,
+    igual a ela por `==` e tratada pelos helpers deste módulo junto com
+    `types.UnionType`; a partir do 3.14, as duas formas são o mesmo objeto.
     """
     if isinstance(annotation, str):
         return _lookup_forward_ref(annotation, owner) or annotation
@@ -1263,10 +1258,8 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
     resolved = tuple(resolve_forward_refs(arg, owner) for arg in args)
     if resolved == args:
         return annotation
-    if isinstance(annotation, types.UnionType):
-        return functools.reduce(operator.or_, resolved)
-    if origin is typing.Union:
-        return typing.Union[resolved]  # noqa: UP007 (preserva a forma typing.Union)
+    if origin in (typing.Union, types.UnionType):
+        return typing.Union[resolved]  # noqa: UP007 (`|` daria types.UnionType antes do 3.14)
     if isinstance(annotation, types.GenericAlias):
         return types.GenericAlias(origin, resolved)
     return annotation.copy_with(resolved)

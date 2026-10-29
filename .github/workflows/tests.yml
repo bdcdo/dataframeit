@@ -171,10 +171,9 @@ jobs:
           if-no-files-found: error
 
   # Cobertura de ramos de src/dataframeit somada dos jobs unit e codex-provider,
-  # em todas as versões da matriz. O fail_under = 100 do pyproject.toml vale
-  # para a soma: a partir do 3.14, typing.Union e types.UnionType são o mesmo
-  # objeto, e os ramos de utils.py que os distinguem só rodam nas versões
-  # anteriores.
+  # em todas as versões da matriz, com o fail_under = 100 do pyproject.toml.
+  # Cada versão sozinha também chega a 100%: utils.py trata typing.Union e
+  # types.UnionType, que a partir do 3.14 são o mesmo objeto, num ramo só.
   coverage:
     needs: [unit, codex-provider]
     runs-on: ubuntu-latest

@@ -17,6 +17,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- Em `is_complex_type` e `resolve_forward_refs`, `typing.Union` e `X | Y` passam por um ramo só, escolhido pela origem da anotação, porque no 3.14 os dois são o mesmo objeto e o ramo de cada forma deixava código sem rodar. `resolve_forward_refs` remonta as duas formas com `typing.Union[...]`: antes do 3.14, um `X | Y` com referência resolvida volta na forma de `typing.Union`, igual a ele por `==` (#231).
 - O extra `codex` fixa `openai-codex==0.163.0`; as flags `api_key_cyber_access_programs`, `cli_daybreak` e `code_mode_interrupt` ficam desligadas no provider (#270).
 
 - `read_df(path, modelo)`, chamada sem argumentos de leitura extras, relê como `int` a célula que o CSV ou o parquet guarda como inteiro num campo `int` ou `Optional[int]`, e a coluna sai como `object`, com `None` na célula vazia, em vez de float64 com `NaN`. É o que faz a retomada devolver exato o inteiro acima de 2**53. A coluna que o leitor já devolve em tipo inteiro, como a `Int64` anulável do parquet, e a coluna só com células vazias ficam como lidas. Com argumento de leitura extra, que vai ao pandas, a função devolve o que ele lê, e o XLSX fica de fora, porque guarda número como double (#223).
