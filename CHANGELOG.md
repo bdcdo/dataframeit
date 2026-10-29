@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Alterado
+
+- O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
+
 ### Corrigido
 
 - Nos providers `claude_code` e `codex`, o status HTTP 408 ou 409 dá `ProviderTransientError`, e a linha é repetida com backoff, como no erro de SDK que chega pelo LangChain; no 408, o aviso sai com a caixa de timeout. Antes, os dois status davam `ProviderError` definitivo, e a linha ficava com erro na primeira falha (#274).
