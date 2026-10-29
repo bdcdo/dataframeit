@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import operator
 from enum import Enum
@@ -241,7 +240,7 @@ def _by_value(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, (set, frozenset)):
-        value = sorted(value, key=lambda item: json.dumps(item, default=_json_default))
+        value = _json_default(value)
     if isinstance(value, (list, tuple)):
         return [_by_value(item) for item in value]
     if isinstance(value, dict):
@@ -263,9 +262,8 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
         field_name: Nome do campo atual (para logging).
 
     O valor do campo e o operando são comparados na forma em que a retomada os
-    relê: o membro de Enum pelo valor, e a tupla e o conjunto como lista, também
-    dentro de coleções e de submodelos (ver `_by_value`). No `in` e no `not_in`,
-    o operando é a coleção das opções, e cada opção passa pela mesma conversão.
+    relê (ver `_by_value`). No `in` e no `not_in`, o operando é a coleção das
+    opções, e cada opção passa pela mesma conversão.
 
     Returns:
         True se a condição é satisfeita, False caso contrário.
