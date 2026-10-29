@@ -12,6 +12,7 @@ from typing import (  # noqa: UP035 (List usado de propósito, ver NodoArvore)
     List,
     Literal,
     Optional,
+    Union,
 )
 from unittest.mock import MagicMock, patch
 
@@ -1857,6 +1858,11 @@ def test_is_list_of_pydantic_model_list_of_primitives():
     ("anotacao", "esperado"),
     [
         (Optional[Annotated[list[PedidoItem], Field(min_length=1)]], (True, PedidoItem)),
+        # A união dentro do `Annotated` dentro do Optional é aberta também.
+        (
+            Optional[Annotated[Union[list[PedidoItem], None], Field(min_length=1)]],
+            (True, PedidoItem),
+        ),
         (list[Optional[PedidoItem]], (True, PedidoItem)),
         (list[Annotated[PedidoItem, "item"]] | None, (True, PedidoItem)),
         (list[str] | list[PedidoItem], (True, PedidoItem)),

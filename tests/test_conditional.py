@@ -1335,6 +1335,8 @@ _SUBMODELOS_DE_ENDERECO = [
     Optional[_EnderecoDeEntrega],
     Optional[Annotated[_EnderecoDeEntrega, "endereço"]],
     Union[_EnderecoDeEntrega, _Filial],
+    # A união dentro do `Annotated` dentro do Optional é aberta também.
+    Optional[Annotated[Union[_EnderecoDeEntrega, _Filial], Field(description="endereço")]],
 ]
 
 
