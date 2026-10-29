@@ -3,7 +3,7 @@
 import datetime
 import warnings
 from enum import Enum
-from typing import Annotated, Literal, NewType, Optional, TypeVar
+from typing import Annotated, Any, Literal, NewType, Optional, TypeVar
 from unittest.mock import patch
 
 import numpy as np
@@ -536,6 +536,8 @@ _APELIDO_COM_NONE = TypeAliasType("_APELIDO_COM_NONE", _ANOTADO_COM_NONE)
     [
         (str, False),
         (Optional[str], True),
+        (Any, True),
+        (object, True),
         (_LITERAL_COM_NONE, True),
         (Literal["NA"], False),
         (_ANOTADO_COM_NONE | Literal["y"], True),

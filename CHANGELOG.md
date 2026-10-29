@@ -11,6 +11,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
 
+### Corrigido
+
+- A retomada devolve `None` no campo que admite `None` e tem outro default, como `str | None = "x"`, `Optional[int] = 5` ou `Any = "x"`, na linha concluída em que a execução gravou `None`, em vez do default; com `default_factory`, a fábrica não é chamada. No CSV e no XLSX, a célula vazia desse campo volta `None` também onde a execução gravou `""`. Só a coluna ausente da entrada e do checkpoint recebe o default (#285).
+- O campo com `exclude=True`, que a execução não grava, deixa de ser conferido na retomada: a coluna volta `None` do checkpoint CSV e XLSX, em vez de `NaN`, e o campo obrigatório não faz a linha ser recusada nem pede `reprocess_columns` (#286).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido

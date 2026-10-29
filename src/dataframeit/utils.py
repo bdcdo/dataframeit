@@ -880,9 +880,9 @@ def accepts_only_text(field_type: object) -> bool:
 
 
 def _admits_none(field_type: object) -> bool:
-    """Se o tipo aceita None: o próprio None, a união com ele ou o Literal com ele."""
+    """Se o tipo aceita None: o próprio None, Any, object, a união com ele ou o Literal com ele."""
     field_type = _resolved(field_type)
-    if field_type is type(None):
+    if field_type is type(None) or field_type is typing.Any or field_type is object:
         return True
     origin = get_origin(field_type)
     if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
