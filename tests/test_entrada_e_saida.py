@@ -294,15 +294,186 @@ def test_lista_em_coluna_existente_float():
 # =============================================================================
 
 
-def test_reexecucao_sobre_a_propria_saida_avisa():
-    primeira, _ = _rodar(pd.DataFrame({"texto": ["a", "b"]}))
-    assert "_dataframeit_status" not in primeira.columns
+@pytest.mark.parametrize("status_column", [None, "st"])
+def test_reexecucao_sobre_a_propria_saida_levanta_e_diz_como_retomar(status_column):
+    primeira, _ = _rodar(pd.DataFrame({"texto": ["a", "b"]}), status_column=status_column)
+    nome = status_column or "_dataframeit_status"
+    assert nome not in primeira.columns
 
-    with warnings.catch_warnings(record=True) as avisos:
-        warnings.simplefilter("always")
-        _rodar(primeira, resume=True)
+    _recusa(
+        primeira,
+        rf"\['x'\] já existem .* df\['{nome}'\] = 'processed' no pandas ou "
+        rf"df = df\.with_columns\(pl\.lit\('processed'\)\.alias\('{nome}'\)\) no polars",
+        questions=Modelo,
+        status_column=status_column,
+    )
 
-    assert any("já estão preenchidas" in str(a.message) for a in avisos)
+
+# =============================================================================
+# Coluna do usuário com o nome de um campo do modelo ou da coluna de status
+# =============================================================================
+
+
+class ModeloCategoria(BaseModel):
+    categoria: str
+    nota: int
+
+
+def _rotulos_humanos():
+    return pd.DataFrame(
+        {"id": [10, 20], "texto": ["a", "b"], "categoria": ["rótulo humano 1", "rótulo humano 2"]}
+    )
+
+
+def _recusa(entrada, match, questions=ModeloCategoria, **opcoes):
+    """Roda esperando o ValueError de `match`, sem chamar o LLM nem alterar a entrada."""
+    antes = entrada.copy()
+    opcoes.setdefault("track_tokens", False)
+    with (
+        patch(
+            "dataframeit.core.call_langchain", side_effect=_responde(categoria="llm", nota=1)
+        ) as llm,
+        patch("dataframeit.core.validate_provider_dependencies"),
+        pytest.raises(ValueError, match=match),
+    ):
+        dataframeit(entrada, questions=questions, prompt="{texto}", **opcoes)
+    llm.assert_not_called()
+    assert entrada.equals(antes)
+
+
+@pytest.mark.parametrize("resume", [True, False])
+def test_coluna_com_nome_de_campo_sem_status_levanta(resume):
+    _recusa(
+        _rotulos_humanos(),
+        r"As colunas \['categoria'\] já existem .* Renomeie ou remova essas colunas, ou passe "
+        r"reprocess_columns=\['categoria'\] para sobrescrevê-las de propósito\.",
+        resume=resume,
+    )
+
+
+def test_coluna_com_nome_de_campo_e_checkpoint_levanta_sem_gravar(tmp_path):
+    checkpoint = tmp_path / "c.csv"
+    _recusa(
+        _rotulos_humanos(),
+        r"As colunas \['categoria'\] já existem",
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+    assert not checkpoint.exists()
+
+
+def test_coluna_de_campo_com_valor_em_uma_linha_levanta():
+    df = pd.DataFrame({"texto": ["a", "b"], "categoria": [None, "rótulo humano"]})
+    _recusa(df, r"As colunas \['categoria'\] já existem")
+
+
+def test_coluna_de_campo_sem_valor_nenhum_recebe_a_resposta():
+    df = pd.DataFrame({"texto": ["a", "b"], "categoria": [None, np.nan]})
+
+    resultado, llm = _rodar(
+        df, questions=ModeloCategoria, llm=_responde(categoria=lambda t: f"llm-{t}", nota=1)
+    )
+
+    assert llm.call_count == 2
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
+
+
+@pytest.mark.parametrize("resume", [True, False])
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [(float, float("nan")), (Decimal, Decimal("NaN"))],
+)
+def test_coluna_com_nan_que_e_valor_sem_status_levanta(annotation, value, resume):
+    modelo = create_model(
+        "ModeloNaN", __config__=ConfigDict(allow_inf_nan=True), nota=(annotation, ...)
+    )
+    entrada = pd.DataFrame({"texto": ["a"], "nota": pd.Series([value], dtype=object)})
+    _recusa(entrada, r"As colunas \['nota'\] já existem", questions=modelo, resume=resume)
+
+
+def test_coluna_float64_so_com_nan_continua_ausente():
+    entrada = pd.DataFrame({"texto": ["a"], "nota": [float("nan")]})
+    resultado, llm = _rodar(entrada, questions=ModeloNotaDecimal, llm=_responde(nota=2.5))
+    assert llm.call_count == 1
+    assert resultado["nota"].tolist() == [2.5]
+
+
+def test_reprocess_columns_sem_status_refaz_a_coluna_pedida():
+    df = pd.DataFrame({"texto": ["a", "b"], "categoria": ["humano a", "humano b"]})
+
+    resultado, llm = _rodar(
+        df,
+        questions=ModeloCategoria,
+        llm=_responde(categoria=lambda t: f"llm-{t}", nota=1),
+        reprocess_columns=["categoria"],
+    )
+
+    assert llm.call_count == 2
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
+
+
+def test_reprocess_columns_sem_status_nao_cobre_outra_coluna_existente():
+    df = _rotulos_humanos().assign(nota=[7, 8])
+    _recusa(
+        df,
+        r"As colunas \['categoria'\] já existem .* reprocess_columns=\['categoria', 'nota'\] "
+        "para sobrescrevê-las",
+        reprocess_columns=["nota"],
+    )
+
+
+def test_dataframe_vazio_com_coluna_de_campo_sem_status_nao_levanta():
+    vazio = pd.Series([], dtype=object)
+    resultado, llm = _rodar(pd.DataFrame({"texto": vazio, "x": vazio}))
+
+    llm.assert_not_called()
+    assert list(resultado.columns) == ["texto", "x"]
+
+
+@pytest.mark.parametrize(
+    ("status_column", "match"),
+    [
+        ("categoria", "status_column='categoria' é um campo do modelo"),
+        ("texto", "status_column='texto' é a coluna de texto"),
+        ("id", r"A coluna de status 'id' já existe .*\(10 na linha 0\)"),
+        ("_error_details", "status_column='_error_details' é o nome de uma coluna de controle"),
+        ("_input_tokens", "status_column='_input_tokens' é o nome de uma coluna de controle"),
+        ("_search_credits", "status_column='_search_credits' é o nome de uma coluna de controle"),
+        ("_trace", "status_column='_trace' é o nome de uma coluna de controle"),
+        ("_trace_categoria", "status_column='_trace_categoria' é o nome de uma coluna de controle"),
+    ],
+)
+def test_status_column_que_ocuparia_outra_coluna_levanta(status_column, match):
+    _recusa(_rotulos_humanos().drop(columns="categoria"), match, status_column=status_column)
+
+
+def test_status_column_com_o_nome_da_coluna_interna_de_texto_levanta():
+    _recusa(
+        pd.Series(["a", "b"]),
+        "status_column='_texto' é a coluna de texto",
+        status_column="_texto",
+    )
+
+
+def test_coluna_de_status_padrao_com_outros_valores_levanta():
+    df = pd.DataFrame({"texto": ["a"], "_dataframeit_status": ["concluído"]})
+    _recusa(df, r"A coluna de status '_dataframeit_status' já existe .*\('concluído' na linha 0\)")
+
+
+def test_status_column_existente_com_valores_de_status_retoma():
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "x": ["feito", "anterior", None],
+            "st": ["processed", "error", np.nan],
+        }
+    )
+
+    resultado, llm = _rodar(df, status_column="st")
+
+    assert llm.call_count == 1
+    assert resultado["x"].tolist() == ["feito", "anterior", "x-c"]
+    assert resultado["st"].tolist() == ["processed", "error", "processed"]
 
 
 # =============================================================================
@@ -408,7 +579,7 @@ def test_padroes_do_modelo_em_coluna_float_na_retomada():
     assert resultado["tags"].tolist() == [[], ["t"]]
 
 
-def test_reexecucao_avisa_mesmo_com_linha_toda_nula():
+def test_reexecucao_levanta_mesmo_com_linha_toda_nula():
     primeira, _ = _rodar(
         pd.DataFrame({"texto": ["a", "b"]}),
         questions=ModeloOpcional,
@@ -416,11 +587,7 @@ def test_reexecucao_avisa_mesmo_com_linha_toda_nula():
     )
     assert primeira["x"].tolist() == ["x", None]
 
-    with warnings.catch_warnings(record=True) as avisos:
-        warnings.simplefilter("always")
-        _rodar(primeira, questions=ModeloOpcional, resume=True)
-
-    assert any("já estão preenchidas" in str(a.message) for a in avisos)
+    _recusa(primeira, r"As colunas \['x'\] já existem", questions=ModeloOpcional)
 
 
 @pytest.mark.parametrize(
@@ -869,7 +1036,12 @@ def test_saida_polars_ja_concluida_devolve_o_campo_de_lista_normalizado():
 def test_entrada_polars_com_colunas_existentes_volta_igual():
     pl = pytest.importorskip("polars")
     entrada = pl.DataFrame(
-        {"texto": ["a"], "x": [date(2024, 1, 2)], "id": pl.Series([None], dtype=pl.Int64)}
+        {
+            "texto": ["a"],
+            "x": [date(2024, 1, 2)],
+            "id": pl.Series([None], dtype=pl.Int64),
+            "_dataframeit_status": ["error"],
+        }
     )
 
     with pytest.warns(UserWarning, match="já existem"):
