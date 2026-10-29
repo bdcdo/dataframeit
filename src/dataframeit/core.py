@@ -840,8 +840,7 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
 
     # A dica nunca sobe o paralelismo. A pausa sai da conta de estimated_rpm,
     # invertida para levar a taxa a 70% do limite, abaixo dos 80% do gatilho; o
-    # arredondamento para cima não deixa a pausa ficar curta. Quando a pausa
-    # atual já basta, a dica só traz parallel_requests.
+    # arredondamento para cima não deixa a pausa ficar curta.
     recommended_parallel = min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES)
     recommended_delay = (
         60 * recommended_parallel * queries_per_row / (provider_limit * 0.7)
