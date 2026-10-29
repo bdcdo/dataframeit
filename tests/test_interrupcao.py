@@ -493,7 +493,10 @@ def test_ctrl_c_com_todas_as_linhas_lentas_sai_sem_esperar_uma_terminar(tmp_path
 
     inicio = time.monotonic()
     try:
-        with _ctrl_c_depois(todas_comecaram, 0.0, 0.3), pytest.raises(KeyboardInterrupt):
+        # A folga do primeiro Ctrl-C deixa o thread principal entrar na espera
+        # do lote: o que chega antes dela vira KeyboardInterrupt em qualquer
+        # espera, e o teste não distinguiria a espera sem prazo.
+        with _ctrl_c_depois(todas_comecaram, 0.1, 0.4), pytest.raises(KeyboardInterrupt):
             _roda(
                 pd.DataFrame({"texto": textos}),
                 llm,
