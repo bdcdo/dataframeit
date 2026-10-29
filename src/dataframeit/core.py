@@ -2593,11 +2593,23 @@ def _default_may_be_none(field: FieldInfo) -> bool:
     dar None em alguma linha. Por isso o campo dela não é restaurado: na
     retomada do CSV e do XLSX, a célula vazia conta como ausente e a fábrica a
     preenche, mesmo onde a execução gravou "".
+
+    A flag do pydantic vem antes da chamada porque essa fábrica, chamada sem
+    os dados, levanta ValueError, e a resposta dela não pode depender de como
+    a chamada falha. Qualquer outra fábrica que levanta aqui, como a que lê
+    os.environ["VARIAVEL"] e levanta KeyError quando a variável falta, também
+    levantaria na execução, e a execução só não a chamou porque o LLM
+    respondeu o campo. Então a linha gravada não veio dela, a célula vazia é
+    o "" da resposta, e a resposta é False. Com True, a célula vazia contaria
+    como ausente, e a validação da linha chamaria a fábrica, que levantaria
+    na retomada.
     """
+    if field.default_factory_takes_validated_data:
+        return True
     try:
         return field.get_default(call_default_factory=True) is None
-    except ValueError:
-        return True
+    except Exception:  # noqa: BLE001 (a fábrica do usuário pode levantar qualquer erro; ver a docstring)
+        return False
 
 
 def _validate_checkpoint_extension(path: str | Path) -> None:

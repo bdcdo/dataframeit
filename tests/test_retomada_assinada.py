@@ -1462,6 +1462,56 @@ def test_texto_vazio_do_campo_com_fabrica_dos_dados_vira_o_valor_da_fabrica(
     assert list(retomada["campo1"]) == [valor, "y"]
 
 
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize("erro", [KeyError, RuntimeError, ValueError])
+def test_fabrica_que_levanta_nao_derruba_a_retomada(tmp_path, formato, erro):
+    """A fábrica que falha fora da execução não impede a retomada do campo respondido.
+
+    A fábrica que lê o ambiente, como os.environ["VARIAVEL"], levanta quando a
+    variável falta, e a execução não a chama, porque o LLM respondeu o campo. A
+    retomada do CSV e do XLSX consulta o default do campo para decidir se a
+    célula vazia volta como texto vazio, e a falha da fábrica não pode sair dali.
+    """
+
+    def fabrica():
+        raise erro
+
+    class ComFabricaQueLevanta(BaseModel):
+        campo1: str = Field(default_factory=fabrica)
+
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, ComFabricaQueLevanta, lambda text: {"campo1": "abc"}
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["campo1"]) == list(direta["campo1"]) == ["abc", "abc"]
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize("erro", [KeyError, RuntimeError, ValueError])
+def test_texto_vazio_do_campo_com_fabrica_que_levanta_volta_vazio(tmp_path, formato, erro):
+    """O texto vazio do campo cuja fábrica levanta volta vazio, sem chamar a fábrica.
+
+    A execução não chama a fábrica, porque o LLM respondeu o campo com "". No
+    CSV e no XLSX, a célula vazia desse campo volta como texto vazio: se ela
+    contasse como ausente, a validação da linha chamaria a fábrica, que
+    levantaria na retomada.
+    """
+
+    def fabrica():
+        raise erro
+
+    class ComFabricaQueLevanta(BaseModel):
+        campo1: str = Field(default_factory=fabrica)
+
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, ComFabricaQueLevanta, lambda text: {"campo1": ""}
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["campo1"]) == list(direta["campo1"]) == ["", ""]
+
+
 class VazioViraNone(BaseModel):
     campo1: str
 
