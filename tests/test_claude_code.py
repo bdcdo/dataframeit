@@ -424,6 +424,8 @@ def _resultado(**campos):
         ({"subtype": "success", "api_error_status": 529}, ProviderOverloadedError),
         ({"subtype": "success", "api_error_status": 429}, ProviderOverloadedError),
         ({"subtype": "success", "api_error_status": 500}, ProviderTransientError),
+        ({"subtype": "success", "api_error_status": 408}, ProviderTransientError),
+        ({"subtype": "success", "api_error_status": 409}, ProviderTransientError),
         ({"subtype": "success", "api_error_status": 400}, ProviderError),
         ({"subtype": "error_during_execution"}, ProviderTransientError),
     ],
@@ -434,9 +436,82 @@ def test_result_message_com_erro_vira_erro_classificado(sdk_falso, campos, class
     with pytest.raises(classe) as erro:
         _chamar()
 
+    assert type(erro.value) is classe
     esperado_recuperavel = issubclass(classe, ProviderTransientError)
     assert is_recoverable_error(erro.value) is esperado_recuperavel
     assert is_rate_limit_error(erro.value) is (classe is ProviderOverloadedError)
+
+
+def test_status_408_do_sdk_da_a_caixa_de_timeout(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = [
+        _resultado(
+            is_error=True,
+            subtype="error_during_execution",
+            api_error_status=408,
+            result="Request timed out",
+        )
+    ]
+
+    with pytest.raises(ProviderTransientError) as erro:
+        _chamar()
+
+    assert "TEMPO ESGOTADO" in get_friendly_error_message(erro.value, "claude_code")
+
+
+# O SDK repassa o api_error_status do JSON sem conferir o tipo: o mesmo número
+# classifica igual em int, texto de dígitos e float inteiro, e bool ou outro
+# texto contam como status ausente.
+@pytest.mark.parametrize(
+    ("status", "classe", "status_code", "caixa"),
+    [
+        (401, ProviderError, 401, "ERRO DE AUTENTICAÇÃO"),
+        ("401", ProviderError, 401, "ERRO DE AUTENTICAÇÃO"),
+        (401.0, ProviderError, 401, "ERRO DE AUTENTICAÇÃO"),
+        (429, ProviderOverloadedError, 429, "LIMITE DE REQUISIÇÕES"),
+        ("429", ProviderOverloadedError, 429, "LIMITE DE REQUISIÇÕES"),
+        (True, ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        (False, ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        ("abc", ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        ("4O1", ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        # Dígitos fora do ASCII: o arábico-índico, que int() aceitaria, e o
+        # sobrescrito, que isdigit() aceita e int() recusa.
+        ("\u0664\u0660\u0661", ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        ("40\u00b9", ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        (401.5, ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+        (float("nan"), ProviderTransientError, None, "ERRO NO PROCESSAMENTO"),
+    ],
+    ids=[
+        "int-401",
+        "texto-401",
+        "float-401",
+        "int-429",
+        "texto-429",
+        "true",
+        "false",
+        "texto-abc",
+        "texto-4O1",
+        "digitos-arabico-indicos",
+        "digito-sobrescrito",
+        "float-401.5",
+        "float-nan",
+    ],
+)
+def test_status_do_sdk_e_normalizado_antes_de_classificar(
+    sdk_falso, status, classe, status_code, caixa
+):
+    sdk_falso["mensagens_do_sdk"] = [
+        _resultado(
+            is_error=True, subtype="error_during_execution", api_error_status=status, result="x"
+        )
+    ]
+
+    with pytest.raises(classe) as erro:
+        _chamar()
+
+    assert type(erro.value) is classe
+    assert erro.value.status_code == status_code
+    assert type(erro.value.status_code) is type(status_code)
+    assert caixa in get_friendly_error_message(erro.value, "claude_code")
 
 
 def test_custo_informado_pelo_sdk_entra_no_usage(sdk_falso):

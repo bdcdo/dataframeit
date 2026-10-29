@@ -13,7 +13,7 @@ cd dataframeit
 uv run --extra dev pytest                     # suíte de testes
 uv run --extra dev --extra all --extra search-all --extra codex pytest --cov  # cobertura de ramos, exige 100%
 uv run --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex pytest --count=2 --repeat-scope=session  # suíte duas vezes no mesmo processo, sem pular teste
-uv run --extra dev ruff check src tests       # lint
+uv run --extra dev ruff check src tests example  # lint
 uv run --extra docs mkdocs serve              # documentação em http://127.0.0.1:8000
 ```
 
@@ -40,4 +40,4 @@ A documentação tem duas árvores com o mesmo conteúdo: `docs/` em português,
 
 ## Exemplos
 
-Os notebooks de `example/` são versionados sem saídas. O teste `tests/test_exemplos.py` confere que eles usam só parâmetros que existem em `dataframeit()`.
+Os notebooks de `example/` são versionados sem saídas. O teste `tests/test_exemplos.py` confere que eles usam só parâmetros que existem em `dataframeit()`. O `ruff check` confere os exemplos só com as regras de correção, listadas em `example/ruff.toml`, sem as de estilo de biblioteca, como docstring e anotação de tipo.

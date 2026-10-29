@@ -43,11 +43,15 @@ jobs:
       - name: zizmor
         run: uvx zizmor@1.30.1 --offline .github/workflows
 
+      # A formatação de example/ não é conferida: o ruff format reescreveria
+      # quase todas as células dos notebooks e desfaria o alinhamento dos
+      # comentários que explicam cada argumento e cada linha de dado.
       - name: Ruff format
         run: uv run --python 3.13 $EXTRAS ruff format --check src tests
 
+      # example/ruff.toml dá aos exemplos só as regras de correção.
       - name: Ruff check
-        run: uv run --python 3.13 $EXTRAS ruff check src tests
+        run: uv run --python 3.13 $EXTRAS ruff check src tests example
 
       - name: ty
         run: uv run --python 3.13 $EXTRAS ty check
