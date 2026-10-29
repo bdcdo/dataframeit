@@ -11,6 +11,7 @@ def dataframeit(
     data,
     questions,
     prompt,
+    perguntas=None,  # nome obsoleto de questions
     resume=True,
     reprocess_columns=None,
     model=None,
@@ -36,6 +37,7 @@ def dataframeit(
     save_trace=None,
     batch_size=None,
     checkpoint_path=None,
+    on_row_done=None,
 ) -> Any
 ```
 
@@ -84,6 +86,7 @@ def dataframeit(
 | `track_tokens` | bool | `True` | Rastreia uso de tokens |
 | `batch_size` | int | `None` | Salva checkpoint a cada N linhas processadas (requer `checkpoint_path`) |
 | `checkpoint_path` | str \| Path | `None` | Destino do checkpoint; extensão define formato (`.csv`, `.xlsx`, `.parquet`) |
+| `on_row_done` | Callable | `None` | Chamada uma vez por linha processada, inclusive em erro, com um [`RowResult`](#rowresult); na thread do worker quando `parallel_requests` > 1 |
 
 #### Busca Web
 
@@ -102,7 +105,7 @@ Com `use_search=True` e `search_per_field=True`, os campos do modelo aceitam con
 
 ### Retorno
 
-Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
+Retorna um DataFrame com as colunas extraídas: polars para entrada polars e pandas para as demais.
 
 | Entrada | Saída |
 |---------|-------|
@@ -116,6 +119,21 @@ Retorna dados no mesmo formato da entrada com colunas extraídas adicionadas.
 Com entrada polars, as colunas de entrada que não são campo do modelo nem têm nome de uma das [colunas adicionadas](#colunas-adicionadas) voltam como entraram, com o mesmo tipo e os mesmos valores. Na saída polars, um campo `Enum` sai pelo valor do membro. Quando as respostas de um campo não cabem numa coluna tipada do polars, como um `Union[int, str]` que recebeu número numa linha e texto em outra, a coluna sai com o tipo `Object`, com os objetos Python que o modelo devolveu, exceto o membro de `Enum` fora de lista ou dict, que também nela sai pelo valor, e um aviso diz quais colunas são; converta-as antes de gravar em arquivo. O campo cuja anotação junta `date`, `datetime`, `time` ou `timedelta` a outro tipo, `float` a `bool` ou `bytes` a `str`, como `Union[date, int]`, `Union[timedelta, int]`, `Union[float, bool]`, `tuple[date, int]` ou `list[Union[date, datetime]]`, sai `Object` quando a entrada tem linhas, com esse aviso, porque o tipo da coluna inferido pelo primeiro valor converteria os demais. Pela mesma razão, com qualquer anotação, sai `Object` a coluna em que essas combinações aparecem nos valores, no mesmo campo de um modelo aninhado ou nos itens de uma lista, como `Any` com `1.5` numa linha e `True` em outra, a coluna em que os dicts do mesmo campo trazem chaves diferentes, como `Any` com `{"a": 1}` numa linha e `{}` em outra, que como `Struct` teriam a união das chaves, e a coluna com `datetime` com e sem fuso, `time` com fuso ou `Decimal` NaN. O NaN de um campo `float`, ou de uma união com `float`, sai NaN, separado do nulo, também quando a saída volta com `resume=True`. Relido de um [checkpoint](../guides/performance.md), ele conta como ausente, como a linha pendente, porque nenhum dos formatos o guarda à parte do nulo. Em `Any`, nos itens de lista e nos campos de modelo aninhado, o NaN sai nulo; no campo `dict`, que sai em texto JSON, ele fica `NaN` no texto. Por isso, a saída polars de um campo `list[float]`, ou de modelo aninhado com campo `float`, que recebeu NaN tem a linha acusada como incompatível quando volta com `resume=True`, porque o nulo não é `float`, e a retomada pede `reprocess_columns`; a retomada pelo checkpoint, que grava a lista em JSON com o NaN, e a da saída pandas não a acusam. Mudam de tipo sem mudar de valor: o inteiro ao lado de um float na mesma coluna ou lista sai float (`[1.5, 2]` sai `[1.5, 2.0]`), o `Decimal` sai com a escala comum da coluna (`1.5` ao lado de `2.25` sai `1.50`), e o `datetime` com fuso diferente do primeiro sai no fuso dele, no mesmo instante. Na saída, na retomada e em [`read_df()`](#read_df), o `NewType` e o apelido `type` contam pelo tipo a que se referem, inclusive o apelido genérico usado com argumentos, como `Opcional[int]` de `type Opcional[T] = T | None`.
 
 Um campo anotado como `dict`, como `dict[str, int]` ou `Optional[dict[str, Any]]`, sai na saída polars como texto JSON, com nulo onde a linha não tem resposta. O texto é o mesmo que o checkpoint grava, e os valores que o JSON não representa saem nele como texto. O tipo das demais colunas do modelo vem das respostas. A coluna sem nenhum valor, toda nula ou só com listas vazias, sai com o tipo da anotação quando ela é `str`, `int`, `float`, `bool`, `date`, `datetime` ou lista de um deles: `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime` ou `List` de um desses. Com outra anotação, a coluna sem valor fica com o tipo que o polars infere. Na entrada sem linhas, a coluna do modelo que a entrada já traz mantém o tipo dela, e a que ela não traz sai `String`.
+
+### RowResult
+
+Dataclass imutável que `on_row_done` recebe a cada linha processada nesta chamada, depois de a linha estar gravada no DataFrame. A linha pulada por `resume` e a que uma interrupção deixou sem status não são entregues.
+
+| Campo | Tipo | Conteúdo |
+|-------|------|----------|
+| `index` | Any | Rótulo da linha no índice do DataFrame |
+| `position` | int | Ordem, de 0, entre as linhas processadas nesta chamada |
+| `success` | bool | `True` quando a linha ficou `'processed'` |
+| `error` | str \| None | Texto gravado em `_error_details`; numa linha bem-sucedida pode registrar as tentativas repetidas |
+| `values` | dict | Campos do modelo que esta chamada gravou na linha, só os de `reprocess_columns` numa linha reprocessada; vazio em erro |
+| `elapsed_seconds` | float | Segundos do início do processamento da linha, com as tentativas repetidas e as pausas de rate limit |
+
+A chamada na thread do worker, com `parallel_requests` > 1, e a exceção dentro do callback estão em [Performance](../guides/performance.md#callback-por-linha).
 
 ### Colunas Adicionadas
 
@@ -135,6 +153,19 @@ if '_dataframeit_status' in resultado.columns:
 ```
 
 Linhas com texto vazio ou ausente não vão ao modelo: recebem status `'error'` e o detalhe `"Texto ausente"`.
+
+### Entrada modificada no lugar
+
+Com entrada `pd.DataFrame`, o `dataframeit()` grava no próprio DataFrame que recebe as colunas do modelo e as [colunas adicionadas](#colunas-adicionadas), inclusive `_dataframeit_status`, que fica nele mesmo quando a saída a remove. Por isso uma interrupção deixa no DataFrame as linhas já processadas, e `resume=True` continua delas.
+
+Pela mesma razão, uma segunda chamada com o mesmo DataFrame, ou com uma cópia feita depois da primeira, não manda ao modelo as linhas com status `'processed'`. Com um modelo de mesmos campos, ela devolve os resultados da primeira chamada. Com um modelo de outros campos e `resume=True`, o padrão, o resultado depende dos campos que a primeira chamada não preencheu. Se algum deles não admite `None`, como `categoria: str`, a chamada levanta `ValueError` por campos incompatíveis. Se todos admitem `None`, como `Optional[str]`, com ou sem padrão, a chamada não levanta erro nem avisa da diferença de campos, não manda nenhuma linha ao modelo e devolve `None` nesses campos em todas as linhas. O mesmo acontece com o modelo da primeira chamada acrescido de um campo `Optional`. O erro só protege, portanto, quando o campo novo não admite `None`. Para aplicar outro modelo ou outro prompt aos mesmos textos, passe a cada chamada um DataFrame novo ou uma cópia feita antes da primeira:
+
+```python
+resultado_a = dataframeit(df.copy(), ModeloA, PROMPT_A)
+resultado_b = dataframeit(df.copy(), ModeloB, PROMPT_B)
+```
+
+A entrada polars, `pd.Series`, `list` e `dict` não é alterada.
 
 ### Exemplos
 

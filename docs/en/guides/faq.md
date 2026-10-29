@@ -4,19 +4,21 @@
 
 ### `ImportError` asking you to install a package
 
-The chosen provider needs the corresponding extra. The message says which one to install, for example:
+The chosen provider needs its package, and the message says what to install. For LangChain providers, it suggests the provider's package or the `all` extra:
 
 ```bash
-pip install dataframeit[anthropic]
+pip install langchain-anthropic
+# or
+pip install dataframeit[all]
 ```
 
-The extras are listed in [Installation](../getting-started/installation.md). LangChain providers without their own extra, such as Cohere and Mistral, need the `langchain-<provider>` package.
+The provider's extra, such as `dataframeit[anthropic]`, installs the same package. `all` brings the providers that have an extra, except Codex; LangChain providers without their own extra, such as Cohere and Mistral, need the `langchain-<provider>` package, which `all` does not include. For `claude_code` and `codex`, the message asks for the provider's extra (`dataframeit[claude-code]`, `dataframeit[codex]`), and for web search, the search provider's package. The extras are listed in [Installation](../getting-started/installation.md).
 
 ### Authentication error (401 or 403)
 
 The API key was not found or was rejected. Check the provider's environment variable (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`) in the same process that runs Python; in a notebook, set it before calling `dataframeit()`. An authentication error gets no new attempt: every row ends with status `'error'`.
 
-The `codex` and `claude_code` providers use the local authentication of those tools and do not accept `api_key`; see [Providers](providers.md).
+The `codex` and `claude_code` providers use the local authentication of those tools. `codex` rejects `api_key` with `ProviderConfigurationError`, and `claude_code` ignores it; see [Providers](providers.md).
 
 ## Result
 

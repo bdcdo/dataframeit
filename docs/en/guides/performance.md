@@ -4,7 +4,7 @@ Optimize processing with parallelism, rate limiting, and token tracking.
 
 ## Parallel Processing
 
-Use `parallel_requests` to speed up processing:
+Use `parallel_requests` to speed up processing. Up to `parallel_requests` rows are in flight at once, and a new row is dispatched as soon as another finishes: a worker that finishes early does not wait for the slowest one.
 
 ```python
 result = dataframeit(
@@ -25,7 +25,7 @@ result = dataframeit(
 
 ### Auto-reduction on Rate Limits
 
-When a row fails after all attempts with a rate limit error, DataFrameIt halves the workers:
+When a row fails after all attempts with a rate limit error, DataFrameIt halves the cap on rows in flight; the rows already in flight finish:
 
 ```
 Start: 10 workers
@@ -38,6 +38,30 @@ With `codex`, the rate limit and the app-server overload are recognized by the e
 
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.
+
+### Per-Row Callback
+
+`on_row_done` receives a `RowResult` for each row processed in this call, including errors, after the row is written to the DataFrame. A row skipped by `resume` is not delivered.
+
+```python
+from dataframeit import RowResult, dataframeit
+
+def on_done(row: RowResult) -> None:
+    print(row.position, row.index, row.success, row.values)
+
+result = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    parallel_requests=5,
+    on_row_done=on_done,
+)
+```
+
+The `RowResult` fields are in the [API reference](../reference/api.md#rowresult).
+
+!!! warning "Worker thread"
+    With `parallel_requests` > 1, the callback runs on the worker thread that processed the row while the others keep writing. Whatever it shares (a counter, a queue, a screen) needs its own synchronization, and what it needs from the row comes from the `RowResult`, not from the DataFrame. An exception inside it becomes a warning, and the run continues.
 
 At the end of the run, a `UserWarning` reports the initial and final workers and suggests using the final number in `parallel_requests`.
 
@@ -119,7 +143,7 @@ result = dataframeit(
 )
 ```
 
-When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output, and running again with `resume=True` processes only the pending rows. With `reprocess_columns`, rows the interruption left without reprocessing keep their previous values and are marked in `_error_details`.
+When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output. When running again with `resume=True` processes only the pending rows, and what happens with `reprocess_columns`, is covered in [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
 
 ## Token Tracking
 
@@ -155,7 +179,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
+The throughput section appears only with `parallel_requests > 1`. Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
 
 To silence the summary and keep the usage columns, raise the logger level:
 

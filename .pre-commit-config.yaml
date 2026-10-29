@@ -1,7 +1,9 @@
 # Os hooks rodam as mesmas versões do extra dev do pyproject.toml, pelo uv, e
 # o job quality do CI (tests.yml) roda os mesmos comandos.
 # Instalação: uv run --extra dev pre-commit install
-# Os hooks disparam com mudanças em src/ e tests/, as pastas que o CI confere.
+# Os hooks disparam com mudanças em src/ e tests/. Os workflows de
+# .github/workflows/ não têm hook: o passo zizmor do job quality os confere, e
+# o comando dele roda também na máquina local.
 files: ^(src|tests)/
 repos:
   - repo: local

@@ -84,6 +84,8 @@ print(resultado)
 2            Entrega ok, produto mediano.     neutro     media
 ```
 
+Com `track_tokens=True`, o padrão, a saída traz também as colunas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` e `_reasoning_tokens`, omitidas acima; ver [Colunas Adicionadas](../reference/api.md#colunas-adicionadas).
+
 ## Exemplo Completo
 
 ```python

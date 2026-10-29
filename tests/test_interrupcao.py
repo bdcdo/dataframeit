@@ -121,6 +121,19 @@ def test_interrupcao_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_an
     assert detalhes[~antigas].isna().all()
 
 
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_interrupcao_no_reprocessamento_de_dict_com_chaves_tupla(paralelo):
+    entrada = {("sp", ano): f"t{ano}" for ano in range(2020, 2026)}
+    _, llm = _llm_que_esgota(2, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(entrada, llm, reprocess_columns=["campo1"], parallel_requests=paralelo)
+
+    assert list(saida.index) == list(entrada)
+    assert (saida["_dataframeit_status"] == "processed").sum() == 2
+    assert saida["_dataframeit_status"].isna().sum() == 4
+
+
 def test_linha_com_erro_que_ia_ser_refeita_volta_a_ficar_pendente():
     df = pd.DataFrame(
         {
@@ -168,7 +181,16 @@ def test_aviso_com_checkpoint_manda_usar_o_mesmo_arquivo(tmp_path):
 def test_falha_ao_despachar_a_linha_interrompe_e_grava_o_checkpoint(tmp_path):
     df = pd.DataFrame({"texto": [f"linha{i}" for i in range(6)]})
     ckpt = tmp_path / "ckpt.csv"
-    _, llm = _llm_que_esgota(100, ProviderAbortError("nunca"))
+    _, llm_base = _llm_que_esgota(100, ProviderAbortError("nunca"))
+    # As duas primeiras linhas entram no provider juntas: a terceira só é
+    # despachada quando uma delas termina, e a outra já passou pela checagem
+    # de interrupção, então as duas terminam processadas.
+    barreira = threading.Barrier(2)
+
+    def llm(*args, **kwargs):
+        barreira.wait(timeout=5)
+        return llm_base(*args, **kwargs)
+
     submit = ThreadPoolExecutor.submit
     despachos = []
 
