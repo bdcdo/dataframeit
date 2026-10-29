@@ -127,7 +127,7 @@ To add other per-field keys, unpack the dict: `json_schema_extra={**field_condit
 {'field': 'campo_opcional', 'exists': True}
 ```
 
-On an `Enum` field, the comparison uses the member's value: with `tipo: Tipo` and `Tipo.PF = 'pf'`, both `{'field': 'tipo', 'equals': 'pf'}` and `{'field': 'tipo', 'equals': Tipo.PF}` hold for `Tipo.PF`, during execution and when resuming. In `in` and `not_in`, each accepted value is compared the same way.
+On an `Enum` field, the comparison uses the member's value: with `tipo: Tipo` and `Tipo.PF = 'pf'`, both `{'field': 'tipo', 'equals': 'pf'}` and `{'field': 'tipo', 'equals': Tipo.PF}` hold for `Tipo.PF`, during execution and when resuming. In `in` and `not_in`, each accepted value is compared the same way. On a collection field, such as `list[Tipo]`, `tuple[Tipo, ...]`, `set[Tipo]` or `list[Item]` with an `Enum` inside the item, each item's member also counts by its value, and the tuple and the set count as a list: `{'field': 'tipos', 'equals': ['pf']}` holds for `[Tipo.PF]`, `(Tipo.PF,)` and `{Tipo.PF}`. The set is compared with its items in a fixed order, the same as the checkpoint's, so an operand written as a set, `{'field': 'tipos', 'equals': {'pf', 'pj'}}`, holds in any order.
 
 Without `depends_on`, the order of a callable is not guaranteed.
 

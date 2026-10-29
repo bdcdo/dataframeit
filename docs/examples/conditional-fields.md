@@ -127,7 +127,7 @@ Para somar outras chaves por campo, desempacote o dict: `json_schema_extra={**fi
 {'field': 'campo_opcional', 'exists': True}
 ```
 
-Num campo `Enum`, a comparação é pelo valor do membro: com `tipo: Tipo` e `Tipo.PF = 'pf'`, tanto `{'field': 'tipo', 'equals': 'pf'}` quanto `{'field': 'tipo', 'equals': Tipo.PF}` valem para `Tipo.PF`, na execução e na retomada. Em `in` e `not_in`, cada valor aceito é comparado do mesmo jeito.
+Num campo `Enum`, a comparação é pelo valor do membro: com `tipo: Tipo` e `Tipo.PF = 'pf'`, tanto `{'field': 'tipo', 'equals': 'pf'}` quanto `{'field': 'tipo', 'equals': Tipo.PF}` valem para `Tipo.PF`, na execução e na retomada. Em `in` e `not_in`, cada valor aceito é comparado do mesmo jeito. Num campo que é coleção, como `list[Tipo]`, `tuple[Tipo, ...]`, `set[Tipo]` ou `list[Item]` com `Enum` dentro do item, o membro de cada item também conta pelo valor, e a tupla e o conjunto contam como lista: `{'field': 'tipos', 'equals': ['pf']}` vale para `[Tipo.PF]`, `(Tipo.PF,)` e `{Tipo.PF}`. O conjunto é comparado com os itens em ordem fixa, a mesma do checkpoint, e por isso o operando escrito como conjunto, `{'field': 'tipos', 'equals': {'pf', 'pj'}}`, vale em qualquer ordem.
 
 Sem `depends_on`, a ordem de um callable não é garantida.
 

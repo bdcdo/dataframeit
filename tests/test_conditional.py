@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import typing
+import warnings
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
@@ -19,7 +20,7 @@ import pytest
 from pydantic import BaseModel, Field, create_model
 from pydantic.json_schema import JsonDict
 
-from dataframeit import dataframeit, field_condition
+from dataframeit import ProviderUsageLimitError, dataframeit, field_condition
 from dataframeit.agent import field_extractor
 from dataframeit.conditional import (
     check_dependencies_exist,
@@ -1618,3 +1619,154 @@ def test_condicao_sobre_enum_na_retomada_da_o_resultado_da_execucao(
     incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", Pessoa, set())
 
     assert incompativeis == (["cpf"] if verdadeira else [])
+
+
+# =============================================================================
+# Condição sobre coleção de Enum: lista, tupla e conjunto comparam pelo valor
+# =============================================================================
+
+
+# Cada valor do campo na execução, como o model_dump o entrega, ao lado do que a
+# retomada relê do checkpoint para o mesmo campo. A tupla e o conjunto voltam
+# como lista, e o conjunto na ordem em que o checkpoint o grava.
+_COLECOES_DE_ENUM = [
+    pytest.param([_Tipo.PF], ["pf"], id="lista"),
+    pytest.param((_Tipo.PF,), ["pf"], id="tupla"),
+    pytest.param({_Tipo.PF}, ["pf"], id="conjunto"),
+    pytest.param(frozenset({_Tipo.PJ, _Tipo.PF}), ["pf", "pj"], id="frozenset"),
+    pytest.param([_Tipo.PJ, _Tipo.PF], ["pj", "pf"], id="lista-em-ordem"),
+    pytest.param([], [], id="lista-vazia"),
+    pytest.param(set(), [], id="conjunto-vazio"),
+    pytest.param([_Tipo.PF, "outro", 3, None], ["pf", "outro", 3, None], id="misto"),
+    pytest.param([{"tipo": _Tipo.PF}], [{"tipo": "pf"}], id="lista-de-submodelo"),
+]
+
+# Operandos que dizem o mesmo que o valor relido, escritos com valor, com membro
+# e em outras formas de coleção.
+_OPERANDOS_IGUAIS = [
+    pytest.param(lambda relido: relido, id="valor"),
+    pytest.param(tuple, id="tupla-de-valor"),
+    pytest.param(
+        lambda relido: [_Tipo(item) if item in ("pf", "pj") else item for item in relido],
+        id="membro",
+    ),
+]
+
+
+@pytest.mark.parametrize("operando", _OPERANDOS_IGUAIS)
+@pytest.mark.parametrize(("executado", "relido"), _COLECOES_DE_ENUM)
+def test_condicao_sobre_colecao_de_enum_da_o_mesmo_resultado_na_execucao_e_na_retomada(
+    executado, relido, operando
+):
+    """Cada operador dá o mesmo resultado com o valor da execução e com o relido."""
+    igual = operando(relido)
+    diferente = [*relido, "pj"]
+    casos = [
+        ({"equals": igual}, True),
+        ({"not_equals": igual}, False),
+        ({"equals": diferente}, False),
+        ({"not_equals": diferente}, True),
+        ({"in": [diferente, igual]}, True),
+        ({"in": (diferente,)}, False),
+        ({"not_in": [igual]}, False),
+        ({"not_in": [diferente]}, True),
+    ]
+    for operador, esperado in casos:
+        condicao = {"field": "tipos", **operador}
+        for valor in (executado, relido):
+            assert evaluate_condition(condicao, {"tipos": valor}, "cpf") is esperado, (
+                condicao,
+                valor,
+            )
+
+
+def test_conjunto_de_enum_e_igual_ao_conjunto_do_operando_em_qualquer_ordem():
+    """O conjunto do campo e o do operando saem na mesma ordem, a do checkpoint."""
+    condicao = {"field": "tipos", "equals": {"pj", _Tipo.PF}}
+
+    for valor in ({_Tipo.PJ, _Tipo.PF}, ["pf", "pj"]):
+        assert evaluate_condition(condicao, {"tipos": valor}, "cpf") is True
+
+
+def test_tupla_que_nao_e_de_enum_e_igual_a_lista_relida():
+    """A tupla volta do checkpoint como lista, com Enum dentro ou não."""
+    condicao = {"field": "nomes", "equals": ["a", "b"]}
+
+    for valor in (("a", "b"), ["a", "b"]):
+        assert evaluate_condition(condicao, {"nomes": valor}, "cpf") is True
+
+
+class _TagDaColecao(Enum):
+    PF = "pf"
+    PJ = "pj"
+
+
+class _ComLista(BaseModel):
+    tags: list[_TagDaColecao]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "equals": ["pf"]}})
+
+
+class _ComTupla(BaseModel):
+    tags: tuple[_TagDaColecao, ...]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "equals": ["pf"]}})
+
+
+class _ComConjunto(BaseModel):
+    tags: set[_TagDaColecao]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "in": [["pf"], ["pj"]]}})
+
+
+class _ItemComTag(BaseModel):
+    tag: _TagDaColecao
+
+
+class _ComListaDeSubmodelo(BaseModel):
+    itens: list[_ItemComTag]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "itens", "equals": [{"tag": "pf"}]}})
+
+
+def _rodar_com_parada(modelo, parar_em=None, **kwargs):
+    """Roda dataframeit por campo em duas linhas; a cota acaba ao chegar em `parar_em`."""
+    resposta = {"tags": ["pf"], "itens": [{"tag": "pf"}], "cpf": "123"}
+
+    def call_agent(text, model, *args, **kw):
+        if text == parar_em:
+            mensagem = "cota"
+            raise ProviderUsageLimitError(mensagem)
+        dados = model.model_validate({campo: resposta[campo] for campo in model.model_fields})
+        return {"data": dados.model_dump(), "usage": {}}
+
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=call_agent),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        return dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=modelo,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+@pytest.mark.parametrize("modelo", [_ComLista, _ComTupla, _ComConjunto, _ComListaDeSubmodelo])
+def test_condicao_sobre_colecao_de_enum_extrai_o_campo_na_execucao_e_na_retomada(
+    modelo, formato, tmp_path
+):
+    """O campo condicionado sai na execução direta e a retomada chega ao mesmo cpf."""
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    checkpoint = tmp_path / f"checkpoint.{formato}"
+
+    direta = _rodar_com_parada(modelo)
+    _rodar_com_parada(modelo, parar_em="b", checkpoint_path=checkpoint, batch_size=1)
+    retomada = _rodar_com_parada(modelo, checkpoint_path=checkpoint, batch_size=1)
+
+    assert direta["cpf"].tolist() == ["123", "123"]
+    assert retomada["cpf"].tolist() == ["123", "123"]
