@@ -80,7 +80,7 @@ Los nombres de clases y campos son arbitrarios: los notebooks de [`example/`](ex
 - **Múltiples tipos de entrada**: DataFrame y Series de pandas o de Polars, list, dict
 - **Salida estructurada**: Validación con Pydantic; una respuesta rechazada vuelve al modelo con el error
 - **Resiliencia**: Reintento automático con backoff exponencial y checkpoints periódicos (`batch_size` + `checkpoint_path`) para retomar ejecuciones largas
-- **Rendimiento**: Procesamiento paralelo que reduce los workers a la mitad ante rate limits, rate limiting configurable
+- **Rendimiento**: Cola paralela continua que reduce a la mitad las filas en vuelo ante rate limits, rate limiting configurable y callback por fila (`on_row_done`), que corre en el hilo del worker
 - **Búsqueda web**: Tavily o Exa, por campo o por grupo de campos, con campos condicionales (`condition`, `depends_on`)
 - **Seguimiento**: Uso de tokens, créditos de búsqueda y métricas de throughput
 

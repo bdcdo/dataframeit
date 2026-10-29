@@ -80,7 +80,7 @@ Os nomes de classes e campos são arbitrários: os notebooks de [`example/`](exa
 - **Múltiplos tipos de entrada**: DataFrame e Series do pandas ou do Polars, list, dict
 - **Saída estruturada**: Validação com Pydantic; nos providers do LangChain, uma resposta recusada volta ao modelo com o erro
 - **Resiliência**: Retry automático com backoff exponencial e checkpoints periódicos (`batch_size` + `checkpoint_path`) para retomar execuções longas
-- **Performance**: Processamento paralelo que reduz os workers pela metade em rate limit, rate limiting configurável
+- **Performance**: Fila paralela contínua que reduz as linhas em voo pela metade em rate limit, rate limiting configurável e callback por linha (`on_row_done`), que roda na thread do worker
 - **Busca web**: Tavily ou Exa, por campo ou por grupo de campos, com campos condicionais (`condition`, `depends_on`)
 - **Tracking**: Uso de tokens, créditos de busca e métricas de throughput
 

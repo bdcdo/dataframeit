@@ -4,7 +4,7 @@ Optimize processing with parallelism, rate limiting, and token tracking.
 
 ## Parallel Processing
 
-Use `parallel_requests` to speed up processing:
+Use `parallel_requests` to speed up processing. Up to `parallel_requests` rows are in flight at once, and a new row is dispatched as soon as another finishes: a worker that finishes early does not wait for the slowest one.
 
 ```python
 result = dataframeit(
@@ -38,6 +38,30 @@ With `codex`, the rate limit and the app-server overload are recognized by the e
 
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.
+
+### Per-Row Callback
+
+`on_row_done` receives a `RowResult` for each row processed in this call, including errors, after the row is written to the DataFrame. A row skipped by `resume` is not delivered.
+
+```python
+from dataframeit import RowResult, dataframeit
+
+def on_done(row: RowResult) -> None:
+    print(row.position, row.index, row.success, row.values)
+
+result = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    parallel_requests=5,
+    on_row_done=on_done,
+)
+```
+
+The `RowResult` fields are in the [API reference](../reference/api.md#rowresult): `index`, `position` (0-based order among the rows processed in this call), `success`, `error` (the `_error_details` text), `values` (model fields written; empty on error) and `elapsed_seconds`.
+
+!!! warning "Worker thread"
+    With `parallel_requests` > 1, the callback runs on the worker thread that processed the row while the others keep writing. Whatever it shares (a counter, a queue, a screen) needs its own synchronization, and what it needs from the row comes from the `RowResult`, not from the DataFrame. An exception inside it becomes a warning, and the run continues.
 
 At the end of the run, a `UserWarning` reports the initial and final workers and suggests using the final number in `parallel_requests`.
 

@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
@@ -194,6 +194,44 @@ class ProviderBackend:
     label: str
     invoke: Callable[[str], dict]
     invoke_partial: Callable[[str, set, dict], dict] | None = None
+
+
+@dataclass(frozen=True)
+class RowResult:
+    """O que uma linha processada deixou gravada, entregue a `on_row_done`.
+
+    `index` é o rótulo da linha no DataFrame, e `position` a ordem (de 0) entre
+    as linhas processadas nesta chamada: a linha pulada por `resume` não conta.
+    `values` traz os campos do modelo que esta chamada gravou na linha, que numa
+    linha reprocessada são só os de `reprocess_columns`; em erro, fica vazio.
+    `error` é o texto gravado em `_error_details`, que numa linha bem-sucedida
+    pode registrar as tentativas repetidas; `success` é o que diz se a linha
+    deu certo. `elapsed_seconds` conta do início do processamento da linha,
+    inclusive as tentativas repetidas e as pausas de rate limit.
+    """
+
+    index: Any
+    position: int
+    success: bool
+    error: str | None
+    values: dict[str, Any]
+    elapsed_seconds: float
+
+
+def _recorded_error(df: pd.DataFrame, idx: Hashable) -> str | None:
+    """Texto gravado em `_error_details` da linha, ou None com a célula vazia."""
+    value = df.at[idx, "_error_details"]  # noqa: PD008 (leitura de uma célula por rótulo)
+    return None if value is None or pd.isna(value) else str(value)
+
+
+def _notify_row_done(on_row_done: Callable[[RowResult], None] | None, result: RowResult) -> None:
+    """Entrega a linha ao callback; a falha dele vira aviso, e a execução segue."""
+    if on_row_done is None:
+        return
+    try:
+        on_row_done(result)
+    except Exception as e:  # noqa: BLE001 (o callback é do usuário; a falha dele não para a execução)
+        warnings.warn(f"on_row_done falhou na linha {result.index}: {_error_text(e)}", stacklevel=1)
 
 
 # Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
@@ -1007,6 +1045,7 @@ def dataframeit(
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | Path | None = None,
+    on_row_done: Callable[[RowResult], None] | None = None,
 ) -> pd.DataFrame: ...
 
 
@@ -1041,6 +1080,7 @@ def dataframeit(
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | Path | None = None,
+    on_row_done: Callable[[RowResult], None] | None = None,
 ) -> PolarsDataFrame: ...
 
 
@@ -1074,6 +1114,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | Path | None = None,
+    on_row_done: Callable[[RowResult], None] | None = None,
 ) -> pd.DataFrame | PolarsDataFrame:
     """Processa textos usando LLMs para extrair informações estruturadas.
 
@@ -1175,6 +1216,14 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             execução; com `resume=True`, a mesma chamada retoma do checkpoint
             quando a assinatura bate, e senão avisa e o sobrescreve.
             Exemplo: ``dataframeit(df, Model, PROMPT, batch_size=100, checkpoint_path="ckpt.xlsx")``.
+        on_row_done: Função chamada uma vez por linha processada nesta chamada, inclusive
+            em erro, depois de a linha estar gravada no DataFrame, com um `RowResult`
+            (rótulo do índice, posição entre as linhas processadas, sucesso, texto de
+            `_error_details`, campos gravados e segundos decorridos). A linha pulada por
+            `resume` não é entregue. Com `parallel_requests` > 1, a chamada vem da thread
+            do worker que processou a linha, enquanto as outras seguem gravando: a função
+            sincroniza o que compartilhar e lê o que precisa do `RowResult`, e não do
+            DataFrame. Uma exceção dentro dela vira aviso, e a execução segue.
 
     Returns:
         DataFrame (polars para entrada polars, pandas nos demais casos) com uma
@@ -1602,6 +1651,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 parallel_requests=parallel_requests,
                 trace_mode=trace_mode,
                 checkpoint=checkpoint,
+                on_row_done=on_row_done,
             )
         else:
             token_stats = _process_rows(
@@ -1619,6 +1669,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 reprocess_columns=reprocess_columns,
                 trace_mode=trace_mode,
                 checkpoint=checkpoint,
+                on_row_done=on_row_done,
             )
 
     if token_stats.get("abort"):
@@ -2312,20 +2363,23 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     reprocess_columns: Sequence[str] | None,
     trace_mode: str | None,
     token_stats: dict,
-) -> None:
+) -> dict[str, Any]:
     """Grava na linha o resultado de uma chamada bem-sucedida e soma o uso.
 
     Numa linha já processada sob reprocess_columns, só essas colunas são
-    gravadas; nas demais linhas, todas as colunas do modelo.
+    gravadas; nas demais linhas, todas as colunas do modelo. Devolve os campos
+    gravados, que o RowResult entrega ao callback.
     """
     extracted = result["data"]
     usage = result.get("usage")
     retry_info = result.get("_retry_info", {})
     only_reprocessed = reprocess_columns if row_already_processed else None
 
+    written = {}
     for col in expected_columns:
         if col in extracted and (not only_reprocessed or col in only_reprocessed):
             _set_cell(df, idx, col, extracted[col])
+            written[col] = extracted[col]
 
     # Armazenar tokens no DataFrame (se habilitado); o total vai só ao resumo.
     if track_tokens and usage:
@@ -2354,6 +2408,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     _set_cell(df, idx, status_col, "processed")
     # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
     _set_cell(df, idx, "_error_details", _success_details(retry_info))
+    return written
 
 
 def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução inteira)
@@ -2495,6 +2550,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     reprocess_columns: Sequence[str] | None = None,
     trace_mode: str | None = None,
     checkpoint: _Checkpoint | None = None,
+    on_row_done: Callable[[RowResult], None] | None = None,
 ) -> dict:
     """Processa cada linha do DataFrame, em sequência.
 
@@ -2514,6 +2570,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
             Se especificado, não pula linhas já processadas.
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
         checkpoint: Arquivo do checkpoint e intervalo de gravação, ou None.
+        on_row_done: Chamado com o RowResult de cada linha depois de gravá-la.
 
     Returns:
         Dict com estatísticas de tokens: {'input_tokens', 'output_tokens', 'total_tokens'}
@@ -2539,7 +2596,9 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
         if not reprocess_columns and not is_pending[i]:
             continue
 
+        started = time.monotonic()
         success = False
+        values: dict[str, Any] = {}
         if _is_missing_text(row[text_column]):
             _record_missing_text(
                 df,
@@ -2558,7 +2617,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     expected_columns,
                     nan_columns=nan_columns,
                 )
-                _record_success(
+                values = _record_success(
                     df,
                     idx,
                     result,
@@ -2593,6 +2652,17 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     token_stats=token_stats,
                 )
 
+        _notify_row_done(
+            on_row_done,
+            RowResult(
+                index=idx,
+                position=rows_processed_this_run,
+                success=success,
+                error=_recorded_error(df, idx),
+                values=values,
+                elapsed_seconds=time.monotonic() - started,
+            ),
+        )
         rows_processed_this_run += 1
         if (
             checkpoint
@@ -2612,7 +2682,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     return token_stats
 
 
-def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
+def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado compartilhado entre threads)
     df: pd.DataFrame,
     *,
     text_column: str,
@@ -2629,8 +2699,13 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     parallel_requests: int,
     trace_mode: str | None = None,
     checkpoint: _Checkpoint | None = None,
+    on_row_done: Callable[[RowResult], None] | None = None,
 ) -> dict:
-    """Processa linhas do DataFrame em paralelo com auto-redução de workers.
+    """Processa linhas do DataFrame em paralelo, com fila contínua e auto-redução.
+
+    Até `parallel_requests` linhas ficam em voo ao mesmo tempo, e uma linha
+    nova é despachada assim que outra termina; o teto cai pela metade a cada
+    rate limit e não volta a subir até o fim da execução.
 
     Args:
         df: DataFrame de trabalho, alterado in-place sob lock.
@@ -2646,10 +2721,12 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         track_tokens: Se True, grava tokens por linha e soma o uso.
         reprocess_columns: Lista de colunas para forçar reprocessamento.
             Se especificado, não pula linhas já processadas.
-        parallel_requests: Número inicial de workers paralelos.
-            Será reduzido automaticamente se detectar erros de rate limit (429).
+        parallel_requests: Teto inicial de linhas em voo, que também dimensiona
+            o executor. Reduzido pela metade a cada erro de rate limit (429).
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
         checkpoint: Arquivo do checkpoint e intervalo de gravação, ou None.
+        on_row_done: Chamado, na thread do worker, com o RowResult de cada
+            linha depois de gravá-la.
 
     Returns:
         Dict com estatísticas de tokens e métricas de throughput.
@@ -2674,10 +2751,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # rótulo, que o _SnapshotWriter usa para descartar o snapshot atrasado.
     writer = _SnapshotWriter(checkpoint) if checkpoint else None
 
-    def _save_snapshot(snapshot: Callable[[], None] | None) -> None:
-        if snapshot is not None:
-            snapshot()
-
     def _count_row(idx: Hashable) -> Callable[[], None] | None:
         """Conta a linha; na hora do checkpoint, copia o DataFrame. Chamar sob `lock`."""
         nonlocal checkpoint_counter
@@ -2696,21 +2769,55 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     )
     desc += _progress_suffix(df, reprocess_columns, processed_count)
 
-    # Identificar linhas a processar
+    # Linhas a processar, com a posição de cada uma entre as processadas nesta
+    # chamada, que o RowResult entrega ao callback.
     rows_to_process = [
-        (i, idx, row)
-        for i, (idx, row) in enumerate(df.iterrows())
-        if reprocess_columns or is_pending[i]
+        (position, idx, row)
+        for position, (idx, row) in enumerate(
+            (idx, row)
+            for i, (idx, row) in enumerate(df.iterrows())
+            if reprocess_columns or is_pending[i]
+        )
     ]
 
     if not rows_to_process:
         return token_stats
 
+    def _finish(  # noqa: PLR0913 (o que a linha gravou, repassado ao RowResult)
+        row_data: tuple,
+        started: float,
+        snapshot: Callable[[], None] | None,
+        *,
+        success: bool,
+        error: str | None,
+        values: dict,
+    ) -> None:
+        """Entrega a linha gravada ao callback e grava o snapshot, fora de `lock`.
+
+        O callback vem antes do snapshot, cuja I/O pode demorar, e um snapshot
+        que falha não repete a entrega: a linha já está contada.
+        """
+        position, idx, _row = row_data
+        _notify_row_done(
+            on_row_done,
+            RowResult(
+                index=idx,
+                position=position,
+                success=success,
+                error=error,
+                values=values,
+                elapsed_seconds=time.monotonic() - started,
+            ),
+        )
+        if snapshot is not None:
+            snapshot()
+
     def process_single_row(row_data: tuple) -> dict:
         """Processa uma única linha (executada em thread separada)."""
         nonlocal current_workers, workers_reduced
 
-        _i, idx, row = row_data
+        started = time.monotonic()
+        _position, idx, row = row_data
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
         if _is_missing_text(row[text_column]):
             with lock:
@@ -2721,8 +2828,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     row_already_processed=row_already_processed,
                     reprocess_columns=reprocess_columns,
                 )
+                error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
-            _save_snapshot(snapshot)
+            _finish(row_data, started, snapshot, success=False, error=error, values={})
             return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
 
         # Linha que ainda não foi ao provider quando a execução foi interrompida
@@ -2746,7 +2854,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
 
             # Atualizar DataFrame (com lock para thread-safety)
             with lock:
-                _record_success(
+                values = _record_success(
                     df,
                     idx,
                     result,
@@ -2760,6 +2868,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     token_stats=token_stats,
                 )
                 token_stats["requests_completed"] += 1
+                error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
 
         except ProviderAbortError as e:
@@ -2799,64 +2908,71 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     reprocess_columns=reprocess_columns,
                     token_stats=token_stats,
                 )
+                error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
-            _save_snapshot(snapshot)
+            _finish(row_data, started, snapshot, success=False, error=error, values={})
             return {"success": False, "idx": idx, "error": error_msg}
 
-        _save_snapshot(snapshot)
+        _finish(row_data, started, snapshot, success=True, error=error, values=values)
         if config.rate_limit_delay > 0:
             time.sleep(config.rate_limit_delay)
         return {"success": True, "idx": idx}
 
-    # Processar com ThreadPoolExecutor
-    with tqdm(total=len(rows_to_process), desc=desc) as pbar:
-        # Usar abordagem iterativa para permitir ajuste dinâmico de workers
-        pending_rows = list(rows_to_process)
-
-        while pending_rows and not abort_event.is_set():
-            # Pegar batch com número atual de workers
+    # Um executor para a execução inteira. O teto de linhas em voo é
+    # current_workers, lido a cada reposição: a redução por rate limit só deixa
+    # de despachar, sem cancelar o que já está em voo, e vale até o fim.
+    pending_rows = iter(rows_to_process)
+    in_flight: dict = {}
+    with (
+        tqdm(total=len(rows_to_process), desc=desc) as pbar,
+        ThreadPoolExecutor(max_workers=parallel_requests) as executor,
+    ):
+        while True:
             with lock:
-                worker_batch = min(current_workers, len(pending_rows))
-            batch = pending_rows[:worker_batch]
-            pending_rows = pending_rows[worker_batch:]
+                limit = current_workers
+            while len(in_flight) < limit and not abort_event.is_set():
+                row = next(pending_rows, None)
+                if row is None:
+                    break
+                # A linha que não foi despachada nunca rodou: falhar ao
+                # despachar interrompe a execução e a deixa sem status, para
+                # a retomada. Como 'error', o resume=True a preservaria.
+                try:
+                    in_flight[executor.submit(process_single_row, row)] = (row, time.monotonic())
+                except Exception as e:  # noqa: BLE001 (ver o comentário acima)
+                    with lock:
+                        token_stats.setdefault("abort", _error_text(e))
+                    abort_event.set()
+                    break
 
-            with ThreadPoolExecutor(max_workers=worker_batch) as executor:
-                futures = {}
-                for row in batch:
-                    # A linha que não foi despachada nunca rodou: falhar ao
-                    # despachar interrompe a execução e a deixa sem status, para
-                    # a retomada. Como 'error', o resume=True a preservaria.
-                    try:
-                        futures[executor.submit(process_single_row, row)] = row
-                    except Exception as e:  # noqa: BLE001 (ver o comentário acima)
-                        with lock:
-                            token_stats.setdefault("abort", _error_text(e))
-                        abort_event.set()
-                        break
-
-                for future in as_completed(futures):
-                    try:
-                        outcome = future.result()
-                    except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
-                        # Escapou do tratamento da própria linha; sem isto ela
-                        # ficaria sem status e sumiria da saída.
-                        _i, idx, _row = futures[future]
-                        if idx in counted:
-                            warnings.warn(
-                                f"Erro inesperado no executor depois de registrar a linha "
-                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                                stacklevel=1,
-                            )
-                        else:
-                            with lock:
-                                _record_unrecorded_error(df, idx, e, status_col=status_col)
-                                snapshot = _count_row(idx)
-                            _save_snapshot(snapshot)
-                        recorded.add(idx)
+            if not in_flight:
+                break
+            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for future in done:
+                row, started = in_flight.pop(future)
+                try:
+                    outcome = future.result()
+                except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
+                    # Escapou do tratamento da própria linha; sem isto ela
+                    # ficaria sem status e sumiria da saída.
+                    _position, idx, _row = row
+                    if idx in counted:
+                        warnings.warn(
+                            f"Erro inesperado no executor depois de registrar a linha "
+                            f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                            stacklevel=1,
+                        )
                     else:
-                        if outcome["success"] or outcome["error"] is not None:
-                            recorded.add(outcome["idx"])
-                    pbar.update(1)
+                        with lock:
+                            _record_unrecorded_error(df, idx, e, status_col=status_col)
+                            error = _recorded_error(df, idx)
+                            snapshot = _count_row(idx)
+                        _finish(row, started, snapshot, success=False, error=error, values={})
+                    recorded.add(idx)
+                else:
+                    if outcome["success"] or outcome["error"] is not None:
+                        recorded.add(outcome["idx"])
+                pbar.update(1)
 
     if abort_event.is_set():
         _mark_unreached(

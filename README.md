@@ -80,7 +80,7 @@ Field and class names are arbitrary; the examples in the [`example/`](https://gi
 - **Multiple input types**: pandas or Polars DataFrame and Series, list, dict
 - **Structured output**: Pydantic validation; with the LangChain providers, a rejected answer goes back to the model with the error
 - **Resilience**: Automatic retry with exponential backoff, and periodic checkpoints (`batch_size` + `checkpoint_path`) to resume long runs
-- **Performance**: Parallel processing that halves workers on rate limits, configurable rate limiting
+- **Performance**: Continuous parallel queue that halves the rows in flight on rate limits, configurable rate limiting, and a per-row callback (`on_row_done`) that runs on the worker thread
 - **Web search**: Tavily or Exa, per field or per group of fields, with conditional fields (`condition`, `depends_on`)
 - **Tracking**: Token usage, search credits and throughput metrics
 
