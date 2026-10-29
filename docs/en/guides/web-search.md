@@ -33,10 +33,12 @@ export EXA_API_KEY="your-exa-key"         # https://exa.ai/
 | Exa | `"exa"` | ignores `search_depth` | 1 credit (US$ 0.005) per search with up to 25 results, 5 above that |
 
 ```python
-result = dataframeit(df, Model, PROMPT, use_search=True, search_provider="exa")
+result = dataframeit(df.copy(), Model, PROMPT, use_search=True, search_provider="exa")
 ```
 
 ## Basic Usage
+
+`dataframeit()` writes the results and the status into the pandas DataFrame it receives; see [Input modified in place](../reference/api.md#input-modified-in-place). That is why the examples on this page pass `df.copy()`: without the copy, each example would find the `df` already processed by the previous one.
 
 ```python
 from pydantic import BaseModel, Field
@@ -61,7 +63,7 @@ extract information about the mentioned company.
 
 # Enable web search with use_search=True
 result = dataframeit(
-    df,
+    df.copy(),
     CompanyInfo,
     PROMPT,
     use_search=True,      # Enable web search
@@ -90,7 +92,7 @@ With search, the output gains the `_search_credits` column, with the credits spe
 
 ```python
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True
 )
 ```
@@ -101,7 +103,7 @@ When the model has many fields, it can be useful to give each field its own agen
 
 ```python
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     search_per_field=True  # One search agent per model field
 )
@@ -112,7 +114,7 @@ result = dataframeit(
 ```python
 # More detailed search (slower, more expensive)
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     search_depth='advanced',
     max_results=10
@@ -162,7 +164,7 @@ class MedicationInfo(BaseModel):
     )
 
 result = dataframeit(
-    df,
+    df.copy(),
     MedicationInfo,
     "Analyze the medication: {texto}",
     use_search=True,
@@ -249,7 +251,7 @@ With one agent per row, the trace goes to `_trace`. The example uses `CompanyInf
 import json
 
 result = dataframeit(
-    df,
+    df.copy(),
     CompanyInfo,
     PROMPT,
     use_search=True,
@@ -269,7 +271,7 @@ For audits where only the search queries matter:
 
 ```python
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     save_trace="minimal"  # Excludes search result content
 )
@@ -279,7 +281,7 @@ result = dataframeit(
 
 ```python
 result = dataframeit(
-    df,
+    df.copy(),
     MedicationInfo,
     PROMPT,
     use_search=True,
@@ -331,7 +333,7 @@ class DrugRegulatory(BaseModel):
     manufacturer: str = Field(description="Manufacturer")
 
 result = dataframeit(
-    df,
+    df.copy(),
     DrugRegulatory,
     "Research the drug: {texto}",
     use_search=True,
@@ -370,7 +372,7 @@ With `save_trace=True`, traces are organized by group:
 
 ```python
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     search_per_field=True,
     search_groups={"regulatory": {"fields": ["fda_status", "ema_approval"]}},
@@ -496,14 +498,14 @@ With `parallel_requests=20` and `search_per_field=True` on a 4-field model, 80 a
 ```python
 # Safe settings for Tavily with multiple fields
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True, search_per_field=True,
     parallel_requests=3, rate_limit_delay=0.5,
 )
 
 # Higher throughput with Exa
 result = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True, search_provider="exa",
     search_per_field=True,
     parallel_requests=5, rate_limit_delay=0.3,
