@@ -631,9 +631,9 @@ def test_mesmo_objeto_em_dois_atributos_assina_como_dois_objetos_iguais():
 
 
 # Objeto chamável sem __dict__, com o estado em __slots__: o slot da classe, o
-# herdado, o privado (que o Python guarda com o nome da classe na frente) e o
-# __dict__ declarado como slot, ao lado dos outros. O slot com conjunto de texto
-# passa pelas sementes.
+# herdado, o privado (que o Python guarda com o nome da classe na frente, sem os
+# sublinhados do começo dele) e o __dict__ declarado como slot, ao lado dos
+# outros. O slot com conjunto de texto passa pelas sementes.
 _SLOTS = """
 class Regra:
     __slots__ = ("alvo",)
@@ -647,6 +647,14 @@ class Regra:
 
 class RegraPesada(Regra):
     __slots__ = "__peso"
+
+    def __init__(self, alvo, peso):
+        super().__init__(alvo)
+        self.__peso = peso
+
+
+class _Regra(Regra):
+    __slots__ = ("__peso",)
 
     def __init__(self, alvo, peso):
         super().__init__(alvo)
@@ -671,6 +679,8 @@ VARIACOES = {
     "herdado": lambda: RegraPesada(TIPOS, 1),
     "herdado-mudado": lambda: RegraPesada({"vip"}, 1),
     "privado-mudado": lambda: RegraPesada(TIPOS, 2),
+    "privado-de-classe-interna": lambda: _Regra(TIPOS, 1),
+    "privado-de-classe-interna-mudado": lambda: _Regra(TIPOS, 2),
     "aberta": lambda: aberta(TIPOS),
     "aberta-com-nota": lambda: aberta(TIPOS, nota=1),
     "aberta-com-dict": lambda: aberta(TIPOS, extra=1),
@@ -706,6 +716,7 @@ def test_objeto_chamavel_com_slots_assina_igual_entre_sementes():
         ("slot", "slot-mudado"),
         ("herdado", "herdado-mudado"),
         ("herdado", "privado-mudado"),
+        ("privado-de-classe-interna", "privado-de-classe-interna-mudado"),
         ("aberta", "aberta-com-nota"),
         ("aberta", "aberta-com-dict"),
     ],
