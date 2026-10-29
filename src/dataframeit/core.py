@@ -15,8 +15,9 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -60,6 +61,8 @@ from .utils import (
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _json_default,
+    _keeps_nan,
     from_pandas,
     get_complex_fields,
     normalize_complex_columns,
@@ -69,7 +72,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Hashable, Sequence
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -214,16 +217,27 @@ def _missing_text_detail(
     return _MISSING_TEXT_DETAIL
 
 
-def _as_object_columns(df: pd.DataFrame, columns: list) -> None:
+def _as_object_columns(df: pd.DataFrame, columns: list, nan_columns: Collection[str] = ()) -> None:
     """Converte para object as colunas que vão receber texto, lista ou None.
 
     Uma coluna lida de CSV ou XLSX toda vazia volta como float, e gravar texto
     nela levanta TypeError no pandas 3. Vale para as colunas do modelo e para
     as de controle (status e detalhe de erro).
+
+    Nas colunas de `nan_columns`, cujo NaN é valor (`_keeps_nan`), o NaN de uma
+    coluna que não é object vira None. Numa coluna float64, como a do
+    checkpoint CSV ou parquet relido, o NaN é também a linha pendente e a
+    resposta None, e a validação da retomada já o conta como ausente
+    (`_validate_processed_rows`). Sem a troca, ele chegaria à coluna object
+    como NaN, que dali em diante é valor: a saída polars, que guarda o NaN
+    dessas colunas, mostraria NaN na linha pendente e na de erro.
     """
     for col in columns:
         if col in df.columns and df[col].dtype != object:
-            df[col] = df[col].astype(object)
+            values = df[col].astype(object)
+            if col in nan_columns:
+                values = values.where(df[col].notna(), None)
+            df[col] = values
 
 
 def _is_missing_text(value: object) -> bool:
@@ -245,28 +259,46 @@ def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list) -> None:
         )
 
 
-def _invoke_row(
+def _invoke_row(  # noqa: PLR0913 (a linha e o que a validação da retomada sabe dela)
     backend: ProviderBackend,
     text: str,
     row: pd.Series,
     reprocess_on_row: Sequence[str] | None,
     expected_columns: list,
+    *,
+    nan_columns: Collection[str] = (),
 ) -> dict:
     """Chama o backend para uma linha, pedindo só as colunas a reprocessar quando dá.
 
     `reprocess_on_row` é reprocess_columns numa linha já processada, e None
     nas demais. Numa linha já processada, só essas colunas são gravadas.
     Com um backend campo a campo, os demais campos nem são pedidos: voltam com
-    o valor já gravado, que também alimenta as condições.
+    o valor já gravado, que também alimenta as condições. A célula ausente
+    vai como None, pela mesma regra da validação da retomada (`_is_absent`),
+    e o NaN de `nan_columns` vai como NaN. A validação já trocou por None o
+    NaN que a coluna não distingue do nulo, e o que resta nela é valor.
     """
     if reprocess_on_row and backend.invoke_partial:
         known = {
-            col: None if is_scalar(row[col]) and pd.isna(row[col]) else row[col]
+            col: None if _is_absent(row[col], nan_is_value=col in nan_columns) else row[col]
             for col in expected_columns
             if col not in reprocess_on_row and col in row.index
         }
         return backend.invoke_partial(text, set(reprocess_on_row), known)
     return backend.invoke(text)
+
+
+def _is_absent(value: object, *, nan_is_value: bool) -> bool:
+    """Se a célula relida conta como ausente: None, NaN, NaT ou pd.NA.
+
+    O pandas conta o Decimal NaN como ausente, mas ele é um valor que o campo
+    Decimal com allow_inf_nan aceita, e a linha que o recebeu já foi paga; sem
+    a exceção, a retomada o acusaria como incompatível. O float NaN é valor
+    quando `nan_is_value`, na coluna que o distingue do nulo (`_keeps_nan`).
+    """
+    if not (is_scalar(value) and bool(pd.isna(value))) or isinstance(value, Decimal):
+        return False
+    return not (nan_is_value and isinstance(value, float))
 
 
 def _condition_holds(condition: object, row_values: dict, field_name: str) -> bool:
@@ -356,6 +388,16 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             )
         return skipping_models[skipped]
 
+    # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
+    # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
+    # linha pendente, e segue contando como ausente.
+    nan_columns = {
+        field_name
+        for field_name, field in pydantic_model.model_fields.items()
+        if field_name in df.columns
+        and df[field_name].dtype == object
+        and _keeps_nan(field.annotation)
+    }
     processed_positions = [
         position for position, status in enumerate(df[status_col]) if status == "processed"
     ]
@@ -367,7 +409,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 row_values[field_name] = None
                 continue
             value = row[field_name]
-            if is_scalar(value) and bool(pd.isna(value)):
+            if _is_absent(value, nan_is_value=field_name in nan_columns):
                 row_values[field_name] = None
             elif field_name in complex_fields:
                 row_values[field_name] = normalize_value(value)
@@ -564,7 +606,7 @@ def _provider_backend(
     pydantic_model: type[BaseModel],
     user_prompt: str,
     trace_mode: str | None,
-) -> Iterator[ProviderBackend]:
+) -> Generator[ProviderBackend, None, None]:
     """Seleciona e vincula uma única implementação para toda a execução.
 
     Os módulos de backend (agent, codex, claude_code) são importados na
@@ -1076,7 +1118,14 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Com provider='codex', aceita somente effort.
         parallel_requests: Número de requisições paralelas (padrão: 1 = sequencial).
             Se > 1, processa múltiplas linhas simultaneamente.
-            Ao detectar erro de rate limit (429), o número de workers é reduzido automaticamente.
+            Quando uma linha falha depois de todas as tentativas com erro de rate limit,
+            o número de workers cai pela metade. No codex, o rate limit e a sobrecarga do
+            app-server são reconhecidos pelo código ou pelo status, sem ler a mensagem;
+            no claude_code, o rate limit (429) e a sobrecarga (529), pelo status que o
+            SDK informa a partir do claude-agent-sdk 0.1.76 (do 0.1.48 ao 0.1.75, sem o
+            status, são repetidos como falha transitória e não reduzem os workers); nos
+            providers do LangChain, o rate limit é reconhecido pelo status 429 ou pela
+            classe do erro e, sem nenhum dos dois, pelo texto da mensagem.
             Dica: use track_tokens=True para ver métricas de throughput (RPM, TPM) e calibrar.
         use_search: Se True, habilita busca web antes de processar. Padrão: False.
         search_provider: Provedor de busca web a usar. Opções:
@@ -1231,7 +1280,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
 
     # Converter para pandas se necessário
-    df_pandas, conversion_info = to_pandas(data)
+    annotations = {name: field.annotation for name, field in questions.model_fields.items()}
+    df_pandas, conversion_info = to_pandas(data, annotations)
 
     # Determinar coluna de texto
     is_dataframe_type = conversion_info.original_type in (
@@ -1312,6 +1362,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
 
     status_col = status_column or "_dataframeit_status"
     complex_fields = get_complex_fields(questions)
+    # Campos cujo NaN é valor, separado do nulo (`_keeps_nan`).
+    nan_columns = frozenset(
+        field_name
+        for field_name, field in questions.model_fields.items()
+        if _keeps_nan(field.annotation)
+    )
 
     # Entrada sem coluna de status é entrada nova; se o checkpoint já existe e
     # é desta execução, ela continua dele. Quem carrega o checkpoint à mão e o
@@ -1421,11 +1477,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             trace_mode=trace_mode,
             pydantic_model=questions,
         )
-        _as_object_columns(df_pandas, expected_columns)
+        _as_object_columns(df_pandas, expected_columns, nan_columns)
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
             normalize_complex_columns(df_pandas, complex_fields)
-        return from_pandas(df_pandas, conversion_info, status_col, expected_columns)
+        return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
     # Os resultados são gravados por rótulo (df.at); com rótulo repetido, o
     # resultado de uma linha cairia em outra. Um checkpoint já concluído, que
@@ -1498,7 +1554,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             pydantic_model=questions,
         )
         control_columns = [status_col, "_error_details"]
-        _as_object_columns(df_pandas, expected_columns + control_columns)
+        _as_object_columns(df_pandas, expected_columns + control_columns, nan_columns)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -1507,7 +1563,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             normalize_complex_columns(df_pandas, complex_fields)
 
         # De novo depois da normalização, cujo apply volta a inferir float; sem
-        # isso, gravar lista ou texto falharia depois da chamada paga.
+        # isso, gravar lista ou texto falharia depois da chamada paga. A coluna
+        # de estrutura não guarda o NaN como valor, e `nan_columns` não muda nada.
         _as_object_columns(df_pandas, expected_columns)
 
         is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume=resume)
@@ -1527,6 +1584,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 text_column=text_column,
                 status_col=status_col,
                 expected_columns=expected_columns,
+                nan_columns=nan_columns,
                 config=config,
                 backend=backend,
                 is_pending=is_pending,
@@ -1544,6 +1602,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 text_column=text_column,
                 status_col=status_col,
                 expected_columns=expected_columns,
+                nan_columns=nan_columns,
                 config=config,
                 backend=backend,
                 is_pending=is_pending,
@@ -1600,7 +1659,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
-    return from_pandas(df_pandas, conversion_info, status_col, expected_columns)
+    return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
 
 def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)
@@ -1663,8 +1722,14 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    # Criar colunas
-    with pd.option_context("mode.chained_assignment", None):
+    # O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
+    # escrita substitui esse aviso e a opção que o controla não se aplica.
+    context = (
+        pd.option_context("mode.chained_assignment", None)
+        if hasattr(pd.errors, "SettingWithCopyWarning")
+        else nullcontext()
+    )
+    with context:
         for col in new_cols:
             df[col] = None
         if needs_status:
@@ -2016,19 +2081,6 @@ def _array_as_list(value: object) -> object:
     return value
 
 
-def _json_default(value: object) -> object:
-    """O que json.dumps não serializa: numpy pelo tolist, Enum pelo valor, o resto texto.
-
-    O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
-    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
-    a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
-    """
-    if isinstance(value, Enum):
-        return value.value
-    tolist = getattr(value, "tolist", None)
-    return tolist() if callable(tolist) else str(value)
-
-
 def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
     """Cópia com listas, dicts, tuplas e arrays do numpy serializados como JSON.
 
@@ -2061,7 +2113,20 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
-            out[col] = out[col].map(to_json if columns is None or col in columns else enum_as_value)
+            convert = to_json if columns is None or col in columns else enum_as_value
+            converted = out[col].map(convert)
+            # Series.map infere o tipo do resultado, e uma coluna com int ao
+            # lado de None ou de float vira float64, que arredonda o int acima
+            # de 2**53 antes de chegar ao arquivo. Sempre que o tipo inferido é
+            # float, a coluna é refeita como object, que o CSV grava com o int
+            # exato. O parquet recusa o int acima de 2**53 ao lado de float, e
+            # a gravação falha com aviso em vez de arredondar. Nos demais casos
+            # fica o tipo inferido.
+            if converted.dtype.kind == "f":
+                converted = pd.Series(
+                    [convert(value) for value in out[col]], index=out.index, dtype=object
+                )
+            out[col] = converted
     return out
 
 
@@ -2403,6 +2468,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
     text_column: str,
     status_col: str,
     expected_columns: list,
+    nan_columns: Collection[str] = (),
     config: LLMConfig,
     backend: ProviderBackend,
     is_pending: list[bool],
@@ -2420,6 +2486,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
         text_column: Coluna com o texto de cada linha.
         status_col: Coluna de status ('processed' ou 'error').
         expected_columns: Campos do modelo, gravados em colunas de mesmo nome.
+        nan_columns: Campos cujo NaN é valor, repassados a `_invoke_row`.
         config: Configuração do LLM.
         backend: Implementação do provider vinculada à execução.
         is_pending: Por posição, se a linha está pendente.
@@ -2472,6 +2539,7 @@ def _process_rows(  # noqa: PLR0913 (estado da execução repassado por datafram
                     row,
                     reprocess_columns if row_already_processed else None,
                     expected_columns,
+                    nan_columns=nan_columns,
                 )
                 _record_success(
                     df,
@@ -2533,6 +2601,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     text_column: str,
     status_col: str,
     expected_columns: list,
+    nan_columns: Collection[str] = (),
     config: LLMConfig,
     backend: ProviderBackend,
     is_pending: list[bool],
@@ -2551,6 +2620,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         text_column: Coluna com o texto de cada linha.
         status_col: Coluna de status ('processed' ou 'error').
         expected_columns: Campos do modelo, gravados em colunas de mesmo nome.
+        nan_columns: Campos cujo NaN é valor, repassados a `_invoke_row`.
         config: Configuração do LLM.
         backend: Implementação do provider vinculada à execução.
         is_pending: Por posição, se a linha está pendente.
@@ -2654,6 +2724,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 row,
                 reprocess_columns if row_already_processed else None,
                 expected_columns,
+                nan_columns=nan_columns,
             )
 
             # Atualizar DataFrame (com lock para thread-safety)

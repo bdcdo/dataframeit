@@ -83,10 +83,12 @@ codex = [
     "filelock>=3.13",
     # O SDK fixa a versão exata do runtime, e o runtime decide quais modelos a
     # conta do ChatGPT alcança: um runtime anterior ao modelo recebe HTTP 400.
-    "openai-codex==0.160.1",
+    "openai-codex==0.163.0",
 ]
 polars = [
-    "polars>=1.0",
+    # Do 1.6 ao 1.9, a coluna só com dicts vazios sai do from_pandas sem linhas,
+    # e a saída polars cai com ShapeError depois de todas as chamadas.
+    "polars>=1.10",
     # A 10.0.0 não tem wheel para Python 3.11, e a compilação do fonte falha.
     "pyarrow>=10.0.1",
 ]
@@ -111,7 +113,7 @@ all = [
     "langchain-tavily>=0.2.12",
     "langchain-exa>=1.0.0",
     "claude-agent-sdk>=0.1.48",
-    "polars>=1.0",
+    "polars>=1.10",
     "pyarrow>=10.0.1",
     "openpyxl>=3.1",
 ]
@@ -119,7 +121,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.16,<0.17",
-    "ty==0.0.84",
+    "ty==0.0.88",
     "vulture>=2.16,<3",
     "deptry>=0.25,<0.26",
     "pre-commit>=4.6,<5",

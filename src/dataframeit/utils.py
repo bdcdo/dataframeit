@@ -11,8 +11,11 @@ Este módulo contém funções utilitárias para:
 from __future__ import annotations
 
 import ast
+import datetime
 import functools
 import json
+import math
+import numbers
 import operator
 import re
 import sys
@@ -20,16 +23,17 @@ import types
 import typing
 import warnings
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import pandas as pd
-from pandas.api.types import is_string_dtype
+from pandas.api.types import is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable
+    from collections.abc import Callable, Collection, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -81,8 +85,6 @@ _TEXT_READERS: dict[str, Callable[..., pd.DataFrame]] = {
     ".xlsx": pd.read_excel,
     ".xls": pd.read_excel,
 }
-# Argumentos de leitura com que o usuário já controla tipos ou NA.
-_READ_CONTROLS = ("dtype", "converters", "na_values", "keep_default_na", "na_filter", "usecols")
 
 
 @dataclass
@@ -130,7 +132,10 @@ def parse_json(resposta: str) -> dict:
         raise ValueError(msg) from e
 
 
-def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
+def to_pandas(
+    data: object,
+    model_columns: Mapping[str, object] = types.MappingProxyType({}),
+) -> tuple[pd.DataFrame, ConversionInfo]:
     """Converte dados para pandas DataFrame.
 
     Suporta:
@@ -143,6 +148,10 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     Args:
         data: Dados a serem convertidos.
+        model_columns: Anotação de cada campo do modelo, pelo nome. Na entrada
+            polars, a coluna de campo que admite `int` chega ao pandas com os
+            valores do polars, e a de campo float, com None no nulo, como em
+            `_python_values`.
 
     Returns:
         Tupla (DataFrame pandas, ConversionInfo com metadados da conversão).
@@ -156,9 +165,17 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
 
     # polars DataFrame
     if pl is not None and isinstance(data, pl.DataFrame):
-        return data.to_pandas(), ConversionInfo(
-            original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data
-        )
+        df = _python_values(data, model_columns)
+        # O to_pandas entrega a lista de uma coluna List ou Array, e a de dentro
+        # de um Struct, como array do numpy, que muda o valor: a data vira
+        # datetime64, o datetime com fuso passa a UTC sem o fuso, e o inteiro
+        # ao lado de um nulo vira float. A retomada validaria essa forma, e a
+        # linha processada de uma saída polars voltaria recusada ou com outra
+        # hora. O to_list do polars dá os objetos Python que o modelo devolveu.
+        for col, dtype in data.schema.items():
+            if isinstance(dtype, (pl.List, pl.Array, pl.Struct)):
+                df[col] = pd.Series(data[col].to_list())
+        return df, ConversionInfo(original_type=ORIGINAL_TYPE_POLARS_DF, polars_frame=data)
 
     # pandas Series
     if isinstance(data, pd.Series):
@@ -201,11 +218,82 @@ def to_pandas(data: object) -> tuple[pd.DataFrame, ConversionInfo]:
     raise TypeError(msg)
 
 
+def _python_values(data: PolarsDataFrame, model_columns: Mapping[str, object]) -> pd.DataFrame:
+    """Converte o DataFrame polars para pandas, sem confundir o nulo com o valor em dois campos.
+
+    O `to_pandas()` do polars leva a coluna inteira com nulo a float64, que
+    arredonda o inteiro acima de 2**53. Na coluna de campo que admite `int`
+    (`_admits_int`), a execução sem interrupção grava inteiros Python e None, e
+    a coluna relida vem assim, em dtype object. A coluna sem nulo também é
+    trocada, porque o int64 do numpy não passa num modelo com strict=True, que
+    acusaria a linha processada como incompatível. Com outra anotação, o
+    inteiro relido não diz o mesmo que o valor validado e fica na coluna: o 1
+    de um campo bool e o inteiro grande de um campo float saem numa coluna
+    Object ao lado das respostas novas, e o bool com strict=True é acusado como
+    incompatível.
+
+    O mesmo `to_pandas()` põe NaN no nulo da coluna de números, e o NaN que o
+    modelo devolveu num campo float não se distinguiria da linha pendente. Na
+    coluna de campo que guarda o NaN (`_keeps_nan`) e não admite int, o nulo
+    volta None, e os demais valores ficam como o `to_pandas()` os dá.
+    """
+    df = data.to_pandas()
+    for col, annotation in model_columns.items():
+        if col not in data.columns:
+            continue
+        if _admits_int(annotation):
+            df[col] = pd.Series(data[col].to_list(), dtype=object)
+        elif _keeps_nan(annotation):
+            df[col] = df[col].astype(object).where(data[col].is_not_null().to_numpy(), None)
+    return df
+
+
+def _members(annotation: object) -> list:
+    """Os membros da união, ou a própria anotação, cada um por `_without_optional`."""
+    annotation = _without_optional(annotation)
+    if get_origin(annotation) in (typing.Union, types.UnionType):
+        return [_without_optional(arg) for arg in get_args(annotation)]
+    return [annotation]
+
+
+def _admits_int(annotation: object) -> bool:
+    """Se a anotação é `int`, o `Literal` com algum int, ou a união com um deles entre os membros.
+
+    O bool é subclasse de int, e o `Literal[True]` não conta.
+    """
+    return any(
+        member is int
+        or (
+            get_origin(member) is typing.Literal
+            and any(type(arg) is int for arg in get_args(member))
+        )
+        for member in _members(annotation)
+    )
+
+
+def _keeps_nan(annotation: object) -> bool:
+    """Se a coluna do campo guarda o NaN como valor: a anotação admite float e não é estrutura.
+
+    O NaN é um float que o modelo devolve, e ao lado dele o nulo da linha
+    pendente ou da resposta None é None, desde que a coluna não passe por
+    nenhuma conversão que troque um pelo outro. A entrada polars restaura o
+    None (`_python_values`), e a saída polars não troca o NaN por nulo
+    (`_to_polars`). A estrutura (lista, dict, tupla ou submodelo) fica de fora,
+    porque a retomada normaliza a coluna dela com `Series.apply`, que reinfere
+    o tipo e leva o None de uma coluna de números a NaN. O `Any` também fica,
+    porque a coluna dele chega da entrada polars com qualquer tipo, e o
+    `to_pandas` põe NaN no nulo de uma coluna de texto.
+    """
+    return any(member is float for member in _members(annotation)) and not is_complex_type(
+        annotation
+    )
+
+
 def from_pandas(
     df: pd.DataFrame,
     conversion_info: ConversionInfo | bool,  # noqa: FBT001 (bool aceito por retrocompatibilidade)
     status_col: str = "_dataframeit_status",
-    model_columns: Collection[str] = (),
+    model_columns: Mapping[str, object] = types.MappingProxyType({}),
 ) -> pd.DataFrame | PolarsDataFrame:
     """Converte DataFrame pandas de volta para o formato original.
 
@@ -217,8 +305,9 @@ def from_pandas(
         conversion_info: ConversionInfo com metadados da conversão original,
                         ou bool para retrocompatibilidade (True = era polars).
         status_col: Nome da coluna de status (o `status_column` do usuário).
-        model_columns: Campos do modelo que a execução gravou. Na saída polars,
-                        só eles e as colunas de controle são convertidos do pandas.
+        model_columns: Anotação de cada campo do modelo que a execução gravou, pelo
+                        nome. Na saída polars, só eles e as colunas de controle são
+                        convertidos do pandas, e a anotação entra em `_to_polars`.
 
     Returns:
         Dados no formato original (DataFrame, Series, list ou dict).
@@ -253,10 +342,13 @@ def from_pandas(
             # As chamadas ao provedor já foram feitas, e a coluna que o polars ou o
             # pyarrow recusam, seja qual for a exceção (ValueError, TypeError,
             # OverflowError, ComputeError), sai Object em vez de derrubar a saída.
-            # O pânico do polars não é Exception e passa por aqui.
+            # O pânico do polars, como o do Decimal acima de 38 dígitos, que o
+            # pyarrow entrega em 256 bits, herda de BaseException e é capturado
+            # pelo nome; capturar BaseException engoliria o KeyboardInterrupt. O
+            # polars ainda escreve a mensagem do pânico no stderr.
             try:
-                columns.append(pl.from_pandas(values))
-            except Exception:  # noqa: BLE001 (a recusa muda de tipo com os valores)
+                columns.append(_to_polars(values, model_columns.get(col)))
+            except (Exception, pl.exceptions.PanicException):  # noqa: BLE001 (a recusa muda de tipo com os valores)
                 # Há versões do polars em que o construtor de Series inspeciona os
                 # valores mesmo com dtype=pl.Object: quando o primeiro valor não nulo
                 # é membro de Enum, troca cada valor pelo `.value`, e levanta erro no
@@ -313,6 +405,313 @@ def _enums_by_value(values: pd.Series) -> pd.Series:
     )
 
 
+def _json_default(value: object) -> object:
+    """O que json.dumps não serializa: numpy pelo tolist, Enum pelo valor, o resto texto.
+
+    O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
+    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
+    a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
+    """
+    if isinstance(value, Enum):
+        return value.value
+    tolist = getattr(value, "tolist", None)
+    return tolist() if callable(tolist) else str(value)
+
+
+def _resolved(annotation: object) -> object:
+    """A anotação sem NewType e sem apelido `type`, pelo tipo a que eles se referem.
+
+    É o ponto único em que os helpers deste módulo que inspecionam anotação
+    resolvem os dois, a cada nível, antes de olhar a origem ou os argumentos.
+    O NewType guarda o tipo em `__supertype__`, e o apelido, em `__value__`. O
+    apelido é reconhecido pelo nome da classe, porque o de `type X = ...` e o
+    `TypeAliasType` do typing_extensions são classes diferentes com esse mesmo
+    nome, e nenhum é instância da classe do outro. O atributo `__value__` não
+    basta, porque uma classe qualquer pode ter um com esse nome.
+
+    O apelido genérico usado com argumentos, como `Opcional[int]` de
+    `type Opcional[T] = T | None`, tem o apelido como origem, e o `__value__`
+    dele traz os parâmetros por substituir (ver `_alias_applied`).
+    """
+    while True:
+        if isinstance(annotation, typing.NewType):
+            annotation = annotation.__supertype__
+        elif type(annotation).__name__ == "TypeAliasType":
+            annotation = annotation.__value__  # ty: ignore[unresolved-attribute]
+        elif type(get_origin(annotation)).__name__ == "TypeAliasType":
+            annotation = _alias_applied(get_origin(annotation), get_args(annotation))
+        else:
+            return annotation
+
+
+def _alias_applied(alias: object, args: tuple) -> object:
+    """O `__value__` do apelido genérico com cada parâmetro trocado pelo argumento.
+
+    Cada parâmetro de `__type_params__` vale o argumento na mesma posição. A
+    substituição segue a ordem de `__parameters__` do valor, que é a ordem em
+    que os parâmetros aparecem nele e pode não ser a da declaração: em
+    `type Par[K, V] = dict[V, K]`, `Par[int, str]` é `dict[str, int]`. O valor
+    que é o próprio parâmetro não tem `__parameters__` e é trocado direto; o
+    que não usa parâmetro nenhum fica como está.
+    """
+    value = alias.__value__  # ty: ignore[unresolved-attribute]
+    by_param = dict(zip(alias.__type_params__, args, strict=False))  # ty: ignore[unresolved-attribute]
+    if isinstance(value, typing.TypeVar):
+        return by_param.get(value, value)
+    parameters = getattr(value, "__parameters__", ())
+    if not parameters:
+        return value
+    return value[tuple(by_param.get(param, param) for param in parameters)]
+
+
+def _without_optional(annotation: object) -> object:
+    """A anotação sem o Optional e sem o Annotated de dentro dele.
+
+    A união de mais de um tipo além de None fica como está. O NewType e o
+    apelido `type` são resolvidos por `_resolved` antes de cada passo e no
+    fim, e valem também dentro do Optional e do Annotated.
+    """
+    annotation = _resolved(annotation)
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if get_origin(annotation) in (typing.Union, types.UnionType) and len(args) == 1:
+        annotation = _resolved(args[0])
+    if get_origin(annotation) is typing.Annotated:
+        annotation = _resolved(get_args(annotation)[0])
+    return annotation
+
+
+# Data, hora e duração: o pyarrow converte cada um destes tipos nos outros e o
+# número em cada um deles. O datetime depois de um date perde a hora, e o int
+# depois de um date ou de um timedelta vira data ou duração.
+_TEMPORAL = (datetime.date, datetime.datetime, datetime.time, datetime.timedelta)
+# Pares que o pyarrow converte um no outro quando o primeiro vem antes: o True
+# depois de um float vira 1.0, e o texto depois de um bytes vira bytes.
+_CONVERTED_PAIRS = ((float, bool), (bytes, str))
+
+
+def _mixes_converted_types(annotation: object) -> bool:
+    """Se a anotação junta, na união ou na tupla, tipos que o pyarrow converte uns nos outros.
+
+    São os de `_TEMPORAL` com qualquer outro tipo e os pares de
+    `_CONVERTED_PAIRS`. A lista ou a tupla é examinada em cada argumento,
+    recursivamente: vale para `tuple[Union[date, int], ...]`, para
+    `list[tuple[date, int]]` e para listas aninhadas. O Optional, o Annotated,
+    o NewType e o apelido `type` são desembrulhados, na anotação e em cada
+    membro. A busca é por identidade, porque o membro pode não ter hash.
+    """
+    annotation = _without_optional(annotation)
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin in (list, tuple) and any(_mixes_converted_types(arg) for arg in args):
+        return True
+    if origin not in (typing.Union, types.UnionType, tuple):
+        return False
+    members = [_without_optional(arg) for arg in args if arg is not Ellipsis]
+    if any(member in _TEMPORAL for member in members) and any(
+        member is not members[0] for member in members
+    ):
+        return True
+    return any(
+        all(any(member is kind for member in members) for kind in pair) for pair in _CONVERTED_PAIRS
+    )
+
+
+# Classe que representa, em `_group_kinds`, o datetime com fuso.
+_AWARE_DATETIME = "datetime com fuso"
+# O bool vem antes do int, e o datetime antes do date, porque cada um é
+# subclasse do seguinte.
+_KINDS = (
+    bool,
+    int,
+    float,
+    Decimal,
+    str,
+    bytes,
+    datetime.datetime,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+)
+_NUMBERS = (int, float, Decimal)
+# A classe de `_KINDS` do número que não é subclasse de nenhuma delas, como o
+# np.int64, que não é int, e o np.float32, que não é float, pela ABC de
+# `numbers` em que o numpy o registra. O pyarrow os converte como os do
+# Python: o np.int64 depois de um date vira data. O bool é Integral, mas
+# chega aqui já contado como bool, primeiro de `_KINDS`; o np.bool_ não é
+# registrado em nenhuma ABC e fica com a própria classe.
+_NUMBER_ABCS = ((numbers.Integral, int), (numbers.Real, float))
+_TEMPORAL_KINDS = (*_TEMPORAL, _AWARE_DATETIME)
+_SEQUENCES = (list, tuple)
+
+
+def _group_kinds(group: list, classes: set) -> set | None:
+    """As classes de `_KINDS` do grupo, ou None se algum valor nenhum tipo do polars guarda.
+
+    A classe do valor vale pela primeira de `_KINDS` de que é subclasse, e o
+    pd.Timestamp conta como datetime; o número do numpy fora delas vale pela
+    ABC de `numbers` (`_NUMBER_ABCS`), e a classe restante fica com ela mesma. A
+    estrutura não entra, porque `_arrow_alters` a abre em outros grupos. O
+    nulo também não, porque é nulo em qualquer tipo: o None, o NaT e o NaN, que
+    a conversão da entrada polars para pandas põe no nulo da coluna de datas e
+    da de números. Na coluna que guarda o NaN como valor (`_keeps_nan`), o nulo
+    volta None, e o NaN que sobra ali só junta float a float. Só quatro
+    classes são conferidas valor a valor: o datetime, com e sem fuso, o float,
+    pelo NaN, o Decimal NaN, que o pyarrow grava nulo, e o time com fuso, que o
+    tipo Time não tem.
+    """
+    kinds = set()
+    for cls in classes:
+        if cls is type(None) or cls is type(pd.NaT) or issubclass(cls, (dict, *_SEQUENCES)):
+            continue
+        members = [value for value in group if type(value) is cls]
+        if issubclass(cls, datetime.datetime):
+            kinds.update(
+                _AWARE_DATETIME if value.tzinfo is not None else datetime.datetime
+                for value in members
+            )
+        elif issubclass(cls, float):
+            if not all(math.isnan(value) for value in members):
+                kinds.add(float)
+        elif (issubclass(cls, Decimal) and any(value.is_nan() for value in members)) or (
+            issubclass(cls, datetime.time) and any(value.tzinfo is not None for value in members)
+        ):
+            return None
+        else:
+            kind = next((kind for kind in _KINDS if issubclass(cls, kind)), None)
+            kinds.add(kind or next((k for abc, k in _NUMBER_ABCS if issubclass(cls, abc)), cls))
+    return kinds
+
+
+def _arrow_alters(values: pd.Series) -> bool:
+    """Se o pyarrow mudaria algum dos valores ao pôr a coluna num tipo do polars.
+
+    Os valores são agrupados como o pyarrow os tipa: as células da coluna num
+    grupo e cada chave de dict, que vira campo de Struct, num grupo. Os itens
+    de lista ou tupla ficam no grupo da própria lista, porque o pyarrow não
+    reúne lista e escalar num tipo, e a coluna que os misturasse já sairia
+    Object. O grupo que junta classes de `_TEMPORAL_KINDS` entre si ou com
+    número, ou os dois tipos de um par de `_CONVERTED_PAIRS`, seria tipado pelo
+    primeiro valor, e os outros convertidos: o datetime sem fuso depois de um
+    com fuso ganharia o fuso dele. Os dicts de um grupo com conjuntos de chaves
+    diferentes também contam, porque o Struct teria a união das chaves, e a
+    chave ausente sairia com nulo, como `{}` ao lado de `{"a": 1}` sairia
+    `{"a": None}`. O valor que nenhum tipo do polars guarda também conta (ver
+    `_group_kinds`).
+
+    O grupo é percorrido inteiro de uma vez, pelas classes dos valores, e só
+    as classes que pedem conferência valor a valor descem a cada um: com uma
+    chamada por valor, a conferência pesava mais que a própria conversão.
+    """
+    if values.dtype != object:
+        return False
+    pending: list[tuple[tuple, list]] = [((), values.tolist())]
+    while pending:
+        path, group = pending.pop()
+        classes = set(map(type, group))
+        while any(issubclass(cls, _SEQUENCES) for cls in classes):
+            group = [
+                item
+                for value in group
+                for item in (value if isinstance(value, _SEQUENCES) else (value,))
+            ]
+            classes = set(map(type, group))
+        if any(issubclass(cls, dict) for cls in classes):
+            dicts = [value for value in group if isinstance(value, dict)]
+            if len({frozenset(value) for value in dicts}) > 1:
+                return True
+            by_key: dict[object, list] = {}
+            for value in dicts:
+                for key, item in value.items():
+                    by_key.setdefault(key, []).append(item)
+            pending.extend(((*path, key), items) for key, items in by_key.items())
+        kinds = _group_kinds(group, classes)
+        if kinds is None or _mixes_converted_kinds(kinds):
+            return True
+    return False
+
+
+def _mixes_converted_kinds(kinds: set) -> bool:
+    """Se as classes de um grupo de `_arrow_alters` seriam convertidas umas nas outras."""
+    temporal = kinds.intersection(_TEMPORAL_KINDS)
+    return (
+        len(temporal) > 1
+        or bool(temporal and kinds.intersection(_NUMBERS))
+        or any(kinds.issuperset(pair) for pair in _CONVERTED_PAIRS)
+    )
+
+
+def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
+    """Converte a coluna para polars; `annotation` é a do campo do modelo, ou None.
+
+    O campo dict sai como texto JSON, como o checkpoint o grava. Como Struct, a
+    coluna teria em cada linha as chaves de todas, e a chave ausente não se
+    distinguiria da chave com valor nulo. O dict com chave que o JSON não
+    aceita, como um Enum, levanta TypeError, e `from_pandas` devolve a coluna
+    como Object.
+
+    A anotação que junta tipos que o pyarrow converte uns nos outros, como
+    date, datetime, time ou timedelta com outro tipo, float com bool e bytes
+    com str, também levanta TypeError, antes de olhar os valores. O pyarrow
+    tiparia a coluna pelo primeiro valor e converteria os outros sem erro: o
+    datetime depois de um date perderia a hora, o int depois de um date
+    viraria data, e o True depois de um float viraria 1.0. Os valores que o
+    pyarrow mudaria levantam TypeError pela mesma razão, com qualquer anotação
+    (ver `_arrow_alters`).
+
+    Na coluna de campo que guarda o NaN como valor (`_keeps_nan`), o NaN sai
+    NaN, e não nulo como o `from_pandas` do polars o grava por padrão: nela, o
+    nulo da linha pendente e da resposta None é None.
+
+    A coluna sem valor, toda nula ou só com listas vazias, não dá ao polars de
+    onde inferir o tipo, e o schema da saída mudaria com as respostas. Ela
+    recebe o tipo da anotação quando esta é um dos tipos de `scalars` ou uma
+    lista de um deles. A busca em `scalars` é por identidade, e não por chave
+    de dict, porque a anotação pode não ter hash, como o item de
+    list[Annotated[int, {...}]].
+    """
+    # Só é chamada com o polars instalado; o Any dispensa conferir o None a cada uso.
+    polars: Any = pl
+    scalars = (
+        (str, polars.String),
+        (int, polars.Int64),
+        (float, polars.Float64),
+        (bool, polars.Boolean),
+        (datetime.date, polars.Date),
+        (datetime.datetime, polars.Datetime),
+    )
+    if _mixes_converted_types(annotation):
+        msg = f"A anotação {annotation} junta tipos que o pyarrow converte uns nos outros."
+        raise TypeError(msg)
+    keeps_nan = _keeps_nan(annotation)
+    annotation = _without_optional(annotation)
+    origin, args = get_origin(annotation), get_args(annotation)
+    if (origin or annotation) is dict:
+        values = pd.Series(
+            [
+                json.dumps(value, ensure_ascii=False, default=_json_default)
+                if isinstance(value, dict)
+                else value
+                for value in values
+            ],
+            name=values.name,
+        )
+        # A coluna de texto JSON sem nenhuma resposta segue a regra do campo str.
+        annotation = str
+    if _arrow_alters(values):
+        msg = "O pyarrow mudaria valores da coluna ao tipá-la."
+        raise TypeError(msg)
+    series = polars.from_pandas(values, nan_to_null=not keeps_nan)
+    item = args[0] if origin is list and args else annotation
+    dtype = next((dtype for python_type, dtype in scalars if item is python_type), None)
+    if dtype is None:
+        return series
+    # Da lista vazia o explode tira um nulo ou nada, conforme a versão do polars,
+    # e a coluna que não é lista ele devolve como está.
+    leaves = series.explode()
+    if leaves.null_count() < len(leaves):
+        return series
+    return series.cast(polars.List(dtype) if origin is list else dtype)
+
+
 def _untouched_columns(
     source: PolarsDataFrame | None,
     status_col: str,
@@ -323,9 +722,10 @@ def _untouched_columns(
     São as colunas do usuário que não são campo do modelo. A saída as tira de
     `source`, o DataFrame polars de entrada: convertidas de volta do pandas,
     elas trocariam de tipo (Date por Datetime, Enum por Categorical) e trariam
-    arredondado o inteiro acima de 2**53 que tem nulo na coluna ou está dentro
-    de Struct e List, porque o `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem das de `source`, porque a
-    execução grava por rótulo e não remove nem reordena linhas.
+    arredondado o inteiro acima de 2**53 que tem nulo na coluna, porque o
+    `to_pandas()` do polars o leva a float. As linhas da saída estão na ordem
+    das de `source`, porque a execução grava por rótulo e não remove nem
+    reordena linhas.
 
     Sem `source` (entrada polars.Series, que só traz o texto), todas as colunas
     são da execução.
@@ -390,6 +790,7 @@ def is_complex_type(field_type: object) -> bool:
         ou dentro de Optional/Union. Um modelo aninhado conta como complexo
         porque a célula guarda o seu model_dump, um dict.
     """
+    field_type = _resolved(field_type)
     origin = get_origin(field_type)
 
     # O Pydantic tira o Annotated só do nível de cima da anotação; dentro de
@@ -440,6 +841,7 @@ def get_complex_fields(pydantic_model: type[BaseModel]) -> set:
 
 def accepts_only_text(field_type: object) -> bool:
     """True se o tipo só aceita texto: str, Literal ou Enum de textos, ou esses com None."""
+    field_type = _resolved(field_type)
     if field_type is str:
         return True
     if isinstance(field_type, type) and issubclass(field_type, Enum):
@@ -549,12 +951,28 @@ def read_df(
         path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
+               Com ele e sem kwargs, os campos de texto do .csv, do .xlsx e
+               do .xls são lidos como texto cru: "2023" não vira número,
+               "N/A" não vira ausência, e só a célula vazia vira ausência.
+               Com kwargs, o texto fica como o leitor do pandas o devolve.
+               Também com ele e sem kwargs, a coluna de campo int, Literal
+               só de ints, ou um deles com None, que o CSV ou o parquet não
+               devolve em tipo inteiro volta como object, com o int exato e
+               None na célula vazia. O NewType e o apelido `type` contam
+               pelo tipo a que se referem. A coluna só com células vazias fica como lida: float
+               no CSV e, na coluna nula que o checkpoint grava no parquet,
+               object com None.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
+                  Com o argumento que faz o leitor devolver outra coisa que
+                  um DataFrame, como chunksize, iterator ou sheet_name=None
+                  ou lista, a função devolve o que o pandas devolve, sem
+                  normalizar nem reler nada, mesmo com model e normalize=True.
 
     Returns:
-        DataFrame com estruturas Python normalizadas.
+        DataFrame com estruturas Python normalizadas, ou o objeto do leitor do
+        pandas quando ele não devolve DataFrame (ver **kwargs).
 
     Raises:
         ValueError: Se o formato do arquivo não for suportado.
@@ -583,9 +1001,15 @@ def read_df(
         msg = f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
         raise ValueError(msg)
     df = reader(path, **kwargs)
+    if not isinstance(df, pd.DataFrame):
+        # Leitor de pedaços ou dict de abas: a normalização e as releituras
+        # trabalham sobre as colunas de um DataFrame, e o objeto sai como o
+        # pandas o devolve.
+        return df
 
     if model is not None:
         _reread_text_columns(df, path, ext, model, kwargs)
+        _reread_int_columns(df, path, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -609,18 +1033,99 @@ def _reread_text_columns(
     """Relê como texto cru os campos de texto do modelo, in-place.
 
     Sem isso, "2023" volta como número e "N/A" ou "NA" viram ausência, e a
-    retomada acusa ou troca o valor. Só a célula vazia vira ausência. A
-    releitura fica de fora quando o usuário já controla tipos ou NA.
+    retomada acusa ou troca o valor. Só a célula vazia vira ausência.
+    Qualquer argumento de leitura desliga a releitura, porque, somado ao
+    usecols dela, ele pode mudar as linhas que o leitor devolve: com
+    on_bad_lines, a linha malformada deixa de sê-lo quando só as colunas de
+    texto são lidas, volta na releitura e desloca o texto das seguintes; com
+    index_col, parse_dates ou names, a releitura levanta. A atribuição alinha
+    pelo índice e não acusa a diferença de tamanho.
     """
     reader = _TEXT_READERS.get(ext)
-    if reader is None or any(k in kwargs for k in _READ_CONTROLS):
+    if reader is None or kwargs:
         return
     text_columns = [f for f in get_text_fields(model) if f in df.columns]
     if not text_columns:
         return
-    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False, **kwargs)
+    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False)
     for col in text_columns:
         df[col] = raw[col].mask(raw[col] == "")
+
+
+def _accepts_only_int(field_type: object) -> bool:
+    """True se o tipo é int, o Literal só de ints, ou um deles com None."""
+    field_type = _resolved(field_type)
+    if field_type is int:
+        return True
+    origin = get_origin(field_type)
+    if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
+        return _accepts_only_int(get_args(field_type)[0])
+    if origin is typing.Literal:
+        return all(type(arg) is int for arg in get_args(field_type))
+    if origin is typing.Union or isinstance(field_type, types.UnionType):
+        args = [arg for arg in get_args(field_type) if arg is not type(None)]
+        return all(_accepts_only_int(arg) for arg in args)
+    return False
+
+
+_INT_TEXT = re.compile(r"-?\d+")
+
+
+def _int_or_read(text: str, read: object) -> object:
+    """O int que o texto da célula do CSV guarda, None se ela é ausente, ou o valor lido.
+
+    O texto vazio vale como ausente também quando o leitor não o trocou por
+    NaN, como na coluna com int acima do Int64, que ele devolve em texto cru.
+    """
+    if _INT_TEXT.fullmatch(text):
+        return int(text)
+    if text == "" or pd.isna(read):
+        return None
+    return read
+
+
+def _reread_int_columns(
+    df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
+) -> None:
+    """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
+
+    O leitor do pandas devolve float64 numa coluna com int e célula vazia, como
+    a de um checkpoint com linha pendente, e o float arredonda o int acima de
+    2**53; com int acima do Int64, o CSV volta como texto. A coluna relida
+    passa a object, com o int que o arquivo guarda como inteiro e None na
+    célula que o leitor devolveu ausente, seja vazia ou "NA"; a célula que
+    guarda outra coisa, como 7.5, fica como lida. O XLSX guarda número como
+    double e fica de fora, porque o int que ele devolve já pode vir
+    arredondado. Qualquer argumento de leitura também desliga a releitura,
+    porque ele muda o que o leitor devolve (on_bad_lines pula linhas, dtype
+    fixa tipos, chunksize nem devolve DataFrame), e a releitura sem ele não
+    casaria com o que foi lido.
+    """
+    if ext not in (".csv", ".parquet") or kwargs:
+        return
+    columns = [
+        f
+        for f, info in model.model_fields.items()
+        if f in df.columns and _accepts_only_int(info.annotation) and not is_integer_dtype(df[f])
+    ]
+    if not columns:
+        return
+    if ext == ".parquet":
+        raw = pd.read_parquet(path, columns=columns, dtype_backend="numpy_nullable")
+        exact = {
+            col: [None if pd.isna(v) else int(v) for v in raw[col]]
+            for col in columns
+            if is_integer_dtype(raw[col])
+        }
+    else:
+        raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False)
+        exact = {
+            col: [_int_or_read(text, read) for text, read in zip(raw[col], df[col], strict=True)]
+            for col in columns
+        }
+    for col, values in exact.items():
+        if any(type(v) is int for v in values):
+            df[col] = pd.Series(values, index=df.index, dtype=object)
 
 
 def _normalize_all_json_columns(df: pd.DataFrame) -> None:

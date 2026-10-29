@@ -22,6 +22,8 @@ from .search import get_provider
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from pydantic import ValidationError
+
     from .search import SearchProvider
 
 
@@ -52,7 +54,9 @@ class ProviderOverloadedError(ProviderTransientError):
 
 
 class ProviderRejectedOutputError(ProviderTransientError, ValueError):
-    """Resposta recusada pela validação do modelo; a tentativa seguinte pede a correção.
+    """Resposta recusada pela validação do modelo; ganha nova tentativa.
+
+    Nos providers do LangChain, a tentativa seguinte pede a correção.
 
     É transitória por classe, e não pela mensagem: um número como '404' no texto
     analisado faria a classificação por texto tratá-la como erro HTTP definitivo.
@@ -79,6 +83,28 @@ class ProviderConfigurationError(ValueError):
 
 class ProviderOutputError(ValueError):
     """Resposta definitiva incompatível com o contrato de saída."""
+
+
+# Teto de erros de validação listados por resposta recusada, na mensagem da
+# exceção e no pedido de correção do LangChain.
+MAX_REJECTED_RULES = 20
+
+
+def validation_error_summary(error: ValidationError) -> str:
+    """Caminho e regra de cada erro de validação, sem o valor recusado (`input`).
+
+    A mensagem vai para `_error_details`, e o valor recusado levaria dado da
+    linha para a coluna. O caminho e a regra ainda trazem texto da resposta
+    quando o Pydantic o põe ali: chave de dict, tag de união discriminada,
+    mensagem de validador próprio. Por isso a classificação das exceções que
+    carregam este resumo decide pela classe, e não pelo texto.
+    """
+    rules = [
+        f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: "
+        f"{item.get('msg', '')}"
+        for item in error.errors()[:MAX_REJECTED_RULES]
+    ]
+    return f"{error.error_count()} erro(s): {'; '.join(rules)}"
 
 
 # Erros considerados recuperáveis (transientes)
@@ -403,15 +429,29 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     Returns:
         Mensagem de erro amigável com instruções de como resolver.
     """
+    # As duas classes de resposta recusada decidem pela classe: a mensagem pode
+    # trazer texto da resposta no caminho e na regra de um erro de validação
+    # (ver validation_error_summary), e um número como '401' na chave de um dict
+    # não pode virar erro de credencial.
     if isinstance(error, ProviderRejectedOutputError):
-        # Decidida pela classe: a mensagem não traz o texto analisado, mas um
-        # número como '401' no caminho de um campo não pode virar erro de chave.
         return (
             "RESPOSTA RECUSADA PELA VALIDAÇÃO DO MODELO PYDANTIC\n"
             f"{error}\n"
-            "As tentativas levaram o erro de volta ao modelo, sem sucesso. Veja as regras "
-            "do modelo que falharam; se o texto é ambíguo, a instrução do campo pode ajudar."
+            "Nenhuma tentativa produziu resposta válida. Veja as regras do modelo que "
+            "falharam; se o texto é ambíguo, a instrução do campo pode ajudar."
         )
+    if isinstance(error, ProviderOutputError):
+        return (
+            "RESPOSTA FORA DO CONTRATO DE SAÍDA\n"
+            f"{error}\n"
+            "O provider terminou sem uma resposta que sirva ao modelo Pydantic, e a linha "
+            "não é tentada de novo."
+        )
+
+    # Obter informações do provider dinamicamente
+    provider_data = _infer_provider_info(provider)
+    provider_name = provider_data["name"]
+    env_var = provider_data["env_var"]
 
     error_str = f"{type(error).__name__}: {error}".lower()
     error_name = type(error).__name__
@@ -428,10 +468,46 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
             _matches_error_pattern(pattern, error_str) for pattern in (*patterns, *map(str, codes))
         )
 
-    # Obter informações do provider dinamicamente
-    provider_data = _infer_provider_info(provider)
-    provider_name = provider_data["name"]
-    env_var = provider_data["env_var"]
+    # === ERROS DE RATE LIMIT ===
+    # A caixa sai quando, e só quando, a execução reduz os workers: a decisão é a
+    # mesma função que _process_rows_parallel chama, e não um padrão de texto
+    # próprio. Por isso vem antes das caixas decididas pelo texto, que não
+    # sombreiam a sobrecarga cuja mensagem cita uma chave ou um 403. Nos
+    # ProviderError, is_rate_limit_error decide pela classe; um '429' no texto,
+    # que pode ser do modelo, cai nas caixas seguintes ou na genérica.
+    if is_rate_limit_error(error):
+        # O 429 do Tavily e do Exa chega como erro da ferramenta de busca, com o
+        # serviço só no texto, e a caixa nomeia o serviço que recusou. As caixas
+        # de limite de uso, mais abaixo, ficam para a cota do plano, que não é
+        # rate limit nem reduz os workers. O ProviderError vem do provider de
+        # LLM, e o texto dele não muda o nome.
+        may_be_search = not isinstance(error, ProviderError)
+        service = (
+            "Tavily"
+            if may_be_search and "tavily" in error_str
+            else "Exa"
+            if may_be_search and is_exa
+            else provider_name
+        )
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  Você fez muitas requisições em pouco tempo para o {service}.          ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Aguarde alguns minutos e tente novamente                                 ║
+║  2. Use rate_limit_delay: cada worker espera esse tempo depois de cada       ║
+║     linha processada, e o teto fica em                                       ║
+║     parallel_requests * 60 / rate_limit_delay linhas por minuto:             ║
+║                                                                              ║
+║     dataframeit(..., rate_limit_delay=1.0)  # até 60 linhas/min por worker   ║
+║                                                                              ║
+║  3. Considere atualizar seu plano para limites maiores                       ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
 
     # === ERROS TAVILY ===
     if "tavily" in error_str and any(
@@ -590,30 +666,13 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    # === ERROS DE RATE LIMIT ===
-    if is_category(["ratelimit", "resourceexhausted", "toomanyrequests"], (429,)):
-        return f"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Você fez muitas requisições em pouco tempo para o {provider_name}.          ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Aguarde alguns minutos e tente novamente                                 ║
-║  2. Use rate_limit_delay: cada worker espera esse tempo depois de cada       ║
-║     linha processada, e o teto fica em                                       ║
-║     parallel_requests * 60 / rate_limit_delay linhas por minuto:             ║
-║                                                                              ║
-║     dataframeit(..., rate_limit_delay=1.0)  # até 60 linhas/min por worker   ║
-║                                                                              ║
-║  3. Considere atualizar seu plano para limites maiores                       ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
     # === ERROS DE TIMEOUT ===
-    if is_category(["timeout", "deadlineexceeded"], (408, 504)):
+    # A caixa sai só para o erro que is_recoverable_error classifica como
+    # recuperável, o que retry_with_backoff repete enquanto houver tentativas, e
+    # por isso manda aumentar max_retries. Ela não afirma que houve repetição,
+    # porque com max_retries=1 não há. O timeout definitivo, como o
+    # ProviderError cujo texto cita 'timeout', cai nas caixas seguintes.
+    if is_recoverable_error(error) and is_category(["timeout", "deadlineexceeded"], (408, 504)):
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  TEMPO ESGOTADO (TIMEOUT)                                                    ║
@@ -627,7 +686,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ║  • Texto muito longo para processar                                          ║
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
-║  1. O sistema já tentou automaticamente várias vezes                         ║
+║  1. Aumente max_retries: o timeout ganha nova tentativa até esse limite      ║
 ║  2. Use resume=True para continuar de onde parou:                            ║
 ║                                                                              ║
 ║     df = dataframeit(df, ..., resume=True)                                   ║
@@ -781,6 +840,9 @@ def is_recoverable_error(error: Exception) -> bool:  # noqa: PLR0911 (precedênc
 def is_rate_limit_error(error: Exception) -> bool:
     """Verifica se um erro é especificamente de rate limit.
 
+    É a decisão que reduz os workers na execução paralela e que escolhe a caixa
+    de limite de requisições em get_friendly_error_message.
+
     Args:
         error: Exceção a ser analisada.
 
@@ -789,7 +851,14 @@ def is_rate_limit_error(error: Exception) -> bool:
     """
     if isinstance(error, ProviderOverloadedError):
         return True
-    if isinstance(error, ProviderTransientError):
+    # Rate limit do pacote é só ProviderOverloadedError. Os demais ProviderError e
+    # o ProviderOutputError decidem pela classe, sem ler o texto: a mensagem deles
+    # pode trazer texto do modelo, como o resumo da validação e o campo result do
+    # SDK no erro do claude_code, e um '429' ali seria tomado por rate limit. O
+    # codex classifica o rate limit na origem, pelo código de erro do turno ou do
+    # JSON-RPC, e o erro que traz "429 Too Many Requests" só no texto não reduz os
+    # workers.
+    if isinstance(error, (ProviderError, ProviderOutputError)):
         return False
     if _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError):
         return True

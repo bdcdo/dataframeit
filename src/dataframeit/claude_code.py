@@ -11,11 +11,15 @@ import concurrent.futures
 import json
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from pydantic import ValidationError
+
 from .errors import (
     ProviderError,
     ProviderOverloadedError,
+    ProviderRejectedOutputError,
     ProviderTransientError,
     retry_with_backoff,
+    validation_error_summary,
 )
 from .llm import LLMConfig, _parse_usage_metadata, build_prompt
 from .utils import parse_json
@@ -77,13 +81,24 @@ async def _async_query(
     response_text = ""
     result = None
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    response_text += block.text
-        elif isinstance(message, ResultMessage):
-            result = message
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        response_text += block.text
+            elif isinstance(message, ResultMessage):
+                result = message
+    except Exception:
+        # O CLI termina a chamada recusada com um ResultMessage de erro e sai com
+        # código não zero, e o SDK levanta essa saída como exceção (ResultError
+        # nas versões recentes, Exception com o texto nas antigas) depois de
+        # entregar a mensagem. A mensagem já recebida traz o custo da tentativa
+        # e, nas versões que o informam, o status da API; quem a classifica é
+        # _raise_for_result_error, e a exceção, repassada, seria classificada
+        # pelo texto.
+        if not getattr(result, "is_error", False):
+            raise
 
     return response_text, result
 
@@ -234,9 +249,20 @@ def call_claude_code(
             msg = "Claude Code SDK retornou resposta vazia"
             raise ValueError(msg)
 
-        # Parse e validação
-        parsed = parse_json(response_text)
-        validated = pydantic_model.model_validate(parsed)
+        # A recusa sai como ProviderRejectedOutputError, transitória pela classe.
+        # A mensagem não leva o valor recusado, mas na falha de validação o
+        # caminho e a regra trazem texto da resposta quando o Pydantic o põe
+        # ali (ver validation_error_summary).
+        try:
+            parsed = parse_json(response_text)
+        except ValueError as err:
+            msg = "Falha no parsing da resposta: o texto não contém um JSON válido"
+            raise ProviderRejectedOutputError(msg) from err
+        try:
+            validated = pydantic_model.model_validate(parsed)
+        except ValidationError as err:
+            msg = f"Falha na validação da resposta: {validation_error_summary(err)}"
+            raise ProviderRejectedOutputError(msg) from err
 
         usage = _usage_from_sdk(getattr(result, "usage", None), spent)
         return {"data": validated.model_dump(), "usage": usage}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import errno
 import json
 import os
 import subprocess
@@ -14,25 +16,32 @@ from datetime import date, datetime, timedelta
 from datetime import time as time_type
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Annotated, Any, Literal
 from unittest.mock import MagicMock, call, patch
 from uuid import UUID
 
+import pandas as pd
 import pytest
 from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
 
+from dataframeit import codex as codex_module
 from dataframeit.codex import (
     _CATALOG_TOOL_FIELDS,
+    _READER_THREAD_JOIN,
     CodexBackend,
     _AppServerStop,
     _build_schema,
+    _close_client,
+    _raise_classified_sdk_error,
     _to_strict_json_schema,
     _toml_string,
     _turn_timeout,
     _validate_config,
     open_codex_backend,
 )
+from dataframeit.core import dataframeit
 from dataframeit.errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
     ProviderAbortError,
@@ -722,10 +731,9 @@ class TestBackendConfiguration:
         ],
     )
     def test_invalid_config_fails_before_client_start(self, codex_sdk, overrides, message):
-        sdk, _, _ = codex_sdk
 
         with (
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match=message),
         ):
             _validate_config(make_config(**overrides))
@@ -765,7 +773,7 @@ class TestBackendLifecycle:
                 "symlink_to",
                 side_effect=AssertionError("symlink não deve ser usado"),
             ) as symlink,
-            patch.object(sdk, "Codex", return_value=client) as codex,
+            patch.object(codex_module, "_open_client", return_value=client) as codex,
         ):
             with open_codex_backend(make_config(), SampleModel, "{texto}") as backend:
                 launch_config = codex.call_args.args[0]
@@ -832,7 +840,7 @@ class TestBackendLifecycle:
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
 
         with (
-            patch.object(sdk, "Codex", return_value=client) as codex,
+            patch.object(codex_module, "_open_client", return_value=client) as codex,
             open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
         ):
             catalog_override = codex.call_args.args[0].config_overrides[-1]
@@ -847,6 +855,35 @@ class TestBackendLifecycle:
                 assert model[field] == value
         assert not catalog_path.exists()
 
+    def test_catalogo_e_lido_sem_codex_api_key(self, codex_sdk, monkeypatch, tmp_path):
+        # O app-server do turno ignora CODEX_API_KEY; com ela, `debug models` leria
+        # o catálogo da API com essa chave, e não com a credencial dos turnos.
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-falsa")
+        monkeypatch.setenv("DATAFRAMEIT_VARIAVEL_DO_USUARIO", "mantida")
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        listing = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"models": []}', stderr=""
+        )
+
+        with (
+            patch("dataframeit.codex.subprocess.run", return_value=listing) as run,
+            patch.object(codex_module, "_open_client", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
+        ):
+            isolated_home = backend._workspace.parent / "home"
+
+        ambiente = run.call_args.kwargs["env"]
+        assert "CODEX_API_KEY" not in ambiente
+        assert ambiente["DATAFRAMEIT_VARIAVEL_DO_USUARIO"] == "mantida"
+        assert ambiente["CODEX_HOME"] == os.fspath(isolated_home)
+        assert run.call_args.args[0][-2:] == ["debug", "models"]
+
     @pytest.mark.parametrize(
         ("stdout", "message"),
         [
@@ -858,7 +895,6 @@ class TestBackendLifecycle:
     def test_catalogo_ilegivel_falha_antes_do_app_server(
         self, codex_sdk, monkeypatch, tmp_path, stdout, message
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -867,7 +903,7 @@ class TestBackendLifecycle:
 
         with (
             patch("dataframeit.codex.subprocess.run", return_value=listing),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -893,7 +929,6 @@ class TestBackendLifecycle:
     def test_falha_ao_obter_ou_gravar_o_catalogo_falha_antes_do_app_server(
         self, codex_sdk, monkeypatch, tmp_path, run, message
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -902,7 +937,7 @@ class TestBackendLifecycle:
         with (
             patch("dataframeit.codex.subprocess.run", **run),
             patch.object(Path, "write_text", side_effect=OSError("disco cheio")),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match=rf"catálogo de modelos.*{message}"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -913,7 +948,6 @@ class TestBackendLifecycle:
     def test_falha_do_runtime_ao_ler_o_catalogo_traz_o_stderr(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -922,7 +956,7 @@ class TestBackendLifecycle:
 
         with (
             patch("dataframeit.codex.subprocess.run", side_effect=failure),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(
                 ProviderConfigurationError,
                 match=r"catálogo de modelos do Codex \(código 1\): sem rede$",
@@ -942,7 +976,7 @@ class TestBackendLifecycle:
         client = as_context_manager(MagicMock(spec=sdk.Codex), resolved_model=resolved)
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(**config), SampleModel, "{texto}") as backend,
         ):
             params = client._client.thread_start.call_args.args[0]
@@ -975,12 +1009,87 @@ class TestBackendLifecycle:
         client._client.request.side_effect = RuntimeError("app-server recusou")
 
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             open_codex_backend(make_config(), SampleModel, "{texto}") as backend,
         ):
             assert backend.config.model == "gpt-6-luna"
 
         assert threads_descarregadas(client) == ["thread-sonda"]
+
+    def _client_whose_close_raises(self, codex_sdk, monkeypatch, tmp_path, erro):
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex))
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        client.close.side_effect = erro
+        return client
+
+    @pytest.mark.parametrize(
+        "erro",
+        [BrokenPipeError(errno.EPIPE, "Broken pipe"), OSError(errno.EINVAL, "Invalid argument")],
+        ids=["broken-pipe", "einval"],
+    )
+    @pytest.mark.parametrize(
+        "saida", [None, ProviderError("falha da linha")], ids=["normal", "erro-do-bloco"]
+    )
+    def test_falha_de_e_s_ao_fechar_nao_substitui_a_saida_do_backend(
+        self, codex_sdk, monkeypatch, tmp_path, erro, saida
+    ):
+        """O fechamento que falha na escrita do stdin não troca o que sai do bloco.
+
+        A escrita num pipe sem leitor falha com `BrokenPipeError`, ou com
+        `OSError(EINVAL)` no Windows, quando o app-server morreu com um pedido
+        no buffer. Propagar a falha do fechamento faria `dataframeit()` perder
+        as linhas processadas, ou trocaria o erro do bloco pelo do fechamento.
+        """
+        client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
+        esperado = pytest.raises(ProviderError) if saida is not None else contextlib.nullcontext()
+
+        with (
+            esperado as excinfo,
+            patch.object(codex_module, "_open_client", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            if saida is not None:
+                raise saida
+
+        client.close.assert_called_once_with()
+        if saida is not None:
+            assert excinfo is not None
+            assert excinfo.value is saida
+
+    @pytest.mark.parametrize(
+        "erro",
+        [
+            pytest.param(OSError(errno.EIO, "Input/output error"), id="eio"),
+            pytest.param(PermissionError(errno.EACCES, "Permission denied"), id="permissao"),
+            pytest.param(ValueError("I/O operation on closed file"), id="valor"),
+            pytest.param(
+                AttributeError("'Codex' object has no attribute '_client'"), id="atributo"
+            ),
+        ],
+    )
+    def test_falha_do_fechamento_fora_do_pipe_sem_leitor_continua_aparecendo(
+        self, codex_sdk, monkeypatch, tmp_path, erro
+    ):
+        """Só a falha da escrita num pipe sem leitor é suprimida; as outras sobem.
+
+        O conjunto é o que o `subprocess` do CPython engole ao fechar o stdin:
+        `BrokenPipeError` e `OSError` com `errno.EINVAL`.
+        """
+        client = self._client_whose_close_raises(codex_sdk, monkeypatch, tmp_path, erro)
+
+        with (
+            pytest.raises(type(erro)) as excinfo,
+            patch.object(codex_module, "_open_client", return_value=client),
+            open_codex_backend(make_config(), SampleModel, "{texto}"),
+        ):
+            pass
+
+        assert excinfo.value is erro
 
     @pytest.mark.parametrize(
         ("model_kwargs", "prazo"), [({}, 600), ({"timeout": 30}, 30), ({"timeout": None}, None)]
@@ -995,10 +1104,9 @@ class TestBackendLifecycle:
         assert backend._turn_timeout == prazo
 
     def test_prazo_invalido_falha_antes_de_subir_o_cliente(self, codex_sdk):
-        sdk, _, _ = codex_sdk
 
         with (
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="timeout inválido"),
             open_codex_backend(make_config(model_kwargs={"timeout": 0}), SampleModel, "{texto}"),
         ):
@@ -1021,14 +1129,13 @@ class TestBackendLifecycle:
         assert params.model is None
 
     def test_missing_auth_fails_before_runtime_or_client(self, codex_sdk, monkeypatch, tmp_path):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         monkeypatch.setenv("CODEX_HOME", str(source_home))
 
         with (
             patch("dataframeit.codex.tempfile.TemporaryDirectory") as temporary_directory,
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError) as exc_info,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1051,7 +1158,7 @@ class TestBackendLifecycle:
 
         monkeypatch.setenv("CODEX_HOME", str(homes[0]))
         with (
-            patch.object(sdk, "Codex", side_effect=clients) as codex,
+            patch.object(codex_module, "_open_client", side_effect=clients) as codex,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
             monkeypatch.setenv("CODEX_HOME", str(homes[1]))
@@ -1066,7 +1173,6 @@ class TestBackendLifecycle:
     def test_hard_link_failure_is_explicit_and_cleans_runtime(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         source_auth = source_home / "auth.json"
@@ -1076,7 +1182,7 @@ class TestBackendLifecycle:
         with (
             patch("dataframeit.codex.os.link", side_effect=OSError("unsupported")),
             patch.object(Path, "symlink_to") as symlink,
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="hard link"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1103,7 +1209,7 @@ class TestBackendLifecycle:
         )
 
         with (
-            patch.object(sdk, "Codex", side_effect=[codex_result]),
+            patch.object(codex_module, "_open_client", side_effect=[codex_result]),
             pytest.raises(RuntimeError, match="failed"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1125,7 +1231,7 @@ class TestBackendLifecycle:
         client.close.side_effect = RuntimeError("close failed")
 
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             pytest.raises(RuntimeError, match="close failed"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1137,7 +1243,6 @@ class TestBackendLifecycle:
     def test_runtime_directory_failure_has_accurate_error_and_cleans_up(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -1152,7 +1257,7 @@ class TestBackendLifecycle:
 
         with (
             patch.object(Path, "mkdir", fail_runtime_directory),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="diretórios do runtime"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1166,7 +1271,6 @@ class TestBackendLifecycle:
     def test_auth_lock_failure_is_explicit_before_runtime_creation(
         self, codex_sdk, monkeypatch, tmp_path, error_type
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -1174,7 +1278,7 @@ class TestBackendLifecycle:
 
         with (
             patch("filelock.FileLock.acquire", side_effect=error_type("unsupported")),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="acesso exclusivo"),
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1254,6 +1358,27 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 1
 
+    def test_number_in_rejected_response_is_not_a_credential_error(self, codex_sdk, tmp_path):
+        response = '{"sentimento": "Súmula 403 do STJ", "confianca": "art. 401"}'
+        backend, _, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response=response)
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderOutputError) as error,
+        ):
+            backend.invoke("texto")
+
+        message = str(error.value)
+        assert "Súmula" not in message
+        assert "art. 401" not in message
+        assert "confianca: Input should be a valid number" in message
+        friendly = get_friendly_error_message(error.value, "codex")
+        assert "AUTENTICAÇÃO" not in friendly
+        assert "PERMISSÃO" not in friendly
+        assert "login" not in friendly
+
     @pytest.mark.parametrize(
         ("response", "status", "message"),
         [
@@ -1317,24 +1442,23 @@ class TestCodexInvocation:
         assert client.thread_start.call_count == 2
         thread.read.assert_not_called()
 
-    def test_failed_turn_internal_server_error_retries_without_rate_limit(
-        self, codex_sdk, tmp_path
-    ):
+    @pytest.mark.parametrize("code", ["internal_server_error", "thread_rollback_failed"])
+    def test_failed_turn_transient_code_retries_without_rate_limit(self, codex_sdk, tmp_path, code):
         _, _, generated = codex_sdk
         backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
-        internal = generated.CodexErrorInfo(
-            root=generated.CodexErrorInfoValue.internal_server_error
+        info = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue[code])
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=info, message="internal failure")
         )
-        turn.stream.side_effect = [
-            as_stream(make_result(codex_sdk, error_info=internal, message="internal failure")),
-            as_stream(make_result(codex_sdk)),
-        ]
 
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderTransientError, match="internal failure") as exc_info,
+        ):
+            backend.invoke("texto")
 
-        assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
+        assert is_rate_limit_error(exc_info.value) is False
 
     def test_failed_turn_http_429_is_overload_and_retries(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
@@ -1387,6 +1511,28 @@ class TestCodexInvocation:
         with (
             pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderError, match="blocked") as exc_info,
+        ):
+            backend.invoke("texto")
+
+        assert not isinstance(exc_info.value, (ProviderTransientError, ProviderAbortError))
+        assert client.thread_start.call_count == 1
+
+    # O SDK aceita código e variante fora do protocolo que conhece: o código vira
+    # membro novo de CodexErrorInfoValue, e a variante fica como dict cru.
+    @pytest.mark.parametrize(
+        "codigo", ["codigoNovo", {"variantNova": {}}], ids=["codigo", "variante"]
+    )
+    def test_codigo_de_erro_desconhecido_falha_so_a_linha(self, codex_sdk, tmp_path, codigo):
+        _, _, generated = codex_sdk
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        info = generated.CodexErrorInfo.model_validate(codigo)
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=info, message="novidade")
+        )
+
+        with (
+            pytest.warns(UserWarning, match="não-recuperável"),
+            pytest.raises(ProviderError, match="novidade") as exc_info,
         ):
             backend.invoke("texto")
 
@@ -1559,7 +1705,6 @@ class TestFalhasDoRuntime:
     def test_falha_ao_criar_o_runtime_temporario_libera_o_lock(
         self, codex_sdk, monkeypatch, tmp_path
     ):
-        sdk, _, _ = codex_sdk
         source_home = tmp_path / "source-home"
         source_home.mkdir()
         (source_home / "auth.json").write_text("{}")
@@ -1570,7 +1715,7 @@ class TestFalhasDoRuntime:
                 "dataframeit.codex.tempfile.TemporaryDirectory",
                 side_effect=OSError("disco cheio"),
             ),
-            patch.object(sdk, "Codex") as codex,
+            patch.object(codex_module, "_open_client") as codex,
             pytest.raises(ProviderConfigurationError, match="runtime temporário") as exc_info,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1590,7 +1735,7 @@ class TestFalhasDoRuntime:
         client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=True)
 
         with (
-            patch.object(sdk, "Codex", return_value=client),
+            patch.object(codex_module, "_open_client", return_value=client),
             pytest.raises(ProviderConfigurationError) as exc_info,
             open_codex_backend(make_config(), SampleModel, "{texto}"),
         ):
@@ -1628,16 +1773,18 @@ class TestClassificacaoDoTurnoQueFalhou:
                 )
             )
         )
-        turn.stream.side_effect = [
-            as_stream(make_result(codex_sdk, error_info=caiu, message="stream caiu")),
-            as_stream(make_result(codex_sdk)),
-        ]
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=caiu, message="stream caiu")
+        )
 
-        with pytest.warns(UserWarning, match="Tentativa 1/2"):
-            result = backend.invoke("texto")
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderTransientError, match="stream caiu") as exc_info,
+        ):
+            backend.invoke("texto")
 
-        assert result["_retry_info"]["retries"] == 1
         assert client.thread_start.call_count == 2
+        assert is_rate_limit_error(exc_info.value) is False
 
     def test_codigo_de_erro_fora_dos_transitorios_e_definitivo(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
@@ -1704,6 +1851,91 @@ class TestClassificacaoDoTurnoQueFalhou:
             backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
+
+    # O app-server recusa com o código JSON-RPC -32001, sem `data`, o pedido que
+    # chega com a fila de entrada cheia. A classificação lê o código, e não a
+    # mensagem: o -32000 com o mesmo texto continua definitivo.
+    def test_fila_cheia_do_app_server_e_sobrecarga(self, codex_sdk):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            map_jsonrpc_error,
+        )
+
+        erro = map_jsonrpc_error(-32001, "Server overloaded; retry later.", None)
+
+        with pytest.raises(ProviderOverloadedError, match="Server overloaded") as exc_info:
+            _raise_classified_sdk_error(erro)
+
+        assert is_rate_limit_error(exc_info.value) is True
+
+    @pytest.mark.parametrize("codigo", [-32000, -32002])
+    def test_outro_codigo_json_rpc_com_texto_de_sobrecarga_e_definitivo(self, codex_sdk, codigo):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            map_jsonrpc_error,
+        )
+
+        erro = map_jsonrpc_error(codigo, "Server overloaded; retry later.", None)
+
+        with pytest.raises(ProviderError) as exc_info:
+            _raise_classified_sdk_error(erro)
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+        assert is_rate_limit_error(exc_info.value) is False
+
+    def test_codigo_fora_de_erro_json_rpc_nao_e_lido(self, codex_sdk):
+        class ErroComCodigo(RuntimeError):
+            code = -32001
+
+        with pytest.raises(ProviderError) as exc_info:
+            _raise_classified_sdk_error(ErroComCodigo("falhou"))
+
+        assert not isinstance(exc_info.value, ProviderTransientError)
+
+    def test_fila_cheia_reduz_workers_e_repete_a_linha(self, codex_sdk, tmp_path, monkeypatch):
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            map_jsonrpc_error,
+        )
+
+        backend, client, _, _ = initialized_backend(tmp_path, codex_sdk)
+        pedidos = []
+        trava = threading.Lock()
+
+        def fila_cheia(**_):
+            with trava:
+                pedidos.append(1)
+            raise map_jsonrpc_error(-32001, "Server overloaded; retry later.", None)
+
+        client.thread_start.side_effect = fila_cheia
+
+        @contextlib.contextmanager
+        def backend_falso(*_args):
+            yield backend
+
+        monkeypatch.setattr("dataframeit.codex.open_codex_backend", backend_falso)
+        # O evento de rate limit é limpo na hora, sem o timer de 5 s.
+        monkeypatch.setattr(
+            "dataframeit.core.threading.Timer",
+            lambda _intervalo, funcao: SimpleNamespace(start=funcao),
+        )
+        entrada = pd.DataFrame({"texto": ["a", "b", "c", "d"]})
+
+        with pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2") as avisos:
+            saida = dataframeit(
+                entrada, SampleModel, "Analise: {texto}", provider="codex", parallel_requests=4
+            )
+
+        mensagens = [str(aviso.message) for aviso in avisos]
+        assert [m for m in mensagens if m.startswith("Rate limit detectado")] == [
+            "Rate limit detectado! Reduzindo workers de 4 para 2.",
+            "Rate limit detectado! Reduzindo workers de 2 para 1.",
+        ]
+        # make_config dá duas tentativas a cada linha.
+        assert (
+            sum(m.startswith("Tentativa 1/2 falhou (ProviderOverloadedError)") for m in mensagens)
+            == 4
+        )
+        assert len(pedidos) == 8
+        assert saida["_dataframeit_status"].tolist() == ["error"] * 4
+        assert all("ProviderOverloadedError" in detalhe for detalhe in saida["_error_details"])
 
     def test_stream_sem_conclusao_e_transitorio(self, codex_sdk, tmp_path):
         backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
@@ -2196,6 +2428,101 @@ class TestPrazoDosPedidos:
 
         assert ordem == ["kill", "close"]
 
+    @pytest.mark.parametrize(
+        ("leitor_do_stdout_vivo", "leitor_do_stderr_vivo", "esperado"),
+        [
+            (False, False, ["close", "stdout", "stderr"]),
+            (True, False, ["close", "stderr"]),
+            (False, True, ["close", "stdout"]),
+        ],
+    )
+    def test_pipe_fecha_depois_do_close_e_so_sem_leitor_vivo(
+        self, leitor_do_stdout_vivo, leitor_do_stderr_vivo, esperado
+    ):
+        """Os pipes de saída fecham depois do `close` do SDK, que espera o processo.
+
+        O pipe cuja thread de leitura ainda roda fica aberto: fechá-lo esperaria
+        a leitura em curso, e a thread do stderr levantaria `ValueError` ao ler
+        a linha seguinte do arquivo fechado.
+        """
+        ordem = []
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        cliente.close.side_effect = lambda: ordem.append("close")
+        processo.stdout.close.side_effect = lambda: ordem.append("stdout")
+        processo.stderr.close.side_effect = lambda: ordem.append("stderr")
+        cliente._client._reader_thread.is_alive.return_value = leitor_do_stdout_vivo
+        cliente._client._stderr_thread.is_alive.return_value = leitor_do_stderr_vivo
+
+        _close_client(cliente)
+
+        assert ordem == esperado
+
+    def test_pipes_fecham_mesmo_quando_o_close_do_sdk_levanta(self):
+        """O `close` que levanta não deixa os pipes de saída abertos.
+
+        Com o app-server morto e um pedido no buffer do stdin, a descarga do
+        `close` levanta antes do `terminate`. As threads de leitura já viram o
+        fim do processo, e os dois pipes fecham; a exceção continua subindo.
+        """
+        erro = BrokenPipeError(32, "Broken pipe")
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        cliente.close.side_effect = erro
+        cliente._client._reader_thread.is_alive.return_value = False
+        cliente._client._stderr_thread.is_alive.return_value = False
+
+        with pytest.raises(BrokenPipeError) as excinfo:
+            _close_client(cliente)
+
+        assert excinfo.value is erro
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
+
+    @pytest.mark.parametrize("returncode", [None, 0], ids=["sem_returncode", "ja_recolhido"])
+    def test_pipe_fecha_quando_o_leitor_termina_durante_a_espera(self, returncode):
+        """A thread de leitura que ainda roda depois do `close` é esperada antes do pipe fechar.
+
+        Depois de um Ctrl+C no `wait` do SDK, ou do `close` que levanta ao
+        descarregar o stdin, as threads de leitura não foram esperadas, e o fim
+        do processo ainda não chegou a elas. A espera deixa cada uma ver o EOF
+        e sair, e o pipe dela fecha em seguida, em vez de ficar para o coletor
+        de lixo.
+        """
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        processo.returncode = returncode
+        leitores = (_LeitorQueTerminaNaEspera(), _LeitorQueTerminaNaEspera())
+        cliente._client._reader_thread, cliente._client._stderr_thread = leitores
+
+        _close_client(cliente)
+
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
+        assert [leitor.esperas for leitor in leitores] == [[_READER_THREAD_JOIN]] * 2
+        assert processo.kill.call_count == (1 if returncode is None else 0)
+
+    def test_encerramento_pelo_prazo_nao_levanta_quando_o_close_falha(self):
+        """O relógio que derruba o app-server termina sem exceção.
+
+        Depois do `kill`, o `close` pode levantar ao descarregar o stdin do
+        processo morto. O encerramento roda na thread do relógio, e a falha não
+        tem quem a receba: as linhas já abortam pela causa registrada.
+        """
+        parada = _AppServerStop()
+        cliente = MagicMock()
+        processo = cliente._client._proc
+        cliente.close.side_effect = BrokenPipeError(32, "Broken pipe")
+        cliente._client._reader_thread.is_alive.return_value = False
+        cliente._client._stderr_thread.is_alive.return_value = False
+
+        parada.stop(cliente, "causa")
+
+        assert str(parada.error()) == "causa"
+        processo.kill.assert_called_once_with()
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
+
     def test_dois_estouros_mantem_a_primeira_causa(self):
         """Linhas que estouram juntas abortam todas com a causa de quem chegou primeiro."""
         parada = _AppServerStop()
@@ -2253,6 +2580,116 @@ class TestPrazoDosPedidos:
             backend.invoke("segunda")
 
         assert excinfo.value.__cause__ is erro
+
+
+class _LeitorQueTerminaNaEspera:
+    """Thread de leitura viva que vê o fim do processo durante o `join`."""
+
+    def __init__(self) -> None:
+        self.vivo = True
+        self.esperas: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return self.vivo
+
+    def join(self, timeout: float | None = None) -> None:
+        self.esperas.append(timeout)
+        self.vivo = False
+
+
+class _ClienteDoProtocolo:
+    """Cliente de protocolo com o `close` da classe, como o do SDK."""
+
+    _proc = None
+
+    def close(self) -> None:
+        pass
+
+
+class TestAberturaDoCliente:
+    """`_open_client` sobre um `Codex` falso, no lugar do construtor do SDK."""
+
+    @staticmethod
+    def _sdk_com(monkeypatch, construtor):
+        modulo = ModuleType("openai_codex")
+        vars(modulo)["Codex"] = type("Codex", (), {"__init__": construtor})
+        monkeypatch.setitem(sys.modules, "openai_codex", modulo)
+
+    @pytest.mark.parametrize(
+        "atribui",
+        [
+            lambda codex, cliente: codex.__dict__.__setitem__("_client", cliente),
+            lambda codex, cliente: setattr(codex, "_rpc", cliente),
+        ],
+        ids=["client_pelo_dict", "client_com_outro_nome"],
+    )
+    def test_abertura_segue_quando_o_close_nao_e_trocado(self, monkeypatch, atribui):
+        """O SDK que não atribui `_client` pelo `__setattr__` abre como abriria sem a subclasse.
+
+        Sem a troca do `close`, a subclasse não tem o que desfazer depois da
+        abertura, e o cliente sai dela com o `close` da classe.
+        """
+        cliente = _ClienteDoProtocolo()
+
+        def construtor(codex, config):
+            atribui(codex, cliente)
+
+        self._sdk_com(monkeypatch, construtor)
+
+        aberto = codex_module._open_client(MagicMock())
+
+        assert cliente in vars(aberto).values()
+        assert "close" not in vars(cliente)
+
+    def test_close_trocado_sem_processo_em_proc_fecha_como_o_do_sdk(self, monkeypatch):
+        """Com o processo fora de `_proc`, o `close` trocado chama o do SDK e não recolhe nada."""
+        fechamentos = []
+
+        class ClienteSemProc:
+            def close(self) -> None:
+                fechamentos.append(self)
+
+        cliente = ClienteSemProc()
+
+        def construtor(codex, config):
+            codex._client = cliente
+
+        self._sdk_com(monkeypatch, construtor)
+        aberto = codex_module._open_client(MagicMock())
+
+        cliente.close()
+
+        assert fechamentos == [cliente]
+        assert aberto._client is cliente
+
+    def test_ctrl_c_na_abertura_sobe_quando_o_close_do_sdk_levanta(self, monkeypatch):
+        """O `close` que levanta durante o Ctrl+C da abertura não troca o `KeyboardInterrupt`.
+
+        O `close` do SDK descarrega o stdin, e a descarga levanta
+        `BrokenPipeError` quando o app-server já não lê o pipe. O processo é
+        recolhido mesmo assim, e o que sobe é a interrupção.
+        """
+        interrupcao = KeyboardInterrupt()
+        cliente = MagicMock()
+        processo = cliente._proc
+        close_do_sdk = cliente.close
+        close_do_sdk.side_effect = BrokenPipeError(32, "Broken pipe")
+        cliente._reader_thread.is_alive.return_value = False
+        cliente._stderr_thread.is_alive.return_value = False
+
+        def construtor(codex, config):
+            codex._client = cliente
+            raise interrupcao
+
+        self._sdk_com(monkeypatch, construtor)
+
+        with pytest.raises(KeyboardInterrupt) as excinfo:
+            codex_module._open_client(MagicMock())
+
+        assert excinfo.value is interrupcao
+        close_do_sdk.assert_called_once_with()
+        processo.stdout.close.assert_called_once_with()
+        processo.stderr.close.assert_called_once_with()
 
 
 class TestConfiguracaoDoPrazo:
@@ -2487,6 +2924,48 @@ class TestDescargaDaThread:
         assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
         # As duas tentativas usam a mesma thread simulada.
         assert threads_descarregadas(client) == ["thread-1", "thread-1"]
+
+    def test_fechamento_solta_a_descarga_escrita_depois_do_fim_do_leitor(self, codex_sdk):
+        """A descarga que escreveu depois do `fail_all` do leitor termina no fechamento.
+
+        O app-server morto ainda pode aceitar a escrita enquanto termina, e o SDK
+        registra a espera da resposta sem conferir que o leitor do stdout já
+        acordou os pedidos em voo e saiu. Ninguém responde nem acorda essa
+        espera, e a thread da descarga ficaria presa para sempre.
+        """
+        from openai_codex.client import CodexClient  # noqa: PLC0415 (SDK carregado pelo fixture)
+        from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
+            TransportClosedError,
+        )
+
+        cliente_do_protocolo = CodexClient()
+        processo = MagicMock()
+        processo.returncode = -9
+        escrita = threading.Event()
+        processo.stdin.write.side_effect = lambda _linha: escrita.set()
+        leitor_encerrado = threading.Thread(target=lambda: None)
+        leitor_encerrado.start()
+        leitor_encerrado.join()
+        cliente_do_protocolo._proc = processo
+        cliente_do_protocolo._reader_thread = leitor_encerrado
+        cliente_do_protocolo._stderr_thread = leitor_encerrado
+        cliente_do_protocolo._router.fail_all(TransportClosedError("stdout fechado"))
+        cliente = MagicMock()
+        cliente._client = cliente_do_protocolo
+        cliente.close.side_effect = cliente_do_protocolo.close
+
+        descarga = threading.Thread(
+            target=codex_module._unsubscribe_quietly, args=(cliente, "thread-1"), daemon=True
+        )
+        descarga.start()
+        assert escrita.wait(5)
+        descarga.join(0.2)
+        assert descarga.is_alive(), "sem o fechamento, nada acorda a espera da resposta"
+
+        _close_client(cliente)
+        descarga.join(5)
+
+        assert not descarga.is_alive()
 
     def test_turno_reroteado_tambem_descarrega_a_thread(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
