@@ -22,7 +22,8 @@ from decimal import Decimal
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from types import CodeType, MethodType
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, overload
 
 import pandas as pd
 from pandas.api.types import is_bool, is_scalar
@@ -2097,10 +2098,13 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
     linhas dele às desta execução misturaria respostas a perguntas diferentes.
     """
-    try:
-        schema = questions.model_json_schema()
-    except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
-        schema = repr(questions.model_fields)
+    if _has_unstable_extra(questions):
+        schema = _schema_form(questions)
+    else:
+        try:
+            schema = questions.model_json_schema()
+        except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
+            schema = repr(questions.model_fields)
     payload = json.dumps(
         {
             "prompt": prompt,
@@ -2124,20 +2128,289 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _stable(value: object) -> object:
+def _has_unstable_extra(questions: type[BaseModel]) -> bool:
+    """Se o json_schema_extra de algum campo, inclusive aninhado, tem função ou conjunto.
+
+    Com eles, o JSON Schema não serve de assinatura: a função faz
+    model_json_schema() falhar, e o fallback leva o endereço dela; o conjunto vira
+    lista na ordem de iteração, que muda com a semente de hash do processo. Os
+    outros modelos ficam com o JSON Schema, e a assinatura deles é a mesma do
+    checkpoint já gravado com eles.
+    """
+    return any(
+        isinstance(field_info.json_schema_extra, dict)
+        and _outside_json(field_info.json_schema_extra)
+        for _, field_info, _ in _walk_fields(questions)
+    )
+
+
+def _outside_json(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_outside_json(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_outside_json(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        # O hash do inteiro é o próprio valor: o conjunto só de inteiros itera na
+        # mesma ordem em todo processo, e o JSON Schema dele é estável.
+        return not all(isinstance(item, int) for item in value)
+    return callable(value)
+
+
+# Atributos do campo na forma canônica: os que o JSON Schema levaria ao LLM e a
+# configuração da biblioteca em json_schema_extra.
+_SIGNED_FIELD_ATTRIBUTES = (
+    "annotation",
+    "default",
+    "default_factory",
+    "alias",
+    "validation_alias",
+    "title",
+    "description",
+    "examples",
+    "deprecated",
+    "discriminator",
+    "json_schema_extra",
+    "metadata",
+)
+
+
+def _schema_form(questions: type[BaseModel]) -> object:
+    """Forma canônica do modelo, para o lugar do JSON Schema na assinatura.
+
+    Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
+    e o chamável entram pelo que `_schema_leaf` tira deles.
+    """
+    leaf = partial(_schema_leaf, descent=_Descent())
+    return _stable(
+        {
+            "model": questions,
+            "fields": {
+                path: {
+                    attribute: getattr(field_info, attribute)
+                    for attribute in _SIGNED_FIELD_ATTRIBUTES
+                }
+                for path, field_info, _ in _walk_fields(questions)
+            },
+        },
+        leaf,
+    )
+
+
+class _Descent:
+    """O que a descida no estado dos objetos chamáveis guarda durante uma assinatura.
+
+    `depth` dá, pelo `id`, a profundidade de cada objeto do caminho atual, de
+    cujo estado o valor faz parte. `lowest` traz, para cada objeto aberto, a
+    menor profundidade a que um marcador de ciclo da subárvore dele apontou.
+    `forms` guarda a forma do objeto cuja subárvore não apontou para ele nem para
+    cima dele, ao lado do próprio objeto, para que o `id` não passe a outro
+    objeto enquanto a assinatura dura.
+    """
+
+    def __init__(self) -> None:
+        self.depth: dict[int, int] = {}
+        self.lowest: list[int] = []
+        self.forms: dict[int, tuple[object, object]] = {}
+
+    def reach(self, depth: int) -> None:
+        """Registra, no objeto aberto mais fundo, um marcador que aponta para `depth`."""
+        if self.lowest:
+            self.lowest[-1] = min(self.lowest[-1], depth)
+
+
+def _schema_leaf(value: object, descent: _Descent) -> object:
+    """Folha da forma canônica: tipo pelo nome e conteúdo, chamável pelo código.
+
+    O que não é tipo vai a `_callable_leaf`.
+    """
+    leaf = partial(_schema_leaf, descent=descent)
+    if get_origin(value) is not None:
+        return {
+            "origin": leaf(get_origin(value)),
+            "args": _stable(get_args(value), leaf),
+        }
+    if isinstance(value, type) and issubclass(value, BaseModel):
+        # Os campos dele já entram pelo caminho; aqui, o que o JSON Schema tiraria
+        # da classe: o título, a descrição e o model_config.
+        return {
+            "model": value.__name__,
+            "doc": value.__doc__,
+            "config": _stable(value.model_config, leaf),
+        }
+    if isinstance(value, type) and issubclass(value, Enum):
+        return {
+            "enum": value.__name__,
+            "members": _stable({member.name: member.value for member in value}, leaf),
+        }
+    if isinstance(value, type):
+        return value.__name__
+    return _callable_leaf(value, descent)
+
+
+def _callable_leaf(value: object, descent: _Descent) -> object:
+    """Chamável pelo código e pelo que ele fixa; o que não é chamável, como veio.
+
+    A função entra pelo nome qualificado e pelo código; o `partial`, pela função
+    que embrulha e pelos argumentos fixados; o objeto chamável, pelo `__call__`
+    da classe, como a função, e pelos atributos da instância. O método ligado
+    entra pela função e pelo dono: a classe, pelo nome; a instância, pelos
+    atributos. O objeto `staticmethod` e o `classmethod`, pela função que
+    embrulham. O resto, inclusive o chamável cujo `__call__` não é código Python,
+    como a função embutida, fica para o `default` do json.dumps em
+    `_run_signature`, que tira o endereço do repr.
+    """
+    leaf = partial(_schema_leaf, descent=descent)
+    # Antes do ramo da função: o método ligado repassa o `__code__` da função, e
+    # por ele entraria sem o dono, que guarda o que a condição compara.
+    if isinstance(value, MethodType):
+        owner = value.__self__
+        return {
+            "method": _callable_leaf(value.__func__, descent),
+            "self": owner.__name__ if isinstance(owner, type) else _instance_state(owner, descent),
+        }
+    if isinstance(value, (staticmethod, classmethod)):
+        return _callable_leaf(value.__func__, descent)
+    if isinstance(value, partial):
+        return {
+            "partial": leaf(value.func),
+            "args": _stable(value.args, leaf),
+            "keywords": _stable(value.keywords, leaf),
+        }
+    code = _attribute_or_none(value, "__code__")
+    if isinstance(code, CodeType):
+        return {"function": _attribute_or_none(value, "__qualname__"), "code": _code_form(code)}
+    # Só o __call__ escrito em Python: o da classe embutida é outro chamável sem
+    # código, e descer nele não terminaria.
+    call = type(value).__call__ if callable(value) else None
+    if isinstance(getattr(call, "__code__", None), CodeType):
+        return {
+            "callable": _callable_leaf(call, descent),
+            "state": _instance_state(value, descent),
+        }
+    return value
+
+
+def _instance_state(value: object, descent: _Descent) -> object:
+    """Atributos da instância, do `__dict__` e dos `__slots__`, pela folha da forma canônica.
+
+    O atributo pode voltar ao próprio objeto, direto ou por outro objeto. O
+    objeto que já está no caminho da descida entra por um marcador com o nome da
+    classe, sem o endereço, que muda a cada processo. O marcador depende só do
+    caminho, e não de tudo o que já foi visto: o mesmo objeto em dois atributos
+    entra pelos dois, como entrariam dois objetos iguais.
+
+    Por isso a forma do objeto que está num ciclo depende de por onde se chegou a
+    ele, e a dele é refeita a cada caminho. A do objeto fora de ciclo não depende:
+    nenhum objeto abaixo dele volta a ele, e nenhum objeto acima dele no caminho
+    é alcançado de novo. Ela é calculada uma vez e reaproveitada, e o objeto
+    alcançado por vários ramos não refaz a descida em cada um, o que dobraria o
+    tempo a cada nível. O que separa um do outro é o marcador mais alto da
+    subárvore: no objeto do ciclo, ele aponta para o próprio objeto ou para
+    cima dele.
+    """
+    key = id(value)
+    if key in descent.depth:
+        descent.reach(descent.depth[key])
+        return {"cycle": type(value).__name__}
+    if key in descent.forms:
+        return descent.forms[key][1]
+    depth = len(descent.depth)
+    descent.depth[key] = depth
+    descent.lowest.append(depth + 1)
+    # No objeto só com `__slots__`, o nome `__dict__` cai no `__getattr__` da
+    # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
+    own = _attribute_or_none(value, "__dict__")
+    state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
+    form = _stable(state, partial(_schema_leaf, descent=descent))
+    del descent.depth[key]
+    lowest = descent.lowest.pop()
+    descent.reach(lowest)
+    if lowest > depth:
+        descent.forms[key] = (value, form)
+    return form
+
+
+def _attribute_or_none(value: object, name: str) -> object:
+    """O atributo, ou None quando a busca dele levanta qualquer exceção.
+
+    O nome que falta vai ao `__getattr__` da classe do usuário, que pode levantar
+    outra coisa que não AttributeError, como o KeyError do objeto que guarda os
+    atributos num dict. A assinatura não pode levantar: ela é calculada antes da
+    primeira linha, e a exceção dela derrubaria a execução inteira.
+    """
+    try:
+        return getattr(value, name, None)
+    except Exception:  # noqa: BLE001 (ver a docstring)
+        return None
+
+
+def _slot_values(value: object) -> dict[str, object]:
+    """Atributos atribuídos nos `__slots__` de cada classe da MRO.
+
+    O slot privado (`__peso` na classe `Regra`) fica guardado com o nome da
+    classe na frente (`_Regra__peso`), e é por esse nome que se lê. O slot
+    `__dict__` já entra por `_instance_state`, e o `__weakref__` é a referência
+    fraca de quem observa o objeto, não configuração dele.
+    """
+    values: dict[str, object] = {}
+    for cls in type(value).__mro__:
+        namespace = vars(cls)
+        slots = namespace.get("__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name in ("__dict__", "__weakref__"):
+                continue
+            private = name.startswith("__") and not name.endswith("__")
+            attribute = f"_{cls.__name__.lstrip('_')}{name}" if private else name
+            # Pelo descritor que a própria classe criou para o slot, e não pela
+            # busca de atributo, que passaria pela property de mesmo nome de uma
+            # subclasse e, no slot não atribuído, pelo `__getattr__`.
+            try:
+                values[attribute] = namespace[attribute].__get__(value, cls)
+            except Exception:  # noqa: BLE001, S112
+                # AttributeError é o slot ainda não atribuído, que não tem valor.
+                # Outra exceção vem do descritor posto no lugar do slot, ou tirado
+                # dele, depois de a classe ser criada; o slot também fica de fora,
+                # porque a assinatura não pode levantar (ver `_attribute_or_none`).
+                continue
+    return values
+
+
+def _code_form(code: CodeType) -> list[object]:
+    """Bytecode, constantes e nomes lidos pela função, sem o arquivo nem a linha.
+
+    Duas funções com o mesmo nome qualificado, como a lambda editada entre uma
+    execução e outra, só assinam igual com o mesmo código. O que a função lê de
+    fora dele (variável global ou do escopo de fora, valor padrão de argumento, o
+    corpo de outra função que ela chama) não entra. O bytecode muda de uma versão
+    menor do Python para outra (3.11, 3.12), e o checkpoint de um modelo com função
+    não é retomado depois dessa troca. A constante frozenset, que o compilador gera
+    para `x in {"a", "b"}`, é ordenada pelo `_stable`.
+    """
+    return [
+        code.co_code.hex(),
+        [
+            _code_form(constant) if isinstance(constant, CodeType) else _stable(constant)
+            for constant in code.co_consts
+        ],
+        list(code.co_names),
+    ]
+
+
+def _stable(value: object, leaf: Callable[[object], object] | None = None) -> object:
     """Forma que serializa igual em qualquer processo.
 
     Chaves de dict viram texto, para ordenar dict com chaves int e str juntas, e
     conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
-    semente de hash do processo.
+    semente de hash do processo. `leaf` converte o que não é dict, lista, tupla
+    nem conjunto; sem ele, o valor fica como está.
     """
     if isinstance(value, dict):
-        return {str(key): _stable(item) for key, item in value.items()}
+        return {str(key): _stable(item, leaf) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_stable(item) for item in value]
+        return [_stable(item, leaf) for item in value]
     if isinstance(value, (set, frozenset)):
-        return sorted((_stable(item) for item in value), key=_stable_repr)
-    return value
+        return sorted((_stable(item, leaf) for item in value), key=_stable_repr)
+    return value if leaf is None else leaf(value)
 
 
 def _stable_repr(value: object) -> str:
