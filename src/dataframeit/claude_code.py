@@ -156,8 +156,11 @@ def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
         # O ty não propaga o tipo do resultado por submit(asyncio.run, coro).
         return executor.submit(asyncio.run, coro).result()  # ty: ignore[invalid-return-type]
     finally:
-        # cancel_futures cancela a corrotina que a interrupção alcança antes de
-        # ela começar a rodar no thread.
+        # wait=False deixa a interrupção sair sem esperar o thread, e a query
+        # já submetida segue nele até o fim, por conta própria. cancel_futures
+        # só retira um futuro que ainda está na fila; com um único worker, ele
+        # sai da fila logo depois do submit, e na prática a interrupção já o
+        # encontra rodando.
         executor.shutdown(wait=False, cancel_futures=True)
 
 
