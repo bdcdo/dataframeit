@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Adicionado
+
+- Um teste confere as permissões do `docs.yml`, que nenhum check de PR executa: o workflow só concede `contents: read`, o job `deploy` tem exatamente `pages: write` e `id-token: write`, e nenhum outro job escreve. O PR que mexer nelas reprova no job de testes, antes do merge (#268).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido
