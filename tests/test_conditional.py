@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
 from unittest.mock import patch
@@ -1464,6 +1465,11 @@ class _Cadastro(BaseModel):
     rotulo: Annotated[str, "rótulo"] = ""
     codigo: str | int = ""
     inicio: datetime.date | None = None
+    bruto: bytes = b""
+    fase: complex = 0j
+    preco: Decimal | None = None
+    hora: datetime.time | None = None
+    prazo: datetime.timedelta | None = None
 
 
 @pytest.mark.parametrize(
@@ -1478,6 +1484,11 @@ class _Cadastro(BaseModel):
         "endereco.rotulo.x",
         "endereco.codigo.x",
         "endereco.inicio.year",
+        "endereco.bruto.x",
+        "endereco.fase.real",
+        "endereco.preco.x",
+        "endereco.hora.hour",
+        "endereco.prazo.days",
         "nome.primeiro",
     ],
 )
