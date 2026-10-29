@@ -215,7 +215,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | `normalize` | bool | Se `False`, não converte nenhuma coluna |
 | `**kwargs` | | Argumentos passados para pandas. Com o que faz o leitor devolver outra coisa que um DataFrame, como `chunksize`, `iterator` ou `sheet_name=None` ou lista, a função devolve o objeto do pandas, como `TextFileReader`, `JsonReader`, dict de abas ou a `Series` de `typ="series"`, sem normalizar nem reler nenhuma coluna, mesmo com `model` e `normalize=True` |
 
-CSV e XLSX gravam `""` e ausência do mesmo jeito. Um campo obrigatório de texto que era `""` volta ausente, e a retomada o acusa para reprocessar; para guardar essa diferença, use checkpoint `.parquet`.
+CSV e XLSX gravam `""` e ausência do mesmo jeito, e `read_df` devolve ausente a célula vazia. A retomada pelo `checkpoint_path`, cuja assinatura garante que o modelo é o mesmo, devolve `""` ao campo de texto que não admite `None` nem tem `None` por padrão. Passado como entrada, o arquivo relido não traz essa garantia, e a retomada acusa o campo obrigatório para reprocessar. No campo que admite `None`, a célula vazia volta `None`; para guardar essa diferença, use checkpoint `.parquet`.
 
 Chamada com `model` e sem argumentos de leitura extras, os `**kwargs` que vão ao pandas, a função relê de `.csv` e `.parquet` a coluna de um campo `int`, `Literal` só de inteiros, ou um deles com `None`, que o pandas não devolve em tipo inteiro: ela volta como `object`, com o `int` exato e `None` na célula vazia, em vez de float64 com `NaN`, que arredonda o inteiro acima de 2**53. A célula que o arquivo guarda como float, como `7.5`, fica como lida. A coluna `Int64` anulável do parquet continua `Int64`, e a coluna só com células vazias fica como lida: float no CSV e, na coluna nula que o checkpoint grava no parquet, `object` com `None`. Argumento de leitura extra desliga essa releitura; `normalize` não a desliga. O `.xlsx`, que guarda número como double, fica de fora.
 
@@ -277,7 +277,7 @@ Identifica os campos de um modelo Pydantic que guardam estrutura em vez de valor
 def get_complex_fields(pydantic_model) -> set
 ```
 
-Retorna o conjunto de nomes dos campos cujo tipo é `list`, `dict`, `tuple` ou modelo Pydantic aninhado, inclusive dentro de `Optional` e `Union`.
+Retorna o conjunto de nomes dos campos cujo tipo é estrutura: `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` e `Mapping` e as versões mutáveis deles, `TypedDict`, `NamedTuple` ou modelo Pydantic aninhado, inclusive dentro de `Optional` e `Union`.
 
 ```python
 from dataframeit import get_complex_fields, normalize_complex_columns, read_df

@@ -16,7 +16,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -62,8 +62,10 @@ from .utils import (
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _admits_none,
     _json_default,
     _keeps_nan,
+    accepts_only_text,
     from_pandas,
     get_complex_fields,
     normalize_complex_columns,
@@ -77,6 +79,7 @@ if TYPE_CHECKING:
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
+    from pydantic.fields import FieldInfo
 
 
 class _FallbackHandler(logging.Handler):
@@ -371,8 +374,24 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     status_col: str,
     pydantic_model: type[BaseModel],
     complex_fields: set[str],
+    *,
+    empty_text_fields: Collection[str] = frozenset(),
 ) -> tuple[list[str], dict[tuple[int, str], Any]]:
-    """Valida linhas concluídas sem alterar o checkpoint recebido."""
+    """Valida linhas concluídas sem alterar o checkpoint recebido.
+
+    Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
+    CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
+    na linha em que a condição do campo é falsa, que o deixa None. No modo
+    normal, a execução grava o model_dump do modelo, e o texto vazio
+    restaurado que a validação da linha não devolve como "" não é o que ela
+    gravou: a célula é o None que um validador deu ao texto vazio, que o tipo
+    do campo recusa, e o campo é acusado. No modo por campo
+    (search_per_field), os validadores do modelo não rodam na execução, que
+    grava o texto vazio como veio, e a validação daqui acusa do mesmo jeito o
+    campo cujo validador o troca. O None que um validador dá a outra resposta
+    não se separa do texto vazio na célula: o "" restaurado passa pelo
+    validador como é, e o campo volta "", sem acusação.
+    """
     incompatible_fields: set[str] = set()
     values_to_fill: dict[tuple[int, str], Any] = {}
     expected_columns = list(pydantic_model.model_fields)
@@ -427,6 +446,24 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         for field_name, field in pydantic_model.model_fields.items()
         if isinstance(field.json_schema_extra, dict) and "condition" in field.json_schema_extra
     }
+    # Na ordem das dependências, como na execução: a condição lê o None do
+    # campo que outra condição pulou antes dela. A configuração que não tem
+    # ordem é recusada antes de processar, e aqui fica a ordem do modelo.
+    if conditions:
+        with suppress(ValueError):
+            execution_order, _ = get_field_execution_order(
+                pydantic_model,
+                {
+                    field_name: field.json_schema_extra
+                    for field_name, field in pydantic_model.model_fields.items()
+                    if isinstance(field.json_schema_extra, dict)
+                },
+            )
+            conditions = {
+                field_name: conditions[field_name]
+                for field_name in execution_order
+                if field_name in conditions
+            }
     skipping_models: dict[frozenset, Any] = {}
 
     def model_skipping(skipped: frozenset) -> type[BaseModel]:
@@ -473,18 +510,37 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             else:
                 row_values[field_name] = value
 
-        skipped = frozenset(
+        empty_cells = {
             field_name
-            for field_name, condition in conditions.items()
+            for field_name in empty_text_fields
             if row_values[field_name] is None
-            and not _condition_holds(condition, row_values, field_name)
-        )
+            and (field_name not in df.columns or pd.isna(row[field_name]))
+        }
+        # A condição vê o texto vazio de outro campo como a execução o viu.
+        condition_values = {**row_values, **dict.fromkeys(empty_cells, "")}
+        skipped_fields = set()
+        for field_name, condition in conditions.items():
+            if row_values[field_name] is None and not _condition_holds(
+                condition, condition_values, field_name
+            ):
+                skipped_fields.add(field_name)
+                condition_values[field_name] = None
+        skipped = frozenset(skipped_fields)
 
         projected = {}
         missing_values = set()
+        restored = set()
         for field_name, field in pydantic_model.model_fields.items():
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
+                if field_name in empty_cells and field_name not in skipped:
+                    # Gravado também quando a linha é recusada por outro campo:
+                    # com esse campo em reprocess_columns, a linha fica, e este
+                    # mantém o valor que tinha.
+                    projected[field_name] = ""
+                    values_to_fill[(position, field_name)] = ""
+                    restored.add(field_name)
+                    continue
                 missing_values.add(field_name)
                 if not field.is_required() or field_name in skipped:
                     continue
@@ -507,6 +563,10 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 else:
                     values_to_fill[(position, field_name)] = default
             continue
+
+        incompatible_fields.update(
+            field_name for field_name in restored if validated_data[field_name] != ""
+        )
 
         # Campo com exclude=True não sai no dump, e não há o que completar nele.
         for field_name in missing_values & validated_data.keys():
@@ -1439,6 +1499,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # é desta execução, ela continua dele. Quem carrega o checkpoint à mão e o
     # passa como entrada já traz a coluna, e o arquivo não é lido de novo.
     signature = None
+    empty_text_fields: frozenset[str] = frozenset()
     if checkpoint is not None:
         signature = _run_signature(
             questions,
@@ -1457,7 +1518,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             structures=frozenset(complex_fields),
         )
         if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
-            _resume_from_checkpoint(
+            empty_text_fields = _resume_from_checkpoint(
                 df_pandas,
                 checkpoint,
                 questions,
@@ -1515,6 +1576,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             status_col,
             questions,
             complex_fields,
+            empty_text_fields=empty_text_fields,
         )
     uncovered_columns = [
         column for column in incompatible_columns if column not in reprocessed_columns
@@ -1689,7 +1751,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         if kept:
             summary += (
                 f", e {kept} não foram reprocessadas e mantêm os valores anteriores "
-                "(marcadas em _error_details); para elas, repita a chamada com reprocess_columns"
+                "(marcadas em _error_details); repetir a chamada com reprocess_columns "
+                "refaz todas as linhas, inclusive as já reprocessadas"
             )
         if checkpoint is not None:
             how = "rode de novo com o mesmo checkpoint_path, ou com resume=True sobre esta saída"
@@ -1909,6 +1972,10 @@ def _format_token_stats(
 
 _SUPPORTED_CHECKPOINT_EXTS = (".csv", ".xlsx", ".parquet")
 
+# Formatos que gravam o texto vazio e o None na mesma célula vazia. O parquet
+# guarda os dois à parte, e a célula nula dele é o None que a execução gravou.
+_EMPTY_TEXT_AS_ABSENT_EXTS = frozenset({".csv", ".xlsx"})
+
 # Extensões que exigem dependência opcional para pandas serializar.
 # Validamos antes do loop para falhar rápido — um ModuleNotFoundError no primeiro
 # save (após N linhas de LLM) desperdiça horas de trabalho.
@@ -2075,7 +2142,7 @@ def _resume_from_checkpoint(
     *,
     text_column: str,
     status_col: str,
-) -> None:
+) -> frozenset[str]:
     """Traz para a entrada, in-place, o que um checkpoint desta execução já processou.
 
     O checkpoint é retomado só quando a assinatura gravada ao lado dele é a
@@ -2094,6 +2161,34 @@ def _resume_from_checkpoint(
     checkpoint não relê. As demais colunas de entrada ficam como o usuário as
     passou, porque o CSV e o XLSX não preservam o tipo delas. As colunas se
     casam pelo nome em texto, que é como o CSV as devolve.
+
+    Devolve os campos cuja célula vazia, numa linha processada, é o texto
+    vazio, para a validação da retomada (`_validate_processed_rows`); sem
+    retomar, nenhum. O CSV e o XLSX gravam o texto vazio e o None na mesma
+    célula vazia, que o leitor devolve ausente. O parquet guarda os dois à
+    parte, e dele também não vem nenhum: a célula nula é o None gravado. A
+    assinatura garante que o checkpoint foi gravado com este modelo, e nele o
+    campo que só aceita texto, não admite None e cujo default não pode ser None
+    (`_default_may_be_none`) só fica None quando a condição dele é falsa ou
+    quando um validador troca uma resposta por None, que o tipo do campo
+    recusa. O campo cuja fábrica lê os outros campos não é restaurado: a célula
+    vazia dele conta como ausente, e a validação a preenche com o valor da
+    fábrica, mesmo onde a execução gravou "". A validação da retomada lê a
+    condição na linha, e do validador só pega o que troca o próprio texto
+    vazio: o "" restaurado que ela não devolve como "" é acusado. O None que o
+    validador dá a outra resposta, como "N/A", fica na mesma célula vazia, e a
+    retomada do CSV e do XLSX o devolve como ""; o parquet guarda o None, e a
+    retomada o acusa. Quem
+    quer guardar esse None declara o campo Optional[str]. No modo por campo
+    (search_per_field), os validadores do modelo não rodam na execução, e o
+    texto vazio que ela gravou num campo cujo validador o troca por None é
+    acusado do mesmo jeito no CSV e no XLSX, e volta "" do parquet. O campo com
+    exclude=True fica de fora, porque o model_dump não o traz e a célula dele
+    guarda o None que a execução pôs ao criar a coluna. Sem essa garantia,
+    como no checkpoint carregado à mão, a célula vazia continua ausente,
+    porque com outro modelo ela pode ser o None de um campo que o admitia. No
+    campo que admite None, ela volta None, e o texto vazio só sobrevive no
+    parquet.
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
     if reason is not None or saved is None:
@@ -2104,7 +2199,7 @@ def _resume_from_checkpoint(
             UserWarning,
             stacklevel=3,
         )
-        return
+        return frozenset()
 
     concluded = saved[status_col].notna().to_numpy()
     by_name = {str(column): column for column in df.columns}
@@ -2119,6 +2214,31 @@ def _resume_from_checkpoint(
             values = df[target].to_numpy(dtype=object).copy()
             values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
             df[target] = values
+    if Path(checkpoint.path).suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
+        return frozenset()
+    return frozenset(
+        field_name
+        for field_name, field in questions.model_fields.items()
+        if accepts_only_text(field.annotation)
+        and not _admits_none(field.annotation)
+        and not _default_may_be_none(field)
+        and not field.exclude
+    )
+
+
+def _default_may_be_none(field: FieldInfo) -> bool:
+    """Se o default do campo, dado direto ou pela fábrica, pode ser None.
+
+    O pydantic não valida o default, e o None dele fica no campo que o tipo
+    recusa. A fábrica que lê os outros campos só é chamada com eles, e pode
+    dar None em alguma linha. Por isso o campo dela não é restaurado: na
+    retomada do CSV e do XLSX, a célula vazia conta como ausente e a fábrica a
+    preenche, mesmo onde a execução gravou "".
+    """
+    try:
+        return field.get_default(call_default_factory=True) is None
+    except ValueError:
+        return True
 
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
@@ -2150,7 +2270,7 @@ def _array_as_list(value: object) -> object:
 
 
 def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
-    """Cópia com listas, dicts, tuplas e arrays do numpy serializados como JSON.
+    """Cópia com listas, dicts, tuplas, conjuntos e arrays do numpy serializados como JSON.
 
     CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
     de volta, e o de um array ("['a' 'b']") o literal_eval lê como ['ab']. O
@@ -2174,7 +2294,7 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 
     def to_json(value: object) -> object:
         value = _array_as_list(value)
-        if isinstance(value, (list, dict, tuple)):
+        if isinstance(value, (list, dict, tuple, set, frozenset)):
             return json.dumps(value, ensure_ascii=False, default=_json_default)
         return enum_as_value(value)
 
@@ -2221,7 +2341,7 @@ def _save_checkpoint(
     if ext == ".csv":
         _structures_as_json(df).to_csv(tmp, index=False)
     elif ext == ".xlsx":
-        _structures_as_json(df).to_excel(tmp, index=False)
+        _to_excel_as_text(_structures_as_json(df), tmp)
     elif ext == ".parquet":
         _structures_as_json(df, structures).to_parquet(tmp, index=False)
     else:
@@ -2233,6 +2353,23 @@ def _save_checkpoint(
     tmp.replace(path)
     if meta is not None:
         _write_checkpoint_signature(path, meta)
+
+
+def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
+    """Grava o XLSX com o texto que começa com "=" como texto, e não como fórmula.
+
+    O openpyxl toma por fórmula todo texto que começa com "=", e o leitor do
+    pandas devolve vazia a célula de fórmula, que nunca foi calculada. O
+    checkpoint não grava fórmula: toda célula que o openpyxl marcou assim é
+    texto da execução ou da entrada, e volta a ser texto. O engine é fixado
+    porque a marca é do openpyxl, que o checkpoint .xlsx já exige.
+    """
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+        for row in next(iter(writer.sheets.values())).iter_rows():
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
 
 
 def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:

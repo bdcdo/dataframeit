@@ -121,6 +121,25 @@ def test_interrupcao_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_an
     assert detalhes[~antigas].isna().all()
 
 
+def test_aviso_do_reprocessamento_interrompido_diz_que_a_repeticao_refaz_todas_as_linhas():
+    """Numa execução de 4 linhas interrompida depois de 2, a repetição faz as 4 chamadas."""
+    df = pd.DataFrame(
+        {
+            "texto": [f"t{i}" for i in range(4)],
+            "campo1": ["antigo"] * 4,
+            "_dataframeit_status": ["processed"] * 4,
+        }
+    )
+    _, llm = _llm_que_esgota(2, ProviderUsageLimitError("usage limit"))
+    with pytest.warns(UserWarning, match="refaz todas as linhas, inclusive as já reprocessadas"):
+        parcial = _roda(df, llm, reprocess_columns=["campo1"])
+
+    chamadas, llm = _llm_que_esgota(100, ProviderUsageLimitError("nunca"))
+    _roda(parcial, llm, reprocess_columns=["campo1"])
+
+    assert len(chamadas) == 4
+
+
 @pytest.mark.parametrize("paralelo", [1, 2])
 def test_interrupcao_no_reprocessamento_de_dict_com_chaves_tupla(paralelo):
     entrada = {("sp", ano): f"t{ano}" for ano in range(2020, 2026)}

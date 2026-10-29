@@ -215,7 +215,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | `normalize` | bool | If `False`, no column is converted |
 | `**kwargs` | | Arguments passed to pandas. With one that makes the reader return something other than a DataFrame, such as `chunksize`, `iterator` or `sheet_name=None` or a list, the function returns the pandas object, such as a `TextFileReader`, a `JsonReader`, a dict of sheets or the `Series` from `typ="series"`, without normalizing or rereading any column, even with `model` and `normalize=True` |
 
-CSV and XLSX store `""` and missing values the same way. A required text field that was `""` comes back missing, and resuming flags it for reprocessing; use a `.parquet` checkpoint to keep that difference.
+CSV and XLSX store `""` and missing values the same way, and `read_df` returns the empty cell as missing. Resuming through `checkpoint_path`, whose signature guarantees that the model is the same, gives `""` back to a text field that neither accepts `None` nor has it as default. Passed as input, the file read back carries no such guarantee, and resuming flags the required field for reprocessing. In a field that accepts `None`, the empty cell comes back as `None`; use a `.parquet` checkpoint to keep that difference.
 
 Called with `model` and no extra read arguments, the `**kwargs` passed to pandas, the function rereads from `.csv` and `.parquet` the column of an `int` field, a `Literal` of integers only, or one of them with `None`, that pandas does not return as an integer dtype: it comes back as `object`, with the exact `int` and `None` in empty cells, instead of float64 with `NaN`, which rounds integers above 2**53. A cell the file stores as a float, such as `7.5`, stays as read. A nullable `Int64` parquet column stays `Int64`, and a column with only empty cells stays as read: float in CSV and, in the null column the checkpoint writes to parquet, `object` with `None`. An extra read argument turns this reread off; `normalize` does not. `.xlsx`, which stores numbers as doubles, is left out.
 
@@ -277,7 +277,7 @@ Identifies the fields of a Pydantic model that hold a structure instead of a sim
 def get_complex_fields(pydantic_model) -> set
 ```
 
-Returns the set of names of the fields whose type is `list`, `dict`, `tuple` or a nested Pydantic model, including inside `Optional` and `Union`.
+Returns the set of names of the fields whose type is a structure: `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` and `Mapping` and their mutable versions, `TypedDict`, `NamedTuple` or a nested Pydantic model, including inside `Optional` and `Union`.
 
 ```python
 from dataframeit import get_complex_fields, normalize_complex_columns, read_df

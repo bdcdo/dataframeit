@@ -4,8 +4,11 @@ import contextlib
 import csv
 import datetime
 import warnings
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from enum import Enum
 from pathlib import Path
+from typing import Any, Literal, NamedTuple
 from unittest.mock import patch
 
 import numpy as np
@@ -19,6 +22,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from typing_extensions import TypedDict
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
@@ -1290,3 +1294,327 @@ def test_inteiro_grande_do_checkpoint_xlsx_volta_arredondado_e_strict_o_recusa(t
     assert final["nota"][0] == _INTEIRO_GRANDE - 1
     with pytest.raises(ValueError, match="campos incompatíveis"):
         _retoma(df, tmp_path / "NotaEstrita.xlsx", NotaEstrita)
+
+
+# =============================================================================
+# Texto vazio, Literal com None e coleções voltam do checkpoint como gravados
+# =============================================================================
+
+
+def _direta_e_retomada(tmp_path, formato, modelo, resposta):
+    """(saída sem interrupção, saída da retomada, linhas chamadas na retomada).
+
+    A resposta passa pelo model_dump do modelo, como a dos providers. A primeira
+    execução com checkpoint responde a linha "a" e é interrompida na "b", e a
+    retomada pelo mesmo checkpoint só tem a "b" por responder.
+    """
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+
+    def dump(text):
+        return modelo.model_validate(resposta(text)).model_dump()
+
+    chamadas = []
+
+    def responde(text, *args, **kwargs):
+        chamadas.append(text)
+        return {"data": dump(text), "usage": None}
+
+    direta = _roda(df, responde, modelo=modelo)
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(df, _uma_linha_por_execucao(dump), modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+    chamadas.clear()
+    retomada = _roda(df, responde, modelo=modelo, batch_size=1, checkpoint_path=ckpt)
+    return direta, retomada, chamadas
+
+
+class ComPadrao(BaseModel):
+    campo1: str = "padrão"
+
+
+class ComPadraoNone(BaseModel):
+    # O pydantic não valida o default, e o campo str guarda o None dele.
+    campo1: str = None  # ty: ignore[invalid-assignment]
+
+
+class ComOcultoNoDump(BaseModel):
+    campo1: str = Field(default="padrão", exclude=True)
+
+
+class ComFabricaNone(BaseModel):
+    # A fábrica, como o default, não passa pela validação do tipo.
+    campo1: str = Field(default_factory=lambda: None)  # ty: ignore[invalid-assignment]
+
+
+class ComFabricaDosDados(BaseModel):
+    # A fábrica que lê os outros campos só é chamada com eles, na validação.
+    campo1: str = Field(default_factory=lambda dados: None)
+
+
+class ComFabricaPadrao(BaseModel):
+    campo1: str = Field(default_factory=lambda: "padrão")
+
+
+class ComQualquer(BaseModel):
+    # Aceita texto, e também None: a célula vazia é o None da resposta.
+    campo1: Any
+
+
+class Decisao(BaseModel):
+    # A forma do caso relatado, que o lint recusa por estilo.
+    campo1: Literal["NA", "deferido", None]  # noqa: PYI061
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx"])
+@pytest.mark.parametrize(
+    ("modelo", "resposta", "valor"),
+    [
+        (Modelo, {"campo1": ""}, ""),
+        (Modelo, {"campo1": "=1+1"}, "=1+1"),
+        (ComPadrao, {"campo1": ""}, ""),
+        (ModeloOpcional, {"campo1": None}, None),
+        (ComPadraoNone, {}, None),
+        (ComFabricaNone, {}, None),
+        (ComFabricaDosDados, {}, None),
+        (ComFabricaPadrao, {"campo1": ""}, ""),
+        (ComQualquer, {"campo1": None}, None),
+        (ComOcultoNoDump, {"campo1": "x"}, None),
+        (Decisao, {"campo1": "NA"}, "NA"),
+        (Decisao, {"campo1": None}, None),
+    ],
+    ids=[
+        "str-vazio",
+        "str-com-igual",
+        "str-com-padrao-vazio",
+        "opcional-none",
+        "str-com-padrao-none-none",
+        "str-com-fabrica-none-none",
+        "str-com-fabrica-dos-dados-none",
+        "str-com-fabrica-vazio",
+        "qualquer-none",
+        "str-fora-do-dump-none",
+        "literal-com-none-na",
+        "literal-com-none-none",
+    ],
+)
+def test_texto_do_checkpoint_textual_volta_como_a_execucao_o_gravou(
+    tmp_path, formato, modelo, resposta, valor
+):
+    """O texto vazio do campo que não admite None volta vazio, e o None dos demais volta None.
+
+    O CSV e o XLSX gravam "" e None na mesma célula vazia. O "NA" do Literal com
+    None é texto, e o "=1+1" vai ao XLSX como texto, e não como fórmula. O campo
+    com exclude=True não sai no model_dump, e a célula dele fica None.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        modelo,
+        lambda text: resposta if text == "a" else {"campo1": "deferido"},
+    )
+
+    # A coluna do campo fora do dump volta NaN do checkpoint relido, e não None;
+    # o que o teste separa é o texto vazio do ausente.
+    def lidos(saida):
+        return [None if pd.isna(v) else v for v in saida["campo1"]]
+
+    assert chamadas == ["b"]
+    assert lidos(retomada) == lidos(direta)
+    assert lidos(direta)[0] == valor
+
+
+class ComFabricaDoOutro(BaseModel):
+    outro: str
+    campo1: str = Field(default_factory=lambda dados: dados["outro"].upper())
+
+
+@pytest.mark.parametrize(("formato", "valor"), [("csv", "O"), ("xlsx", "O"), ("parquet", "")])
+def test_texto_vazio_do_campo_com_fabrica_dos_dados_vira_o_valor_da_fabrica(
+    tmp_path, formato, valor
+):
+    """O texto vazio do campo cuja fábrica lê os outros campos não é restaurado.
+
+    No CSV e no XLSX, a célula vazia dele conta como ausente, e a retomada a
+    preenche com o valor da fábrica, embora a execução tenha gravado "". O
+    parquet guarda o texto vazio, que volta como foi gravado.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        ComFabricaDoOutro,
+        lambda text: {"outro": "o", "campo1": ""} if text == "a" else {"outro": "x", "campo1": "y"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(direta["campo1"]) == ["", "y"]
+    assert list(retomada["campo1"]) == [valor, "y"]
+
+
+class VazioViraNone(BaseModel):
+    campo1: str
+
+    @field_validator("campo1")
+    @classmethod
+    def vazio_vira_none(cls, valor):
+        return valor or None
+
+
+def test_none_do_campo_textual_volta_none_do_checkpoint_parquet(tmp_path):
+    """O parquet grava o texto vazio e o None à parte, e o None não volta como texto vazio."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        "parquet",
+        ComFabricaNone,
+        lambda text: {} if text == "a" else {"campo1": "deferido"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["campo1"]) == list(direta["campo1"]) == [None, "deferido"]
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_none_do_validador_em_campo_textual_continua_acusado(tmp_path, formato):
+    """O None que o validador põe no campo str é um valor que o tipo do campo recusa.
+
+    A retomada o acusa, como acusa qualquer valor que o modelo não valida, e
+    não o troca pelo texto vazio. No CSV e no XLSX, a célula vazia não é o texto
+    vazio, porque o validador não o devolve como ele é.
+    """
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _direta_e_retomada(
+            tmp_path,
+            formato,
+            VazioViraNone,
+            lambda text: {"campo1": "" if text == "a" else "deferido"},
+        )
+
+
+class NaViraNone(BaseModel):
+    campo1: str
+
+    @field_validator("campo1")
+    @classmethod
+    def na_vira_none(cls, valor):
+        return None if valor == "N/A" else valor
+
+
+def test_none_do_validador_de_outra_resposta_acusado_no_parquet(tmp_path):
+    """O parquet guarda o None que o validador deu ao "N/A", e o tipo str o recusa.
+
+    A célula nula do parquet é o None gravado, e a retomada não a troca pelo
+    texto vazio, que o validador deixaria passar.
+    """
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _direta_e_retomada(
+            tmp_path,
+            "parquet",
+            NaViraNone,
+            lambda text: {"campo1": "N/A" if text == "a" else "deferido"},
+        )
+
+
+class VazioViraTexto(BaseModel):
+    campo1: str
+
+    @field_validator("campo1")
+    @classmethod
+    def troca(cls, valor):
+        return None if valor == "N/A" else (valor or "vazio")
+
+
+def test_texto_vazio_restaurado_que_o_validador_troca_por_texto_e_acusado(tmp_path):
+    """O "" restaurado que a validação devolve como outro texto não é o que a execução gravou.
+
+    A execução gravou o None do "N/A". O "" restaurado vira "vazio" no
+    validador, e a célula vazia não pode ter sido esse "", que a execução
+    teria gravado como "vazio".
+    """
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _direta_e_retomada(
+            tmp_path,
+            "csv",
+            VazioViraTexto,
+            lambda text: {"campo1": "N/A" if text == "a" else "deferido"},
+        )
+
+
+class Autoria(TypedDict):
+    autor: str
+    ano: int
+
+
+class Ponto(NamedTuple):
+    x: int
+    rotulo: str
+
+
+class ComSequencia(BaseModel):
+    itens: Sequence[str]
+
+
+class ComConjunto(BaseModel):
+    itens: set[str]
+
+
+class ComConjuntoAbstrato(BaseModel):
+    itens: AbstractSet[str]
+
+
+class ComTypedDict(BaseModel):
+    itens: Autoria
+
+
+class ComMapping(BaseModel):
+    itens: Mapping[str, int]
+
+
+class ComNamedTuple(BaseModel):
+    itens: Ponto
+
+
+class ComConjuntoNoDict(BaseModel):
+    itens: dict[str, set[str]]
+
+
+_COLECOES = {
+    ComSequencia: lambda text: [text, "z"],
+    ComConjunto: lambda text: {text, "z"},
+    ComConjuntoAbstrato: lambda text: {text, "z"},
+    ComTypedDict: lambda text: {"autor": text, "ano": 2024},
+    ComMapping: lambda text: {text: 1},
+    ComNamedTuple: lambda text: (1, text),
+    ComConjuntoNoDict: lambda text: {"partes": {text, "z"}},
+}
+
+
+def _com_tipos(valor):
+    """O valor com o tipo de cada parte, que a igualdade do Python não separa: 1 == 1.0."""
+    if isinstance(valor, (set, frozenset)):
+        return type(valor).__name__, sorted(map(_com_tipos, valor), key=repr)
+    if isinstance(valor, dict):
+        return type(valor).__name__, [(_com_tipos(k), _com_tipos(v)) for k, v in valor.items()]
+    if isinstance(valor, (list, tuple)):
+        return type(valor).__name__, [_com_tipos(v) for v in valor]
+    return type(valor).__name__, valor
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize("modelo", list(_COLECOES), ids=lambda modelo: modelo.__name__)
+def test_colecao_volta_do_checkpoint_com_o_valor_e_o_tipo_gravados(tmp_path, formato, modelo):
+    """Sequence, conjunto, TypedDict, Mapping e NamedTuple são estruturas do checkpoint.
+
+    O checkpoint as grava em JSON, e a retomada as devolve ao tipo do campo,
+    inclusive nas partes: o parquet gravaria o dict como struct e relê o int dele
+    como float.
+    """
+    resposta = _COLECOES[modelo]
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, modelo, lambda text: {"itens": resposta(text)}
+    )
+
+    assert chamadas == ["b"]
+    assert [_com_tipos(v) for v in retomada["itens"]] == [_com_tipos(v) for v in direta["itens"]]
