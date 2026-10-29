@@ -1504,6 +1504,31 @@ def test_none_do_validador_de_outra_resposta_acusado_no_parquet(tmp_path):
         )
 
 
+class VazioViraTexto(BaseModel):
+    campo1: str
+
+    @field_validator("campo1")
+    @classmethod
+    def troca(cls, valor):
+        return None if valor == "N/A" else (valor or "vazio")
+
+
+def test_texto_vazio_restaurado_que_o_validador_troca_por_texto_e_acusado(tmp_path):
+    """O "" restaurado que a validação devolve como outro texto não é o que a execução gravou.
+
+    A execução gravou o None do "N/A". O "" restaurado vira "vazio" no
+    validador, e a célula vazia não pode ter sido esse "", que a execução
+    teria gravado como "vazio".
+    """
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _direta_e_retomada(
+            tmp_path,
+            "csv",
+            VazioViraTexto,
+            lambda text: {"campo1": "N/A" if text == "a" else "deferido"},
+        )
+
+
 class Autoria(TypedDict):
     autor: str
     ano: int
