@@ -71,7 +71,7 @@ Automatic retry with exponential backoff, configurable rate limiting and periodi
 
 ### Performance
 
-Parallel processing with auto-adjustment. Real-time throughput metrics.
+Parallel processing that reduces the workers on rate limits. With `parallel_requests > 1`, the summary at the end of the run includes throughput metrics.
 </div>
 
 <div class="feature-card" markdown>
@@ -87,7 +87,7 @@ Tavily or Exa to enrich data with information from the internet, with per-field 
 
 ### Multiple Inputs
 
-pandas or Polars DataFrame and Series, list and dictionary. The output comes back in the same format as the input.
+pandas or Polars DataFrame and Series, list and dictionary. The output is a DataFrame, a Polars one when the input is Polars.
 </div>
 
 </div>
@@ -98,7 +98,7 @@ pandas or Polars DataFrame and Series, list and dictionary. The output comes bac
 pip install dataframeit[openai]     # OpenAI (default provider)
 pip install dataframeit[google]     # Google Gemini
 pip install dataframeit[anthropic]  # Anthropic
-pip install dataframeit[all]        # all providers, web search, Polars and Excel
+pip install dataframeit[all]        # providers with an extra except Codex, plus web search, Polars and Excel
 ```
 
 ## Next Steps
