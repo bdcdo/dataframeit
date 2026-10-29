@@ -26,7 +26,11 @@ from types import CodeType, MethodType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, overload
 
 import pandas as pd
-from pandas.api.types import is_bool, is_scalar
+from pandas.api.types import infer_dtype, is_bool, is_scalar
+
+# O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
+# `__getattr__` que o checker de tipos lê como `object`.
+from pandas.core.util.hashing import hash_pandas_object
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from tqdm import tqdm
 
@@ -71,6 +75,7 @@ from .utils import (
     accepts_only_text,
     from_pandas,
     get_complex_fields,
+    get_nested_pydantic_models,
     normalize_complex_columns,
     normalize_value,
     read_df,
@@ -2129,31 +2134,50 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
 
 
 def _has_unstable_extra(questions: type[BaseModel]) -> bool:
-    """Se o json_schema_extra de algum campo, inclusive aninhado, tem função ou conjunto.
+    """Se o json_schema_extra de um campo ou de um model_config tem o que não é JSON.
 
-    Com eles, o JSON Schema não serve de assinatura: a função faz
-    model_json_schema() falhar, e o fallback leva o endereço dela; o conjunto vira
-    lista na ordem de iteração, que muda com a semente de hash do processo. Os
-    outros modelos ficam com o JSON Schema, e a assinatura deles é a mesma do
-    checkpoint já gravado com eles.
+    Contam os campos e os modelos, inclusive aninhados. Com função, conjunto ou
+    contêiner que contém a si mesmo, o JSON Schema não serve de assinatura: a
+    função faz model_json_schema() falhar, e o fallback leva o endereço dela; o
+    conjunto vira lista na ordem de iteração, que muda com a semente de hash do
+    processo, também quando o Pydantic o deixa cru no schema, como faz com o do
+    model_config; e o ciclo derruba o json.dumps. Os outros modelos ficam com o
+    JSON Schema, e a assinatura deles é a mesma do checkpoint já gravado com eles.
     """
-    return any(
-        isinstance(field_info.json_schema_extra, dict)
-        and _outside_json(field_info.json_schema_extra)
-        for _, field_info, _ in _walk_fields(questions)
-    )
+    fields = [field_info for _, field_info, _ in _walk_fields(questions)]
+    models = [
+        questions,
+        *(
+            model
+            for field_info in fields
+            for model in get_nested_pydantic_models(field_info.annotation)
+        ),
+    ]
+    extras = [field_info.json_schema_extra for field_info in fields] + [
+        model.model_config.get("json_schema_extra") for model in models
+    ]
+    return any(isinstance(extra, dict) and _outside_json(extra) for extra in extras)
 
 
-def _outside_json(value: object) -> bool:
-    if isinstance(value, dict):
-        return any(_outside_json(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_outside_json(item) for item in value)
+def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
+    # O chamável vem antes do contêiner: o NamedTuple ou a subclasse de dict com
+    # `__call__` é lido pelo código, e ler só os itens deixaria o modelo no JSON
+    # Schema, que não leva o código; a iteração ainda passaria pelo `__iter__`
+    # da classe do usuário.
+    if callable(value):
+        return True
+    if isinstance(value, (dict, list, tuple)):
+        # `path` traz os contêineres abertos acima deste: o que reaparece nele
+        # contém a si mesmo, o que o JSON não representa.
+        if id(value) in path:
+            return True
+        items = value.values() if isinstance(value, dict) else value
+        return any(_outside_json(item, path | {id(value)}) for item in items)
     if isinstance(value, (set, frozenset)):
         # O hash do inteiro é o próprio valor: o conjunto só de inteiros itera na
         # mesma ordem em todo processo, e o JSON Schema dele é estável.
         return not all(isinstance(item, int) for item in value)
-    return callable(value)
+    return False
 
 
 # Atributos do campo na forma canônica: os que o JSON Schema levaria ao LLM e a
@@ -2180,7 +2204,6 @@ def _schema_form(questions: type[BaseModel]) -> object:
     Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
     e o chamável entram pelo que `_schema_leaf` tira deles.
     """
-    leaf = partial(_schema_leaf, descent=_Descent())
     return _stable(
         {
             "model": questions,
@@ -2192,7 +2215,7 @@ def _schema_form(questions: type[BaseModel]) -> object:
                 for path, field_info, _ in _walk_fields(questions)
             },
         },
-        leaf,
+        _Descent(),
     )
 
 
@@ -2204,13 +2227,20 @@ class _Descent:
     menor profundidade a que um marcador de ciclo da subárvore dele apontou.
     `forms` guarda a forma do objeto cuja subárvore não apontou para ele nem para
     cima dele, ao lado do próprio objeto, para que o `id` não passe a outro
-    objeto enquanto a assinatura dura.
+    objeto enquanto a assinatura dura. `containers` traz o `id` dos contêineres
+    abertos desde o objeto aberto mais fundo (ver `_stable`).
+
+    `leaves` diz se a folha passa por `_schema_leaf`. Na forma canônica, sim;
+    no `_stable` chamado sem descida, como o dos `model_kwargs`, a folha fica
+    como veio, e a descida serve só à guarda de ciclo dos contêineres.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, leaves: bool = True) -> None:
+        self.leaves = leaves
         self.depth: dict[int, int] = {}
         self.lowest: list[int] = []
         self.forms: dict[int, tuple[object, object]] = {}
+        self.containers: set[int] = set()
 
     def reach(self, depth: int) -> None:
         """Registra, no objeto aberto mais fundo, um marcador que aponta para `depth`."""
@@ -2223,11 +2253,10 @@ def _schema_leaf(value: object, descent: _Descent) -> object:
 
     O que não é tipo vai a `_callable_leaf`.
     """
-    leaf = partial(_schema_leaf, descent=descent)
     if get_origin(value) is not None:
         return {
-            "origin": leaf(get_origin(value)),
-            "args": _stable(get_args(value), leaf),
+            "origin": _schema_leaf(get_origin(value), descent),
+            "args": _stable(get_args(value), descent),
         }
     if isinstance(value, type) and issubclass(value, BaseModel):
         # Os campos dele já entram pelo caminho; aqui, o que o JSON Schema tiraria
@@ -2235,12 +2264,12 @@ def _schema_leaf(value: object, descent: _Descent) -> object:
         return {
             "model": value.__name__,
             "doc": value.__doc__,
-            "config": _stable(value.model_config, leaf),
+            "config": _stable(value.model_config, descent),
         }
     if isinstance(value, type) and issubclass(value, Enum):
         return {
             "enum": value.__name__,
-            "members": _stable({member.name: member.value for member in value}, leaf),
+            "members": _stable({member.name: member.value for member in value}, descent),
         }
     if isinstance(value, type):
         return value.__name__
@@ -2259,7 +2288,6 @@ def _callable_leaf(value: object, descent: _Descent) -> object:
     como a função embutida, fica para o `default` do json.dumps em
     `_run_signature`, que tira o endereço do repr.
     """
-    leaf = partial(_schema_leaf, descent=descent)
     # Antes do ramo da função: o método ligado repassa o `__code__` da função, e
     # por ele entraria sem o dono, que guarda o que a condição compara.
     if isinstance(value, MethodType):
@@ -2272,22 +2300,30 @@ def _callable_leaf(value: object, descent: _Descent) -> object:
         return _callable_leaf(value.__func__, descent)
     if isinstance(value, partial):
         return {
-            "partial": leaf(value.func),
-            "args": _stable(value.args, leaf),
-            "keywords": _stable(value.keywords, leaf),
+            "partial": _schema_leaf(value.func, descent),
+            "args": _stable(value.args, descent),
+            "keywords": _stable(value.keywords, descent),
         }
     code = _attribute_or_none(value, "__code__")
     if isinstance(code, CodeType):
         return {"function": _attribute_or_none(value, "__qualname__"), "code": _code_form(code)}
-    # Só o __call__ escrito em Python: o da classe embutida é outro chamável sem
-    # código, e descer nele não terminaria.
-    call = type(value).__call__ if callable(value) else None
-    if isinstance(getattr(call, "__code__", None), CodeType):
+    call = _python_call(value)
+    if call is not None:
         return {
             "callable": _callable_leaf(call, descent),
             "state": _instance_state(value, descent),
         }
     return value
+
+
+def _python_call(value: object) -> object | None:
+    """O `__call__` da classe do valor, quando escrito em Python; None no resto.
+
+    O `__call__` da classe embutida é outro chamável sem código, e descer nele
+    não terminaria.
+    """
+    call = type(value).__call__ if callable(value) else None
+    return call if isinstance(getattr(call, "__code__", None), CodeType) else None
 
 
 def _instance_state(value: object, descent: _Descent) -> object:
@@ -2317,17 +2353,57 @@ def _instance_state(value: object, descent: _Descent) -> object:
     depth = len(descent.depth)
     descent.depth[key] = depth
     descent.lowest.append(depth + 1)
+    # O estado do objeto abre um trecho novo de contêineres (ver `_stable`).
+    outer, descent.containers = descent.containers, set()
     # No objeto só com `__slots__`, o nome `__dict__` cai no `__getattr__` da
     # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
     own = _attribute_or_none(value, "__dict__")
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
-    form = _stable(state, partial(_schema_leaf, descent=descent))
+    form = _stable(state, descent)
+    builtin = _builtin_value(value)
+    if builtin is not None:
+        form = {"value": _stable(builtin, descent), "state": form}
+    descent.containers = outer
     del descent.depth[key]
     lowest = descent.lowest.pop()
     descent.reach(lowest)
     if lowest > depth:
         descent.forms[key] = (value, form)
     return form
+
+
+# Tipos embutidos cujo valor a subclasse guarda fora do `__dict__` e dos
+# `__slots__`, como o 5 de `Limite(5)` ou a tupla de um NamedTuple.
+_BUILTIN_VALUE_TYPES = (
+    int,
+    float,
+    complex,
+    str,
+    bytes,
+    bytearray,
+    tuple,
+    list,
+    dict,
+    set,
+    frozenset,
+)
+
+
+def _builtin_value(value: object) -> object:
+    """O valor de tipo embutido da instância de subclasse dele; None no resto.
+
+    Sai pelo construtor da classe embutida mais próxima na MRO (`int(self)`,
+    `tuple(self)`). O construtor passa pelo `__int__` ou pelo `__iter__` que a
+    subclasse redefina, e a exceção dele deixa o valor de fora, como o atributo
+    que não se lê (ver `_attribute_or_none`).
+    """
+    base = next((cls for cls in type(value).__mro__ if cls in _BUILTIN_VALUE_TYPES), None)
+    if base is None:
+        return None
+    try:
+        return base(value)
+    except Exception:  # noqa: BLE001 (ver a docstring)
+        return None
 
 
 def _attribute_or_none(value: object, name: str) -> object:
@@ -2396,21 +2472,84 @@ def _code_form(code: CodeType) -> list[object]:
     ]
 
 
-def _stable(value: object, leaf: Callable[[object], object] | None = None) -> object:
+_CONTAINERS = (dict, list, tuple, set, frozenset, pd.DataFrame, pd.Series)
+
+
+def _stable(value: object, descent: _Descent | None = None) -> object:
     """Forma que serializa igual em qualquer processo.
 
     Chaves de dict viram texto, para ordenar dict com chaves int e str juntas, e
     conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
-    semente de hash do processo. `leaf` converte o que não é dict, lista, tupla
-    nem conjunto; sem ele, o valor fica como está.
+    semente de hash do processo. O DataFrame e a Series entram por `_table_form`.
+    Com `descent`, o que não é contêiner passa por `_schema_leaf`; sem ele, fica
+    como está.
+
+    O contêiner que já está aberto no caminho entra por um marcador com o nome
+    da classe, sem o endereço. O caminho guardado é só o trecho desde o objeto
+    aberto mais fundo, que `_instance_state` recomeça. Assim, o ciclo que passa
+    por um objeto é marcado no objeto, pela regra de `_instance_state`, e o
+    marcador do contêiner só aparece no ciclo feito só de contêineres (ou de
+    contêineres e partials). Ele aponta sempre para dentro do estado do objeto
+    mais fundo, e por isso não decide se a forma desse objeto é reaproveitada.
     """
+    if descent is None:
+        descent = _Descent(leaves=False)
+    # O chamável vem antes do contêiner: o NamedTuple com `__call__` entraria
+    # pela lista dos valores, sem o código, e a subclasse de dict, só pelos itens.
+    # `_callable_leaf` o lê pelo `__call__` e pelo valor embutido ao lado do estado.
+    if not isinstance(value, _CONTAINERS) or (descent.leaves and _python_call(value) is not None):
+        return _schema_leaf(value, descent) if descent.leaves else value
+    key = id(value)
+    if key in descent.containers:
+        return {"cycle": type(value).__name__}
+    descent.containers.add(key)
     if isinstance(value, dict):
-        return {str(key): _stable(item, leaf) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_stable(item, leaf) for item in value]
-    if isinstance(value, (set, frozenset)):
-        return sorted((_stable(item, leaf) for item in value), key=_stable_repr)
-    return value if leaf is None else leaf(value)
+        form: object = {str(name): _stable(item, descent) for name, item in value.items()}
+    elif isinstance(value, (set, frozenset)):
+        form = sorted((_stable(item, descent) for item in value), key=_stable_repr)
+    elif isinstance(value, (pd.DataFrame, pd.Series)):
+        form = _table_form(value, descent)
+    else:
+        form = [_stable(item, descent) for item in value]
+    descent.containers.remove(key)
+    return form
+
+
+def _table_form(value: pd.DataFrame | pd.Series, descent: _Descent) -> object:
+    """DataFrame ou Series pelo conteúdo inteiro, pelo índice e pelos nomes e tipos.
+
+    O repr do pandas mostra só as primeiras e as últimas linhas, e a mudança
+    numa célula do meio não apareceria nele.
+    """
+    columns = list(value.items()) if isinstance(value, pd.DataFrame) else [(value.name, value)]
+    return {
+        "table": type(value).__name__,
+        "index": [
+            _stable(list(value.index.names), descent),
+            _column_cells(value.index.to_series(), descent),
+        ],
+        "columns": [
+            [_stable(label, descent), str(column.dtype), _column_cells(column, descent)]
+            for label, column in columns
+        ],
+    }
+
+
+def _column_cells(column: pd.Series, descent: _Descent) -> object:
+    """Células da coluna, na ordem, por um valor que não muda de um processo a outro.
+
+    A coluna de número, data ou texto entra pelo `hash_pandas_object`, que lê
+    toda célula, a custo linear, com chave fixa: o resultado é o mesmo em todo
+    processo. A coluna com outros objetos entra pelas células na forma canônica,
+    a mesma do resto da assinatura. O pandas não as lê: com lista ou conjunto na
+    célula ele levanta, e com outro objeto ele o converte por `str()`, que
+    escreve o conjunto na ordem de iteração e leva o endereço do objeto. O
+    `to_json` também escreve o conjunto na ordem de iteração, e o repr é truncado.
+    """
+    if column.dtype.kind not in "biufcmM" and infer_dtype(column, skipna=True) != "string":
+        return _stable(column.tolist(), descent)
+    cells = hash_pandas_object(column, index=False).to_numpy()
+    return hashlib.sha256(cells.tobytes()).hexdigest()
 
 
 def _stable_repr(value: object) -> str:

@@ -952,3 +952,473 @@ def test_objeto_classmethod_em_chave_livre_assina_pelo_codigo():
     depois = classmethod(_funcao(_REGRA.replace("==", "!="), "regra"))
 
     assert _assinatura(_com_extra(antes)) != _assinatura(_com_extra(depois))
+
+
+# Forma canônica de modelos que não caem nos casos da guarda de ciclo dos
+# contêineres, do valor da subclasse de tipo embutido, da folha do DataFrame nem
+# do model_config: as assinaturas foram medidas antes dessas mudanças, e o
+# checkpoint já gravado com esses modelos continua sendo retomado. O código da
+# função entra pelo `_code_form`, cujo bytecode muda de uma versão menor do
+# Python para outra; no teste ele vira um marcador fixo, e o que se fixa é o
+# resto da forma canônica, igual em toda versão. Nenhum campo é união, cujo nome
+# do tipo também muda com a versão.
+_FORMAS_FIXADAS = """
+import functools
+from typing import NamedTuple
+
+from pydantic import BaseModel, Field
+
+from dataframeit import field_condition
+
+
+class Regra:
+    def __init__(self, alvo):
+        self.alvo = alvo
+
+    def __call__(self, d):
+        return d.get("tipo") == self.alvo
+
+
+class Par(NamedTuple):
+    nome: str
+    peso: int
+
+
+def regra(d, alvo="vip"):
+    return d.get("tipo") == alvo
+
+
+def com(alvo="vip", **atributos):
+    instancia = Regra(alvo)
+    for nome, valor in atributos.items():
+        setattr(instancia, nome, valor)
+    return instancia
+
+
+def auto_referente():
+    instancia = com()
+    instancia.eu = instancia
+    return instancia
+
+
+def registro(n):
+    todas = []
+    for i in range(n):
+        todas.append(com(f"r{i}", todas=todas))
+    return todas[0]
+
+
+def dag(profundidade):
+    no = com("folha")
+    for _ in range(profundidade):
+        no = com("z", a=no, b=no)
+    return no
+
+
+def pedido(condicao):
+    class Pedido(BaseModel):
+        tipo: str
+        desconto: float = Field(
+            default=0.0, json_schema_extra=field_condition(condicao, depends_on="tipo")
+        )
+
+    return Pedido
+
+
+CONDICOES = {
+    "lambda": lambda d: d.get("tipo") == "vip",
+    "funcao": regra,
+    "partial": functools.partial(regra, alvo="vip"),
+    "objeto": com(),
+    "estado-com-contêineres": com(
+        par=Par("vip", 1), tipos=frozenset({"vip", "ouro"}), mapa={"a": [1, (2, 3)]}
+    ),
+    "metodo": com().__call__,
+    "auto-referente": auto_referente(),
+    "registro": registro(3),
+    "dag": dag(3),
+}
+MODELOS = {nome: pedido(condicao) for nome, condicao in CONDICOES.items()}
+"""
+
+
+@pytest.mark.parametrize(
+    ("nome", "esperada"),
+    [
+        ("lambda", "186aebcd5c34ef47ed45d9276961ddc3be0f17f218239fb3de92425dbe10a03a"),
+        ("funcao", "ca7579a2d88491b4d18eaf55b137ba0f863bac6a98e513df0d4a134aeeeb83ce"),
+        ("partial", "928be25f8ae5d0f02f04908a9758ea493f8187c4d711baa9cc67c318377b6cc2"),
+        ("objeto", "dacf623d408ebec62e8083da0143068569e1d275b7ff730f026ccc998d04f805"),
+        (
+            "estado-com-contêineres",
+            "e40160f9f02442b84a932bb155c31b3489487834038c77861974a3d07e173add",
+        ),
+        ("metodo", "226eb8f15c1c2ee16ae1b0f9816d11dc59a02041dbdaed057061a52486a5d9cf"),
+        ("auto-referente", "513f026cd38d6ff2fe5c19deb787ee5373479204bca0777e1ae6ed70a2fff90b"),
+        ("registro", "ba7fd7407d7949ea895b233b30e149676f56a7d85168d06de451403826375f82"),
+        ("dag", "e858f56986938f8f25a97f171ff9f314821028b2cf8a17df0efe144f37b65e62"),
+    ],
+)
+def test_forma_canonica_sem_os_casos_novos_mantem_a_assinatura(monkeypatch, nome, esperada):
+    monkeypatch.setattr(core, "_code_form", lambda _codigo: "codigo")
+
+    assert _assinatura(_funcao(_FORMAS_FIXADAS, "MODELOS")[nome]) == esperada
+
+
+# Contêiner que volta a si mesmo sem objeto no caminho que a guarda do objeto
+# pegaria: a lista e o dict que contêm a si mesmos, a tupla que volta a si pela
+# lista de dentro, a lista que volta a si pelos argumentos de um partial e a
+# subclasse chamável de lista que contém a si mesma. A condição lê o contêiner,
+# e o que está ao lado do ciclo continua contando.
+_CONTEINERES_COM_CICLO = """
+import functools
+
+
+class Regra:
+    def __init__(self, estado):
+        self.estado = estado
+
+    def __call__(self, d):
+        return d.get("tipo") in self.estado
+
+
+class Fila(list):
+    def __call__(self, d):
+        return d.get("tipo") in self
+
+
+def lista(alvo):
+    itens = [alvo]
+    itens.append(itens)
+    return Regra(itens)
+
+
+def mapa(alvo):
+    itens = {alvo: True}
+    itens["eu"] = itens
+    return Regra(itens)
+
+
+def tupla(alvo):
+    dentro = [alvo]
+    itens = (alvo, dentro)
+    dentro.append(itens)
+    return Regra(itens)
+
+
+def parcial(alvo):
+    itens = [alvo]
+    itens.append(functools.partial(max, itens))
+    return Regra(itens)
+
+
+def fila(alvo):
+    itens = Fila([alvo])
+    itens.append(itens)
+    return itens
+
+
+CONSTRUTORES = {"lista": lista, "mapa": mapa, "tupla": tupla, "parcial": parcial, "fila": fila}
+"""
+
+
+def test_conteiner_que_contem_a_si_no_estado_assina_sem_recursao_e_igual_entre_sementes():
+    """O contêiner reencontrado no caminho entra por um marcador, sem o endereço."""
+    _assinaturas_em_tres_sementes(
+        _CONTEINERES_COM_CICLO, "{nome: montar('vip') for nome, montar in CONSTRUTORES.items()}"
+    )
+
+
+@pytest.mark.parametrize("construtor", ["lista", "mapa", "tupla", "parcial", "fila"])
+def test_mudanca_ao_lado_do_conteiner_com_ciclo_muda_a_assinatura(construtor):
+    montar = _funcao(_CONTEINERES_COM_CICLO, "CONSTRUTORES")[construtor]
+
+    assert _assinatura(_pedido(montar("vip"))) != _assinatura(_pedido(montar("ouro")))
+
+
+def _contem_a_si(alvo):
+    valor: dict[str, Any] = {"alvo": alvo}
+    valor["eu"] = valor
+    return valor
+
+
+def test_json_schema_extra_e_model_kwargs_que_contem_a_si_assinam_sem_recursao():
+    """O ciclo não cabe no JSON Schema: o modelo vai à forma canônica, que o marca."""
+
+    def modelo(alvo):
+        class Pedido(BaseModel):
+            tipo: str = Field(json_schema_extra=_contem_a_si(alvo))
+
+        return Pedido
+
+    def com_model_kwargs(alvo):
+        return _run_signature(
+            Modelo,
+            "{texto}",
+            provider="openai",
+            model="m",
+            model_kwargs=_contem_a_si(alvo),
+            search_config=None,
+            text_column="texto",
+            status_col="_dataframeit_status",
+        )
+
+    assert _assinatura(modelo("vip")) == _assinatura(modelo("vip")) != _assinatura(modelo("ouro"))
+    assert com_model_kwargs("vip") == com_model_kwargs("vip") != com_model_kwargs("ouro")
+
+
+# Subclasse chamável de tipo embutido: o valor dela (o inteiro, o texto, o
+# conjunto, o dict, a tupla do NamedTuple) fica fora do __dict__ e dos
+# __slots__, e o NamedTuple seria lido como tupla, sem o __call__. A classe do
+# NamedTuple é compilada de novo a cada variação, com o mesmo nome qualificado.
+_EMBUTIDOS = '''
+from typing import NamedTuple
+
+FONTE = """
+class Corte(NamedTuple):
+    limite: int
+
+    def __call__(self, d):
+        return d.get("valor", 0) > self.limite
+
+    def acima(self, d):
+        return d.get("valor", 0) > self.limite
+"""
+
+
+def corte(limite, operador=">"):
+    espaco = {"NamedTuple": NamedTuple}
+    exec(FONTE.replace(">", operador), espaco)
+    return espaco["Corte"](limite)
+
+
+class Limite(int):
+    def __call__(self, d):
+        return d.get("valor", 0) > self
+
+
+class Rotulo(str):
+    def __call__(self, d):
+        return d.get("tipo") == self
+
+
+class Tipos(frozenset):
+    def __call__(self, d):
+        return d.get("tipo") in self
+
+
+class Tabela(dict):
+    def __call__(self, d):
+        return self.get(d.get("tipo"), False)
+
+
+TIPOS = {"vip", "ouro", "prata", "bronze"}
+VARIACOES = {
+    "int": lambda: Limite(5),
+    "int-mudado": lambda: Limite(10),
+    "str": lambda: Rotulo("vip"),
+    "str-mudado": lambda: Rotulo("ouro"),
+    "frozenset": lambda: Tipos(TIPOS),
+    "frozenset-mudado": lambda: Tipos(TIPOS | {"lata"}),
+    "dict": lambda: Tabela(vip=True),
+    "dict-mudado": lambda: Tabela(ouro=True),
+    "namedtuple": lambda: corte(5),
+    "namedtuple-valor-mudado": lambda: corte(10),
+    "namedtuple-call-mudado": lambda: corte(5, "<"),
+    "metodo-de-namedtuple": lambda: corte(5).acima,
+    "metodo-de-namedtuple-mudado": lambda: corte(10).acima,
+}
+'''
+
+
+def _so_a_condicao(condicao):
+    """Modelo só com a condição, como o do caso relatado: nada mais o leva à forma canônica."""
+
+    class Pedido(BaseModel):
+        valor: int
+        desconto: float | None = Field(
+            default=None, json_schema_extra=field_condition(condicao, depends_on="valor")
+        )
+
+    return Pedido
+
+
+def test_subclasse_chamavel_de_tipo_embutido_assina_igual_entre_sementes():
+    _assinaturas_em_tres_sementes(
+        _EMBUTIDOS, "{nome: montar() for nome, montar in VARIACOES.items()}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("antes", "depois"),
+    [
+        ("int", "int-mudado"),
+        ("str", "str-mudado"),
+        ("frozenset", "frozenset-mudado"),
+        ("dict", "dict-mudado"),
+        ("namedtuple", "namedtuple-valor-mudado"),
+        ("namedtuple", "namedtuple-call-mudado"),
+        ("metodo-de-namedtuple", "metodo-de-namedtuple-mudado"),
+    ],
+)
+def test_mudanca_no_valor_ou_no_call_da_subclasse_de_tipo_embutido_muda_a_assinatura(antes, depois):
+    """O chamável entra pelo código do __call__ e pelo valor embutido, ao lado do estado."""
+    variacoes = _funcao(_EMBUTIDOS, "VARIACOES")
+
+    assert _assinatura(_so_a_condicao(variacoes[antes]())) != _assinatura(
+        _so_a_condicao(variacoes[depois]())
+    )
+
+
+def test_valor_embutido_que_levanta_ao_ser_lido_fica_de_fora():
+    """A assinatura não pode levantar: o valor que não se lê fica de fora, como o atributo."""
+
+    class Quebrada(tuple):
+        __slots__ = ()
+
+        def __iter__(self):
+            msg = "sem iteração"
+            raise RuntimeError(msg)
+
+        def __call__(self, d):
+            return d.get("valor", 0) > 1
+
+    assert _assinatura(_so_a_condicao(Quebrada((1,)))) == _assinatura(
+        _so_a_condicao(Quebrada((2,)))
+    )
+
+
+# DataFrame e Series do pandas no estado do objeto chamável. O repr do pandas
+# mostra só as primeiras e as últimas linhas, e a célula do meio tem de contar.
+_TABELAS = """
+import pandas as pd
+
+
+class Regra:
+    def __init__(self, tabela):
+        self.tabela = tabela
+
+    def __call__(self, d):
+        return d.get("tipo") in set(self.tabela["tipo"])
+
+
+def tabela(linha=None, valor="ouro", **opcoes):
+    df = pd.DataFrame({"tipo": ["vip"] * 100_000}, **opcoes)
+    if linha is not None:
+        df.loc[linha, "tipo"] = valor
+    return df
+
+
+def listas(meio=("vip",)):
+    celulas = [["vip"]] * 1_000
+    celulas[500] = list(meio)
+    return pd.DataFrame({"tipo": celulas})
+
+
+TIPOS = {"vip", "ouro", "prata", "bronze"}
+PARES = {
+    "linha-do-meio": (lambda: tabela(), lambda: tabela(50_000)),
+    "linha-do-meio-em-coluna-de-objeto": (
+        lambda: tabela(dtype=object), lambda: tabela(50_000, dtype=object)
+    ),
+    "linha-do-meio-da-series": (lambda: tabela()["tipo"], lambda: tabela(50_000)["tipo"]),
+    "nome-da-series": (lambda: tabela()["tipo"], lambda: tabela()["tipo"].rename("classe")),
+    "nome-da-coluna": (lambda: tabela(), lambda: tabela().rename(columns={"tipo": "classe"})),
+    "tipo-da-coluna": (
+        lambda: pd.DataFrame({"tipo": [1, 2]}), lambda: pd.DataFrame({"tipo": [1.0, 2.0]})
+    ),
+    "indice": (lambda: tabela(), lambda: tabela().set_axis(pd.RangeIndex(1, 100_001))),
+    "ordem-das-linhas": (
+        lambda: pd.DataFrame({"tipo": ["vip", "ouro"]}, index=[0, 0]),
+        lambda: pd.DataFrame({"tipo": ["ouro", "vip"]}, index=[0, 0]),
+    ),
+    "lista-na-celula-do-meio": (lambda: listas(), lambda: listas(("ouro",))),
+}
+ESTAVEIS = {
+    "texto": tabela(),
+    "objeto": tabela(dtype=object),
+    "series": tabela()["tipo"],
+    "conjunto-na-celula": pd.DataFrame({"tipo": [TIPOS] * 3, "nota": [1.5, None, 2.0]}),
+    "indice-de-pares": tabela().iloc[:4].set_axis(pd.MultiIndex.from_tuples([("a", 1), ("a", 2), ("b", 1), ("b", 2)])),
+}
+"""
+
+
+def test_tabela_no_estado_assina_igual_entre_sementes():
+    """O hash do pandas tem chave fixa, e o conjunto na célula entra em ordem."""
+    _assinaturas_em_tres_sementes(
+        _TABELAS, "{nome: Regra(tabela) for nome, tabela in ESTAVEIS.items()}"
+    )
+
+
+@pytest.mark.parametrize(
+    "par",
+    [
+        "linha-do-meio",
+        "linha-do-meio-em-coluna-de-objeto",
+        "linha-do-meio-da-series",
+        "nome-da-series",
+        "nome-da-coluna",
+        "tipo-da-coluna",
+        "indice",
+        "ordem-das-linhas",
+        "lista-na-celula-do-meio",
+    ],
+)
+def test_mudanca_em_qualquer_celula_ou_rotulo_da_tabela_muda_a_assinatura(par):
+    """A tabela entra por todas as células, pelo índice e pelos nomes e tipos das colunas."""
+    regra = _funcao(_TABELAS, "Regra")
+    antes, depois = _funcao(_TABELAS, "PARES")[par]
+
+    assert _assinatura(_pedido(regra(antes()))) != _assinatura(_pedido(regra(depois())))
+
+
+# Conjunto de texto no json_schema_extra do model_config, na raiz, num modelo
+# aninhado e no item de uma lista de modelo. O Pydantic deixa o conjunto cru no
+# JSON Schema, e o modelo vai à forma canônica, que o ordena.
+_CONFIG_COM_CONJUNTO = """
+from pydantic import ConfigDict
+
+EXEMPLOS = {"centro", "mooca", "liberdade", "lapa", "se", "bras"}
+
+
+def raiz(exemplos=EXEMPLOS):
+    class Bairro(BaseModel):
+        model_config = ConfigDict(json_schema_extra={"exemplos": exemplos})
+
+        nome: str
+
+    return Bairro
+
+
+def aninhado(exemplos=EXEMPLOS):
+    class Cadastro(BaseModel):
+        bairro: raiz(exemplos) | None = None
+
+    return Cadastro
+
+
+def lista(exemplos=EXEMPLOS):
+    class Roteiro(BaseModel):
+        paradas: list[raiz(exemplos)] = []
+
+    return Roteiro
+
+
+CONSTRUTORES = {"raiz": raiz, "aninhado": aninhado, "lista": lista}
+"""
+
+
+def test_conjunto_no_model_config_assina_igual_entre_sementes():
+    _assinaturas_em_tres_sementes(
+        _CONFIG_COM_CONJUNTO, "{nome: montar() for nome, montar in CONSTRUTORES.items()}"
+    )
+
+
+@pytest.mark.parametrize("construtor", ["raiz", "aninhado", "lista"])
+def test_mudanca_no_conjunto_do_model_config_muda_a_assinatura(construtor):
+    montar = _funcao("from pydantic import BaseModel\n" + _CONFIG_COM_CONJUNTO, "CONSTRUTORES")[
+        construtor
+    ]
+
+    assert _assinatura(montar({"centro", "mooca"})) != _assinatura(montar({"centro", "lapa"}))
