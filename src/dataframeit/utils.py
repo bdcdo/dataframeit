@@ -1206,7 +1206,10 @@ def is_list_of_pydantic_model(field_type: object) -> tuple:
     volta do item: `Optional[Annotated[list[Item], ...]]` e `list[Item | None]`
     são listas de `Item`, como `list[Item]`. A lista de listas, o dict e a tupla
     de modelos não são: só a lista cujo item é o modelo tem um dicionário por
-    item onde gravar a busca.
+    item onde gravar a busca. Também não é a lista cujo item pode ser mais de um
+    modelo, como `list[A | B]` ou `list[A] | list[B]`: sem saber de qual modelo
+    é cada item, a busca do campo de A iria para o item de B, e a de B não
+    seria feita; os campos de busca dos dois seguem a busca aninhada da linha.
 
     Args:
         field_type: Anotação de tipo a analisar.
@@ -1228,10 +1231,14 @@ def is_list_of_pydantic_model(field_type: object) -> tuple:
         >>> is_list_of_pydantic_model(List[str])
         (False, None)
     """
-    for value_type in _value_types(field_type):
-        for item_type in _item_types(value_type):
-            if _is_pydantic_model(item_type):
-                return (True, item_type)
+    item_models = {
+        item_type
+        for value_type in _value_types(field_type)
+        for item_type in _item_types(value_type)
+        if _is_pydantic_model(item_type)
+    }
+    if len(item_models) == 1:
+        return (True, item_models.pop())
     return (False, None)
 
 
@@ -1241,7 +1248,8 @@ def list_layers(annotation: object, target: type) -> int | None:
     Só conta os ramos que chegam ao modelo; em Union[list[str], X], a lista
     de strings não envolve X. A camada de lista é a que `_item_types`
     reconhece, a mesma de `is_list_of_pydantic_model`: com uma camada, a
-    validação aceita a configuração do item que a extração busca item a item.
+    validação aceita a configuração do item, que a extração busca item a item
+    ou, quando o item pode ser mais de um modelo, uma vez para a linha.
     Devolve None quando `target` não aparece.
     """
     depths = []

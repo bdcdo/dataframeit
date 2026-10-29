@@ -426,3 +426,49 @@ def test_lista_de_modelo_e_buscada_item_a_item_e_conta_uma_camada_na_validacao(a
         {"nome": "A", "preco": "R$ 1"},
         {"nome": "B", "preco": "R$ 1"},
     ]
+
+
+class _Livro(BaseModel):
+    titulo: str
+    isbn: Optional[str] = Field(None, json_schema_extra={"prompt": "Busque o ISBN"})
+
+
+class _Filme(BaseModel):
+    nome: str
+    diretor: Optional[str] = Field(None, json_schema_extra={"prompt": "Busque o diretor"})
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [
+        list[_Livro | _Filme],
+        Optional[list[Annotated[_Livro | _Filme, "obra"]]],
+        list[_Livro] | list[_Filme],
+    ],
+    ids=["item_uniao", "item_uniao_anotado_opcional", "uniao_de_listas"],
+)
+def test_lista_de_mais_de_um_modelo_busca_os_campos_de_cada_modelo(anotacao):
+    """Sem um modelo só para o item, cada campo de busca é buscado uma vez para a linha.
+
+    O ISBN não é aplicado ao filme, e o diretor não fica sem busca.
+    """
+    modelo = create_model("Obras", obras=(anotacao, None))
+    agente = _Agente(
+        {
+            "obras": [{"titulo": "Dom Casmurro"}, {"nome": "Central do Brasil"}],
+            "isbn": "978",
+            "diretor": "Walter Salles",
+        }
+    )
+
+    resultado = _rodar(agente, modelo, _config())
+
+    assert {caminho: camadas for caminho, _, camadas in _walk_fields(modelo)} == {
+        "obras": 0,
+        "obras.titulo": 1,
+        "obras.isbn": 1,
+        "obras.nome": 1,
+        "obras.diretor": 1,
+    }
+    assert agente.nomes == ["NestedSearch_obras_isbn", "NestedSearch_obras_diretor", "Obras_obras"]
+    assert resultado["data"]["obras"] == [{"titulo": "Dom Casmurro"}, {"nome": "Central do Brasil"}]

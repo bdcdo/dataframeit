@@ -1860,6 +1860,10 @@ def test_is_list_of_pydantic_model_list_of_primitives():
         (list[Optional[PedidoItem]], (True, PedidoItem)),
         (list[Annotated[PedidoItem, "item"]] | None, (True, PedidoItem)),
         (list[str] | list[PedidoItem], (True, PedidoItem)),
+        # O item que pode ser mais de um modelo não tem um modelo só com que
+        # buscar os campos de cada item.
+        (list[PedidoItem | InformacoesMedicamento], (False, None)),
+        (list[PedidoItem] | list[InformacoesMedicamento], (False, None)),
         # Nenhum destes é lista cujo item é o modelo: o dict e a tupla não têm
         # itens onde gravar a busca, e a lista de listas é recusada na validação.
         (dict[str, list[PedidoItem]], (False, None)),
