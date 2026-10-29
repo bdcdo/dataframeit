@@ -717,6 +717,77 @@ def test_mudanca_no_slot_do_objeto_chamavel_muda_a_assinatura(antes, depois):
     assert _assinatura(_pedido(variacoes[antes]())) != _assinatura(_pedido(variacoes[depois]()))
 
 
+# Objeto chamável com busca de atributo própria: o __getattr__ que devolve None
+# para qualquer nome, o que levanta KeyError (o objeto que guarda os atributos
+# num dict) e o slot sombreado, na subclasse, por property que levanta. A
+# assinatura lê o estado sem passar por eles, e o slot não atribuído fica de fora
+# em vez de entrar com o valor que o __getattr__ inventa.
+_BUSCA_PROPRIA = """
+class Nula:
+    __slots__ = ("alvo", "extra")
+
+    def __init__(self, alvo):
+        self.alvo = alvo
+
+    def __getattr__(self, nome):
+        return None
+
+    def __call__(self, d):
+        return d.get("tipo") == self.alvo
+
+
+class Dicionario:
+    __slots__ = ("alvo", "_dados", "extra")
+
+    def __init__(self, alvo):
+        self.alvo = alvo
+        self._dados = {}
+
+    def __getattr__(self, nome):
+        return self._dados[nome]
+
+    def __call__(self, d):
+        return d.get("tipo") == self.alvo
+
+
+class Base:
+    __slots__ = ("alvo",)
+
+    def __call__(self, d):
+        return d.get("tipo") == "vip"
+
+
+class Sombreada(Base):
+    @property
+    def alvo(self):
+        raise ValueError("lendo alvo")
+
+
+def sombreada(alvo):
+    regra = Sombreada()
+    Base.alvo.__set__(regra, alvo)
+    return regra
+
+
+CONSTRUTORES = {"nula": Nula, "dicionario": Dicionario, "sombreada": sombreada}
+"""
+
+
+def test_objeto_com_busca_de_atributo_propria_assina_igual_entre_sementes():
+    """Nem o __getattr__ nem a property que levantam derrubam a assinatura."""
+    _assinaturas_em_tres_sementes(
+        _BUSCA_PROPRIA, "{nome: montar('vip') for nome, montar in CONSTRUTORES.items()}"
+    )
+
+
+@pytest.mark.parametrize("construtor", ["nula", "dicionario", "sombreada"])
+def test_mudanca_no_slot_de_objeto_com_busca_propria_muda_a_assinatura(construtor):
+    """O slot entra pelo descritor da classe que o declara, sem a busca de atributo."""
+    montar = _funcao(_BUSCA_PROPRIA, "CONSTRUTORES")[construtor]
+
+    assert _assinatura(_pedido(montar("vip"))) != _assinatura(_pedido(montar("ouro")))
+
+
 # Método como condição: o ligado à instância, o partial dele, o objeto
 # staticmethod (o que se tem ao citar o método estático no corpo do próprio
 # modelo) e o classmethod ligado à classe. A classe é compilada de novo a cada

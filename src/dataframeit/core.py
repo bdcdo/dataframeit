@@ -2027,9 +2027,9 @@ def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
             "args": _stable(value.args, leaf),
             "keywords": _stable(value.keywords, leaf),
         }
-    code = getattr(value, "__code__", None)
+    code = _attribute_or_none(value, "__code__")
     if isinstance(code, CodeType):
-        return {"function": getattr(value, "__qualname__", None), "code": _code_form(code)}
+        return {"function": _attribute_or_none(value, "__qualname__"), "code": _code_form(code)}
     # Só o __call__ escrito em Python: o da classe embutida é outro chamável sem
     # código, e descer nele não terminaria.
     call = type(value).__call__ if callable(value) else None
@@ -2049,13 +2049,25 @@ def _instance_state(value: object, path: frozenset[int]) -> object:
     """
     if id(value) in path:
         return {"cycle": type(value).__name__}
-    state = {**getattr(value, "__dict__", {}), **_slot_values(value)}
+    # No objeto só com `__slots__`, o nome `__dict__` cai no `__getattr__` da
+    # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
+    own = _attribute_or_none(value, "__dict__")
+    state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
     return _stable(state, partial(_schema_leaf, path=path | {id(value)}))
 
 
-# O slot declarado e ainda não atribuído não tem valor, e o getattr dele cai no
-# default; None não serve de marca, porque é um valor que o slot pode ter.
-_UNSET_SLOT = object()
+def _attribute_or_none(value: object, name: str) -> object:
+    """O atributo, ou None quando a busca dele levanta qualquer exceção.
+
+    O nome que falta vai ao `__getattr__` da classe do usuário, que pode levantar
+    outra coisa que não AttributeError, como o KeyError do objeto que guarda os
+    atributos num dict. A assinatura não pode levantar: ela é calculada antes da
+    primeira linha, e a exceção dela derrubaria a execução inteira.
+    """
+    try:
+        return getattr(value, name, None)
+    except Exception:  # noqa: BLE001 (ver a docstring)
+        return None
 
 
 def _slot_values(value: object) -> dict[str, object]:
@@ -2068,15 +2080,24 @@ def _slot_values(value: object) -> dict[str, object]:
     """
     values: dict[str, object] = {}
     for cls in type(value).__mro__:
-        slots = vars(cls).get("__slots__", ())
+        namespace = vars(cls)
+        slots = namespace.get("__slots__", ())
         for name in (slots,) if isinstance(slots, str) else slots:
             if name in ("__dict__", "__weakref__"):
                 continue
             private = name.startswith("__") and not name.endswith("__")
             attribute = f"_{cls.__name__.lstrip('_')}{name}" if private else name
-            slot = getattr(value, attribute, _UNSET_SLOT)
-            if slot is not _UNSET_SLOT:
-                values[attribute] = slot
+            # Pelo descritor que a própria classe criou para o slot, e não pela
+            # busca de atributo, que passaria pela property de mesmo nome de uma
+            # subclasse e, no slot não atribuído, pelo `__getattr__`.
+            try:
+                values[attribute] = namespace[attribute].__get__(value, cls)
+            except Exception:  # noqa: BLE001, S112
+                # AttributeError é o slot ainda não atribuído, que não tem valor.
+                # Outra exceção vem do descritor posto no lugar do slot, ou tirado
+                # dele, depois de a classe ser criada; o slot também fica de fora,
+                # porque a assinatura não pode levantar (ver `_attribute_or_none`).
+                continue
     return values
 
 
