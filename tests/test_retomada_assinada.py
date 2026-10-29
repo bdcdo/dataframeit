@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Optional
 from unittest.mock import patch
 
 import numpy as np
@@ -1098,7 +1098,8 @@ class EstritoVariado(BaseModel):
     model_config = ConfigDict(strict=True)
     n: int | None = None
     ok: bool | None = None
-    oculto: int | None = Field(default=None, exclude=True)
+    # O dump não traz o 3, e o campo fica sem valor validado para comparar.
+    oculto: int | None = Field(default=None, exclude_if=lambda valor: valor == 3)
 
 
 @pytest.mark.parametrize(
@@ -1131,6 +1132,18 @@ def test_bool_relido_como_float_do_xlsx_volta_como_bool():
 
     assert incompativeis == []
     assert valores[(0, "ok")] is True
+
+
+def test_valor_que_o_dump_nao_traz_fica_como_relido():
+    """Sem o valor validado, não há volta ao tipo, e a célula fica como foi relida."""
+    df = pd.DataFrame({"oculto": [3], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", EstritoVariado, set()
+    )
+
+    assert incompativeis == []
+    assert (0, "oculto") not in valores
 
 
 @pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
@@ -1309,12 +1322,13 @@ def test_inteiro_grande_do_checkpoint_xlsx_volta_arredondado_e_strict_o_recusa(t
 # =============================================================================
 
 
-def _direta_e_retomada(tmp_path, formato, modelo, resposta):
+def _direta_e_retomada(tmp_path, formato, modelo, resposta, *, entrada="pandas"):
     """(saída sem interrupção, saída da retomada, linhas chamadas na retomada).
 
     A resposta passa pelo model_dump do modelo, como a dos providers. A primeira
     execução com checkpoint responde a linha "a" e é interrompida na "b", e a
-    retomada pelo mesmo checkpoint só tem a "b" por responder.
+    retomada pelo mesmo checkpoint só tem a "b" por responder. Com `entrada`
+    "polars", as três execuções recebem e devolvem DataFrame polars.
     """
     if formato == "xlsx":
         pytest.importorskip("openpyxl")
@@ -1322,6 +1336,8 @@ def _direta_e_retomada(tmp_path, formato, modelo, resposta):
         pytest.importorskip("pyarrow")
     ckpt = tmp_path / f"ckpt.{formato}"
     df = pd.DataFrame({"texto": ["a", "b"]})
+    if entrada == "polars":
+        df = pytest.importorskip("polars").from_pandas(df)
 
     def dump(text):
         return modelo.model_validate(resposta(text)).model_dump()
@@ -1676,3 +1692,204 @@ def test_colecao_volta_do_checkpoint_com_o_valor_e_o_tipo_gravados(tmp_path, for
 
     assert chamadas == ["b"]
     assert [_com_tipos(v) for v in retomada["itens"]] == [_com_tipos(v) for v in direta["itens"]]
+
+
+class OpcionalComPadrao(BaseModel):
+    obs: str | None = "x"
+
+
+class OpcionalComFabrica(BaseModel):
+    obs: str | None = Field(default_factory=lambda: "x")
+
+
+class InteiroOpcionalComPadrao(BaseModel):
+    obs: Optional[int] = 5
+
+
+class QualquerComPadrao(BaseModel):
+    obs: Any = "x"
+
+
+def _fabrica_que_levanta():
+    raise KeyError
+
+
+class OpcionalComFabricaQueLevanta(BaseModel):
+    obs: str | None = Field(default_factory=_fabrica_que_levanta)
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize(
+    ("modelo", "valor"),
+    [
+        (OpcionalComPadrao, "y"),
+        (OpcionalComFabrica, "y"),
+        (InteiroOpcionalComPadrao, 7),
+        (QualquerComPadrao, "y"),
+        (OpcionalComFabricaQueLevanta, "y"),
+    ],
+    ids=["str-com-padrao", "str-com-fabrica", "optional-int", "any", "fabrica-que-levanta"],
+)
+def test_none_respondido_no_campo_que_admite_none_volta_none(tmp_path, formato, modelo, valor):
+    """O None que a execução gravou volta None, e não o default do campo.
+
+    A execução grava o model_dump da resposta, e nele o campo traz o None
+    respondido, não o default. A retomada não chama a fábrica do campo, que
+    a execução também não chamou.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        modelo,
+        lambda text: {"obs": None} if text == "a" else {"obs": valor},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, valor]
+
+
+@pytest.mark.parametrize(("formato", "valor"), [("csv", None), ("xlsx", None), ("parquet", "")])
+def test_texto_vazio_do_campo_opcional_com_padrao_nunca_volta_o_padrao(tmp_path, formato, valor):
+    """O CSV e o XLSX gravam "" e None na mesma célula vazia, e o campo admite os dois.
+
+    A célula vazia do campo que admite None volta None, e o parquet, que guarda
+    o texto vazio à parte, o devolve como foi gravado. O default nunca é o que
+    a célula vazia guarda: a execução o gravaria como texto.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, OpcionalComPadrao, lambda text: {"obs": ""}
+    )
+
+    assert chamadas == ["b"]
+    assert list(direta["obs"]) == ["", ""]
+    assert list(retomada["obs"]) == [valor, ""]
+
+
+class InteiroEOpcionalComPadrao(BaseModel):
+    n: int
+    obs: str | None = "x"
+
+
+def test_none_do_campo_opcional_fica_na_linha_recusada_por_outro_campo():
+    """Com o campo recusado em reprocess_columns, a linha fica, e o None não vira o default."""
+    df = pd.DataFrame(
+        {"n": ["abc"], "obs": [None], "_dataframeit_status": ["processed"]}, dtype=object
+    )
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", InteiroEOpcionalComPadrao, set()
+    )
+
+    assert incompativeis == ["n"]
+    assert valores == {(0, "obs"): None}
+
+
+class InteiroEPulado(BaseModel):
+    n: int
+    tipo: str
+    detalhe: str = Field(
+        default="x", json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}}
+    )
+
+
+def test_campo_pulado_pela_condicao_fica_none_na_linha_recusada_por_outro_campo():
+    """A condição falsa deixou o campo None, e a linha mantida não o troca pelo default."""
+    df = pd.DataFrame(
+        {"n": ["abc"], "tipo": ["pj"], "detalhe": [None], "_dataframeit_status": ["processed"]},
+        dtype=object,
+    )
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", InteiroEPulado, set()
+    )
+
+    assert incompativeis == ["n"]
+    assert valores == {(0, "detalhe"): None}
+
+
+@pytest.mark.parametrize("n", [1, "abc"], ids=["linha-valida", "linha-recusada"])
+def test_campo_opcional_sem_coluna_recebe_o_padrao(n):
+    """Sem a coluna, a linha não tem resposta do campo, e ele recebe o default."""
+    df = pd.DataFrame({"n": [n], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    _, valores = _validate_processed_rows(
+        df, "_dataframeit_status", InteiroEOpcionalComPadrao, set()
+    )
+
+    assert valores[(0, "obs")] == "x"
+
+
+class ExcluidoComPadrao(BaseModel):
+    outro: str
+    obs: str = Field(default="padrão", exclude=True)
+
+
+class ExcluidoObrigatorio(BaseModel):
+    outro: str
+    obs: str = Field(exclude=True)
+
+
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize(
+    "modelo", [ExcluidoComPadrao, ExcluidoObrigatorio], ids=["padrao", "obrigatorio"]
+)
+def test_campo_excluido_do_dump_volta_none_como_na_execucao(tmp_path, entrada, formato, modelo):
+    """A execução não grava o campo com exclude=True, e a coluna dele fica None.
+
+    A retomada não confere esse campo: não há resposta paga a comparar, e o
+    obrigatório não faz a linha ser recusada.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        modelo,
+        lambda text: {"outro": text, "obs": "resposta"},
+        entrada=entrada,
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["outro"]) == list(direta["outro"]) == ["a", "b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, None]
+    assert retomada["obs"].dtype == direta["obs"].dtype
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_none_do_campo_opcional_com_padrao_volta_none_tambem_na_saida_polars(tmp_path, formato):
+    """A saída polars sai da mesma coluna pandas, e o None também não vira o default nela."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        OpcionalComPadrao,
+        lambda text: {"obs": None} if text == "a" else {"obs": "y"},
+        entrada="polars",
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, "y"]
+    assert retomada["obs"].dtype == direta["obs"].dtype
+
+
+def test_campo_excluido_do_dump_nao_e_conferido_na_retomada():
+    """O valor que a entrada trouxe no campo com exclude=True fica como veio.
+
+    A execução não grava esse campo, e a célula dele não é resposta paga: o
+    valor que o tipo do campo recusaria não faz a linha ser recusada.
+    """
+
+    class ExcluidoEstrito(BaseModel):
+        model_config = ConfigDict(strict=True)
+        n: int
+        oculto: int = Field(exclude=True)
+
+    df = pd.DataFrame(
+        {"n": [1, 2], "oculto": ["3", None], "_dataframeit_status": ["processed"] * 2},
+        dtype=object,
+    )
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", ExcluidoEstrito, set()
+    )
+
+    assert incompativeis == []
+    assert all(campo != "oculto" for _, campo in valores)
