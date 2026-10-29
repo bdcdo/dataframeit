@@ -254,18 +254,24 @@ def test_resumo_sai_uma_vez_por_handler_no_logger_do_pacote(capsys):
     assert "ESTATISTICAS" not in capsys.readouterr().err
 
 
-def _registro_sem_propagacao(nome):
+def _registro_sem_propagacao(monkeypatch, nome):
     logger = logging.getLogger(nome)
-    logger.propagate = False
+    # O pytest pendura os handlers de captura em todo logger que já está sem
+    # propagação quando cada fase de teste começa. Se o propagate=False ficasse
+    # depois do teste, o logger chegaria à execução seguinte com esses handlers,
+    # e a reserva, que os toma por handlers da aplicação, não escreveria.
+    monkeypatch.setattr(logger, "propagate", False)
     return logger.makeRecord(nome, logging.INFO, __file__, 0, "resumo", (), None)
 
 
-def test_logger_sem_propagacao_nao_olha_os_handlers_acima(capsys):
+def test_logger_sem_propagacao_nao_olha_os_handlers_acima(capsys, monkeypatch):
     """Sem propagação, o handler da raiz não recebe o registro, e a reserva escreve."""
     raiz = _Coletor()
     logging.getLogger().addHandler(raiz)
     try:
-        core._FallbackHandler().emit(_registro_sem_propagacao("dataframeit.teste_sem_propagacao"))
+        core._FallbackHandler().emit(
+            _registro_sem_propagacao(monkeypatch, "dataframeit.teste_sem_propagacao")
+        )
     finally:
         logging.getLogger().removeHandler(raiz)
 
@@ -280,7 +286,7 @@ def test_falha_ao_escrever_segue_o_tratamento_do_logging(monkeypatch):
             raise OSError(msg)
 
     handler = core._FallbackHandler()
-    registro = _registro_sem_propagacao("dataframeit.teste_stderr_fechado")
+    registro = _registro_sem_propagacao(monkeypatch, "dataframeit.teste_stderr_fechado")
     monkeypatch.setattr(core.sys, "stderr", _StderrQueFalha())
 
     with patch.object(handler, "handleError") as tratamento:

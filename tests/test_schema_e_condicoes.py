@@ -467,7 +467,7 @@ def test_reprocess_columns_por_campo_chama_so_os_campos_pedidos(parallel_request
     assert resultado["nome"].tolist() == ["Ana", "Beta"]
 
 
-def test_resolve_forward_refs_preserva_literal_e_a_forma_da_uniao():
+def test_resolve_forward_refs_preserva_literal_e_resolve_as_unioes():
 
     class Folha(BaseModel):
         x: int
@@ -479,8 +479,11 @@ def test_resolve_forward_refs_preserva_literal_e_a_forma_da_uniao():
     uniao_typing = resolve_forward_refs(Union[list["Folha"], None], Dono)
     assert typing.get_origin(uniao_typing) is typing.Union
     assert typing.get_args(uniao_typing)[0] == list[Folha]
+    # X | Y volta pela forma de typing.Union, que antes do 3.14 é outro tipo e
+    # é igual a X | Y por ==; a partir do 3.14, as duas formas são uma só.
     uniao_pipe = resolve_forward_refs(list["Dono"] | None, Dono)
-    assert isinstance(uniao_pipe, types.UnionType)
+    assert typing.get_origin(uniao_pipe) is typing.Union
+    assert uniao_pipe == (list[Dono] | None)
     assert typing.get_args(uniao_pipe)[0] == list[Dono]
     inexistente = types.GenericAlias(list, ("Inexistente",))
     assert resolve_forward_refs(inexistente, Dono) == inexistente
