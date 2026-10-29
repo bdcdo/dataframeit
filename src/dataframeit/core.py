@@ -329,10 +329,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
     CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
     na linha em que a condição do campo é falsa ou a fábrica que lê os outros
-    campos dá None, que o deixam None. A execução grava o model_dump, e o texto
-    vazio restaurado que a validação da linha não devolve como "" não é o que
-    ela gravou: a célula é o None que um validador deu ao texto vazio, que o
-    tipo do campo recusa, e o campo é acusado. O None que um validador dá a
+    campos dá None, que o deixam None. No modo normal, a execução grava o
+    model_dump do modelo, e o texto vazio restaurado que a validação da linha
+    não devolve como "" não é o que ela gravou: a célula é o None que um
+    validador deu ao texto vazio, que o tipo do campo recusa, e o campo é
+    acusado. No modo por campo (search_per_field), os validadores do modelo
+    não rodam na execução, que grava o texto vazio como veio, e a validação
+    daqui acusa do mesmo jeito o campo cujo validador o troca. O None que um validador dá a
     outra resposta não se separa do texto vazio na célula: o "" restaurado
     passa pelo validador como é, e o campo volta "", sem acusação.
     """
@@ -2119,7 +2122,10 @@ def _resume_from_checkpoint(
     ela não devolve como "" é acusado. O None que o validador dá a outra
     resposta, como "N/A", fica na mesma célula vazia, e a retomada do CSV e do
     XLSX o devolve como ""; o parquet guarda o None, e a retomada o acusa. Quem
-    quer guardar esse None declara o campo Optional[str]. O campo com
+    quer guardar esse None declara o campo Optional[str]. No modo por campo
+    (search_per_field), os validadores do modelo não rodam na execução, e o
+    texto vazio que ela gravou num campo cujo validador o troca por None é
+    acusado do mesmo jeito no CSV e no XLSX, e volta "" do parquet. O campo com
     exclude=True fica de fora, porque o model_dump não o traz e a célula dele
     guarda o None que a execução pôs ao criar a coluna. Sem essa garantia,
     como no checkpoint carregado à mão, a célula vazia continua ausente,
