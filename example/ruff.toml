@@ -1,0 +1,31 @@
+# Regras do ruff para os notebooks e scripts de example/. O ruff usa a
+# configuração mais próxima de cada arquivo conferido, então esta vale no lugar
+# da do pyproject.toml para todo arquivo desta pasta, e o `extend` traz de lá a
+# versão do Python e o comprimento de linha. Por isso uma única invocação, como
+# o `ruff check src tests example` do CI ou o hook do pre-commit, que recebe os
+# arquivos alterados, confere src/ e tests/ com o pyproject.toml e example/ com
+# este arquivo, sem conflito.
+#
+# Os exemplos ficam só com as regras de correção, porque é deles que se copia
+# código: pycodestyle e pyflakes (E, F), com nome indefinido, import sem uso e
+# except sem tipo (E722); armadilhas do bugbear (B); ordem dos imports (I);
+# sintaxe moderna (UP); e except que engole o erro (S110, BLE). As regras de
+# estilo de biblioteca, como docstring, anotação de tipo, aspas e proibição de
+# print, não cabem em notebook didático.
+#
+# O select daqui substitui o ["ALL"] do pyproject.toml. Per-file-ignores só
+# tiram regras do ALL: chegar a este conjunto por eles exigiria listar cada
+# família do ALL que fica de fora, e toda família nova do ruff passaria a valer
+# nos exemplos sem ninguém escolher. O select substitui também o ignore herdado,
+# e por isso o E501 volta a ser ignorado aqui: o que passa de 100 colunas nos
+# exemplos são as descrições dos campos e os textos de entrada.
+extend = "../pyproject.toml"
+
+[lint]
+select = ["E", "F", "B", "I", "UP", "S110", "BLE"]
+ignore = ["E501"]
+
+[lint.isort]
+# Na raiz, o ruff acha o pacote em src/ e separa o import dele dos de terceiros.
+# Nesta pasta ele procuraria em example/, por isso o nome vai explícito.
+known-first-party = ["dataframeit"]

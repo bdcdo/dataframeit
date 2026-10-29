@@ -1786,6 +1786,34 @@ class TestClassificacaoDoTurnoQueFalhou:
         assert client.thread_start.call_count == 2
         assert is_rate_limit_error(exc_info.value) is False
 
+    @pytest.mark.parametrize(
+        ("status", "caixa"), [(408, "TEMPO ESGOTADO"), (409, "ERRO NO PROCESSAMENTO")]
+    )
+    def test_falha_http_408_e_409_e_transitoria_como_no_langchain(
+        self, codex_sdk, tmp_path, status, caixa
+    ):
+        _, _, generated = codex_sdk
+        backend, client, _, turn = initialized_backend(tmp_path, codex_sdk)
+        falhou = generated.CodexErrorInfo(
+            root=generated.HttpConnectionFailedCodexErrorInfo(
+                httpConnectionFailed=generated.HttpConnectionFailed(httpStatusCode=status)
+            )
+        )
+        turn.stream.side_effect = lambda: as_stream(
+            make_result(codex_sdk, error_info=falhou, message="request timed out")
+        )
+
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderTransientError, match="request timed out") as exc_info,
+        ):
+            backend.invoke("texto")
+
+        assert client.thread_start.call_count == 2
+        assert exc_info.value.status_code == status
+        assert is_rate_limit_error(exc_info.value) is False
+        assert caixa in get_friendly_error_message(exc_info.value, "codex")
+
     def test_codigo_de_erro_fora_dos_transitorios_e_definitivo(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
         janela = generated.CodexErrorInfo(
