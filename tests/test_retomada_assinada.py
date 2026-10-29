@@ -1336,6 +1336,20 @@ class ComOcultoNoDump(BaseModel):
     campo1: str = Field(default="padrão", exclude=True)
 
 
+class ComFabricaNone(BaseModel):
+    # A fábrica, como o default, não passa pela validação do tipo.
+    campo1: str = Field(default_factory=lambda: None)  # ty: ignore[invalid-assignment]
+
+
+class ComFabricaDosDados(BaseModel):
+    # A fábrica que lê os outros campos só é chamada com eles, na validação.
+    campo1: str = Field(default_factory=lambda dados: None)
+
+
+class ComFabricaPadrao(BaseModel):
+    campo1: str = Field(default_factory=lambda: "padrão")
+
+
 class Decisao(BaseModel):
     # A forma do caso relatado, que o lint recusa por estilo.
     campo1: Literal["NA", "deferido", None]  # noqa: PYI061
@@ -1350,6 +1364,9 @@ class Decisao(BaseModel):
         (ComPadrao, {"campo1": ""}, ""),
         (ModeloOpcional, {"campo1": None}, None),
         (ComPadraoNone, {}, None),
+        (ComFabricaNone, {}, None),
+        (ComFabricaDosDados, {}, None),
+        (ComFabricaPadrao, {"campo1": ""}, ""),
         (ComOcultoNoDump, {"campo1": "x"}, None),
         (Decisao, {"campo1": "NA"}, "NA"),
         (Decisao, {"campo1": None}, None),
@@ -1360,6 +1377,9 @@ class Decisao(BaseModel):
         "str-com-padrao-vazio",
         "opcional-none",
         "str-com-padrao-none-none",
+        "str-com-fabrica-none-none",
+        "str-com-fabrica-dos-dados-none",
+        "str-com-fabrica-vazio",
         "str-fora-do-dump-none",
         "literal-com-none-na",
         "literal-com-none-none",
@@ -1391,11 +1411,6 @@ def test_texto_do_checkpoint_textual_volta_como_a_execucao_o_gravou(
     assert lidos(direta)[0] == valor
 
 
-class ComFabricaNone(BaseModel):
-    # A fábrica, como o default, não passa pela validação do tipo.
-    campo1: str = Field(default_factory=lambda: None)  # ty: ignore[invalid-assignment]
-
-
 class VazioViraNone(BaseModel):
     campo1: str
 
@@ -1418,12 +1433,13 @@ def test_none_do_campo_textual_volta_none_do_checkpoint_parquet(tmp_path):
     assert list(retomada["campo1"]) == list(direta["campo1"]) == [None, "deferido"]
 
 
-@pytest.mark.parametrize("formato", ["parquet"])
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
 def test_none_do_validador_em_campo_textual_continua_acusado(tmp_path, formato):
     """O None que o validador põe no campo str é um valor que o tipo do campo recusa.
 
     A retomada o acusa, como acusa qualquer valor que o modelo não valida, e
-    não o troca pelo texto vazio.
+    não o troca pelo texto vazio. No CSV e no XLSX, a célula vazia não é o texto
+    vazio, porque o validador não o devolve como ele é.
     """
     with pytest.raises(ValueError, match="campos incompatíveis"):
         _direta_e_retomada(

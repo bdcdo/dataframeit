@@ -78,6 +78,7 @@ if TYPE_CHECKING:
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
+    from pydantic.fields import FieldInfo
 
 
 class _FallbackHandler(logging.Handler):
@@ -327,7 +328,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
 
     Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
     CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
-    quando a condição do campo é falsa na linha, que o deixa None.
+    quando a condição do campo é falsa na linha, que o deixa None, e quando a
+    validação da linha não devolve o texto vazio como ele é. A execução grava o
+    model_dump, e o texto vazio que o validador troca por outro valor não é o
+    que ela gravou: a célula é o None que o validador deu, que o tipo do campo
+    recusa, e o campo é acusado.
     """
     incompatible_fields: set[str] = set()
     values_to_fill: dict[tuple[int, str], Any] = {}
@@ -438,6 +443,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
 
         projected = {}
         missing_values = set()
+        restored = set()
         for field_name, field in pydantic_model.model_fields.items():
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
@@ -447,6 +453,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     # mantém o valor que tinha.
                     projected[field_name] = ""
                     values_to_fill[(position, field_name)] = ""
+                    restored.add(field_name)
                     continue
                 missing_values.add(field_name)
                 if not field.is_required() or field_name in skipped:
@@ -470,6 +477,10 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 else:
                     values_to_fill[(position, field_name)] = default
             continue
+
+        incompatible_fields.update(
+            field_name for field_name in restored if validated_data[field_name] != ""
+        )
 
         # Campo com exclude=True não sai no dump, e não há o que completar nele.
         for field_name in missing_values & validated_data.keys():
@@ -2048,10 +2059,12 @@ def _resume_from_checkpoint(
     vazio, para a validação da retomada (`_validate_processed_rows`); sem
     retomar, nenhum. O CSV e o XLSX gravam o texto vazio e o None na mesma
     célula vazia, que o leitor devolve ausente. O parquet guarda os dois à
-    parte, e dele também não vem nenhum: a célula nula é o None gravado. A assinatura garante que o
-    checkpoint foi gravado com este modelo, e nele o campo que só aceita texto,
-    não admite None e não tem None por padrão só fica None quando a condição
-    dele é falsa. O campo com exclude=True fica de fora, porque o model_dump
+    parte, e dele também não vem nenhum: a célula nula é o None gravado. A
+    assinatura garante que o checkpoint foi gravado com este modelo, e nele o
+    campo que só aceita texto, não admite None e cujo default não pode ser None
+    (`_default_may_be_none`) só fica None quando a condição dele é falsa ou
+    quando um validador troca a resposta por None. A validação da retomada
+    separa os dois casos do texto vazio. O campo com exclude=True fica de fora, porque o model_dump
     não o traz e a célula dele guarda o None que a execução pôs ao criar a
     coluna. Sem essa garantia, como no checkpoint carregado à mão, a
     célula vazia continua ausente, porque com outro modelo ela pode ser o None
@@ -2089,9 +2102,22 @@ def _resume_from_checkpoint(
         for field_name, field in questions.model_fields.items()
         if accepts_only_text(field.annotation)
         and not _admits_none(field.annotation)
-        and field.default is not None
+        and not _default_may_be_none(field)
         and not field.exclude
     )
+
+
+def _default_may_be_none(field: FieldInfo) -> bool:
+    """Se o default do campo, dado direto ou pela fábrica, pode ser None.
+
+    O pydantic não valida o default, e o None dele fica no campo que o tipo
+    recusa. A fábrica que lê os outros campos só é chamada com eles, e pode
+    dar None em alguma linha.
+    """
+    try:
+        return field.get_default(call_default_factory=True) is None
+    except ValueError:
+        return True
 
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
