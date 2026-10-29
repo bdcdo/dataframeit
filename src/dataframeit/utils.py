@@ -1290,21 +1290,29 @@ def _is_keyless(value_type: object) -> bool:
     return isinstance(value_type, type) and issubclass(value_type, _KEYLESS_TYPES)
 
 
+def _is_sequence(value_type: object) -> bool:
+    """Se o valor desse tipo é lista ou tupla, de qualquer item, com ou sem argumentos."""
+    origin = get_origin(value_type) or value_type
+    return isinstance(origin, type) and issubclass(origin, (list, tuple))
+
+
 def submodels(annotation: object) -> list[type[BaseModel]] | None:
     """Os modelos Pydantic em que pode estar a chave seguinte de um caminho no valor.
 
     `Optional[Endereco]` dá `[Endereco]`, e `Union[A, B]`, `[A, B]`. O tipo
     escalar (`_KEYLESS_TYPES` e `Literal`) não tem chave e fica de fora:
     `Union[Endereco, str]` dá `[Endereco]`, e `str`, a lista vazia, em que
-    nenhuma chave existe. None quando algum tipo do valor pode ter chave que
-    nenhum modelo declara, como `dict`, `Any`, a lista, a tupla,
+    nenhuma chave existe. A lista e a tupla ficam de fora também, porque
+    `get_nested_value` só segue dict: nem o campo do item nem o índice são
+    seguidos, e `list[Endereco]` dá a lista vazia. None quando algum tipo do
+    valor pode ter chave que nenhum modelo declara, como `dict`, `Any`,
     `Union[Endereco, dict[str, str]]` ou um tipo que esta função não conhece.
     """
     models = []
     for value_type in _value_types(annotation):
         if _is_pydantic_model(value_type):
             models.append(value_type)
-        elif not _is_keyless(value_type):
+        elif not (_is_keyless(value_type) or _is_sequence(value_type)):
             return None
     return models
 

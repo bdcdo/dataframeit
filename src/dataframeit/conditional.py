@@ -339,15 +339,15 @@ def _path_exists(path: str, pydantic_model: type[BaseModel]) -> bool:
     O caminho é conferido enquanto o valor do segmento só pode ser modelo ou
     escalar (`submodels`): o seguinte tem de ser campo de um dos modelos. O
     escalar, como `str`, `int` ou `Enum`, não tem chave, e o caminho que segue
-    depois dele é recusado, porque nunca teria valor. Na união, como
+    depois dele é recusado, porque nunca teria valor; a lista e a tupla
+    também, porque `get_nested_value` não entra nelas. Na união, como
     `Union[PessoaFisica, PessoaJuridica]`, cada modelo que tem o segmento é um
     ramo, e o caminho vale quando algum ramo chega ao fim: os dois modelos
     podem ter `documento` com submodelos diferentes, e `documento.cnpj` existe
     pelo segundo. Depois de um campo que pode ter chave que nenhum modelo
-    declara, como `dict`, `Any` ou a lista, não há campo contra o qual
-    conferir o resto, e ele é aceito. Na avaliação, `get_nested_value` segue
-    esse resto pelas chaves do dict, e o caminho que atravessa a lista fica
-    sem valor.
+    declara, como `dict` ou `Any`, não há campo contra o qual conferir o
+    resto, e ele é aceito; na avaliação, `get_nested_value` segue esse resto
+    pelas chaves do dict.
     """
     models = [pydantic_model]
     for part in path.split("."):

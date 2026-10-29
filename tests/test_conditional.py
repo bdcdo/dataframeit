@@ -75,6 +75,13 @@ class TestGetNestedValue:
         data = {"nome": None}
         assert get_nested_value(data, "nome") is None
 
+    def test_caminho_nao_entra_em_lista_nem_em_escalar(self):
+        """Só o dict é seguido: nem o campo do item nem o índice da lista têm valor."""
+        data = {"itens": [{"preco": 1}], "nome": "João"}
+        assert get_nested_value(data, "itens.preco") is None
+        assert get_nested_value(data, "itens.0.preco") is None
+        assert get_nested_value(data, "nome.primeiro") is None
+
 
 class TestEvaluateCondition:
     """Testes para evaluate_condition."""
@@ -889,8 +896,8 @@ class TestCondicaoPelaApi:
         assert linha["detalhe"] is None
         assert "Erro ao avaliar condição callable para campo 'detalhe'" in caplog.text
 
-    def test_caminho_que_atravessa_uma_lista_nao_tem_valor(self):
-        """'pedidos.nome' não se resolve numa lista: o valor é ausente e 'exists' é falso."""
+    def test_caminho_que_atravessa_uma_lista_e_recusado_antes_de_processar(self):
+        """'pedidos.nome' não se resolve numa lista: a condição seria sempre falsa."""
 
         class Pedido(BaseModel):
             nome: str
@@ -902,12 +909,9 @@ class TestCondicaoPelaApi:
                 json_schema_extra={"condition": {"field": "pedidos.nome", "exists": True}},
             )
 
-        linha, chamadas = _executar_por_campo(
-            Modelo, {"pedidos": [{"nome": "dipirona"}], "observacao": "x"}
-        )
-
-        assert chamadas == [["pedidos"]]
-        assert linha["observacao"] is None
+        mensagem = "Campo 'observacao' depende de campos inexistentes: ['pedidos.nome']"
+        with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+            _executar_por_campo(Modelo, {"pedidos": [{"nome": "dipirona"}], "observacao": "x"})
 
     def test_depends_on_em_texto_vale_como_lista_de_um_campo(self):
         """Com depends_on='tipo', 'detalhe' espera 'tipo', mesmo declarado antes dele."""
@@ -1362,12 +1366,9 @@ def test_caminho_aninhado_com_campo_inexistente_e_recusado(anotacao, configuraca
         (dict[str, str], "endereco.cidade"),
         (Any, "endereco.cidade.nome"),
         (Union[_EnderecoDeEntrega, dict[str, str]], "endereco.bairro"),
-        # O caminho que atravessa a lista ou a tupla é aceito e fica sem valor.
-        (list[_EnderecoDeEntrega], "endereco.cidadee"),
-        (list[_EnderecoDeEntrega], "endereco.0.cidade"),
-        (tuple[_EnderecoDeEntrega, ...], "endereco.0.cidade"),
-        # O texto da união não tem chave, e o caminho segue pelo modelo.
+        # O texto e a lista da união não têm chave, e o caminho segue pelo modelo.
         (Union[_EnderecoDeEntrega, str], "endereco.cidade"),
+        (Union[_EnderecoDeEntrega, list[_Filial]], "endereco.cidade"),
     ],
 )
 def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
@@ -1378,6 +1379,33 @@ def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
     )
 
     assert dependencias["taxa"] == ["endereco"]
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "caminho"),
+    [
+        (list[_EnderecoDeEntrega], "endereco.cidade"),
+        (list[_EnderecoDeEntrega], "endereco.cidadee"),
+        (list[_EnderecoDeEntrega], "endereco.0.cidade"),
+        (Optional[list[_EnderecoDeEntrega]], "endereco.cidade"),
+        (tuple[_EnderecoDeEntrega, ...], "endereco.0.cidade"),
+        (list[str], "endereco.0"),
+        (list, "endereco.cidade"),
+        (Union[_Filial, list[_EnderecoDeEntrega]], "endereco.cidade"),
+    ],
+)
+def test_caminho_que_atravessa_lista_ou_tupla_e_recusado(anotacao, caminho):
+    """`get_nested_value` só segue dict: o caminho dentro da lista nunca teria valor.
+
+    Nem o campo do item, como `endereco.cidade` com `list[Endereco]`, nem o
+    índice, como `endereco.0.cidade`, são seguidos na avaliação, e a condição
+    seria sempre falsa.
+    """
+    configuracao = {"condition": {"field": caminho, "exists": True}}
+
+    mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
+    with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+        get_field_execution_order(_entrega(anotacao, configuracao), {"taxa": configuracao})
 
 
 class _DocumentoPF(BaseModel):
