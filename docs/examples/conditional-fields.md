@@ -151,7 +151,7 @@ class Entrega(BaseModel):
     )
 ```
 
-O caminho é conferido inteiro antes de processar, em `condition` e em `depends_on`: enquanto atravessa submodelos, cada parte tem de ser campo do modelo anterior, e `endereco.cidadee` levanta `ValueError`, como uma raiz inexistente. Depois de um campo que não é modelo, como `dict`, o resto do caminho não é conferido.
+O caminho é conferido inteiro antes de processar, em `condition` e em `depends_on`: enquanto atravessa submodelos, cada parte tem de ser campo do modelo anterior, e `endereco.cidadee` levanta `ValueError`, como uma raiz inexistente. Na união de modelos, como `Union[PessoaFisica, PessoaJuridica]`, o caminho segue cada modelo que tem a parte e vale quando um deles chega ao fim. Depois de um campo que não é modelo, como `dict`, o resto do caminho não é conferido.
 
 A condição fica no campo de nível superior. `condition` ou `depends_on` num campo de modelo aninhado, ou de item de lista, levanta `ValueError` antes de processar.
 

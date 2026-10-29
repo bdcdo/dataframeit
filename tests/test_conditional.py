@@ -1373,6 +1373,48 @@ def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
     assert dependencias["taxa"] == ["endereco"]
 
 
+class _DocumentoPF(BaseModel):
+    cpf: str
+
+
+class _DocumentoPJ(BaseModel):
+    cnpj: str
+
+
+class _PessoaFisica(BaseModel):
+    documento: _DocumentoPF
+
+
+class _PessoaJuridica(BaseModel):
+    documento: _DocumentoPJ
+
+
+@pytest.mark.parametrize(
+    ("caminho", "existe"),
+    [
+        ("endereco.documento.cpf", True),
+        ("endereco.documento.cnpj", True),
+        ("endereco.documento.rg", False),
+    ],
+)
+def test_caminho_segue_todos_os_modelos_da_uniao_que_tem_o_segmento(caminho, existe):
+    """Os dois modelos têm `documento`, de submodelos diferentes.
+
+    O caminho vale quando algum dos ramos chega ao fim, e não só o do primeiro
+    modelo que tem o segmento.
+    """
+    configuracao = {"condition": {"field": caminho, "exists": True}}
+    modelo = _entrega(Union[_PessoaFisica, _PessoaJuridica], configuracao)
+
+    if existe:
+        _, dependencias = get_field_execution_order(modelo, {"taxa": configuracao})
+        assert dependencias["taxa"] == ["endereco"]
+    else:
+        mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
+        with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+            get_field_execution_order(modelo, {"taxa": configuracao})
+
+
 def test_caminho_aninhado_inexistente_falha_antes_de_processar():
     modelo = _entrega(
         _EnderecoDeEntrega, {"condition": {"field": "endereco.cidadee", "equals": "SP"}}
