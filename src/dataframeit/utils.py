@@ -413,23 +413,28 @@ def _json_default(value: object) -> object:
     que o conjunto validado (`_same_json`) quando os dois saem na mesma ordem.
     O texto JSON também ordena itens de tipos que não se comparam, como 1 e "a".
 
-    A sequência que não é lista nem tupla, como o deque, vira lista na ordem
-    dela; os bytes não são coleção para a célula (`_TEXT_CLASSES`) e vão como
-    texto.
-
     O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
-    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
+    que pelo texto voltaria "5" ou "True". Ele vem antes do ramo de sequência
+    porque sabe montar a lista aninhada de um buffer de mais de uma dimensão,
+    como a memoryview, que o list() não percorre.
+
+    A sequência que não é lista nem tupla, como o deque, vira lista na ordem
+    dela. O texto não é coleção para a célula (`_TEXT_CLASSES`): a UserString
+    é Sequence, e cada item que o list() tira dela é outra UserString, então
+    descer nela não termina. O Enum vai pelo valor porque é o que
     a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
     O resto vai como texto.
     """
     if isinstance(value, (set, frozenset)):
         return sorted(value, key=lambda item: json.dumps(item, default=_json_default))
-    if isinstance(value, collections.abc.Sequence) and not isinstance(value, _TEXT_CLASSES):
-        return list(value)
     if isinstance(value, Enum):
         return value.value
     tolist = getattr(value, "tolist", None)
-    return tolist() if callable(tolist) else str(value)
+    if callable(tolist):
+        return tolist()
+    if isinstance(value, collections.abc.Sequence) and not isinstance(value, _TEXT_CLASSES):
+        return list(value)
+    return str(value)
 
 
 def _resolved(annotation: object) -> object:
@@ -800,7 +805,7 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") 
 # collections.abc e ficam de fora pela subclasse, inclusive o Enum de texto: a
 # célula guarda o valor inteiro deles.
 _STRUCTURE_ABCS = (collections.abc.Sequence, collections.abc.Set, collections.abc.Mapping)
-_TEXT_CLASSES = (str, bytes, bytearray)
+_TEXT_CLASSES = (str, bytes, bytearray, collections.UserString)
 
 
 def _is_structure_class(cls: type) -> bool:
