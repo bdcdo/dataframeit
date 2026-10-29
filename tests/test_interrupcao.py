@@ -4,7 +4,9 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pandas as pd
@@ -250,6 +252,42 @@ def _llm_com_ctrl_c(na_chamada: int | None = None):
     return pagas, llm
 
 
+@contextmanager
+def _ctrl_c_depois(gatilho: threading.Event, *folgas: float) -> Iterator[None]:
+    """Manda um Ctrl-C a cada folga, contada desde `gatilho`, enquanto o bloco roda.
+
+    Na saída do bloco, o Ctrl-C que falta é cancelado e o envio em curso é
+    esperado: o `KeyboardInterrupt` cai dentro do teste, nunca num teste adiante.
+    """
+    saiu = threading.Event()
+    trava = threading.Lock()
+
+    def envia() -> None:
+        while not gatilho.wait(0.05):
+            if saiu.is_set():
+                return
+        inicio = time.monotonic()
+        for folga in folgas:
+            if saiu.wait(max(0.0, inicio + folga - time.monotonic())):
+                return
+            with trava:
+                if saiu.is_set():
+                    return
+                _ctrl_c()
+
+    remetente = threading.Thread(target=envia, daemon=True)
+    remetente.start()
+    try:
+        yield
+    finally:
+        # `saiu` vem antes da trava: um KeyboardInterrupt que chegue enquanto o
+        # thread principal espera a trava já não deixa outro envio para depois.
+        saiu.set()
+        with trava:
+            pass
+        remetente.join()
+
+
 def _entrada(biblioteca: str, textos: list[str]):
     if biblioteca == "polars":
         pl = pytest.importorskip("polars")
@@ -409,6 +447,52 @@ def test_segundo_ctrl_c_corta_a_espera_e_a_chamada_lenta_fica_pendente(tmp_path)
         checkpoint_path=ckpt,
     )
     assert retomada == ["lenta"]
+
+
+@requer_pthread_kill
+@pytest.mark.usefixtures("sigint_reinicia_a_espera")
+def test_ctrl_c_com_todas_as_linhas_lentas_sai_sem_esperar_uma_terminar(tmp_path):
+    """Os dois Ctrl-C chegam com as três linhas em andamento e nenhuma termina.
+
+    O primeiro vira `KeyboardInterrupt` sem esperar uma linha terminar, e o
+    segundo corta a espera da saída: o lote sai antes da duração das linhas.
+    """
+    duracao = 5.0
+    textos = ["a", "b", "c"]
+    trava = threading.Lock()
+    comecadas: list[str] = []
+    terminadas: list[str] = []
+    todas_comecaram = threading.Event()
+    liberada = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        with trava:
+            comecadas.append(texto)
+            if len(comecadas) == len(textos):
+                todas_comecaram.set()
+        liberada.wait(timeout=duracao)
+        with trava:
+            terminadas.append(texto)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
+
+    inicio = time.monotonic()
+    try:
+        with _ctrl_c_depois(todas_comecaram, 0.0, 0.3), pytest.raises(KeyboardInterrupt):
+            _roda(
+                pd.DataFrame({"texto": textos}),
+                llm,
+                parallel_requests=3,
+                batch_size=100,
+                checkpoint_path=tmp_path / "ckpt.csv",
+            )
+        saida = time.monotonic() - inicio
+        with trava:
+            terminadas_na_saida = list(terminadas)
+    finally:
+        liberada.set()
+
+    assert saida < duracao
+    assert terminadas_na_saida == []
 
 
 @requer_pthread_kill
