@@ -1148,10 +1148,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Se False, processa toda linha que não esteja 'processed'. Com False e a
             coluna de status presente, se alguma coluna do modelo já existe no
             DataFrame e reprocess_columns não foi passado, emite um aviso e devolve
-            a entrada sem processar. Sem a coluna de status, com True ou False, toda
-            linha conta como nova, e uma coluna com algum valor e com o nome de um
-            campo do modelo levanta ValueError antes de qualquer chamada, a menos
-            que esteja em reprocess_columns.
+            a entrada sem processar. Quando a entrada chega sem a coluna de status
+            e não há checkpoint a reler, com True ou False, toda linha conta como
+            nova, e uma coluna com algum valor e com o nome de um campo do modelo
+            levanta ValueError antes de qualquer chamada, a menos que esteja em
+            reprocess_columns; na retomada de um checkpoint_path, a coluna
+            acrescentada à entrada depois da interrupção não é checada.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM. Se None, usa o default do provider em
