@@ -2650,26 +2650,33 @@ def _closing_in_slices(max_workers: int) -> Iterator[ThreadPoolExecutor]:
 
     Faz as vezes do `with ThreadPoolExecutor`, cuja saída espera as threads sem
     prazo: com prazo em cada espera, um segundo Ctrl-C a corta; ver
-    _completed_in_slices. A espera é pelas threads, e não pelos futuros que o
-    bloco guardou, porque o Ctrl-C pode sair de dentro do `submit` depois de o
-    item entrar na fila. A linha roda e é paga sem que o futuro dela chegue ao
-    bloco, e a gravação do checkpoint precisa encontrá-la registrada. Cada
-    futuro guardado roda numa dessas threads, que só saem depois de esvaziar a
-    fila.
+    _completed_in_slices. O encerramento cancela as linhas que ainda estão na
+    fila, e nenhuma thread começa outra depois dele: a linha cancelada não é
+    paga e fica sem status, para a retomada. Isso cobre o Ctrl-C que sai de
+    dentro do `Thread.start()`, com a thread já lançada e ainda sem marcar o
+    início; sem o cancelamento, ela começaria depois da gravação do checkpoint
+    e pagaria fora dele a linha da fila. Fora do Ctrl-C, a saída chega com a
+    fila vazia, porque o bloco espera todos os futuros que guardou.
+
+    A espera é pelas threads, e não pelos futuros que o bloco guardou, porque o
+    Ctrl-C pode sair de dentro do `submit` depois de uma thread tirar a linha
+    da fila. A linha roda e é paga sem que o futuro dela chegue ao bloco, e a
+    gravação do checkpoint precisa encontrá-la registrada.
 
     As threads são achadas pelo nome, com o prefixo deste executor, em
     `threading.enumerate()`. O conjunto `_threads` do executor é privado e só
     recebe a thread depois de `Thread.start()` voltar; `enumerate` a lista
-    desde antes. A lista se refaz a cada fatia, para pegar a thread que começa
-    a rodar durante a espera, e `is_alive` deixa de fora a que o Ctrl-C
-    impediu de começar, que nunca terminaria.
+    desde antes. `is_alive` deixa de fora a thread que ainda não marcou o
+    início, que `join` recusaria: ela nunca começa ou, ao começar, encontra a
+    fila vazia e sai sem rodar linha. A lista se refaz a cada fatia e pega
+    também a thread que começa durante a espera.
     """
     prefix = f"dataframeit-lote{next(_executor_ids)}"
     executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
     try:
         yield executor
     finally:
-        executor.shutdown(wait=False)
+        executor.shutdown(wait=False, cancel_futures=True)
         while alive := [
             thread
             for thread in threading.enumerate()

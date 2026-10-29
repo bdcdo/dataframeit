@@ -367,6 +367,18 @@ def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path,
     assert grava.call_count == 1
 
 
+def _sigint_com_restart(reinicia: bool) -> Iterator[None]:
+    """Liga ou desliga o SA_RESTART do SIGINT durante o teste.
+
+    Na volta, o SA_RESTART fica como o processo o tinha: ligado com o polars
+    importado, que instala um handler com ele, e desligado sem o polars.
+    """
+    com_polars = "polars" in sys.modules
+    signal.siginterrupt(signal.SIGINT, not reinicia)
+    yield
+    signal.siginterrupt(signal.SIGINT, not com_polars)
+
+
 @pytest.fixture
 def sigint_reinicia_a_espera():
     """Põe SA_RESTART no SIGINT, como o handler que o polars instala ao ser importado.
@@ -374,14 +386,20 @@ def sigint_reinicia_a_espera():
     Com SA_RESTART, o kernel reinicia a espera sem prazo de um lock quando o
     SIGINT chega, e o thread principal só levanta o `KeyboardInterrupt` quando a
     espera termina. Sem isso, o SIGINT interromperia também a espera sem prazo,
-    e o teste não a distinguiria da espera em fatias. Com o polars importado, o
-    SA_RESTART já estava lá e fica.
+    e o teste não a distinguiria da espera em fatias.
     """
-    com_polars = "polars" in sys.modules
-    signal.siginterrupt(signal.SIGINT, False)
-    yield
-    if not com_polars:
-        signal.siginterrupt(signal.SIGINT, True)
+    yield from _sigint_com_restart(reinicia=True)
+
+
+@pytest.fixture
+def sigint_interrompe_a_espera():
+    """Tira o SA_RESTART do SIGINT, como fica o processo sem o polars importado.
+
+    Sem SA_RESTART, o SIGINT interrompe também a espera sem prazo do
+    `Thread.start()` pelo início da thread nova, e o `KeyboardInterrupt` sai de
+    dentro dele.
+    """
+    yield from _sigint_com_restart(reinicia=False)
 
 
 @requer_pthread_kill
@@ -556,8 +574,8 @@ def test_ctrl_c_espera_a_linha_em_andamento_e_nao_deixa_thread_do_lote(tmp_path)
 
 
 @requer_pthread_kill
-def test_ctrl_c_dentro_do_submit_espera_a_linha_que_ja_entrou_na_fila(tmp_path):
-    """O Ctrl-C chega dentro do `submit` da última linha, que já entrou na fila.
+def test_ctrl_c_dentro_do_submit_espera_a_linha_que_a_thread_ja_comecou(tmp_path):
+    """O Ctrl-C chega dentro do `submit` da última linha, que a thread já começou.
 
     A linha roda e é paga, embora o laço não tenha guardado o futuro dela. A
     interrupção espera as threads do executor, e a linha entra no checkpoint.
@@ -565,9 +583,11 @@ def test_ctrl_c_dentro_do_submit_espera_a_linha_que_ja_entrou_na_fila(tmp_path):
     textos = ["a", "b", "lenta"]
     ckpt = tmp_path / "ckpt.csv"
     pagas, llm_rapido = _llm_com_ctrl_c()
+    lenta_comecou = threading.Event()
 
     def llm(texto, *args, **kwargs):
         if texto == "lenta":
+            lenta_comecou.set()
             # Termina depois da gravação que esperasse só os futuros guardados.
             time.sleep(0.5)
         return llm_rapido(texto, *args, **kwargs)
@@ -578,10 +598,12 @@ def test_ctrl_c_dentro_do_submit_espera_a_linha_que_ja_entrou_na_fila(tmp_path):
     def ajusta_e_interrompe(self):
         # O submit põe o item na fila e chama este método, que inicia a thread
         # quando falta uma; o KeyboardInterrupt do pthread_kill sai do submit
-        # antes de o laço guardar o futuro.
+        # antes de o laço guardar o futuro. O Ctrl-C espera a thread tirar a
+        # linha da fila: a que ainda estivesse nela seria cancelada.
         ajusta(self)
         despachos.append(1)
         if len(despachos) == len(textos):
+            assert lenta_comecou.wait(timeout=10)
             _ctrl_c()
 
     with (
@@ -610,6 +632,70 @@ def test_ctrl_c_dentro_do_submit_espera_a_linha_que_ja_entrou_na_fila(tmp_path):
         checkpoint_path=ckpt,
     )
     assert retomada == []
+
+
+@requer_pthread_kill
+@pytest.mark.usefixtures("sigint_interrompe_a_espera")
+def test_ctrl_c_dentro_do_start_da_thread_deixa_a_linha_da_fila_pendente(tmp_path):
+    """O Ctrl-C sai do `Thread.start()` da primeira thread do lote, antes de ela começar.
+
+    A thread já foi lançada, mas ainda não marcou o início, e a linha que ela
+    pegaria está na fila. O encerramento cancela a linha, e a thread, ao
+    começar, não a roda: a linha não é paga e a retomada a chama. Nenhuma
+    linha é paga fora do checkpoint.
+    """
+    textos = ["a", "b", "c"]
+    ckpt = tmp_path / "ckpt.csv"
+    pagas, llm = _llm_com_ctrl_c()
+    inicia = threading.Thread._bootstrap_inner  # ty: ignore[unresolved-attribute]
+    lancadas: list[threading.Thread] = []
+    saiu = threading.Event()
+
+    def inicia_depois_do_ctrl_c(self):
+        # Roda na thread nova, antes de ela marcar o início: o thread principal
+        # está no `_started.wait()` do `start()`, e o Ctrl-C o interrompe ali.
+        if not self.name.startswith("dataframeit-lote") or lancadas:
+            inicia(self)
+            return
+        lancadas.append(self)
+        _ctrl_c()
+        time.sleep(0.2)
+        try:
+            inicia(self)
+        finally:
+            saiu.set()
+
+    with (
+        patch.object(threading.Thread, "_bootstrap_inner", inicia_depois_do_ctrl_c),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": textos}),
+            llm,
+            parallel_requests=3,
+            batch_size=100,
+            checkpoint_path=ckpt,
+        )
+    assert len(lancadas) == 1
+    # A thread ainda não começou, e `join` a recusaria.
+    assert saiu.wait(timeout=10)
+
+    # Sem linha registrada, a interrupção não grava o arquivo.
+    processadas = set()
+    if ckpt.exists():
+        gravado = pd.read_csv(ckpt)
+        processadas = set(gravado.loc[gravado["_dataframeit_status"].eq("processed"), "texto"])
+    assert set(pagas) <= processadas
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    _roda(
+        pd.DataFrame({"texto": textos}),
+        llm_ok,
+        parallel_requests=3,
+        batch_size=100,
+        checkpoint_path=ckpt,
+    )
+    assert sorted(retomada) == sorted(set(textos) - set(pagas))
 
 
 @pytest.mark.parametrize("paralelo", [1, 3])
