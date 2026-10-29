@@ -114,24 +114,29 @@ def _raise_for_result_error(result: object) -> None:
     orçamento ou de turnos é definitivo; o status da API, quando o SDK o
     informa, decide entre sobrecarga (reduz o paralelismo), falha transitória
     e falha definitiva. Erro de execução sem status é tratado como transitório.
+
+    O status vai também no `status_code` da exceção, qualquer que seja a classe.
+    A mensagem leva o `result` do SDK, que pode ser texto do modelo, e a caixa
+    amigável sai do status, e não dela.
     """
     if result is None or not getattr(result, "is_error", False):
         return
 
     subtype = getattr(result, "subtype", None)
     status = getattr(result, "api_error_status", None)
+    status_code = status if isinstance(status, int) else None
     detail = getattr(result, "errors", None) or getattr(result, "result", None) or ""
     message = f"Claude Code SDK retornou erro ({subtype}, status {status}): {detail}".strip()
 
     if subtype in _FINAL_RESULT_SUBTYPES:
-        raise ProviderError(message)
-    if status in _OVERLOADED_STATUSES:
-        raise ProviderOverloadedError(message)
-    if isinstance(status, int) and status >= _SERVER_ERROR_MIN:
-        raise ProviderTransientError(message)
-    if isinstance(status, int):
-        raise ProviderError(message)
-    raise ProviderTransientError(message)
+        error_class = ProviderError
+    elif status in _OVERLOADED_STATUSES:
+        error_class = ProviderOverloadedError
+    elif status_code is None or status_code >= _SERVER_ERROR_MIN:
+        error_class = ProviderTransientError
+    else:
+        error_class = ProviderError
+    raise error_class(message, status_code=status_code)
 
 
 def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:

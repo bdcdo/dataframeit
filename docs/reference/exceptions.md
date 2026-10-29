@@ -57,6 +57,8 @@ ValueError
 | `ProviderAbortError` | Não | Falha depois da qual nenhuma linha passaria, como o runtime do `codex` encerrado; a execução para |
 | `ProviderUsageLimitError` | Não | Cota de uso da conta esgotada, como a do `codex`; a execução para |
 
+O `ProviderError` e as subclasses trazem em `status_code` o status HTTP que o provider informou fora da mensagem, ou `None` quando ele não informou: no `claude_code`, o `api_error_status` do SDK; no `codex`, o status HTTP do turno que falhou, e 401 no código `unauthorized`. A caixa do aviso de falha da linha sai da classe e desse status, e não da mensagem, que pode trazer texto do modelo. A classe decide primeiro: o `ProviderOverloadedError` dá a caixa de limite de requisições, com ou sem status, e o `ProviderRejectedOutputError` dá a caixa da validação. Nas demais classes, o status decide: 401 dá a caixa de autenticação, 403 a de permissão, e 408 ou 504, num `ProviderTransientError`, a de timeout. Sem classe nem status que decidam, a caixa é a genérica, com o tipo e o começo da mensagem. A caixa de conexão, que só o texto decide, não sai para o `ProviderError`.
+
 Erros dos providers via LangChain não usam essas classes. Eles são classificados pelo tipo que a própria LangChain declara, pelo status HTTP e pela mensagem. Os detalhes estão em [Tratamento de Erros](../guides/error-handling.md).
 
 ## Falhas que interrompem a execução
