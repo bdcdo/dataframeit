@@ -272,6 +272,21 @@ jobs:
           tests/test_codex.py::TestBackendLifecycle
           tests/test_codex_runtime.py
 
+      # A descarga da linha que aborta com a morte do app-server termina por um
+      # de três caminhos, conforme a ordem entre a morte e a escrita: a escrita
+      # levanta, ou a escrita passa e o pedido é solto pelo `fail_all` do
+      # recolhimento ou pelo do leitor do stdout. O teste grava o caminho no
+      # JUnit, e a contagem diz quais deles o Windows percorre.
+      - name: Count drain paths of the aborted row
+        shell: bash
+        run: |
+          for i in $(seq 1 20); do
+            uv run --python 3.13 --extra dev --extra codex pytest -q -p no:cacheprovider \
+              -o junit_family=xunit1 --junitxml="descarga/$i.xml" \
+              tests/test_codex_runtime.py::test_app_server_que_morre_no_turno_devolve_as_linhas_processadas
+          done
+          grep -ho 'name="caminho_da_descarga" value="[^"]*"' descarga/*.xml | sort | uniq -c
+
   docs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

@@ -498,38 +498,64 @@ def _guarda_os_processos(monkeypatch):
     return processos
 
 
-def _segundo_ctrl_c_no_wait(processo):
-    """O primeiro `wait` do processo levanta `KeyboardInterrupt`, como um segundo Ctrl+C.
+def _interrompe_os_waits(processo, interrompidos):
+    """Os `wait` do processo nas posições de `interrompidos`, a partir de 1, levantam `KeyboardInterrupt`.
 
-    O sinal de verdade, mandado por um `threading.Timer`, chegaria fora do bloco
-    se o temporizador atrasasse, e o `KeyboardInterrupt` derrubaria a sessão do
-    pytest. Os `wait` seguintes são os do processo.
+    Cada um faz as vezes de um Ctrl+C a mais durante o fechamento. O sinal de
+    verdade, mandado por um `threading.Timer`, chegaria fora do bloco se o
+    temporizador atrasasse, e o `KeyboardInterrupt` derrubaria a sessão do
+    pytest. Os demais `wait` são os do processo. Devolve o `timeout` de cada
+    chamada, na ordem.
     """
     espera = processo.wait
     chamadas = []
 
-    def interrompe_a_primeira(timeout=None):
+    def interrompe(timeout=None):
         chamadas.append(timeout)
-        if len(chamadas) == 1:
+        if len(chamadas) in interrompidos:
             raise KeyboardInterrupt
         return espera(timeout)
 
-    processo.wait = interrompe_a_primeira
+    processo.wait = interrompe
+    return chamadas
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP só existe em POSIX")
-@pytest.mark.parametrize("segundo_ctrl_c", [False, True], ids=["sem_sair_em_2s", "segundo_ctrl_c"])
-def test_app_server_que_nao_sai_no_fechamento_e_recolhido(tmp_path, monkeypatch, segundo_ctrl_c):
-    """O app-server que não sai depois do SIGTERM é morto, esperado e tem os pipes fechados.
+_SO_COM_SIGSTOP = pytest.mark.skipif(sys.platform == "win32", reason="SIGSTOP só existe em POSIX")
+
+
+@pytest.mark.parametrize(
+    ("ctrl_c_no_bloco", "waits_interrompidos"),
+    [
+        pytest.param(False, (), id="sem_sair_em_2s", marks=_SO_COM_SIGSTOP),
+        pytest.param(True, (1,), id="segundo_ctrl_c"),
+        pytest.param(True, (1, 2), id="terceiro_ctrl_c"),
+        pytest.param(True, (1, 2, 3), id="quarto_ctrl_c"),
+        pytest.param(False, (2,), id="ctrl_c_so_no_recolhimento", marks=_SO_COM_SIGSTOP),
+    ],
+)
+def test_app_server_que_nao_sai_no_fechamento_e_recolhido(
+    tmp_path, monkeypatch, ctrl_c_no_bloco, waits_interrompidos
+):
+    """O app-server que não sai depois do SIGTERM é morto, recolhido e tem os pipes fechados.
 
     Com `SIGSTOP`, o processo não sai em 2 s, e o `close` do SDK faz `kill`
     sem `wait`: o processo ficaria zumbi, sem `returncode`, e o `Popen` avisaria
     na coleta de lixo. Com um segundo Ctrl+C durante o `wait` do SDK, o `close`
     sai sem `kill`, e o app-server ficaria vivo, com os pipes abertos, depois
-    que o bloco já levantou `KeyboardInterrupt`.
+    que o bloco já levantou `KeyboardInterrupt`. O terceiro e o quarto Ctrl+C
+    caem na espera do recolhimento depois do `kill`, que os absorve até o
+    processo ser recolhido, fecha os pipes e acorda os pedidos em voo; sem
+    essa espera, o quarto deixaria o processo zumbi e os pipes abertos. O Ctrl+C
+    absorvido continua chegando ao chamador, também quando é o único, depois
+    que o bloco saiu sem erro e o `wait` do SDK estourou os 2 s.
+
+    No Windows, sem `SIGSTOP`, o processo sai com o `terminate` do SDK, e só
+    os casos em que o Ctrl+C interrompe o `wait` do SDK rodam: o processo segue
+    sem `returncode`, e a espera do recolhimento é a do Windows.
     """
     processos = _guarda_os_processos(monkeypatch)
-    esperado = pytest.raises(KeyboardInterrupt) if segundo_ctrl_c else contextlib.nullcontext()
+    ctrl_c = ctrl_c_no_bloco or waits_interrompidos
+    esperado = pytest.raises(KeyboardInterrupt) if ctrl_c else contextlib.nullcontext()
     with socket.socket() as closed_port, _avisos_de_recurso() as avisos:
         closed_port.bind(("127.0.0.1", 0))
         port = closed_port.getsockname()[1]
@@ -538,15 +564,22 @@ def test_app_server_que_nao_sai_no_fechamento_e_recolhido(tmp_path, monkeypatch,
             esperado,
             codex_provider.open_codex_backend(config, _Answer, "Responda: {texto}"),
         ):
-            os.kill(processos[0].pid, signal.SIGSTOP)
-            if segundo_ctrl_c:
-                _segundo_ctrl_c_no_wait(processos[0])
+            if sys.platform != "win32":
+                os.kill(processos[0].pid, signal.SIGSTOP)
+            chamadas = _interrompe_os_waits(processos[0], waits_interrompidos)
+            if ctrl_c_no_bloco:
                 raise KeyboardInterrupt
 
         (processo,) = processos
         try:
             assert processo.returncode is not None
+            if sys.platform != "win32":
+                # O zumbi ainda seria filho do pytest à espera do `wait`.
+                with pytest.raises(ChildProcessError):
+                    os.waitpid(processo.pid, os.WNOHANG)
             assert _pipes_fechados(processo)
+            # Cada Ctrl+C simulado caiu num `wait` do fechamento.
+            assert len(chamadas) >= max(waits_interrompidos, default=0)
         finally:
             # Sem a correção, o app-server segue parado, e o teste o recolhe.
             processo.kill()
@@ -689,27 +722,81 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
         pass
 
 
-def _avisa_a_escrita_da_descarga(monkeypatch, cliente_do_protocolo, threads, escrita):
-    """Liga `escrita` depois de cada tentativa de escrever o `thread/unsubscribe` de uma das `threads`.
+@dataclasses.dataclass
+class _DescargaDaLinhaAbortada:
+    """O `thread/unsubscribe` das `threads` que o provider derrubou, visto pelo cliente do protocolo.
 
-    A tentativa conta tenha a escrita passado ou levantado.
+    `escrita` liga depois de cada tentativa de escrever o pedido, tenha ela
+    passado ou levantado. `soltos` guarda o erro de cada `fail_all` do
+    roteador, com a origem: o leitor do stdout, quando a chamada roda na
+    thread dele, ou o recolhimento, no fechamento do cliente.
     """
-    escreve = cliente_do_protocolo._write_message
 
-    def escreve_e_avisa(mensagem):
-        try:
-            escreve(mensagem)
-        finally:
-            if (
+    threads: list[str | None]
+    escrita: threading.Event = dataclasses.field(default_factory=threading.Event)
+    erro_da_escrita: BaseException | None = None
+    erro_do_pedido: BaseException | None = None
+    soltos: list[tuple[str, BaseException]] = dataclasses.field(default_factory=list)
+
+    def caminho(self):
+        """Diz por qual caminho a descarga terminou.
+
+        A escrita levanta quando o stdin do processo morto já não tem leitor,
+        com `BrokenPipeError`, ou `OSError(EINVAL)` no Windows, e o pedido nem
+        espera resposta. Quando ela passa, a resposta não vem, e o pedido sai
+        pelo `fail_all` que acordou a espera: o do recolhimento, quando ela foi
+        registrada depois do `fail_all` do leitor do stdout, ou o do leitor,
+        quando foi registrada antes.
+        """
+        if self.erro_da_escrita is not None:
+            return "escrita_levantou"
+        for origem, erro in self.soltos:
+            if erro is self.erro_do_pedido:
+                return f"fail_all_do_{origem}"
+        return f"outro: {self.erro_do_pedido!r}"
+
+    def instala(self, monkeypatch, cliente_do_protocolo):
+        escreve = cliente_do_protocolo._write_message
+        pede = cliente_do_protocolo.request
+        roteador = cliente_do_protocolo._router
+        solta = roteador.fail_all
+
+        def escreve_e_registra(mensagem):
+            da_descarga = (
                 mensagem.get("method") == "thread/unsubscribe"
-                and mensagem["params"]["threadId"] in threads
-            ):
-                escrita.set()
+                and mensagem["params"]["threadId"] in self.threads
+            )
+            try:
+                escreve(mensagem)
+            except BaseException as erro:
+                if da_descarga:
+                    self.erro_da_escrita = erro
+                raise
+            finally:
+                if da_descarga:
+                    self.escrita.set()
 
-    monkeypatch.setattr(cliente_do_protocolo, "_write_message", escreve_e_avisa)
+        def pede_e_registra(metodo, params, **kwargs):
+            try:
+                return pede(metodo, params, **kwargs)
+            except BaseException as erro:
+                if metodo == "thread/unsubscribe" and params["threadId"] in self.threads:
+                    self.erro_do_pedido = erro
+                raise
+
+        def solta_e_registra(erro):
+            leitor = threading.current_thread() is cliente_do_protocolo._reader_thread
+            self.soltos.append(("leitor" if leitor else "recolhimento", erro))
+            solta(erro)
+
+        monkeypatch.setattr(cliente_do_protocolo, "_write_message", escreve_e_registra)
+        monkeypatch.setattr(cliente_do_protocolo, "request", pede_e_registra)
+        monkeypatch.setattr(roteador, "fail_all", solta_e_registra)
 
 
-def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, monkeypatch):
+def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(
+    tmp_path, monkeypatch, record_property
+):
     """O app-server que morre no meio de um turno não derruba `dataframeit()`.
 
     A linha em curso aborta, e o `thread/unsubscribe` dela em geral fica no
@@ -729,6 +816,12 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
     não a distingue: a da linha abortada pode começar antes de o handler do
     provider voltar a rodar depois do `kill`, e a da primeira linha pode
     atrasar até depois dele.
+
+    O caminho por que a descarga da linha abortada terminou vai ao relatório
+    JUnit na propriedade `caminho_da_descarga`, com os valores de
+    `_DescargaDaLinhaAbortada.caminho`. Ele depende da ordem entre a morte do
+    processo e a escrita, que o teste não controla, e o teste passa em todos.
+    O job `codex-windows` roda o teste várias vezes e conta os caminhos.
     """
     handler = type(
         "Handler",
@@ -749,15 +842,13 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
 
     abre_backend = codex_provider.open_codex_backend
 
-    descarga_escrita = threading.Event()
+    descarga = _DescargaDaLinhaAbortada(handler.threads_derrubadas)
 
     @contextlib.contextmanager
     def guarda_o_processo(*args, **kwargs):
         with abre_backend(*args, **kwargs) as backend:
             handler.processos.append(backend._client._client._proc)
-            _avisa_a_escrita_da_descarga(
-                monkeypatch, backend._client._client, handler.threads_derrubadas, descarga_escrita
-            )
+            descarga.instala(monkeypatch, backend._client._client)
             yield backend
 
     descarga_feita = threading.Event()
@@ -771,7 +862,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
     fecha = codex_provider._close_client
 
     def fecha_depois_da_escrita(client):
-        assert descarga_escrita.wait(30), "a linha abortada não pediu a descarga da thread"
+        assert descarga.escrita.wait(30), "a linha abortada não pediu a descarga da thread"
         client._client._reader_thread.join(30)
         client._client._stderr_thread.join(30)
         fecha(client)
@@ -801,6 +892,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(tmp_path, m
 
     (processo,) = handler.processos
     assert descarga_feita.wait(30), "a descarga da linha abortada ficou presa"
+    record_property("caminho_da_descarga", descarga.caminho())
     assert _pipes_fechados(processo)
     assert resultado["_dataframeit_status"].tolist() == ["processed", None, None]
     assert resultado["resposta"].tolist() == ["ok", None, None]
