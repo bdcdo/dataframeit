@@ -13,8 +13,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - As exceções `ProviderError`, `ProviderTransientError`, `ProviderOverloadedError`, `ProviderRejectedOutputError`, `ProviderConfigurationError` e `ProviderOutputError` e o `__version__` passam a ser exportados por `dataframeit`.
 - `ProviderAbortError` e a subclasse `ProviderUsageLimitError`, também exportadas, marcam a falha que impede qualquer linha seguinte. A execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status; a linha que recebeu o erro e as que faltam ficam pendentes para `resume=True`, e as colunas de controle ficam na saída enquanto houver linha pendente. Com `reprocess_columns`, a linha que ficou sem reprocessar mantém os valores anteriores e é marcada em `_error_details`, e as marcas vão ao checkpoint.
 - No provider `codex`, uma thread sem turno confere na abertura que o runtime resolveu o `model` pedido, e a divergência levanta `ProviderConfigurationError` antes da primeira linha; sem `model`, um aviso diz qual será usado. Um turno reroteado para outro modelo é interrompido e a linha falha.
+- O pacote declara suporte a Python 3.14, e o CI roda os testes também nessa versão (#231).
 
 ### Alterado
+
+- Em `is_complex_type` e `resolve_forward_refs`, `typing.Union` e `X | Y` passam por um ramo só, escolhido pela origem da anotação, porque no 3.14 os dois são o mesmo objeto e o ramo de cada forma deixava código sem rodar. `resolve_forward_refs` remonta as duas formas com `typing.Union[...]`: antes do 3.14, um `X | Y` com referência resolvida volta na forma de `typing.Union`, igual a ele por `==` (#231).
+- O extra `codex` fixa `openai-codex==0.163.0`; as flags `api_key_cyber_access_programs`, `cli_daybreak` e `code_mode_interrupt` ficam desligadas no provider (#270).
 
 - O extra `dev` passa a trazer o `pytest-repeat`, e o CI roda a suíte duas vezes no mesmo processo (`pytest --count=2 --repeat-scope=session`), o que reprova o teste que só passa na primeira execução (#201).
 - `read_df(path, modelo)`, chamada sem argumentos de leitura extras, relê como `int` a célula que o CSV ou o parquet guarda como inteiro num campo `int` ou `Optional[int]`, e a coluna sai como `object`, com `None` na célula vazia, em vez de float64 com `NaN`. É o que faz a retomada devolver exato o inteiro acima de 2**53. A coluna que o leitor já devolve em tipo inteiro, como a `Int64` anulável do parquet, e a coluna só com células vazias ficam como lidas. Com argumento de leitura extra, que vai ao pandas, a função devolve o que ele lê, e o XLSX fica de fora, porque guarda número como double (#223).
@@ -40,6 +44,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - Na saída polars, um campo `dict` sai como texto JSON, como no checkpoint. Antes, saía `Struct` com as chaves de todas as linhas: a chave ausente ficava igual à chave com valor nulo, e o dict vazio deixava de ser vazio. A coluna de um campo sem nenhum valor, toda nula ou só com listas vazias, sai com o tipo da anotação quando ela é `str`, `int`, `float`, `bool`, `date`, `datetime` ou lista de um deles. Antes, o tipo vinha só das respostas: um `Optional[int]` todo nulo saía `String`, e um `list[str]` só com listas vazias, `List(Null)` (#219).
 
 ### Corrigido
+
+- As anotações dos geradores usados como context managers são verificadas pelo ty 0.0.88 (#270).
+
+- A criação das colunas de saída usa a opção `mode.chained_assignment` só no pandas 2, preservando entradas fatiadas sem emitir aviso de depreciação no pandas 3.1 (#269).
 
 - No provider `codex`, a thread daemon que pede o `thread/unsubscribe` da linha abortada pela morte do app-server deixa de ficar presa para sempre. O processo morto ainda aceita a escrita enquanto termina, e o SDK registra a espera da resposta depois de o leitor do stdout ter acordado os pedidos em voo; agora o fechamento do cliente acorda essa espera (#250).
 - `read_df` com argumento de leitura que faz o pandas devolver outra coisa que um DataFrame, como `chunksize`, `iterator`, `sheet_name=None` ou lista e o `chunksize` do JSON em linhas, devolve o `TextFileReader`, o `JsonReader` ou o dict de abas como o pandas o devolve, sem normalizar, com ou sem modelo. Antes, sem modelo, ou com modelo que tem campo de lista, dict ou modelo aninhado, e com `normalize=True`, o padrão, a função levantava `AttributeError` ao procurar as colunas no objeto do leitor (#249).
@@ -77,6 +85,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - No provider `codex`, a thread efêmera de cada tentativa e a da sonda do modelo recebem `thread/unsubscribe` ao terminar, e o app-server as descarrega depois de cerca de 60 s sem assinante. Antes, todas ficavam carregadas até o fim da execução, e a memória do app-server crescia com o número de linhas: 100 threads sem turno ocupavam cerca de 330 MB. O pedido sai da thread da linha, e um app-server que não responde a ele não prende a linha (#156).
 - `depends_on` em tupla vale como a lista. Antes, era descartado em silêncio, e o aviso dizia que `depends_on` faltava. Forma diferente de texto, lista ou tupla de nomes levanta `ValueError` antes de processar (#150).
 - A configuração por campo declarada num modelo dentro de `Annotated` aninhado, como `list[Annotated[list["X"], ...]]`, é encontrada pela varredura e pelas validações. A referência adiantada dentro do `Annotated` é resolvida, e os metadados ficam como estavam (#151).
+
+### Segurança
+
+- Os workflows do CI fixam cada action pelo SHA do commit, com a versão em comentário; o `actions/checkout` deixa de gravar o token do GitHub no `.git/config` do runner (`persist-credentials: false`); e, no `docs.yml`, só o job que publica tem `pages: write` e `id-token: write`. O job `quality` roda o `zizmor`, que reprova a action referida por tag ou branch no lugar do SHA, o `actions/checkout` sem a chave `persist-credentials` e a permissão de escrita no nível do workflow (#209).
 
 ## [0.10.0] - 2026-09-24
 
