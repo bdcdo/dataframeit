@@ -23,7 +23,7 @@ Os testes não chamam nenhum provider de verdade e não precisam de chave de API
 1. Abra uma issue antes de uma mudança grande, para combinar o desenho.
 2. Crie uma branch a partir da `main` com o prefixo do tipo de mudança: `feature/`, `fix/`, `docs/` ou `refactor/`.
 3. Escreva o teste junto com a mudança. Uma correção de bug vem com o teste que falhava antes dela.
-4. Abra o PR contra a `main`. O CI roda lint, testes em Python 3.11, 3.13 e 3.14, os testes com as versões mínimas das dependências e o build da documentação.
+4. Abra o PR contra a `main`. O CI roda lint, a auditoria dos workflows pelo `zizmor`, testes em Python 3.11, 3.13 e 3.14, os testes com as versões mínimas das dependências e o build da documentação.
 
 ## Convenções
 
@@ -32,6 +32,8 @@ As regras de versionamento, de `CHANGELOG.md` e de escrita de documentação est
 - Toda mudança de código entra no `CHANGELOG.md`, na seção `[Unreleased]`, no formato Keep a Changelog.
 - A documentação descreve o estado atual. O histórico fica no `CHANGELOG.md` e no git, sem notas do tipo "desde a versão X".
 - O número de versão só muda na preparação de um release.
+
+Os workflows de `.github/workflows/` fixam cada action pelo SHA do commit, com a versão em comentário (`uses: dono/action@<sha> # v1.2.3`), e o `actions/checkout` leva `persist-credentials: false`. O passo `zizmor` do job `quality`, em `tests.yml`, reprova a action referida por tag ou branch no lugar do SHA, o `actions/checkout` sem a chave `persist-credentials` e a permissão de escrita no nível do workflow. O `zizmor --offline` não confere o comentário de versão e aceita `persist-credentials: true`, e essas duas partes da convenção ficam a cargo da revisão do PR. O mesmo comando do passo roda na máquina local.
 
 A documentação tem duas árvores com o mesmo conteúdo: `docs/` em português, que é o idioma padrão do site, e `docs/en/` em inglês. Uma mudança numa página vale para as duas.
 
