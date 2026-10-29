@@ -111,6 +111,33 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  # A suíte roda duas vezes no mesmo processo e reprova o teste que só passa na
+  # primeira execução, porque depende de estado que um teste anterior, ou ele
+  # mesmo, deixou para trás: atributo de classe, logger global, variável de
+  # módulo. Instala todos os extras, para que nenhum teste fique pulado, e roda
+  # sem cobertura, que o job coverage já mede.
+  repeat:
+    runs-on: ubuntu-latest
+    env:
+      EXTRAS: --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+
+      - name: Run tests twice in one session
+        run: uv run --python 3.13 $EXTRAS pytest --count=2 --repeat-scope=session
+
   # Instala cada dependência direta na menor versão que o pyproject.toml aceita,
   # resolvendo cada conjunto de extras à parte: num lock universal, um extra
   # pode subir o piso de uma dependência base (claude-agent-sdk puxa pydantic
