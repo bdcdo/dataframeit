@@ -2027,7 +2027,7 @@ def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
 
 
 def _instance_state(value: object, path: frozenset[int]) -> object:
-    """Atributos da instância, pela folha da forma canônica.
+    """Atributos da instância, do `__dict__` e dos `__slots__`, pela folha da forma canônica.
 
     O atributo pode voltar ao próprio objeto, direto ou por outro objeto. O
     objeto que já está em `path` entra por um marcador com o nome da classe, sem
@@ -2037,7 +2037,35 @@ def _instance_state(value: object, path: frozenset[int]) -> object:
     """
     if id(value) in path:
         return {"cycle": type(value).__name__}
-    return _stable(getattr(value, "__dict__", {}), partial(_schema_leaf, path=path | {id(value)}))
+    state = {**getattr(value, "__dict__", {}), **_slot_values(value)}
+    return _stable(state, partial(_schema_leaf, path=path | {id(value)}))
+
+
+# O slot declarado e ainda não atribuído não tem valor, e o getattr dele cai no
+# default; None não serve de marca, porque é um valor que o slot pode ter.
+_UNSET_SLOT = object()
+
+
+def _slot_values(value: object) -> dict[str, object]:
+    """Atributos atribuídos nos `__slots__` de cada classe da MRO.
+
+    O slot privado (`__peso` na classe `Regra`) fica guardado com o nome da
+    classe na frente (`_Regra__peso`), e é por esse nome que se lê. O slot
+    `__dict__` já entra por `_instance_state`, e o `__weakref__` é a referência
+    fraca de quem observa o objeto, não configuração dele.
+    """
+    values: dict[str, object] = {}
+    for cls in type(value).__mro__:
+        slots = vars(cls).get("__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name in ("__dict__", "__weakref__"):
+                continue
+            private = name.startswith("__") and not name.endswith("__")
+            attribute = f"_{cls.__name__.lstrip('_')}{name}" if private else name
+            slot = getattr(value, attribute, _UNSET_SLOT)
+            if slot is not _UNSET_SLOT:
+                values[attribute] = slot
+    return values
 
 
 def _code_form(code: CodeType) -> list[object]:

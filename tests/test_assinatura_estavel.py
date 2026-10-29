@@ -534,7 +534,8 @@ def test_atributo_do_campo_que_o_json_schema_levaria_muda_a_assinatura(atributo)
 
 
 # Cabeçalho do processo filho que assina condições chamáveis: o Pedido com a
-# condição dada e a assinatura dele, pelo mesmo `_run_signature` do teste.
+# condição dada e a assinatura dele, pelo mesmo `_run_signature` do teste. O
+# modelo já montado, em vez da condição, é assinado como veio.
 _ASSINA_CONDICOES = textwrap.dedent(
     """
     import functools
@@ -553,8 +554,9 @@ _ASSINA_CONDICOES = textwrap.dedent(
                 default=None, json_schema_extra=field_condition(condicao, depends_on="tipo")
             )
 
+        modelo = condicao if isinstance(condicao, type) else Pedido
         return _run_signature(
-            Pedido, "{texto}", provider="openai", model="m", model_kwargs=None,
+            modelo, "{texto}", provider="openai", model="m", model_kwargs=None,
             search_config=None, text_column="texto", status_col="_dataframeit_status",
         )
     """
@@ -626,4 +628,91 @@ def test_mesmo_objeto_em_dois_atributos_assina_como_dois_objetos_iguais():
     igual.a, igual.b = outro, regra("vip")
 
     assert _assinatura(_pedido(repetido)) == _assinatura(_pedido(igual))
+
+
+# Objeto chamável sem __dict__, com o estado em __slots__: o slot da classe, o
+# herdado, o privado (que o Python guarda com o nome da classe na frente) e o
+# __dict__ declarado como slot, ao lado dos outros. O slot com conjunto de texto
+# passa pelas sementes.
+_SLOTS = """
+class Regra:
+    __slots__ = ("alvo",)
+
+    def __init__(self, alvo):
+        self.alvo = alvo
+
+    def __call__(self, d):
+        return d.get("tipo") in self.alvo
+
+
+class RegraPesada(Regra):
+    __slots__ = "__peso"
+
+    def __init__(self, alvo, peso):
+        super().__init__(alvo)
+        self.__peso = peso
+
+
+class RegraAberta(Regra):
+    __slots__ = ("__dict__", "__weakref__", "nota")
+
+
+def aberta(alvo, **atributos):
+    regra = RegraAberta(alvo)
+    for nome, valor in atributos.items():
+        setattr(regra, nome, valor)
+    return regra
+
+
+TIPOS = {"vip", "ouro", "prata", "bronze"}
+VARIACOES = {
+    "slot": lambda: Regra(TIPOS),
+    "slot-mudado": lambda: Regra(TIPOS | {"lata"}),
+    "herdado": lambda: RegraPesada(TIPOS, 1),
+    "herdado-mudado": lambda: RegraPesada({"vip"}, 1),
+    "privado-mudado": lambda: RegraPesada(TIPOS, 2),
+    "aberta": lambda: aberta(TIPOS),
+    "aberta-com-nota": lambda: aberta(TIPOS, nota=1),
+    "aberta-com-dict": lambda: aberta(TIPOS, extra=1),
+}
+"""
+
+# A referência fraca ao objeto não conta. O Pydantic guarda referência fraca às
+# variáveis locais da função que define o modelo, e a condição do Pedido
+# montado em `assinatura` tem um `__weakref__` que a deste Pedido, definido no
+# módulo, não tem.
+_PEDIDO_NO_MODULO = """
+class Pedido(BaseModel):
+    tipo: str
+    desconto: float | None = Field(
+        default=None, json_schema_extra=field_condition(aberta(TIPOS), depends_on="tipo")
+    )
+"""
+
+
+def test_objeto_chamavel_com_slots_assina_igual_entre_sementes():
+    """O slot entra igual em qualquer processo, e a referência fraca ao objeto não conta."""
+    assinaturas = _assinaturas_em_tres_sementes(
+        _SLOTS + _PEDIDO_NO_MODULO,
+        "{nome: montar() for nome, montar in VARIACOES.items()} | {'aberta-no-modulo': Pedido}",
+    )
+
+    assert assinaturas["aberta"] == assinaturas["aberta-no-modulo"]
+
+
+@pytest.mark.parametrize(
+    ("antes", "depois"),
+    [
+        ("slot", "slot-mudado"),
+        ("herdado", "herdado-mudado"),
+        ("herdado", "privado-mudado"),
+        ("aberta", "aberta-com-nota"),
+        ("aberta", "aberta-com-dict"),
+    ],
+)
+def test_mudanca_no_slot_do_objeto_chamavel_muda_a_assinatura(antes, depois):
+    """O atributo em __slots__, sem __dict__, conta como o atributo da instância."""
+    variacoes = _funcao(_SLOTS, "VARIACOES")
+
+    assert _assinatura(_pedido(variacoes[antes]())) != _assinatura(_pedido(variacoes[depois]()))
 
