@@ -7,6 +7,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- Nos providers `claude_code` e `codex`, o status HTTP 408 ou 409 dá `ProviderTransientError`, e a linha é repetida com backoff, como no erro de SDK que chega pelo LangChain; no 408, o aviso sai com a caixa de timeout. Antes, os dois status davam `ProviderError` definitivo, e a linha ficava com erro na primeira falha (#274).
+- A caixa genérica de erro (`ERRO NO PROCESSAMENTO`) mostra a mensagem em até três linhas, terminada em reticências quando passa disso, e a moldura fica alinhada nas linhas do tipo e dos detalhes. Antes, a mensagem era cortada em 66 caracteres sem aviso, e no `claude_code` o corte caía dentro do prefixo `Claude Code SDK retornou erro (subtipo, status N): `, sem mostrar nada do texto do SDK (#275).
+- No provider `claude_code`, o `api_error_status` que o SDK entrega como texto de dígitos ou float inteiro, como `"401"` ou `401.0`, é classificado como o status inteiro: `"401"` dá a caixa de autenticação sem nova tentativa, e `"429"` reduz o paralelismo. `True`, `False` e os demais valores contam como status ausente; antes, `True` passava como status e virava `ProviderError` definitivo com `status_code=True` (#276).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido

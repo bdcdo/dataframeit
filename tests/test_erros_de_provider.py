@@ -2,11 +2,15 @@
 
 import importlib
 import importlib.util
+from types import SimpleNamespace
 
 import pytest
 
 from dataframeit import errors
+from dataframeit.claude_code import _raise_for_result_error
 from dataframeit.errors import (
+    ProviderError,
+    ProviderTransientError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -182,6 +186,144 @@ def test_403_escolhe_a_caixa_de_permissao():
 def test_timeout_escolhe_a_caixa_de_tempo_esgotado():
     mensagem = get_friendly_error_message(TimeoutError("request timed out"), "openai")
     assert "TEMPO ESGOTADO" in mensagem
+
+
+# =============================================================================
+# Caixa genérica
+# =============================================================================
+
+
+def _detalhes(mensagem):
+    """Conteúdo das linhas da caixa que vão de 'Detalhes:' até a linha em branco."""
+    linhas = [linha.strip("║").strip() for linha in mensagem.splitlines()]
+    inicio = next(i for i, linha in enumerate(linhas) if linha.startswith("Detalhes:"))
+    fim = linhas.index("", inicio)
+    return [linhas[inicio].removeprefix("Detalhes:").strip(), *linhas[inicio + 1 : fim]]
+
+
+def _caixa_generica(texto):
+    mensagem = get_friendly_error_message(RuntimeError(texto), "openai")
+    assert "ERRO NO PROCESSAMENTO" in mensagem
+    return mensagem
+
+
+def test_caixa_generica_do_claude_code_mostra_o_texto_do_sdk():
+    resultado = SimpleNamespace(
+        is_error=True,
+        subtype="error_during_execution",
+        api_error_status=None,
+        errors=None,
+        result="Invalid API key · Please run /login",
+    )
+    with pytest.raises(ProviderTransientError) as erro:
+        _raise_for_result_error(resultado)
+
+    detalhes = " ".join(_detalhes(get_friendly_error_message(erro.value, "claude_code")))
+
+    assert detalhes == str(erro.value)
+    assert "Invalid API key · Please run /login" in detalhes
+
+
+def test_caixa_generica_mostra_mensagem_curta_numa_linha():
+    assert _detalhes(_caixa_generica("falhou")) == ["falhou"]
+
+
+def test_caixa_generica_quebra_a_mensagem_em_ate_tres_linhas_com_reticencias():
+    texto = " ".join(f"palavra{i}" for i in range(60))
+
+    detalhes = _detalhes(_caixa_generica(texto))
+
+    assert len(detalhes) == 3
+    assert detalhes[-1].endswith(" ...")
+    assert texto.startswith(" ".join(detalhes).removesuffix(" ..."))
+
+
+def test_caixa_generica_sem_corte_nao_poe_reticencias():
+    texto = " ".join(["palavra"] * 20)
+
+    detalhes = _detalhes(_caixa_generica(texto))
+
+    assert len(detalhes) == 3
+    assert " ".join(detalhes) == texto
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "",
+        "falhou",
+        "linha um\nlinha dois\tcom tabulação",
+        "x" * 300,
+        " ".join(["palavra"] * 100),
+        "Claude Code SDK retornou erro (error_during_execution, status None): " + "y" * 200,
+    ],
+    ids=["vazia", "curta", "quebra-de-linha", "palavra-longa", "longa", "prefixo-do-claude-code"],
+)
+def test_caixa_generica_mantem_a_moldura_alinhada(texto):
+    linhas = _caixa_generica(texto).splitlines()
+
+    assert {len(linha) for linha in linhas} == {len(linhas[0])}
+    assert all(linha.startswith(("║", "╔", "╠", "╚")) for linha in linhas)
+
+
+# =============================================================================
+# Status HTTP nos backends sem LangChain
+# =============================================================================
+
+
+class _ErroDeSdk(Exception):
+    """Como o erro de SDK que chega pelo LangChain, com o status em status_code."""
+
+    def __init__(self, mensagem, status_code):
+        super().__init__(mensagem)
+        self.status_code = status_code
+
+
+def _erro_do_claude_code(status):
+    resultado = SimpleNamespace(
+        is_error=True,
+        subtype="error_during_execution",
+        api_error_status=status,
+        errors=None,
+        result="falhou",
+    )
+    try:
+        _raise_for_result_error(resultado)
+    except ProviderError as erro:
+        return erro
+    pytest.fail("o resultado com erro não levantou")
+
+
+# Cada status de erro HTTP é recuperável no claude_code se, e só se, o é no erro
+# de SDK que chega pelo LangChain.
+@pytest.mark.parametrize("status", range(400, 600))
+def test_claude_code_repete_os_mesmos_status_que_o_langchain(status):
+    erro = _erro_do_claude_code(status)
+
+    assert erro.status_code == status
+    esperado = is_recoverable_error(_ErroDeSdk("falhou", status))
+    assert is_recoverable_error(erro) is esperado
+
+
+@pytest.mark.parametrize("status", range(400, 600))
+def test_codex_repete_os_mesmos_status_que_o_langchain(status):
+    gerado = pytest.importorskip("openai_codex.generated.v2_all")
+    from dataframeit.codex import _raise_turn_error  # noqa: PLC0415 (extra codex opcional)
+
+    turno = gerado.TurnError(
+        message="falhou",
+        codexErrorInfo=gerado.CodexErrorInfo(
+            root=gerado.HttpConnectionFailedCodexErrorInfo(
+                httpConnectionFailed=gerado.HttpConnectionFailed(httpStatusCode=status)
+            )
+        ),
+    )
+    with pytest.raises(ProviderError) as erro:
+        _raise_turn_error(turno)
+
+    assert erro.value.status_code == status
+    esperado = is_recoverable_error(_ErroDeSdk("falhou", status))
+    assert is_recoverable_error(erro.value) is esperado
 
 
 # =============================================================================

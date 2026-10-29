@@ -30,6 +30,7 @@ from .errors import (
     ProviderOverloadedError,
     ProviderTransientError,
     ProviderUsageLimitError,
+    _is_recoverable_http_status,
     retry_with_backoff,
     validation_error_summary,
 )
@@ -43,11 +44,9 @@ if TYPE_CHECKING:
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort, ThreadTokenUsage
 
-# Status HTTP de credencial recusada, de rate limit e início da faixa de erro do
-# servidor.
+# Status HTTP de credencial recusada e de rate limit.
 _HTTP_UNAUTHORIZED = 401
 _HTTP_TOO_MANY_REQUESTS = 429
-_HTTP_SERVER_ERROR_MIN = 500
 # Código JSON-RPC com que o app-server do Codex recusa um pedido quando a fila de
 # entrada está cheia, com a mensagem "Server overloaded; retry later." e sem
 # `data`. O `is_retryable_error` do SDK procura a sobrecarga só no `data` e não o
@@ -1131,7 +1130,8 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
         status = getattr(root, payload_field).http_status_code
         if status == _HTTP_TOO_MANY_REQUESTS:
             error_class = ProviderOverloadedError
-        elif status is None or status >= _HTTP_SERVER_ERROR_MIN:
+        elif status is None or _is_recoverable_http_status(status):
+            # A mesma regra dos erros que chegam pelo LangChain: 5xx, 408 e 409.
             error_class = ProviderTransientError
         else:
             error_class = ProviderError
