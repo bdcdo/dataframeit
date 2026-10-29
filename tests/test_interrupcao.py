@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest.mock import patch
 
 import pandas as pd
@@ -696,6 +696,80 @@ def test_ctrl_c_dentro_do_start_da_thread_deixa_a_linha_da_fila_pendente(tmp_pat
         checkpoint_path=ckpt,
     )
     assert sorted(retomada) == sorted(set(textos) - set(pagas))
+
+
+@pytest.mark.parametrize(
+    "numeros",
+    [None, (10, 1)],
+    ids=["numeracao_do_modulo", "lote_1_ao_lado_do_lote_10"],
+)
+def test_lote_nao_espera_as_threads_de_outra_chamada_concorrente(numeros):
+    """Duas chamadas ao mesmo tempo: a curta termina com a longa em andamento.
+
+    A saída de cada lote espera só as threads do próprio executor. A longa roda
+    num thread do usuário, com as linhas presas até a curta voltar. Com os
+    números fixados, a longa abre o lote 10 e a curta o lote 1, e o nome
+    `dataframeit-lote10_0` começa com `dataframeit-lote1`.
+    """
+    prazo = 10.0
+    trava = threading.Lock()
+    longas = [f"longa{i}" for i in range(3)]
+    comecadas: list[str] = []
+    terminadas: list[str] = []
+    longas_comecaram = threading.Event()
+    liberada = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto in longas:
+            with trava:
+                comecadas.append(texto)
+                if len(comecadas) == len(longas):
+                    longas_comecaram.set()
+            liberada.wait(timeout=prazo)
+            with trava:
+                terminadas.append(texto)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
+
+    saidas: list[pd.DataFrame] = []
+
+    def roda_longa() -> None:
+        saidas.append(
+            dataframeit(
+                pd.DataFrame({"texto": longas}),
+                questions=Modelo,
+                prompt="{texto}",
+                parallel_requests=3,
+            )
+        )
+
+    numeracao = patch("dataframeit.core._executor_ids", iter(numeros)) if numeros else nullcontext()
+    longa = threading.Thread(target=roda_longa)
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        numeracao,
+    ):
+        try:
+            longa.start()
+            assert longas_comecaram.wait(timeout=prazo)
+            inicio = time.monotonic()
+            curta = dataframeit(
+                pd.DataFrame({"texto": ["a", "b"]}),
+                questions=Modelo,
+                prompt="{texto}",
+                parallel_requests=2,
+            )
+            duracao = time.monotonic() - inicio
+            with trava:
+                terminadas_na_volta = list(terminadas)
+        finally:
+            liberada.set()
+            longa.join(timeout=prazo)
+
+    assert duracao < 2.0
+    assert terminadas_na_volta == []
+    assert list(curta["campo1"]) == ["r-a", "r-b"]
+    assert [list(saida["campo1"]) for saida in saidas] == [[f"r-{t}" for t in longas]]
 
 
 @pytest.mark.parametrize("paralelo", [1, 3])
