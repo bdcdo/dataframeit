@@ -1,5 +1,6 @@
 """Falha que impede as linhas seguintes interrompe a execução sem gastá-las."""
 
+import re
 import signal
 import sys
 import threading
@@ -183,6 +184,50 @@ def test_aviso_diz_como_retomar_conforme_a_entrada(entrada, trecho):
 
     with pytest.warns(UserWarning, match=trecho):
         _roda(entrada(), llm)
+
+
+_SO_CHECKPOINT = "rode de novo com o mesmo checkpoint_path."
+_CHECKPOINT_OU_RESUME = (
+    "rode de novo com o mesmo checkpoint_path, ou com resume=True sobre esta saída."
+)
+_SO_RESUME = "rode de novo com resume=True sobre esta saída."
+_SEM_VIA = (
+    "a entrada não é um DataFrame e a saída não traz o texto, então só um "
+    "checkpoint_path permite retomar."
+)
+
+
+@pytest.mark.parametrize(
+    ("entrada", "com_checkpoint", "via"),
+    [
+        (lambda: ["a", "b", "c"], True, _SO_CHECKPOINT),
+        (lambda: {"k1": "a", "k2": "b", "k3": "c"}, True, _SO_CHECKPOINT),
+        (lambda: pd.DataFrame({"texto": ["a", "b", "c"]}), True, _CHECKPOINT_OU_RESUME),
+        (lambda: ["a", "b", "c"], False, _SEM_VIA),
+        (lambda: {"k1": "a", "k2": "b", "k3": "c"}, False, _SEM_VIA),
+        (lambda: pd.DataFrame({"texto": ["a", "b", "c"]}), False, _SO_RESUME),
+    ],
+    ids=[
+        "lista-com-checkpoint",
+        "dict-com-checkpoint",
+        "dataframe-com-checkpoint",
+        "lista-sem-checkpoint",
+        "dict-sem-checkpoint",
+        "dataframe-sem-checkpoint",
+    ],
+)
+def test_aviso_so_oferece_resume_sobre_a_saida_quando_ela_traz_o_texto(
+    entrada, com_checkpoint, via, tmp_path
+):
+    # resume=True sobre a saída só funciona quando a saída traz a coluna de
+    # texto, o que acontece só com entrada DataFrame. O texto inteiro da via de
+    # retomada é fixado, ancorado no fim da mensagem, para que nenhuma via a
+    # mais apareça.
+    _, llm = _llm_que_esgota(1, ProviderUsageLimitError("usage limit"))
+    extra = {"checkpoint_path": tmp_path / "c.csv", "batch_size": 1} if com_checkpoint else {}
+
+    with pytest.warns(UserWarning, match=re.escape(f"Para retomar, {via}") + "$"):
+        _roda(entrada(), llm, **extra)
 
 
 def test_aviso_com_checkpoint_manda_usar_o_mesmo_arquivo(tmp_path):

@@ -1841,9 +1841,18 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 "(marcadas em _error_details); repetir a chamada com reprocess_columns "
                 "refaz todas as linhas, inclusive as já reprocessadas"
             )
+        # resume=True sobre a saída só retoma quando a saída traz a coluna de
+        # texto, e só a saída de entrada DataFrame a traz; para list, dict e
+        # Series a via de retomada é o checkpoint.
+        output_has_text = conversion_info.original_type in (
+            ORIGINAL_TYPE_PANDAS_DF,
+            ORIGINAL_TYPE_POLARS_DF,
+        )
         if checkpoint is not None:
-            how = "rode de novo com o mesmo checkpoint_path, ou com resume=True sobre esta saída"
-        elif conversion_info.original_type in (ORIGINAL_TYPE_PANDAS_DF, ORIGINAL_TYPE_POLARS_DF):
+            how = "rode de novo com o mesmo checkpoint_path"
+            if output_has_text:
+                how += ", ou com resume=True sobre esta saída"
+        elif output_has_text:
             how = "rode de novo com resume=True sobre esta saída"
         else:
             how = (
