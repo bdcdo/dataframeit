@@ -716,3 +716,108 @@ def test_mudanca_no_slot_do_objeto_chamavel_muda_a_assinatura(antes, depois):
 
     assert _assinatura(_pedido(variacoes[antes]())) != _assinatura(_pedido(variacoes[depois]()))
 
+
+# Método como condição: o ligado à instância, o partial dele, o objeto
+# staticmethod (o que se tem ao citar o método estático no corpo do próprio
+# modelo) e o classmethod ligado à classe. A classe é compilada de novo a cada
+# alvo, com o mesmo nome, como a classe editada entre uma execução e outra.
+_METODOS = '''
+import functools
+
+FONTE = """
+class Regra:
+    def __init__(self, alvo):
+        self.alvo = alvo
+
+    def verifica(self, d):
+        return d.get("tipo") == self.alvo
+
+    @staticmethod
+    def vip(d):
+        return d.get("tipo") == "ALVO"
+
+    @classmethod
+    def da_classe(cls, d):
+        return d.get("tipo") == "ALVO"
+"""
+
+
+def regra(alvo="vip", modulo="regras"):
+    espaco = {"__name__": modulo}
+    exec(FONTE.replace("ALVO", alvo), espaco)
+    return espaco["Regra"]
+
+
+def com_atalho(alvo):
+    instancia = regra()(alvo)
+    instancia.atalho = instancia.verifica
+    return instancia.verifica
+
+
+VARIACOES = {
+    "ligado": lambda: regra()("vip").verifica,
+    "ligado-mudado": lambda: regra()("comum").verifica,
+    "partial-ligado": lambda: functools.partial(regra()("vip").verifica),
+    "partial-ligado-mudado": lambda: functools.partial(regra()("comum").verifica),
+    "estatico": lambda: vars(regra("vip"))["vip"],
+    "estatico-mudado": lambda: vars(regra("comum"))["vip"],
+    "da-classe": lambda: regra("vip").da_classe,
+    "da-classe-mudado": lambda: regra("comum").da_classe,
+    "da-classe-em-outro-modulo": lambda: regra("vip", "outro").da_classe,
+    "atalho": lambda: com_atalho("vip"),
+    "atalho-mudado": lambda: com_atalho("comum"),
+}
+'''
+
+
+def test_metodo_como_condicao_assina_igual_entre_sementes():
+    """O método, o partial dele e o dono entram igual em qualquer processo."""
+    _assinaturas_em_tres_sementes(
+        _METODOS, "{nome: montar() for nome, montar in VARIACOES.items()}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("antes", "depois"),
+    [
+        ("ligado", "ligado-mudado"),
+        ("partial-ligado", "partial-ligado-mudado"),
+        ("estatico", "estatico-mudado"),
+        ("da-classe", "da-classe-mudado"),
+        ("atalho", "atalho-mudado"),
+    ],
+)
+def test_mudanca_no_metodo_ou_no_dono_muda_a_assinatura(antes, depois):
+    """O método ligado entra pelo código e pelo estado do objeto; o staticmethod, pelo código."""
+    variacoes = _funcao(_METODOS, "VARIACOES")
+
+    assert _assinatura(_pedido(variacoes[antes]())) != _assinatura(_pedido(variacoes[depois]()))
+
+
+def test_classe_dona_do_metodo_entra_pelo_nome_e_nao_pelo_modulo():
+    """Como a função, que entra pelo nome qualificado: mover a classe de módulo não muda nada."""
+    variacoes = _funcao(_METODOS, "VARIACOES")
+
+    assert _assinatura(_pedido(variacoes["da-classe"]())) == _assinatura(
+        _pedido(variacoes["da-classe-em-outro-modulo"]())
+    )
+
+
+def _com_extra(valor):
+    """Modelo com `valor` numa chave livre do json_schema_extra, na forma canônica."""
+    # O Pydantic tipa json_schema_extra como JSON; o conjunto leva o modelo à
+    # forma canônica, e o classmethod não é JSON.
+    extra: dict[str, Any] = {"regra": valor, "tipos": {"pf", "mei"}}
+
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra=extra)
+
+    return Pedido
+
+
+def test_objeto_classmethod_em_chave_livre_assina_pelo_codigo():
+    """O field_condition recusa o classmethod, mas a chave livre do extra o aceita."""
+    antes = classmethod(_funcao(_REGRA, "regra"))
+    depois = classmethod(_funcao(_REGRA.replace("==", "!="), "regra"))
+
+    assert _assinatura(_com_extra(antes)) != _assinatura(_com_extra(depois))

@@ -21,7 +21,7 @@ from decimal import Decimal
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from types import CodeType
+from types import CodeType, MethodType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, overload
 
 import pandas as pd
@@ -2003,12 +2003,24 @@ def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
 
     A função entra pelo nome qualificado e pelo código; o `partial`, pela função
     que embrulha e pelos argumentos fixados; o objeto chamável, pelo `__call__`
-    da classe, como a função, e pelos atributos da instância. O resto, inclusive
-    o chamável cujo `__call__` não é código Python, como a função embutida, fica
-    para o `default` do json.dumps em `_run_signature`, que tira o endereço do
-    repr.
+    da classe, como a função, e pelos atributos da instância. O método ligado
+    entra pela função e pelo dono: a classe, pelo nome; a instância, pelos
+    atributos. O objeto `staticmethod` e o `classmethod`, pela função que
+    embrulham. O resto, inclusive o chamável cujo `__call__` não é código Python,
+    como a função embutida, fica para o `default` do json.dumps em
+    `_run_signature`, que tira o endereço do repr.
     """
     leaf = partial(_schema_leaf, path=path)
+    # Antes do ramo da função: o método ligado repassa o `__code__` da função, e
+    # por ele entraria sem o dono, que guarda o que a condição compara.
+    if isinstance(value, MethodType):
+        owner = value.__self__
+        return {
+            "method": _callable_leaf(value.__func__, path),
+            "self": owner.__name__ if isinstance(owner, type) else _instance_state(owner, path),
+        }
+    if isinstance(value, (staticmethod, classmethod)):
+        return _callable_leaf(value.__func__, path)
     if isinstance(value, partial):
         return {
             "partial": leaf(value.func),
