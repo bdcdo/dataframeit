@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- Com `checkpoint_path`, um Ctrl-C (`KeyboardInterrupt`) grava no checkpoint as linhas concluídas desde a última gravação e relança a interrupção, nos modos sequencial e paralelo. Antes, o arquivo ficava na última gravação de `batch_size`, e a retomada pagava de novo as linhas concluídas depois dela. No paralelo, entram as chamadas já em andamento, que terminam enquanto a interrupção espera as threads do executor, também quando o Ctrl-C sai de dentro do despacho; a linha que ainda está na fila, sem thread que a tenha começado, é cancelada e fica para a retomada, e as que um segundo Ctrl-C deixa sem terminar ficam pendentes. A espera pelas linhas corre em fatias curtas, porque o handler de SIGINT que o polars instala ao ser importado faz o kernel reiniciar a espera sem prazo: com o polars instalado, o Ctrl-C do paralelo só chegava quando uma linha terminava, e o segundo não cortava a espera. A falha ao gravar vira aviso e não troca a interrupção (#213).
+
 ## [0.11.0] - 2026-10-29
 
 ### Adicionado

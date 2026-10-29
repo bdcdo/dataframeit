@@ -64,3 +64,5 @@ Rode primeiro uma amostra (`df.sample(30)`) com `track_tokens=True`. O resumo ao
 ### Uma execução longa foi interrompida
 
 Use `batch_size` e `checkpoint_path` para gravar o progresso durante a execução, e retome rodando a mesma chamada de novo, que continua do arquivo; ver [Checkpoints em Execuções Longas](performance.md#checkpoints-em-execucoes-longas).
+
+Um Ctrl-C grava no checkpoint as linhas concluídas desde a última gravação antes de interromper, e a retomada não as chama de novo. A linha cuja chamada o Ctrl-C cortou fica pendente. Com `parallel_requests`, a interrupção espera as chamadas em andamento terminarem, e elas entram na gravação; um segundo Ctrl-C corta essa espera, e as chamadas que não terminaram ficam pendentes.

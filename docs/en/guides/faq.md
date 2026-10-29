@@ -64,3 +64,5 @@ Run a sample first (`df.sample(30)`) with `track_tokens=True`. The summary at th
 ### A long run was interrupted
 
 Use `batch_size` and `checkpoint_path` to save progress during the run, and resume by running the same call again, which continues from the file; see [Checkpoints for Long Runs](performance.md#checkpoints-for-long-runs).
+
+A Ctrl-C saves to the checkpoint the rows completed since the last save before stopping, and resuming does not call them again. The row whose call the Ctrl-C cut off stays pending. With `parallel_requests`, the interruption waits for the calls in progress to finish, and they go into the save; a second Ctrl-C cuts that wait short, and the calls that did not finish stay pending.
