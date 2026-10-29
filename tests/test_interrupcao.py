@@ -411,6 +411,63 @@ def test_segundo_ctrl_c_corta_a_espera_e_a_chamada_lenta_fica_pendente(tmp_path)
     assert retomada == ["lenta"]
 
 
+@requer_pthread_kill
+def test_ctrl_c_dentro_do_submit_espera_a_linha_que_ja_entrou_na_fila(tmp_path):
+    """O Ctrl-C chega dentro do `submit` da última linha, que já entrou na fila.
+
+    A linha roda e é paga, embora o laço não tenha guardado o futuro dela. A
+    interrupção espera as threads do executor, e a linha entra no checkpoint.
+    """
+    textos = ["a", "b", "lenta"]
+    ckpt = tmp_path / "ckpt.csv"
+    pagas, llm_rapido = _llm_com_ctrl_c()
+
+    def llm(texto, *args, **kwargs):
+        if texto == "lenta":
+            # Termina depois da gravação que esperasse só os futuros guardados.
+            time.sleep(0.5)
+        return llm_rapido(texto, *args, **kwargs)
+
+    ajusta = ThreadPoolExecutor._adjust_thread_count
+    despachos: list[int] = []
+
+    def ajusta_e_interrompe(self):
+        # O submit põe o item na fila e chama este método, que inicia a thread
+        # quando falta uma; o KeyboardInterrupt do pthread_kill sai do submit
+        # antes de o laço guardar o futuro.
+        ajusta(self)
+        despachos.append(1)
+        if len(despachos) == len(textos):
+            _ctrl_c()
+
+    with (
+        patch.object(ThreadPoolExecutor, "_adjust_thread_count", ajusta_e_interrompe),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": textos}),
+            llm,
+            parallel_requests=3,
+            batch_size=100,
+            checkpoint_path=ckpt,
+        )
+
+    gravado = pd.read_csv(ckpt)
+    status = dict(zip(gravado["texto"], gravado["_dataframeit_status"], strict=True))
+    assert status == dict.fromkeys(textos, "processed")
+    assert sorted(pagas) == sorted(textos)
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    _roda(
+        pd.DataFrame({"texto": textos}),
+        llm_ok,
+        parallel_requests=3,
+        batch_size=100,
+        checkpoint_path=ckpt,
+    )
+    assert retomada == []
+
+
 @pytest.mark.parametrize("paralelo", [1, 3])
 def test_ctrl_c_antes_de_terminar_uma_linha_nao_reescreve_o_checkpoint(tmp_path, paralelo):
     """Sem linha registrada desde a última gravação, o arquivo fica como estava."""

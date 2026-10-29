@@ -6,6 +6,7 @@ import dataclasses
 import datetime
 import hashlib
 import importlib.util
+import itertools
 import json
 import logging
 import numbers
@@ -161,6 +162,10 @@ _PER_FIELD_SEARCH_WARNING_CALLS = 100
 # Prazo de cada espera do laço paralelo pelas linhas em andamento; ver
 # _completed_in_slices.
 _WAIT_SLICE_SECONDS = 0.1
+
+# Numera os executores do laço paralelo, para que o nome das threads de cada um
+# não se confunda com o das de outro; ver _closing_in_slices.
+_executor_ids = itertools.count()
 
 # Contadores de uso somados de cada linha para o resumo.
 _TOKEN_STAT_KEYS = (
@@ -2637,21 +2642,37 @@ def _completed_in_slices(futures: Collection[Future]) -> Iterator[Future]:
 
 
 @contextmanager
-def _closing_in_slices(
-    executor: ThreadPoolExecutor, futures: Collection[Future]
-) -> Iterator[ThreadPoolExecutor]:
-    """Na saída, encerra o executor e espera os futuros em fatias.
+def _closing_in_slices(max_workers: int) -> Iterator[ThreadPoolExecutor]:
+    """Abre um executor e, na saída, o encerra e espera as threads dele em fatias.
 
     Faz as vezes do `with ThreadPoolExecutor`, cuja saída espera as threads sem
-    prazo: com a espera em fatias, um segundo Ctrl-C a corta; ver
-    _completed_in_slices. `futures` é lido na saída, com o que o bloco despachou.
+    prazo: com prazo em cada espera, um segundo Ctrl-C a corta; ver
+    _completed_in_slices. A espera é pelas threads, e não pelos futuros que o
+    bloco guardou, porque o Ctrl-C pode sair de dentro do `submit` depois de o
+    item entrar na fila. A linha roda e é paga sem que o futuro dela chegue ao
+    bloco, e a gravação do checkpoint precisa encontrá-la registrada. Cada
+    futuro guardado roda numa dessas threads, que só saem depois de esvaziar a
+    fila.
+
+    As threads são achadas pelo nome, com o prefixo deste executor, em
+    `threading.enumerate()`. O conjunto `_threads` do executor é privado e só
+    recebe a thread depois de `Thread.start()` voltar; `enumerate` a lista
+    desde antes. A lista se refaz a cada fatia, para pegar a thread que começa
+    a rodar durante a espera, e `is_alive` deixa de fora a que o Ctrl-C
+    impediu de começar, que nunca terminaria.
     """
+    prefix = f"dataframeit-lote{next(_executor_ids)}"
+    executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
     try:
         yield executor
     finally:
         executor.shutdown(wait=False)
-        for _future in _completed_in_slices(futures):
-            pass
+        while alive := [
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith(f"{prefix}_") and thread.is_alive()
+        ]:
+            alive[0].join(_WAIT_SLICE_SECONDS)
 
 
 def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
@@ -2876,10 +2897,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             batch = pending_rows[:worker_batch]
             pending_rows = pending_rows[worker_batch:]
 
-            futures = {}
-            with _closing_in_slices(
-                ThreadPoolExecutor(max_workers=worker_batch), futures
-            ) as executor:
+            with _closing_in_slices(worker_batch) as executor:
+                futures = {}
                 for row in batch:
                     # A linha que não foi despachada nunca rodou: falhar ao
                     # despachar interrompe a execução e a deixa sem status, para
