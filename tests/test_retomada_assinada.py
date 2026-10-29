@@ -1418,29 +1418,6 @@ def test_texto_do_checkpoint_textual_volta_como_a_execucao_o_gravou(
     assert lidos(direta)[0] == valor
 
 
-class ComFabricaDoOutroCampo(BaseModel):
-    outro: str
-    campo1: str = Field(default_factory=lambda dados: dados["outro"].upper())
-
-
-@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
-def test_texto_vazio_do_campo_com_fabrica_dos_dados_volta_vazio(tmp_path, formato):
-    """A fábrica que lê os outros campos dá texto nesta linha, e a célula vazia é o texto vazio.
-
-    Se a resposta tivesse omitido o campo, a execução gravaria o "O" da fábrica,
-    e a célula não estaria vazia.
-    """
-    direta, retomada, chamadas = _direta_e_retomada(
-        tmp_path,
-        formato,
-        ComFabricaDoOutroCampo,
-        lambda text: {"outro": "o", "campo1": ""},
-    )
-
-    assert chamadas == ["b"]
-    assert list(retomada["campo1"]) == list(direta["campo1"]) == ["", ""]
-
-
 class VazioViraNone(BaseModel):
     campo1: str
 

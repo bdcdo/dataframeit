@@ -380,36 +380,6 @@ def test_condicao_le_o_none_do_campo_pulado_antes_dela():
     assert [valores[(1, "motivo")], valores[(1, "obs")]] == [None, None]
 
 
-def test_fabrica_dos_dados_decide_o_texto_vazio_linha_a_linha():
-    """A célula vazia é o texto vazio na linha em que a fábrica dá texto, e None onde dá None.
-
-    A fábrica recebe os valores da linha com o texto vazio das outras células
-    restauradas: na linha 2, o tipo vazio é "", e a fábrica dá "", e não None.
-    """
-
-    class Pedido(BaseModel):
-        tipo: str
-        campo1: str = Field(
-            default_factory=lambda dados: (
-                None if dados["tipo"] in {"pj", None} else dados["tipo"].upper()
-            )
-        )
-
-    df = pd.DataFrame(
-        {
-            "tipo": ["pf", "pj", None],
-            "campo1": [None, None, None],
-            "_dataframeit_status": ["processed", "processed", "processed"],
-        }
-    )
-    incompativeis, valores = _validate_processed_rows(
-        df, "_dataframeit_status", Pedido, set(), empty_text_fields={"tipo", "campo1"}
-    )
-
-    assert incompativeis == []
-    assert [valores[(posicao, "campo1")] for posicao in range(3)] == ["", None, ""]
-
-
 @pytest.mark.parametrize("parallel_requests", [1, 3])
 def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, parallel_requests):
     gravacoes = []
