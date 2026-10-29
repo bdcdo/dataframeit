@@ -468,9 +468,12 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # um "timeout" ali é conteúdo, e não diz nada de credencial, permissão ou
     # rede. Por isso, para ele, os padrões abaixo leem um texto vazio, e a caixa
     # sai da classe e do status estruturado (o status_code que o provider
-    # preenche); sem status, cai na genérica, que mostra o tipo e o começo da
-    # mensagem. Os demais erros, como os do LangChain, que embrulham os SDKs de
-    # vários providers, ainda são lidos pelo texto quando não há status.
+    # preenche); sem classe nem status que decidam, cai na genérica, que mostra o
+    # tipo e o começo da mensagem, e a de conexão, que só o texto decide, nunca
+    # sai. Os demais erros, como os do LangChain, que embrulham os SDKs de vários
+    # providers, são lidos pelo texto: sem status, em todas as caixas; com
+    # status, o texto ainda decide a de chave inválida e as do Tavily e do Exa, e
+    # o status decide as outras.
     error_str = (
         "" if isinstance(error, ProviderError) else f"{type(error).__name__}: {error}".lower()
     )
