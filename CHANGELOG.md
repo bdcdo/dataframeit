@@ -17,7 +17,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-
+- A mensagem de pacote ausente de um provider do LangChain só sugere `pip install dataframeit[all]` quando o pacote do provider está no extra `all`, lido dos metadados do pacote instalado. Para Mistral, Cohere, Bedrock, Vertex AI e outros providers sem extra próprio, ela sugere só o `langchain-<provider>`, porque o `all` não os instala (#279).
 
 ## [0.11.1] - 2026-10-29
 
