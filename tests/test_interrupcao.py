@@ -4,7 +4,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from unittest.mock import patch
@@ -275,7 +275,7 @@ def _llm_com_ctrl_c(na_chamada: int | None = None):
 
 
 @contextmanager
-def _ctrl_c_depois(gatilho: threading.Event, *folgas: float) -> Iterator[None]:
+def _ctrl_c_depois(gatilho: threading.Event, *folgas: float) -> Generator[None, None, None]:
     """Manda um Ctrl-C a cada folga, contada desde `gatilho`, enquanto o bloco roda.
 
     Na saída do bloco, o Ctrl-C que falta é cancelado e o envio em curso é
@@ -331,16 +331,40 @@ def test_ctrl_c_grava_as_linhas_pagas_e_a_retomada_nao_as_chama_de_novo(
     """12 linhas, batch_size=5 e Ctrl-C durante a 9ª chamada.
 
     No sequencial, a 9ª chamada não termina, e 8 linhas estão pagas. Com 3
-    workers, a 9ª é a última do terceiro lote, e as três do lote terminam
-    enquanto o executor as espera. A gravação a cada 5 linhas deixaria as
-    últimas 3 ou 4 de fora.
+    workers, a 9ª chamada começa com a 7ª e a 8ª em voo, presas até o executor
+    ser encerrado: as três terminam enquanto a interrupção espera as threads, e
+    as linhas 10 a 12, que nenhuma thread começou, ficam pendentes. A gravação
+    a cada 5 linhas deixaria as últimas 3 ou 4 de fora.
     """
     textos = [f"t{i:02d}" for i in range(1, 13)]
     entrada = _entrada(biblioteca, textos)
     ckpt = tmp_path / "ckpt.csv"
-    pagas, llm = _llm_com_ctrl_c(na_chamada=9)
+    pagas, llm_base = _llm_com_ctrl_c()
+    trava = threading.Lock()
+    comecadas: list[str] = []
+    encerrando = threading.Event()
+    encerra = ThreadPoolExecutor.shutdown
 
-    with pytest.raises(KeyboardInterrupt):
+    def encerra_observado(self, *args, **kwargs):
+        encerrando.set()
+        return encerra(self, *args, **kwargs)
+
+    def llm(texto, *args, **kwargs):
+        # A 7ª e a 8ª chamadas seguram as threads delas até o encerramento, e
+        # com as três em voo o laço não despacha a 10ª linha antes do Ctrl-C.
+        with trava:
+            comecadas.append(texto)
+            vez = len(comecadas)
+        if vez == 9:
+            _ctrl_c()
+        elif paralelo > 1 and vez in {7, 8}:
+            assert encerrando.wait(timeout=10)
+        return llm_base(texto, *args, **kwargs)
+
+    with (
+        patch.object(ThreadPoolExecutor, "shutdown", encerra_observado),
+        pytest.raises(KeyboardInterrupt),
+    ):
         _roda(
             entrada,
             llm,
@@ -349,7 +373,7 @@ def test_ctrl_c_grava_as_linhas_pagas_e_a_retomada_nao_as_chama_de_novo(
             checkpoint_path=ckpt,
         )
 
-    assert len(pagas) == (8 if paralelo == 1 else 9)
+    assert sorted(pagas) == textos[: 8 if paralelo == 1 else 9]
     gravado = pd.read_csv(ckpt)
     processadas = gravado.loc[gravado["_dataframeit_status"].eq("processed"), "texto"]
     assert sorted(processadas) == sorted(pagas)
@@ -389,7 +413,7 @@ def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path,
     assert grava.call_count == 1
 
 
-def _sigint_com_restart(reinicia: bool) -> Iterator[None]:
+def _sigint_com_restart(reinicia: bool) -> Generator[None, None, None]:
     """Liga ou desliga o SA_RESTART do SIGINT durante o teste.
 
     Na volta, o SA_RESTART fica como o processo o tinha: ligado com o polars
@@ -493,7 +517,7 @@ def test_ctrl_c_com_todas_as_linhas_lentas_sai_sem_esperar_uma_terminar(tmp_path
     """Os dois Ctrl-C chegam com as três linhas em andamento e nenhuma termina.
 
     O primeiro vira `KeyboardInterrupt` sem esperar uma linha terminar, e o
-    segundo corta a espera da saída: o lote sai antes da duração das linhas.
+    segundo corta a espera da saída: a execução sai antes da duração das linhas.
     """
     duracao = 5.0
     textos = ["a", "b", "c"]
@@ -516,7 +540,7 @@ def test_ctrl_c_com_todas_as_linhas_lentas_sai_sem_esperar_uma_terminar(tmp_path
     inicio = time.monotonic()
     try:
         # A folga do primeiro Ctrl-C deixa o thread principal entrar na espera
-        # do lote: o que chega antes dela vira KeyboardInterrupt em qualquer
+        # das linhas: o que chega antes dela vira KeyboardInterrupt em qualquer
         # espera, e o teste não distinguiria a espera sem prazo.
         with _ctrl_c_depois(todas_comecaram, 0.1, 0.4), pytest.raises(KeyboardInterrupt):
             _roda(
@@ -537,11 +561,11 @@ def test_ctrl_c_com_todas_as_linhas_lentas_sai_sem_esperar_uma_terminar(tmp_path
 
 
 @requer_pthread_kill
-def test_ctrl_c_espera_a_linha_em_andamento_e_nao_deixa_thread_do_lote(tmp_path):
+def test_ctrl_c_espera_a_linha_em_andamento_e_nao_deixa_thread_do_executor(tmp_path):
     """As linhas lentas em andamento no Ctrl-C terminam na espera e entram no checkpoint.
 
     Elas só terminam depois de o executor ser encerrado, e nenhuma thread do
-    lote sobrevive à interrupção.
+    executor sobrevive à interrupção.
     """
     textos = ["lenta1", "ctrl-c", "lenta2"]
     ckpt = tmp_path / "ckpt.csv"
@@ -662,7 +686,7 @@ def test_ctrl_c_dentro_do_submit_espera_a_linha_que_a_thread_ja_comecou(tmp_path
 @requer_pthread_kill
 @pytest.mark.usefixtures("sigint_interrompe_a_espera")
 def test_ctrl_c_dentro_do_start_da_thread_deixa_a_linha_da_fila_pendente(tmp_path):
-    """O Ctrl-C sai do `Thread.start()` da primeira thread do lote, antes de ela começar.
+    """O Ctrl-C sai do `Thread.start()` da primeira thread do executor, antes de ela começar.
 
     A thread já foi lançada, mas ainda não marcou o início, e a linha que ela
     pegaria está na fila. O encerramento cancela a linha, e a thread, ao
@@ -679,7 +703,7 @@ def test_ctrl_c_dentro_do_start_da_thread_deixa_a_linha_da_fila_pendente(tmp_pat
     def inicia_depois_do_ctrl_c(self):
         # Roda na thread nova, antes de ela marcar o início: o thread principal
         # está no `_started.wait()` do `start()`, e o Ctrl-C o interrompe ali.
-        if not self.name.startswith("dataframeit-lote") or lancadas:
+        if not self.name.startswith("dataframeit-paralelo") or lancadas:
             inicia(self)
             return
         lancadas.append(self)
@@ -726,15 +750,15 @@ def test_ctrl_c_dentro_do_start_da_thread_deixa_a_linha_da_fila_pendente(tmp_pat
 @pytest.mark.parametrize(
     "numeros",
     [None, (10, 1)],
-    ids=["numeracao_do_modulo", "lote_1_ao_lado_do_lote_10"],
+    ids=["numeracao_do_modulo", "executor_1_ao_lado_do_executor_10"],
 )
-def test_lote_nao_espera_as_threads_de_outra_chamada_concorrente(numeros):
+def test_execucao_nao_espera_as_threads_de_outra_chamada_concorrente(numeros):
     """Duas chamadas ao mesmo tempo: a curta termina com a longa em andamento.
 
-    A saída de cada lote espera só as threads do próprio executor. A longa roda
-    num thread do usuário, com as linhas presas até a curta voltar. Com os
-    números fixados, a longa abre o lote 10 e a curta o lote 1, e o nome
-    `dataframeit-lote10_0` começa com `dataframeit-lote1`.
+    A saída de cada execução espera só as threads do próprio executor. A longa
+    roda num thread do usuário, com as linhas presas até a curta voltar. Com os
+    números fixados, a longa abre o executor 10 e a curta o 1, e o nome
+    `dataframeit-paralelo10_0` começa com `dataframeit-paralelo1`.
     """
     prazo = 10.0
     trava = threading.Lock()
@@ -836,3 +860,108 @@ def test_ctrl_c_sem_checkpoint_deixa_as_linhas_pagas_na_entrada_pandas(paralelo)
         _roda(df, llm, parallel_requests=paralelo)
 
     assert sorted(df.loc[df["_dataframeit_status"].eq("processed"), "texto"]) == sorted(pagas)
+
+
+@requer_pthread_kill
+def test_ctrl_c_espera_o_on_row_done_em_andamento_e_grava_a_linha(tmp_path):
+    """O Ctrl-C chega com o `on_row_done` de uma linha ainda rodando na thread do worker.
+
+    O callback não recebe o KeyboardInterrupt, e a linha já está contada quando
+    ele começa: a interrupção espera a thread dele, o callback termina antes de
+    a interrupção sair da chamada, e a linha entra no checkpoint. A linha que
+    não foi despachada fica pendente.
+    """
+    textos = ["callback", "ctrl-c", "fila"]
+    ckpt = tmp_path / "ckpt.csv"
+    callback_comecou = threading.Event()
+    encerrando = threading.Event()
+    trava = threading.Lock()
+    entregues: list[str] = []
+    encerra = ThreadPoolExecutor.shutdown
+
+    def encerra_observado(self, *args, **kwargs):
+        encerrando.set()
+        return encerra(self, *args, **kwargs)
+
+    def llm(texto, *args, **kwargs):
+        if texto == "ctrl-c":
+            assert callback_comecou.wait(timeout=10)
+            _ctrl_c()
+            # Termina só depois do encerramento, como a linha em andamento.
+            assert encerrando.wait(timeout=10)
+            time.sleep(0.2)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
+
+    def ao_terminar(resultado):
+        if resultado.index == 0:
+            callback_comecou.set()
+            # Termina depois de a interrupção começar a esperar as threads.
+            encerrando.wait(timeout=10)
+            time.sleep(0.2)
+        with trava:
+            entregues.append(textos[resultado.index])
+
+    with (
+        patch.object(ThreadPoolExecutor, "shutdown", encerra_observado),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": textos}),
+            llm,
+            parallel_requests=2,
+            batch_size=100,
+            checkpoint_path=ckpt,
+            on_row_done=ao_terminar,
+        )
+    with trava:
+        entregues_na_saida = sorted(entregues)
+
+    assert entregues_na_saida == ["callback", "ctrl-c"]
+    gravado = pd.read_csv(ckpt)
+    status = dict(zip(gravado["texto"], gravado["_dataframeit_status"], strict=True))
+    assert status["callback"] == "processed"
+    assert status["ctrl-c"] == "processed"
+    assert pd.isna(status["fila"])
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    _roda(
+        pd.DataFrame({"texto": textos}),
+        llm_ok,
+        parallel_requests=2,
+        batch_size=100,
+        checkpoint_path=ckpt,
+    )
+    assert retomada == ["fila"]
+
+
+def test_ctrl_c_dentro_do_on_row_done_no_sequencial_grava_a_linha_entregue(tmp_path):
+    """No sequencial, o callback roda no thread principal e pode receber o Ctrl-C.
+
+    A linha entregue ao callback já está gravada no DataFrame e contada, e a
+    gravação do Ctrl-C a leva, também quando é a primeira linha da execução. A
+    retomada não a chama de novo.
+    """
+    textos = ["a", "b", "c"]
+    ckpt = tmp_path / "ckpt.csv"
+    pagas, llm = _llm_com_ctrl_c()
+
+    def interrompe(resultado):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _roda(
+            pd.DataFrame({"texto": textos}),
+            llm,
+            batch_size=100,
+            checkpoint_path=ckpt,
+            on_row_done=interrompe,
+        )
+
+    assert pagas == ["a"]
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].tolist()[0] == "processed"
+    assert gravado["_dataframeit_status"].isna().tolist()[1:] == [True, True]
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    _roda(pd.DataFrame({"texto": textos}), llm_ok, batch_size=100, checkpoint_path=ckpt)
+    assert retomada == ["b", "c"]
