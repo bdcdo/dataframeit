@@ -1,11 +1,14 @@
 """Testes para funcionalidade de execução condicional de campos."""
 
+import collections
+import collections.abc
 import datetime
 import logging
 import os
 import re
 import subprocess
 import sys
+import typing
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
@@ -1369,9 +1372,11 @@ def test_caminho_aninhado_com_campo_inexistente_e_recusado(anotacao, configuraca
         (dict[str, str], "endereco.cidade"),
         (Any, "endereco.cidade.nome"),
         (Union[_EnderecoDeEntrega, dict[str, str]], "endereco.bairro"),
-        # O texto e a lista da união não têm chave, e o caminho segue pelo modelo.
+        # O texto e a coleção da união não têm chave, e o caminho segue pelo modelo.
         (Union[_EnderecoDeEntrega, str], "endereco.cidade"),
         (Union[_EnderecoDeEntrega, list[_Filial]], "endereco.cidade"),
+        (Union[_EnderecoDeEntrega, typing.Sequence[_EnderecoDeEntrega]], "endereco.cidade"),
+        (Union[_EnderecoDeEntrega, set[str]], "endereco.cidade"),
     ],
 )
 def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
@@ -1395,14 +1400,30 @@ def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
         (list[str], "endereco.0"),
         (list, "endereco.cidade"),
         (Union[_Filial, list[_EnderecoDeEntrega]], "endereco.cidade"),
+        (tuple[_EnderecoDeEntrega, str], "endereco.0.cidade"),
+        (tuple[_EnderecoDeEntrega, str], "endereco.cidade"),
+        (list[Union[_EnderecoDeEntrega, _Filial]], "endereco.cidade"),
+        # As outras coleções também, com e sem `typing`.
+        (typing.Sequence[_EnderecoDeEntrega], "endereco.cidade"),
+        (typing.Sequence[_EnderecoDeEntrega], "endereco.0.cidade"),
+        (collections.abc.Sequence[_EnderecoDeEntrega], "endereco.cidade"),
+        (typing.Iterable[_EnderecoDeEntrega], "endereco.cidade"),
+        (collections.abc.Iterable[_EnderecoDeEntrega], "endereco.cidade"),
+        (collections.deque[_EnderecoDeEntrega], "endereco.cidade"),
+        (set[str], "endereco.x"),
+        (frozenset[str], "endereco.x"),
+        # Na união, a coleção não abre o resto do caminho para o erro de digitação.
+        (Union[_EnderecoDeEntrega, typing.Sequence[_EnderecoDeEntrega]], "endereco.cidadee"),
+        (Union[_EnderecoDeEntrega, set[str]], "endereco.cidadee"),
     ],
 )
-def test_caminho_que_atravessa_lista_ou_tupla_e_recusado(anotacao, caminho):
-    """`get_nested_value` só segue dict: o caminho dentro da lista nunca teria valor.
+def test_caminho_que_atravessa_colecao_e_recusado(anotacao, caminho):
+    """`get_nested_value` só segue dict: o caminho dentro da coleção nunca teria valor.
 
     Nem o campo do item, como `endereco.cidade` com `list[Endereco]`, nem o
     índice, como `endereco.0.cidade`, são seguidos na avaliação, e a condição
-    seria sempre falsa.
+    seria sempre falsa. Vale para lista, tupla, set, deque, `Sequence` e
+    `Iterable`.
     """
     configuracao = {"condition": {"field": caminho, "exists": True}}
 

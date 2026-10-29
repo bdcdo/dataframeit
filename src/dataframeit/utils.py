@@ -11,6 +11,7 @@ Este módulo contém funções utilitárias para:
 from __future__ import annotations
 
 import ast
+import collections.abc
 import datetime
 import functools
 import json
@@ -1290,10 +1291,22 @@ def _is_keyless(value_type: object) -> bool:
     return isinstance(value_type, type) and issubclass(value_type, _KEYLESS_TYPES)
 
 
-def _is_sequence(value_type: object) -> bool:
-    """Se o valor desse tipo é lista ou tupla, de qualquer item, com ou sem argumentos."""
+def _is_collection(value_type: object) -> bool:
+    """Se o valor desse tipo é coleção sem chave, de qualquer item, com ou sem argumentos.
+
+    A coleção é reconhecida pela ABC: `Iterable` pega a lista, a tupla, o set,
+    o deque, `Sequence` e o próprio `Iterable`, de `typing` ou de
+    `collections.abc`. O `Mapping` tem chave e fica de fora, como `dict`. O
+    modelo Pydantic define `__iter__` e passaria também: `submodels` confere o
+    modelo antes. O texto e os bytes passam, mas `_is_keyless` já os põe de
+    fora pelo mesmo motivo.
+    """
     origin = get_origin(value_type) or value_type
-    return isinstance(origin, type) and issubclass(origin, (list, tuple))
+    return (
+        isinstance(origin, type)
+        and issubclass(origin, collections.abc.Iterable)
+        and not issubclass(origin, collections.abc.Mapping)
+    )
 
 
 def submodels(annotation: object) -> list[type[BaseModel]] | None:
@@ -1302,17 +1315,18 @@ def submodels(annotation: object) -> list[type[BaseModel]] | None:
     `Optional[Endereco]` dá `[Endereco]`, e `Union[A, B]`, `[A, B]`. O tipo
     escalar (`_KEYLESS_TYPES` e `Literal`) não tem chave e fica de fora:
     `Union[Endereco, str]` dá `[Endereco]`, e `str`, a lista vazia, em que
-    nenhuma chave existe. A lista e a tupla ficam de fora também, porque
-    `get_nested_value` só segue dict: nem o campo do item nem o índice são
-    seguidos, e `list[Endereco]` dá a lista vazia. None quando algum tipo do
-    valor pode ter chave que nenhum modelo declara, como `dict`, `Any`,
-    `Union[Endereco, dict[str, str]]` ou um tipo que esta função não conhece.
+    nenhuma chave existe. A lista, a tupla ou outra coleção (`_is_collection`)
+    ficam de fora também, porque `get_nested_value` só segue dict: nem o campo
+    do item nem o índice são seguidos, e `list[Endereco]` dá a lista vazia.
+    None quando algum tipo do valor pode ter chave que nenhum modelo declara,
+    como `dict`, `Any`, `Union[Endereco, dict[str, str]]` ou um tipo que esta
+    função não conhece.
     """
     models = []
     for value_type in _value_types(annotation):
         if _is_pydantic_model(value_type):
             models.append(value_type)
-        elif not (_is_keyless(value_type) or _is_sequence(value_type)):
+        elif not (_is_keyless(value_type) or _is_collection(value_type)):
             return None
     return models
 
