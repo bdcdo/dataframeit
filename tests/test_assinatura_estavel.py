@@ -45,9 +45,9 @@ def _roda_python(codigo, *argumentos, semente, cwd=None):
 
 # Um modelo por forma que o JSON Schema não serializa igual em todo processo: a
 # função da condição, o conjunto de texto na condição, o conjunto de texto num
-# campo aninhado e o conjunto nos argumentos do partial e no estado do objeto
-# chamável. O Pedido traz também Literal, Enum e modelo aninhado, para que toda a
-# forma canônica dele passe pelas sementes.
+# campo aninhado, o conjunto dentro de lista e o conjunto nos argumentos do
+# partial e no estado do objeto chamável. O Pedido traz também Literal, Enum e
+# modelo aninhado, para que toda a forma canônica dele passe pelas sementes.
 _MODELOS = textwrap.dedent(
     '''
     import functools
@@ -99,6 +99,10 @@ _MODELOS = textwrap.dedent(
         bairro: Bairro
 
 
+    class Roteiro(BaseModel):
+        parada: str = Field(json_schema_extra={"exemplos": [{"centro", "mooca", "liberdade", "lapa"}]})
+
+
     def _tipo_em(d, tipos):
         return d.get("tipo") in tipos
 
@@ -138,7 +142,7 @@ _MODELOS = textwrap.dedent(
     '''
 )
 
-_NOMES = ("Pedido", "Cadastro", "Entrega", "Oferta", "Promocao")
+_NOMES = ("Pedido", "Cadastro", "Entrega", "Roteiro", "Oferta", "Promocao")
 
 
 def test_assinatura_igual_em_processos_com_sementes_diferentes():
@@ -153,7 +157,7 @@ def test_assinatura_igual_em_processos_com_sementes_diferentes():
                 modelo, "{texto}", provider="openai", model="m", model_kwargs=None,
                 search_config=None, text_column="texto", status_col="_dataframeit_status",
             )
-            for modelo in (Pedido, Cadastro, Entrega, Oferta, Promocao)
+            for modelo in (Pedido, Cadastro, Entrega, Roteiro, Oferta, Promocao)
         }))
         """
     )
