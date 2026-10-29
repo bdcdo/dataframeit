@@ -1418,6 +1418,33 @@ def test_texto_do_checkpoint_textual_volta_como_a_execucao_o_gravou(
     assert lidos(direta)[0] == valor
 
 
+class ComFabricaDoOutro(BaseModel):
+    outro: str
+    campo1: str = Field(default_factory=lambda dados: dados["outro"].upper())
+
+
+@pytest.mark.parametrize(("formato", "valor"), [("csv", "O"), ("xlsx", "O"), ("parquet", "")])
+def test_texto_vazio_do_campo_com_fabrica_dos_dados_vira_o_valor_da_fabrica(
+    tmp_path, formato, valor
+):
+    """O texto vazio do campo cuja fábrica lê os outros campos não é restaurado.
+
+    No CSV e no XLSX, a célula vazia dele conta como ausente, e a retomada a
+    preenche com o valor da fábrica, embora a execução tenha gravado "". O
+    parquet guarda o texto vazio, que volta como foi gravado.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        ComFabricaDoOutro,
+        lambda text: {"outro": "o", "campo1": ""} if text == "a" else {"outro": "x", "campo1": "y"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(direta["campo1"]) == ["", "y"]
+    assert list(retomada["campo1"]) == [valor, "y"]
+
+
 class VazioViraNone(BaseModel):
     campo1: str
 

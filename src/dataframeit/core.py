@@ -2097,11 +2097,14 @@ def _resume_from_checkpoint(
     campo que só aceita texto, não admite None e cujo default não pode ser None
     (`_default_may_be_none`) só fica None quando a condição dele é falsa ou
     quando um validador troca uma resposta por None, que o tipo do campo
-    recusa. A validação da retomada lê a condição na linha, e do
-    validador só pega o que troca o próprio texto vazio: o "" restaurado que
-    ela não devolve como "" é acusado. O None que o validador dá a outra
-    resposta, como "N/A", fica na mesma célula vazia, e a retomada do CSV e do
-    XLSX o devolve como ""; o parquet guarda o None, e a retomada o acusa. Quem
+    recusa. O campo cuja fábrica lê os outros campos não é restaurado: a célula
+    vazia dele conta como ausente, e a validação a preenche com o valor da
+    fábrica, mesmo onde a execução gravou "". A validação da retomada lê a
+    condição na linha, e do validador só pega o que troca o próprio texto
+    vazio: o "" restaurado que ela não devolve como "" é acusado. O None que o
+    validador dá a outra resposta, como "N/A", fica na mesma célula vazia, e a
+    retomada do CSV e do XLSX o devolve como ""; o parquet guarda o None, e a
+    retomada o acusa. Quem
     quer guardar esse None declara o campo Optional[str]. No modo por campo
     (search_per_field), os validadores do modelo não rodam na execução, e o
     texto vazio que ela gravou num campo cujo validador o troca por None é
@@ -2109,8 +2112,9 @@ def _resume_from_checkpoint(
     exclude=True fica de fora, porque o model_dump não o traz e a célula dele
     guarda o None que a execução pôs ao criar a coluna. Sem essa garantia,
     como no checkpoint carregado à mão, a célula vazia continua ausente,
-    porque com outro modelo ela pode ser o None de um campo que o admitia. No campo que admite None, ela volta None, e o
-    texto vazio só sobrevive no parquet.
+    porque com outro modelo ela pode ser o None de um campo que o admitia. No
+    campo que admite None, ela volta None, e o texto vazio só sobrevive no
+    parquet.
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
     if reason is not None or saved is None:
@@ -2153,7 +2157,9 @@ def _default_may_be_none(field: FieldInfo) -> bool:
 
     O pydantic não valida o default, e o None dele fica no campo que o tipo
     recusa. A fábrica que lê os outros campos só é chamada com eles, e pode
-    dar None em alguma linha.
+    dar None em alguma linha. Por isso o campo dela não é restaurado: na
+    retomada do CSV e do XLSX, a célula vazia conta como ausente e a fábrica a
+    preenche, mesmo onde a execução gravou "".
     """
     try:
         return field.get_default(call_default_factory=True) is None
