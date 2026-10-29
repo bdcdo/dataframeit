@@ -1,7 +1,9 @@
 """Falha que impede as linhas seguintes interrompe a execução sem gastá-las."""
 
 import signal
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -327,33 +329,58 @@ def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path,
     assert grava.call_count == 1
 
 
+@pytest.fixture
+def sigint_reinicia_a_espera():
+    """Põe SA_RESTART no SIGINT, como o handler que o polars instala ao ser importado.
+
+    Com SA_RESTART, o kernel reinicia a espera sem prazo de um lock quando o
+    SIGINT chega, e o thread principal só levanta o `KeyboardInterrupt` quando a
+    espera termina. Sem isso, o SIGINT interromperia também a espera sem prazo,
+    e o teste não a distinguiria da espera em fatias. Com o polars importado, o
+    SA_RESTART já estava lá e fica.
+    """
+    com_polars = "polars" in sys.modules
+    signal.siginterrupt(signal.SIGINT, False)
+    yield
+    if not com_polars:
+        signal.siginterrupt(signal.SIGINT, True)
+
+
 @requer_pthread_kill
-def test_segundo_ctrl_c_grava_so_as_linhas_concluidas(tmp_path):
-    """O segundo Ctrl-C corta a espera do executor, e a chamada que não terminou fica pendente."""
+@pytest.mark.usefixtures("sigint_reinicia_a_espera")
+def test_segundo_ctrl_c_corta_a_espera_e_a_chamada_lenta_fica_pendente(tmp_path):
+    """O segundo Ctrl-C chega enquanto a interrupção espera a chamada lenta.
+
+    A espera acaba sem a chamada terminar, o checkpoint leva só a linha
+    concluída, e a retomada chama a lenta de novo.
+    """
     textos = ["lenta", "ctrl-c"]
     ckpt = tmp_path / "ckpt.csv"
+    encerrando = threading.Event()
     liberada = threading.Event()
+    terminou = threading.Event()
+    encerra = ThreadPoolExecutor.shutdown
+
+    def encerra_observado(self, *args, **kwargs):
+        encerrando.set()
+        return encerra(self, *args, **kwargs)
 
     def llm(texto, *args, **kwargs):
         if texto == "lenta":
+            # O primeiro Ctrl-C encerra o executor antes de esperar esta
+            # chamada; a folga deixa a espera começar antes do segundo.
+            encerrando.wait(timeout=10)
+            time.sleep(0.2)
+            _ctrl_c()
             liberada.wait(timeout=10)
+            terminou.set()
         else:
             _ctrl_c()
         return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
 
-    saida_do_executor = ThreadPoolExecutor.__exit__
-
-    def segundo_ctrl_c_na_espera(self, tipo, valor, rastro):
-        # A saída por Ctrl-C espera as threads; o segundo Ctrl-C chega nessa
-        # espera, depois de o executor ter sido encerrado sem esperar.
-        if tipo is KeyboardInterrupt:
-            self.shutdown(wait=False)
-            _ctrl_c()
-        return saida_do_executor(self, tipo, valor, rastro)
-
     try:
         with (
-            patch.object(ThreadPoolExecutor, "__exit__", segundo_ctrl_c_na_espera),
+            patch.object(ThreadPoolExecutor, "shutdown", encerra_observado),
             pytest.raises(KeyboardInterrupt),
         ):
             _roda(
@@ -363,12 +390,15 @@ def test_segundo_ctrl_c_grava_so_as_linhas_concluidas(tmp_path):
                 batch_size=100,
                 checkpoint_path=ckpt,
             )
+        cortada = not terminou.is_set()
         gravado = pd.read_csv(ckpt)
     finally:
         liberada.set()
 
-    processadas = set(gravado.loc[gravado["_dataframeit_status"].eq("processed"), "texto"])
-    assert "lenta" not in processadas
+    assert cortada
+    status = dict(zip(gravado["texto"], gravado["_dataframeit_status"], strict=True))
+    assert status["ctrl-c"] == "processed"
+    assert pd.isna(status["lenta"])
 
     retomada, llm_ok = _llm_com_ctrl_c()
     _roda(
@@ -378,7 +408,7 @@ def test_segundo_ctrl_c_grava_so_as_linhas_concluidas(tmp_path):
         batch_size=100,
         checkpoint_path=ckpt,
     )
-    assert sorted(retomada) == sorted(set(textos) - processadas)
+    assert retomada == ["lenta"]
 
 
 @pytest.mark.parametrize("paralelo", [1, 3])

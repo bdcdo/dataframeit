@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -73,6 +73,7 @@ from .utils import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Hashable, Iterator, Sequence
+    from concurrent.futures import Future
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -156,6 +157,10 @@ _MAX_RESULTS_LIMIT = 20
 
 # Chamadas de busca por campo acima das quais vale avisar sobre rate limit.
 _PER_FIELD_SEARCH_WARNING_CALLS = 100
+
+# Prazo de cada espera do laço paralelo pelas linhas em andamento; ver
+# _completed_in_slices.
+_WAIT_SLICE_SECONDS = 0.1
 
 # Contadores de uso somados de cada linha para o resumo.
 _TOKEN_STAT_KEYS = (
@@ -2615,6 +2620,40 @@ def _on_ctrl_c(callback: Callable[[], None]) -> Iterator[None]:
         raise
 
 
+def _completed_in_slices(futures: Collection[Future]) -> Iterator[Future]:
+    """Entrega os futuros à medida que terminam, esperando em fatias curtas.
+
+    O polars, ao ser importado, instala um handler de SIGINT com SA_RESTART, e
+    com ele o kernel reinicia a espera sem prazo de um lock em vez de
+    interrompê-la. O `as_completed` e a saída do `with ThreadPoolExecutor`
+    esperam sem prazo, e com eles o Ctrl-C só vira `KeyboardInterrupt` quando
+    uma linha termina. Ao fim de cada fatia, o thread principal volta ao
+    interpretador, que levanta o `KeyboardInterrupt` pendente.
+    """
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, timeout=_WAIT_SLICE_SECONDS, return_when=FIRST_COMPLETED)
+        yield from done
+
+
+@contextmanager
+def _closing_in_slices(
+    executor: ThreadPoolExecutor, futures: Collection[Future]
+) -> Iterator[ThreadPoolExecutor]:
+    """Na saída, encerra o executor e espera os futuros em fatias.
+
+    Faz as vezes do `with ThreadPoolExecutor`, cuja saída espera as threads sem
+    prazo: com a espera em fatias, um segundo Ctrl-C a corta; ver
+    _completed_in_slices. `futures` é lido na saída, com o que o bloco despachou.
+    """
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=False)
+        for _future in _completed_in_slices(futures):
+            pass
+
+
 def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
     df: pd.DataFrame,
     *,
@@ -2814,8 +2853,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     def save_registered_rows() -> None:
         """Grava o checkpoint no Ctrl-C.
 
-        A saída do executor espera as linhas em andamento, e elas chegam aqui
-        registradas. Um segundo Ctrl-C durante essa espera deixa threads
+        O lote espera as linhas em andamento antes de chegar aqui, e elas
+        chegam registradas. Um segundo Ctrl-C durante essa espera deixa threads
         rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
         demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
         não regrava o arquivo sem linha contada desde o último snapshot gravado.
@@ -2837,8 +2876,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             batch = pending_rows[:worker_batch]
             pending_rows = pending_rows[worker_batch:]
 
-            with ThreadPoolExecutor(max_workers=worker_batch) as executor:
-                futures = {}
+            futures = {}
+            with _closing_in_slices(
+                ThreadPoolExecutor(max_workers=worker_batch), futures
+            ) as executor:
                 for row in batch:
                     # A linha que não foi despachada nunca rodou: falhar ao
                     # despachar interrompe a execução e a deixa sem status, para
@@ -2851,7 +2892,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         abort_event.set()
                         break
 
-                for future in as_completed(futures):
+                for future in _completed_in_slices(futures):
                     try:
                         outcome = future.result()
                     except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
