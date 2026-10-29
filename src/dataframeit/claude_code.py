@@ -18,6 +18,7 @@ from .errors import (
     ProviderOverloadedError,
     ProviderRejectedOutputError,
     ProviderTransientError,
+    _is_recoverable_http_status,
     retry_with_backoff,
     validation_error_summary,
 )
@@ -32,10 +33,8 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-# Status da API que indicam sobrecarga (429 Too Many Requests, 529 Overloaded)
-# e o início da faixa de erro do servidor.
+# Status da API que indicam sobrecarga (429 Too Many Requests, 529 Overloaded).
 _OVERLOADED_STATUSES = (429, 529)
-_SERVER_ERROR_MIN = 500
 
 
 def _build_json_system_prompt(json_schema: dict) -> str:
@@ -107,13 +106,35 @@ async def _async_query(
 _FINAL_RESULT_SUBTYPES = frozenset({"error_max_budget_usd", "error_max_turns"})
 
 
+def _api_error_status(value: object) -> int | None:
+    """Converte o api_error_status do SDK em int, ou None quando não é um status.
+
+    O SDK repassa o campo do JSON do CLI sem conferir o tipo, e o mesmo número
+    pode chegar como int, como texto de dígitos ou como float inteiro. O bool sai
+    antes do int, porque é subclasse dele e True passaria como status 1. O texto
+    só vale com dígitos ASCII: str.isdigit aceita outros dígitos Unicode, alguns
+    que int() recusa, como o sobrescrito.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
+
+
 def _raise_for_result_error(result: object) -> None:
     """Converte um ResultMessage com is_error na exceção que o retry entende.
 
     Sem isso, o erro virava "resposta vazia", que é re-tentada. Estouro de
     orçamento ou de turnos é definitivo; o status da API, quando o SDK o
     informa, decide entre sobrecarga (reduz o paralelismo), falha transitória
-    e falha definitiva. Erro de execução sem status é tratado como transitório.
+    e falha definitiva, com a regra de _is_recoverable_http_status que vale
+    para os erros que chegam pelo LangChain. Erro de execução sem status é
+    tratado como transitório.
 
     O status vai também no `status_code` da exceção, qualquer que seja a classe.
     A mensagem leva o `result` do SDK, que pode ser texto do modelo, e a caixa
@@ -124,15 +145,15 @@ def _raise_for_result_error(result: object) -> None:
 
     subtype = getattr(result, "subtype", None)
     status = getattr(result, "api_error_status", None)
-    status_code = status if isinstance(status, int) else None
+    status_code = _api_error_status(status)
     detail = getattr(result, "errors", None) or getattr(result, "result", None) or ""
     message = f"Claude Code SDK retornou erro ({subtype}, status {status}): {detail}".strip()
 
     if subtype in _FINAL_RESULT_SUBTYPES:
         error_class = ProviderError
-    elif status in _OVERLOADED_STATUSES:
+    elif status_code in _OVERLOADED_STATUSES:
         error_class = ProviderOverloadedError
-    elif status_code is None or status_code >= _SERVER_ERROR_MIN:
+    elif status_code is None or _is_recoverable_http_status(status_code):
         error_class = ProviderTransientError
     else:
         error_class = ProviderError

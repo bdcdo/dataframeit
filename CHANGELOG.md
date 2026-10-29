@@ -13,7 +13,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-- Com `checkpoint_path` e entrada que não é DataFrame, como `list` ou `dict`, o aviso de execução interrompida manda retomar só pelo mesmo `checkpoint_path`, sem oferecer `resume=True` sobre a saída, que não traz o texto e levanta `ValueError` (#277).
+
 
 ## [0.11.1] - 2026-10-29
 
