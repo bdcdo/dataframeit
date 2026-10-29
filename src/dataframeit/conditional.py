@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import operator
-from typing import TYPE_CHECKING, Any, cast, get_args, get_origin
+from enum import Enum
+from typing import TYPE_CHECKING, Any, cast
 
-from .utils import get_nested_pydantic_models, resolve_forward_refs
+from .utils import get_nested_pydantic_models, list_layers, resolve_forward_refs, submodels
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -147,24 +148,6 @@ def _collect_configured_fields(
     return results
 
 
-def _list_layers(annotation: object, target: type) -> int | None:
-    """Quantas listas envolvem `target` na anotação: list[list[X]] dá 2.
-
-    Só conta os ramos que chegam ao modelo; em Union[list[str], X], a lista
-    de strings não envolve X. Devolve None quando `target` não aparece.
-    """
-    if annotation is target:
-        return 0
-    depths = [
-        depth
-        for depth in (_list_layers(arg, target) for arg in get_args(annotation))
-        if depth is not None
-    ]
-    if not depths:
-        return None
-    return max(depths) + (1 if get_origin(annotation) is list else 0)
-
-
 def _walk_fields(
     pydantic_model: type[BaseModel],
     prefix: str = "",
@@ -192,7 +175,7 @@ def _walk_fields(
             yield from _walk_fields(
                 nested_model,
                 path,
-                list_depth + (_list_layers(annotation, nested_model) or 0),
+                list_depth + (list_layers(annotation, nested_model) or 0),
                 _visited,
             )
 
@@ -232,6 +215,17 @@ def get_nested_value(data: dict[str, Any], field_path: str) -> Any:  # noqa: ANN
     return current
 
 
+def _by_value(value: object) -> object:
+    """O membro de Enum pelo valor dele; o resto como está.
+
+    Na execução, o campo Enum chega à condição como membro, porque o
+    `model_dump` da resposta o guarda assim; relido do checkpoint, chega como o
+    valor. Comparados os dois lados pelo valor, a condição dá o mesmo resultado
+    nos dois caminhos, com o operando escrito como valor ou como membro.
+    """
+    return value.value if isinstance(value, Enum) else value
+
+
 def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
     condition: object, field_data: dict[str, Any], field_name: str
 ) -> bool:
@@ -244,6 +238,9 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
             - None (sempre True)
         field_data: Dados dos campos já processados.
         field_name: Nome do campo atual (para logging).
+
+    O membro de Enum, no valor do campo e no operando, é comparado pelo valor
+    (ver `_by_value`).
 
     Returns:
         True se a condição é satisfeita, False caso contrário.
@@ -276,10 +273,16 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
             return False
 
         value = get_nested_value(field_data, field_path)
+        compared = _by_value(value)
 
         for key, (symbol, compare) in _CONDITION_OPERATORS.items():
             if key in condition:
-                result = compare(value, condition[key])
+                operand = condition[key]
+                if key in ("in", "not_in") and isinstance(operand, _MEMBERSHIP_OPERAND_TYPES):
+                    operand = [_by_value(option) for option in operand]
+                else:
+                    operand = _by_value(operand)
+                result = compare(compared, operand)
                 logger.debug(
                     "Campo '%s': %s=%s %s %s -> %s",
                     field_name,
@@ -316,25 +319,48 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
     return False
 
 
-def check_dependencies_exist(depends_on: list[str], all_fields: set[str]) -> list[str]:
-    """Verifica se todas as dependências existem no modelo.
+def check_dependencies_exist(depends_on: list[str], pydantic_model: type[BaseModel]) -> list[str]:
+    """Verifica se todas as dependências existem no modelo, com o caminho aninhado inteiro.
 
     Args:
-        depends_on: Lista de campos dos quais este campo depende.
-        all_fields: Set com todos os nomes de campos do modelo.
+        depends_on: Lista de campos dos quais este campo depende. Campo de
+            modelo aninhado usa notação de ponto (`endereco.cidade`).
+        pydantic_model: Modelo Pydantic contra o qual os caminhos são conferidos.
 
     Returns:
         Lista de dependências inexistentes (vazia se todas existem).
     """
-    missing = []
-    for dep in depends_on:
-        # Suporta campos aninhados (ex: 'endereco.cidade')
-        # Verifica apenas o campo raiz
-        root_field = dep.split(".")[0]
-        if root_field not in all_fields:
-            missing.append(dep)
+    return [dep for dep in depends_on if not _path_exists(dep, pydantic_model)]
 
-    return missing
+
+def _path_exists(path: str, pydantic_model: type[BaseModel]) -> bool:
+    """Se cada segmento do caminho é campo do modelo a que o segmento anterior leva.
+
+    O caminho é conferido enquanto o valor do segmento só pode ser modelo ou
+    escalar (`submodels`): o seguinte tem de ser campo de um dos modelos. O
+    escalar, como `str`, `int` ou `Enum`, não tem chave, e o caminho que segue
+    depois dele é recusado, porque nunca teria valor; a lista, a tupla ou
+    outra coleção também, porque `get_nested_value` não entra nelas. Na união,
+    como `Union[PessoaFisica, PessoaJuridica]`, cada modelo que tem o segmento é um
+    ramo, e o caminho vale quando algum ramo chega ao fim: os dois modelos
+    podem ter `documento` com submodelos diferentes, e `documento.cnpj` existe
+    pelo segundo. Depois de um campo que pode ter chave que nenhum modelo
+    declara, como `dict` ou `Any`, não há campo contra o qual conferir o
+    resto, e ele é aceito; na avaliação, `get_nested_value` segue esse resto
+    pelas chaves do dict.
+    """
+    models = [pydantic_model]
+    for part in path.split("."):
+        owners = [model for model in models if part in model.model_fields]
+        if not owners:
+            return False
+        models = []
+        for owner in owners:
+            branch = submodels(resolve_forward_refs(owner.model_fields[part].annotation, owner))
+            if branch is None:
+                return True
+            models.extend(branch)
+    return True
 
 
 # Estado de cada nó na busca em profundidade de detect_circular_dependencies.
@@ -565,16 +591,22 @@ def get_field_execution_order(
     Raises:
         ValueError: Se há dependências inválidas ou circulares.
     """
-    all_fields = set(pydantic_model.model_fields.keys())
     dependencies = {}
 
-    # A ordem do modelo, e não a do set, fixa a ordem entre campos
-    # independentes: topological_sort segue a ordem de inserção do dict.
+    # A ordem do modelo fixa a ordem entre campos independentes:
+    # topological_sort segue a ordem de inserção do dict.
     for field_name in pydantic_model.model_fields:
         config = field_configs.get(field_name, {})
         depends_on = _resolve_depends_on(field_name, config)
 
-        missing = check_dependencies_exist(depends_on, all_fields)
+        missing = check_dependencies_exist(depends_on, pydantic_model)
+        condition = config.get("condition")
+        if not missing and isinstance(condition, dict):
+            # Da condição dict, a dependência é a raiz do caminho, que basta à
+            # ordem; o caminho inteiro, que é o que a condição lê, é conferido
+            # aqui, para que o erro de digitação depois da raiz não deixe a
+            # condição sempre falsa.
+            missing = check_dependencies_exist([condition["field"]], pydantic_model)
         if missing:
             msg = f"Campo '{field_name}' depende de campos inexistentes: {missing}"
             raise ValueError(msg)

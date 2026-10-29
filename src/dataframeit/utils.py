@@ -1190,57 +1190,181 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 # =============================================================================
 
 
+def _unwrapped(annotation: object) -> object:
+    """Um nível da anotação sem o `Annotated`, que só acrescenta metadados ao tipo.
+
+    É o ponto único em que os helpers de modelo aninhado abaixo desembrulham
+    cada nível da anotação antes de olhar a origem e os argumentos: todos
+    passam por `_value_types`, que o chama. O Pydantic tira o `Annotated` só do
+    nível de cima da anotação do campo; dentro de Optional, de união ou de
+    lista ele fica, e os metadados dele nunca são percorridos como tipo.
+    """
+    if get_origin(annotation) is typing.Annotated:
+        return get_args(annotation)[0]
+    return annotation
+
+
+def _value_types(annotation: object) -> list:
+    """Os tipos que o valor pode ter: cada membro da união, menos o None, sem `Annotated`.
+
+    A união dentro de outra, como `Optional[Annotated[A | B, ...]]`, é aberta
+    também, e a anotação que não é união volta sozinha na lista.
+    """
+    annotation = _unwrapped(annotation)
+    if get_origin(annotation) in (typing.Union, types.UnionType):
+        return [
+            value_type
+            for arg in get_args(annotation)
+            if arg is not type(None)
+            for value_type in _value_types(arg)
+        ]
+    return [annotation]
+
+
+def _item_types(value_type: object) -> list:
+    """Os tipos que o item pode ter quando `value_type` é `list[X]`; vazio para outro tipo.
+
+    É a decisão única de camada de lista: `is_list_of_pydantic_model`, que a
+    extração usa para buscar item a item, e `list_layers`, que a validação usa
+    para contar as listas em volta de um modelo, reconhecem a lista por aqui.
+    """
+    args = get_args(value_type)
+    return _value_types(args[0]) if get_origin(value_type) is list and args else []
+
+
+def _is_pydantic_model(annotation: object) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
 def is_list_of_pydantic_model(field_type: object) -> tuple:
-    """Verifica se um tipo é List[Model] ou Optional[List[Model]].
+    """Verifica se o valor do campo é uma lista de modelo Pydantic.
+
+    O Optional, a união e o `Annotated` não contam, em volta da lista e em
+    volta do item: `Optional[Annotated[list[Item], ...]]` e `list[Item | None]`
+    são listas de `Item`, como `list[Item]`. A lista de listas, o dict e a tupla
+    de modelos não são: só a lista cujo item é o modelo tem um dicionário por
+    item onde gravar a busca. Também não é a lista cujo item pode ser mais de um
+    modelo, como `list[A | B]` ou `list[A] | list[B]`: sem saber de qual modelo
+    é cada item, a busca do campo de A iria para o item de B, e a de B não
+    seria feita; os campos de busca dos dois seguem a busca aninhada da linha.
 
     Args:
         field_type: Anotação de tipo a analisar.
 
     Returns:
         Tupla (is_list, inner_model):
-        - is_list: True se o tipo é List[PydanticModel]
-        - inner_model: O modelo Pydantic interno (ou None)
+        - is_list: True se o tipo é lista de modelo Pydantic
+        - inner_model: O modelo Pydantic dos itens (ou None)
 
     Examples:
         >>> class Inner(BaseModel):
         ...     x: str
         >>> is_list_of_pydantic_model(List[Inner])
         (True, <class 'Inner'>)
-        >>> is_list_of_pydantic_model(Optional[List[Inner]])
+        >>> is_list_of_pydantic_model(Optional[List[Optional[Inner]]])
         (True, <class 'Inner'>)
         >>> is_list_of_pydantic_model(Inner)
         (False, None)
         >>> is_list_of_pydantic_model(List[str])
         (False, None)
     """
-    origin = get_origin(field_type)
-    args = get_args(field_type)
-
-    # Caso 1: Diretamente List[Model]
-    inner_model = _list_item_model(origin, args)
-    if inner_model is not None:
-        return (True, inner_model)
-
-    # Caso 2: Optional[List[Model]] ou Union[List[Model], None], com typing.Union
-    # ou com types.UnionType (X | None)
-    if origin is typing.Union or isinstance(field_type, types.UnionType):
-        for arg in args:
-            if arg is type(None):
-                continue
-            inner_model = _list_item_model(get_origin(arg), get_args(arg))
-            if inner_model is not None:
-                return (True, inner_model)
-
+    item_models = {
+        item_type
+        for value_type in _value_types(field_type)
+        for item_type in _item_types(value_type)
+        if _is_pydantic_model(item_type)
+    }
+    if len(item_models) == 1:
+        return (True, item_models.pop())
     return (False, None)
 
 
-def _list_item_model(origin: object, args: tuple) -> type[BaseModel] | None:
-    """Modelo Pydantic dos itens quando origin e args descrevem list[Model]."""
-    if origin is list and args:
-        inner_type = args[0]
-        if isinstance(inner_type, type) and issubclass(inner_type, BaseModel):
-            return inner_type
-    return None
+def list_layers(annotation: object, target: type) -> int | None:
+    """Quantas listas envolvem `target` na anotação: list[list[X]] dá 2.
+
+    Só conta os ramos que chegam ao modelo; em Union[list[str], X], a lista
+    de strings não envolve X. A camada de lista é a que `_item_types`
+    reconhece, a mesma de `is_list_of_pydantic_model`: com uma camada, a
+    validação aceita a configuração do item, que a extração busca item a item
+    ou, quando o item pode ser mais de um modelo, uma vez para a linha.
+    Devolve None quando `target` não aparece.
+    """
+    depths = []
+    for value_type in _value_types(annotation):
+        if value_type is target:
+            depths.append(0)
+            continue
+        item_types = _item_types(value_type)
+        layer = 1 if item_types else 0
+        for inner in item_types or get_args(value_type):
+            depth = list_layers(inner, target)
+            if depth is not None:
+                depths.append(depth + layer)
+    return max(depths, default=None)
+
+
+# Os tipos cujo valor não tem chave: no `model_dump`, eles ficam como estão, e
+# `get_nested_value` não segue caminho dentro deles. `datetime.datetime` entra
+# por ser subclasse de `datetime.date`, e `bool`, por ser de `int`.
+_KEYLESS_TYPES = (
+    str,
+    bytes,
+    int,
+    float,
+    complex,
+    Decimal,
+    Enum,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+)
+
+
+def _is_keyless(value_type: object) -> bool:
+    """Se o valor desse tipo é escalar, sem chave que um caminho possa seguir."""
+    if get_origin(value_type) is typing.Literal:
+        return True
+    return isinstance(value_type, type) and issubclass(value_type, _KEYLESS_TYPES)
+
+
+def _is_collection(value_type: object) -> bool:
+    """Se o valor desse tipo é coleção sem chave, de qualquer item, com ou sem argumentos.
+
+    A coleção é reconhecida pela ABC: `Iterable` pega a lista, a tupla, o set,
+    o deque, `Sequence` e o próprio `Iterable`, de `typing` ou de
+    `collections.abc`. O `Mapping` tem chave e fica de fora, como `dict`. O
+    modelo Pydantic define `__iter__` e passaria também: `submodels` confere o
+    modelo antes. O texto e os bytes passam, mas `_is_keyless` já os põe de
+    fora pelo mesmo motivo.
+    """
+    origin = get_origin(value_type) or value_type
+    return (
+        isinstance(origin, type)
+        and issubclass(origin, collections.abc.Iterable)
+        and not issubclass(origin, collections.abc.Mapping)
+    )
+
+
+def submodels(annotation: object) -> list[type[BaseModel]] | None:
+    """Os modelos Pydantic em que pode estar a chave seguinte de um caminho no valor.
+
+    `Optional[Endereco]` dá `[Endereco]`, e `Union[A, B]`, `[A, B]`. O tipo
+    escalar (`_KEYLESS_TYPES` e `Literal`) não tem chave e fica de fora:
+    `Union[Endereco, str]` dá `[Endereco]`, e `str`, a lista vazia, em que
+    nenhuma chave existe. A lista, a tupla ou outra coleção (`_is_collection`)
+    ficam de fora também, porque `get_nested_value` só segue dict: nem o campo
+    do item nem o índice são seguidos, e `list[Endereco]` dá a lista vazia.
+    None quando algum tipo do valor pode ter chave que nenhum modelo declara,
+    como `dict`, `Any`, `Union[Endereco, dict[str, str]]` ou um tipo que esta
+    função não conhece.
+    """
+    models = []
+    for value_type in _value_types(annotation):
+        if _is_pydantic_model(value_type):
+            models.append(value_type)
+        elif not (_is_keyless(value_type) or _is_collection(value_type)):
+            return None
+    return models
 
 
 def _lookup_forward_ref(name: str, owner: type[BaseModel]) -> type | None:
@@ -1312,7 +1436,8 @@ def get_nested_pydantic_models(field_type: object) -> list:
     """Extrai todos os modelos Pydantic de uma anotação de tipo.
 
     Trata List[Model], Optional[List[Model]], Union[Model, None], etc.
-    Usado para detectar campos de busca em modelos aninhados.
+    Usado para detectar campos de busca em modelos aninhados. Cada nível passa
+    por `_value_types`, e os metadados de `Annotated` ficam de fora.
 
     Args:
         field_type: Anotação de tipo a analisar.
@@ -1331,28 +1456,10 @@ def get_nested_pydantic_models(field_type: object) -> list:
         []
     """
     models = []
-    origin = get_origin(field_type)
-
-    # Caso 1: É diretamente um modelo Pydantic
-    if isinstance(field_type, type) and issubclass(field_type, BaseModel):
-        models.append(field_type)
-        return models
-
-    # Caso 2: Tipos genéricos (List[X], Optional[X], Union[X, Y], X | Y etc.).
-    # get_origin também reconhece types.UnionType, então `X | None` cai aqui.
-    if origin is not None:
-        args = get_args(field_type)
-
-        for arg in args:
-            # Ignorar NoneType em Optional/Union
-            if arg is type(None):
-                continue
-
-            # Checar se o argumento é um modelo Pydantic
-            if isinstance(arg, type) and issubclass(arg, BaseModel):
-                models.append(arg)
-            else:
-                # Recursivamente buscar em tipos aninhados (e.g., List[List[Model]])
+    for value_type in _value_types(field_type):
+        if _is_pydantic_model(value_type):
+            models.append(value_type)
+        else:
+            for arg in get_args(value_type):
                 models.extend(get_nested_pydantic_models(arg))
-
     return models
