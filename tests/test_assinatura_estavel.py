@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any, Literal
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from dataframeit import field_condition
 from dataframeit.core import _run_signature
@@ -335,9 +335,9 @@ def _funcao(fonte, nome="condicao"):
 _VIP = "condicao = lambda d: d.get('tipo') == 'vip'"
 
 
-def _porte(*membros):
-    """Enum `Porte` com os membros dados; o mesmo nome, como o Enum editado."""
-    return Enum("Porte", {membro: membro[0] for membro in membros})
+def _porte(*membros, nome="Porte"):
+    """Enum com os membros dados; o mesmo nome, como o Enum editado."""
+    return Enum(nome, {membro: membro[0] for membro in membros})
 
 
 def _pedido(  # noqa: PLR0913 (uma parte do modelo por variação do teste)
@@ -347,31 +347,38 @@ def _pedido(  # noqa: PLR0913 (uma parte do modelo por variação do teste)
     tipos=frozenset({"pf", "mei"}),
     enum_porte=None,
     anotacao_etiquetas=list[str],
+    nome_endereco="Endereco",
     doc_endereco="Endereço de entrega.",
     titulo_endereco=None,
     descricao_cidade="Cidade da entrega.",
+    doc_pedido=None,
+    titulo_pedido=None,
 ):
     condicao = condicao or _funcao(_VIP)
     enum_porte = enum_porte or _porte("pequeno", "grande")
     condicao_frete: dict[str, Any] = {"condition": {"field": "tipo", "in": set(tipos)}}
-
-    class Endereco(BaseModel):
-        model_config = ConfigDict(title=titulo_endereco)
-
-        cidade: str = Field(description=descricao_cidade)
-
-    Endereco.__doc__ = doc_endereco
+    # Pelo create_model, o nome da classe muda como na classe renomeada no código.
+    # Any porque o ty não aceita a variável de tipo na anotação do campo.
+    endereco_modelo: Any = create_model(
+        nome_endereco,
+        __config__=ConfigDict(title=titulo_endereco),
+        __doc__=doc_endereco,
+        cidade=(str, Field(description=descricao_cidade)),
+    )
 
     class Pedido(BaseModel):
+        model_config = ConfigDict(title=titulo_pedido)
+
         tipo: str
         porte: enum_porte | None = None
         etiquetas: anotacao_etiquetas = []
-        endereco: Endereco | None = None
+        endereco: endereco_modelo | None = None
         desconto: float | None = Field(
             default=None, json_schema_extra=field_condition(condicao, depends_on=depends_on)
         )
         frete: float | None = Field(default=None, json_schema_extra=condicao_frete)
 
+    Pedido.__doc__ = doc_pedido
     return Pedido
 
 
@@ -397,10 +404,16 @@ def test_mesmo_modelo_criado_duas_vezes_tem_a_mesma_assinatura():
         pytest.param({"depends_on": ["tipo", "porte"]}, id="depends-on"),
         pytest.param({"tipos": {"pf", "mei", "me"}}, id="conjunto-da-condicao"),
         pytest.param({"enum_porte": _porte("pequeno", "medio", "grande")}, id="membro-do-enum"),
+        pytest.param(
+            {"enum_porte": _porte("pequeno", "grande", nome="Tamanho")}, id="nome-do-enum"
+        ),
         pytest.param({"anotacao_etiquetas": list[int]}, id="argumento-da-anotacao"),
         pytest.param({"doc_endereco": "Endereço de cobrança."}, id="docstring-do-aninhado"),
         pytest.param({"titulo_endereco": "Destino"}, id="model-config-do-aninhado"),
         pytest.param({"descricao_cidade": "Cidade de cobrança."}, id="campo-do-aninhado"),
+        pytest.param({"nome_endereco": "Destino"}, id="nome-do-aninhado"),
+        pytest.param({"doc_pedido": "Pedido de venda."}, id="docstring-do-raiz"),
+        pytest.param({"titulo_pedido": "Venda"}, id="model-config-do-raiz"),
     ],
 )
 def test_mudanca_no_modelo_com_condicao_callable_muda_a_assinatura(variacao):
