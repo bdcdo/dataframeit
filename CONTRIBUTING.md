@@ -23,7 +23,7 @@ Os testes não chamam nenhum provider de verdade e não precisam de chave de API
 1. Abra uma issue antes de uma mudança grande, para combinar o desenho.
 2. Crie uma branch a partir da `main` com o prefixo do tipo de mudança: `feature/`, `fix/`, `docs/` ou `refactor/`.
 3. Escreva o teste junto com a mudança. Uma correção de bug vem com o teste que falhava antes dela.
-4. Abra o PR contra a `main`. O CI roda lint, a auditoria dos workflows pelo `zizmor`, testes em Python 3.11 e 3.13, os testes com as versões mínimas das dependências e o build da documentação.
+4. Abra o PR contra a `main`. O CI roda lint, a auditoria dos workflows pelo `zizmor`, testes em Python 3.11, 3.13 e 3.14, os testes com as versões mínimas das dependências e o build da documentação.
 
 ## Convenções
 

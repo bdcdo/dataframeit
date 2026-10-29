@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.13']
+        python-version: ['3.11', '3.13', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,7 +157,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.13']
+        python-version: ['3.11', '3.13', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -190,7 +190,9 @@ jobs:
           if-no-files-found: error
 
   # Cobertura de ramos de src/dataframeit somada dos jobs unit e codex-provider,
-  # nas duas versões de Python. O fail_under = 100 do pyproject.toml vale aqui.
+  # em todas as versões da matriz, com o fail_under = 100 do pyproject.toml.
+  # Cada versão sozinha também chega a 100%: utils.py trata typing.Union e
+  # types.UnionType, que a partir do 3.14 são o mesmo objeto, num ramo só.
   coverage:
     needs: [unit, codex-provider]
     runs-on: ubuntu-latest
