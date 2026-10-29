@@ -771,7 +771,7 @@ def test_mudanca_no_slot_do_objeto_chamavel_muda_a_assinatura(antes, depois):
 
 
 # Objeto chamável com busca de atributo própria: o __getattr__ que devolve None
-# para qualquer nome, o que levanta KeyError (o objeto que guarda os atributos
+# para qualquer nome, o que devolve texto vazio, o que levanta KeyError (o objeto que guarda os atributos
 # num dict) e o slot sombreado, na subclasse, por property que levanta. A
 # assinatura lê o estado sem passar por eles, e o slot não atribuído fica de fora
 # em vez de entrar com o valor que o __getattr__ inventa.
@@ -787,6 +787,13 @@ class Nula:
 
     def __call__(self, d):
         return d.get("tipo") == self.alvo
+
+
+class Vazia(Nula):
+    __slots__ = ()
+
+    def __getattr__(self, nome):
+        return ""
 
 
 class Dicionario:
@@ -822,7 +829,7 @@ def sombreada(alvo):
     return regra
 
 
-CONSTRUTORES = {"nula": Nula, "dicionario": Dicionario, "sombreada": sombreada}
+CONSTRUTORES = {"nula": Nula, "vazia": Vazia, "dicionario": Dicionario, "sombreada": sombreada}
 """
 
 
@@ -833,7 +840,7 @@ def test_objeto_com_busca_de_atributo_propria_assina_igual_entre_sementes():
     )
 
 
-@pytest.mark.parametrize("construtor", ["nula", "dicionario", "sombreada"])
+@pytest.mark.parametrize("construtor", ["nula", "vazia", "dicionario", "sombreada"])
 def test_mudanca_no_slot_de_objeto_com_busca_propria_muda_a_assinatura(construtor):
     """O slot entra pelo descritor da classe que o declara, sem a busca de atributo."""
     montar = _funcao(_BUSCA_PROPRIA, "CONSTRUTORES")[construtor]
