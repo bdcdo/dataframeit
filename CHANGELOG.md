@@ -11,6 +11,13 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
 
+### Corrigido
+
+- A assinatura do checkpoint de um modelo com conjunto de texto no `json_schema_extra` do `model_config`, da raiz ou de um modelo aninhado, deixa de mudar a cada processo, e a execução interrompida retoma em outro processo. O `model_config` passa pelo mesmo critério do campo: com função, conjunto que não é só de inteiros ou contêiner que contém a si mesmo, a assinatura sai da forma canônica, que ordena o conjunto. O checkpoint gravado antes com um desses modelos não é retomado e a execução recomeça (#296).
+- A assinatura do checkpoint não levanta `RecursionError` com lista, dict ou tupla que contém a si mesma, direto ou por outro contêiner, no estado de uma condição chamável, no `json_schema_extra` ou em `model_kwargs`; o contêiner reencontrado entra por um marcador, como o objeto que aponta para si (#297).
+- A assinatura do checkpoint de uma condição chamável que é subclasse de tipo embutido leva o valor dela: `Limite(5)` e `Limite(10)`, com `class Limite(int)`, assinam diferente, e o `NamedTuple` com `__call__` entra pelo código do `__call__` e pelos valores, e não só pelos valores. O mesmo vale para o dono de um método ligado (#298).
+- A assinatura do checkpoint lê o `DataFrame` e a `Series` do pandas no estado de uma condição chamável pelo conteúdo inteiro, pelo índice e pelos nomes e tipos das colunas, e não pelo repr, que mostra só as primeiras e as últimas linhas: mudar uma linha do meio muda a assinatura. A coluna de número, data ou texto entra pelo `hash_pandas_object`, a custo linear; a de outros objetos, como lista ou conjunto na célula, pelas células na forma canônica (#299).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido
