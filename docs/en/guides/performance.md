@@ -119,7 +119,7 @@ result = dataframeit(
 )
 ```
 
-When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output, and running again with `resume=True` processes only the pending rows. With `reprocess_columns`, rows the interruption left without reprocessing keep their previous values and are marked in `_error_details`.
+When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output. When running again with `resume=True` processes only the pending rows, and what happens with `reprocess_columns`, is covered in [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
 
 ## Token Tracking
 
@@ -155,7 +155,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
+The throughput section appears only with `parallel_requests > 1`. Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
 
 To silence the summary and keep the usage columns, raise the logger level:
 

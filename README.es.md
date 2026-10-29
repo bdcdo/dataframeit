@@ -22,7 +22,7 @@ pip install dataframeit[anthropic]    # Anthropic Claude
 pip install dataframeit[groq]         # Groq
 pip install dataframeit[codex]        # SDK oficial de Codex (experimental)
 pip install dataframeit[claude-code]  # Claude Code mediante el Claude Agent SDK
-pip install dataframeit[all]          # todos los proveedores excepto Codex, búsqueda web, Polars y Excel
+pip install dataframeit[all]          # los proveedores de arriba salvo Codex, más búsqueda web, Polars y Excel
 ```
 
 Extras opcionales: `search` (Tavily), `search-exa` (Exa), `search-all`, `polars`, `excel`.
@@ -69,6 +69,8 @@ print(resultado)
 | ¡Producto excelente! ... | positivo | alta |
 | Pésima atención... | negativo | alta |
 | La entrega bien... | neutro | media |
+
+Con `track_tokens=True`, el valor por defecto, la salida también trae las columnas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` y `_reasoning_tokens`, omitidas en la tabla de arriba.
 
 Los nombres de clases y campos son arbitrarios: los notebooks de [`example/`](example/) usan nombres en portugués.
 

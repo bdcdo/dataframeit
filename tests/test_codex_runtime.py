@@ -81,7 +81,6 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
         "ultrafast_mode",
         "unified_exec",
         "unified_exec_tty",
-        "unified_exec_zsh_fork",
         "workspace_dependencies",
         "worktrees",
         "write_stdin_approval",

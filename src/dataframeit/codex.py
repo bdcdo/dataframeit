@@ -36,14 +36,16 @@ from .errors import (
 from .llm import LLMConfig, build_prompt
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator
 
     from openai_codex import Codex, CodexConfig, TurnHandle
     from openai_codex.client import CodexClient
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort, ThreadTokenUsage
 
-# Status HTTP de rate limit e início da faixa de erro do servidor.
+# Status HTTP de credencial recusada, de rate limit e início da faixa de erro do
+# servidor.
+_HTTP_UNAUTHORIZED = 401
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR_MIN = 500
 # Código JSON-RPC com que o app-server do Codex recusa um pedido quando a fila de
@@ -80,6 +82,9 @@ _CODEX_CONFIG_OVERRIDES = (
     "features.image_generation=false",
     "features.sleep_tool=false",
     "features.view_image=false",
+    "features.api_key_cyber_access_programs=false",
+    "features.cli_daybreak=false",
+    "features.code_mode_interrupt=false",
     # Ligada, o runtime repete sem limite a conexão que falha, e o turno não
     # termina; desligada, o turno falha e a nova tentativa fica com o
     # `retry_with_backoff` da linha.
@@ -456,7 +461,7 @@ def _turn_timeout(config: LLMConfig) -> float | None:
 
 
 @contextmanager
-def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
+def _isolated_runtime() -> Generator[tuple[Path, Path], None, None]:
     """Mantém lock, credencial e diretórios isolados pelo tempo da execução."""
     from filelock import FileLock, Timeout  # noqa: PLC0415 (extra codex opcional)
 
@@ -975,7 +980,7 @@ class _AttemptDeadline:
 @contextmanager
 def _attempt_deadline(
     client: Codex, timeout: float | None, stop: _AppServerStop
-) -> Iterator[_AttemptDeadline]:
+) -> Generator[_AttemptDeadline, None, None]:
     """Arma o relógio da tentativa e o desarma na saída, com ou sem erro."""
     deadline = _AttemptDeadline(client, timeout, stop)
     if timeout is None:
@@ -1125,13 +1130,23 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
             continue
         status = getattr(root, payload_field).http_status_code
         if status == _HTTP_TOO_MANY_REQUESTS:
-            raise ProviderOverloadedError(message)
-        if status is None or status >= _HTTP_SERVER_ERROR_MIN:
-            raise ProviderTransientError(message)
-        raise ProviderError(message)
+            error_class = ProviderOverloadedError
+        elif status is None or status >= _HTTP_SERVER_ERROR_MIN:
+            error_class = ProviderTransientError
+        else:
+            error_class = ProviderError
+        # A mensagem do turno pode trazer texto da conversa com o modelo, e a
+        # caixa amigável sai do status, que vai no status_code da exceção.
+        raise error_class(message, status_code=status)
 
     if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
         raise ProviderTransientError(message)
+
+    # O código unauthorized é a recusa da credencial do Codex. Sem status HTTP no
+    # turno, ele vai como 401 para que a caixa de autenticação, que manda refazer
+    # o login, saia do código, e não do texto.
+    if root is CodexErrorInfoValue.unauthorized:
+        raise ProviderError(message, status_code=_HTTP_UNAUTHORIZED)
 
     # Os demais códigos ficam como falha da linha. Entre eles, a violação de
     # política vem do conteúdo da requisição, e as recusas acumuladas e o
@@ -1194,7 +1209,7 @@ def open_codex_backend(
     config: LLMConfig,
     pydantic_model: type[BaseModel],
     user_prompt: str,
-) -> Iterator[CodexBackend]:
+) -> Generator[CodexBackend, None, None]:
     """Abre um backend ativo e fecha seus recursos na ordem inversa."""
     from openai_codex import CodexConfig  # noqa: PLC0415 (extra codex opcional)
 

@@ -115,6 +115,19 @@ def test_interrupcao_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_an
     assert detalhes[~antigas].isna().all()
 
 
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_interrupcao_no_reprocessamento_de_dict_com_chaves_tupla(paralelo):
+    entrada = {("sp", ano): f"t{ano}" for ano in range(2020, 2026)}
+    _, llm = _llm_que_esgota(2, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(UserWarning, match="interrompida"):
+        saida = _roda(entrada, llm, reprocess_columns=["campo1"], parallel_requests=paralelo)
+
+    assert list(saida.index) == list(entrada)
+    assert (saida["_dataframeit_status"] == "processed").sum() == 2
+    assert saida["_dataframeit_status"].isna().sum() == 4
+
+
 def test_linha_com_erro_que_ia_ser_refeita_volta_a_ficar_pendente():
     df = pd.DataFrame(
         {
