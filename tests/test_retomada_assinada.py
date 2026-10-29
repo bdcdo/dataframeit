@@ -1480,6 +1480,30 @@ def test_none_do_validador_em_campo_textual_continua_acusado(tmp_path, formato):
         )
 
 
+class NaViraNone(BaseModel):
+    campo1: str
+
+    @field_validator("campo1")
+    @classmethod
+    def na_vira_none(cls, valor):
+        return None if valor == "N/A" else valor
+
+
+def test_none_do_validador_de_outra_resposta_acusado_no_parquet(tmp_path):
+    """O parquet guarda o None que o validador deu ao "N/A", e o tipo str o recusa.
+
+    A célula nula do parquet é o None gravado, e a retomada não a troca pelo
+    texto vazio, que o validador deixaria passar.
+    """
+    with pytest.raises(ValueError, match="campos incompatíveis"):
+        _direta_e_retomada(
+            tmp_path,
+            "parquet",
+            NaViraNone,
+            lambda text: {"campo1": "N/A" if text == "a" else "deferido"},
+        )
+
+
 class Autoria(TypedDict):
     autor: str
     ano: int
