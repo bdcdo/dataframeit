@@ -405,11 +405,6 @@ def test_segundo_ctrl_c_corta_a_espera_e_a_chamada_lenta_fica_pendente(tmp_path)
 
     def llm(texto, *args, **kwargs):
         if texto == "lenta":
-            # O primeiro Ctrl-C encerra o executor antes de esperar esta
-            # chamada; a folga deixa a espera começar antes do segundo.
-            encerrando.wait(timeout=10)
-            time.sleep(0.2)
-            _ctrl_c()
             liberada.wait(timeout=10)
             terminou.set()
         else:
@@ -417,8 +412,11 @@ def test_segundo_ctrl_c_corta_a_espera_e_a_chamada_lenta_fica_pendente(tmp_path)
         return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
 
     try:
+        # O primeiro Ctrl-C encerra o executor antes de esperar a chamada
+        # lenta; a folga deixa a espera começar antes do segundo.
         with (
             patch.object(ThreadPoolExecutor, "shutdown", encerra_observado),
+            _ctrl_c_depois(encerrando, 0.2),
             pytest.raises(KeyboardInterrupt),
         ):
             _roda(
@@ -493,6 +491,68 @@ def test_ctrl_c_com_todas_as_linhas_lentas_sai_sem_esperar_uma_terminar(tmp_path
 
     assert saida < duracao
     assert terminadas_na_saida == []
+
+
+@requer_pthread_kill
+def test_ctrl_c_espera_a_linha_em_andamento_e_nao_deixa_thread_do_lote(tmp_path):
+    """As linhas lentas em andamento no Ctrl-C terminam na espera e entram no checkpoint.
+
+    Elas só terminam depois de o executor ser encerrado, e nenhuma thread do
+    lote sobrevive à interrupção.
+    """
+    textos = ["lenta1", "ctrl-c", "lenta2"]
+    ckpt = tmp_path / "ckpt.csv"
+    antes = set(threading.enumerate())
+    trava = threading.Lock()
+    comecadas: list[str] = []
+    todas_comecaram = threading.Event()
+    encerrando = threading.Event()
+    encerra = ThreadPoolExecutor.shutdown
+
+    def encerra_observado(self, *args, **kwargs):
+        encerrando.set()
+        return encerra(self, *args, **kwargs)
+
+    def llm(texto, *args, **kwargs):
+        with trava:
+            comecadas.append(texto)
+            if len(comecadas) == len(textos):
+                todas_comecaram.set()
+        if texto == "ctrl-c":
+            todas_comecaram.wait(timeout=10)
+            _ctrl_c()
+        else:
+            encerrando.wait(timeout=10)
+            time.sleep(0.2)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": {}}
+
+    with (
+        patch.object(ThreadPoolExecutor, "shutdown", encerra_observado),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": textos}),
+            llm,
+            parallel_requests=3,
+            batch_size=100,
+            checkpoint_path=ckpt,
+        )
+    sobreviventes = [t for t in set(threading.enumerate()) - antes if not t.daemon]
+
+    gravado = pd.read_csv(ckpt)
+    status = dict(zip(gravado["texto"], gravado["_dataframeit_status"], strict=True))
+    assert status == dict.fromkeys(textos, "processed")
+    assert sobreviventes == []
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    _roda(
+        pd.DataFrame({"texto": textos}),
+        llm_ok,
+        parallel_requests=3,
+        batch_size=100,
+        checkpoint_path=ckpt,
+    )
+    assert retomada == []
 
 
 @requer_pthread_kill
