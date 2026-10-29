@@ -384,16 +384,14 @@ def test_fabrica_dos_dados_decide_o_texto_vazio_linha_a_linha():
     """A célula vazia é o texto vazio na linha em que a fábrica dá texto, e None onde dá None.
 
     A fábrica recebe os valores da linha com o texto vazio das outras células
-    restauradas: na linha 2, o tipo vazio é "", e a fábrica dá "sem tipo", e
-    não None. Com o tipo None, a célula ficaria None, e a validação a
-    preencheria com o "sem tipo" da fábrica.
+    restauradas: na linha 2, o tipo vazio é "", e a fábrica dá "", e não None.
     """
 
     class Pedido(BaseModel):
         tipo: str
         campo1: str = Field(
             default_factory=lambda dados: (
-                None if dados["tipo"] in {"pj", None} else dados["tipo"].upper() or "sem tipo"
+                None if dados["tipo"] in {"pj", None} else dados["tipo"].upper()
             )
         )
 
