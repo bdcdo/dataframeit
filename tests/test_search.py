@@ -7,7 +7,13 @@ import os
 import sys
 import types
 import warnings as _warnings
-from typing import List, Literal, Optional  # noqa: UP035 (List usado de propósito, ver NodoArvore)
+from typing import (  # noqa: UP035 (List usado de propósito, ver NodoArvore)
+    Annotated,
+    List,
+    Literal,
+    Optional,
+    Union,
+)
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -367,7 +373,7 @@ def test_tavily_friendly_error_messages():
 
     error = TavilyMissingAPIKeyError("Missing API key for Tavily")
     msg = get_friendly_error_message(error)
-    assert "TAVILY" in msg.upper() or "API" in msg.upper()
+    assert "ERRO DE AUTENTICAÇÃO TAVILY" in msg
 
     # Erro de limite de uso
     class UsageLimitExceededError(Exception):
@@ -375,7 +381,7 @@ def test_tavily_friendly_error_messages():
 
     error = UsageLimitExceededError("Usage limit exceeded for Tavily")
     msg = get_friendly_error_message(error)
-    assert "LIMITE" in msg.upper() or "LIMIT" in msg.upper()
+    assert "LIMITE DE USO TAVILY EXCEDIDO" in msg
 
 
 # =============================================================================
@@ -1582,8 +1588,8 @@ def test_modo_por_campo_nested_search():
     assert len(pedidos) == 2
 
 
-def test_modo_por_campo_nested_context_in_prompt():
-    """Verifica que contexto de busca aninhada é incluído no prompt."""
+def test_modo_por_campo_prompt_da_lista_sem_contexto_aninhado():
+    """O prompt que extrai um List[Model] não leva o contexto de buscas aninhadas."""
 
     captured_prompts = []
 
@@ -1617,12 +1623,11 @@ def test_modo_por_campo_nested_context_in_prompt():
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
         field_extractor(AnaliseSentencaSaude, "Analise {texto}", config)("Medicamento X")
 
-    # Procurar prompt do campo 'pedidos' que deve ter contexto aninhado
+    # O campo com busca dentro do item de um List[Model] só existe depois que a
+    # lista é extraída e é buscado item a item; as buscas aninhadas que entram
+    # no prompt do campo de primeiro nível são as de modelo aninhado sem lista.
     prompts_pedidos = [p for p in captured_prompts if "pedidos" in p.lower()]
-
-    # Deve haver menção ao contexto de buscas aninhadas
-    pedidos_prompt = next((p for p in prompts_pedidos if "Contexto de buscas" in p), None)
-    assert pedidos_prompt is not None or len(prompts_pedidos) > 0
+    assert prompts_pedidos == ["Analise {texto}\n\nResponda APENAS o campo: pedidos"]
 
 
 def test_modo_por_campo_sums_nested_usage():
@@ -1848,6 +1853,35 @@ def test_is_list_of_pydantic_model_list_of_primitives():
     assert inner is None
 
 
+@pytest.mark.parametrize(
+    ("anotacao", "esperado"),
+    [
+        (Optional[Annotated[list[PedidoItem], Field(min_length=1)]], (True, PedidoItem)),
+        # A união dentro do `Annotated` dentro do Optional é aberta também.
+        (
+            Optional[Annotated[Union[list[PedidoItem], None], Field(min_length=1)]],
+            (True, PedidoItem),
+        ),
+        (list[Optional[PedidoItem]], (True, PedidoItem)),
+        (list[Annotated[PedidoItem, "item"]] | None, (True, PedidoItem)),
+        (list[str] | list[PedidoItem], (True, PedidoItem)),
+        # O item que pode ser mais de um modelo não tem um modelo só com que
+        # buscar os campos de cada item.
+        (list[PedidoItem | InformacoesMedicamento], (False, None)),
+        (list[PedidoItem] | list[InformacoesMedicamento], (False, None)),
+        # Nenhum destes é lista cujo item é o modelo: o dict e a tupla não têm
+        # itens onde gravar a busca, e a lista de listas é recusada na validação.
+        (dict[str, list[PedidoItem]], (False, None)),
+        (tuple[PedidoItem, ...], (False, None)),
+        (list[list[PedidoItem]], (False, None)),
+        (Optional[Annotated[PedidoItem, "item"]], (False, None)),
+        (list, (False, None)),
+    ],
+)
+def test_is_list_of_pydantic_model_tira_optional_e_annotated_em_todo_nivel(anotacao, esperado):
+    assert is_list_of_pydantic_model(anotacao) == esperado
+
+
 def test_get_list_fields_with_nested_search():
     """Testa identificação de campos List[Model] com busca interna."""
 
@@ -2070,7 +2104,7 @@ def test_warn_search_rate_limit_exa_higher_threshold():
 
     # Configuração: 10 queries concorrentes está no limite (10), não dispara.
     # A diferença que exercitamos é a taxa estimada:
-    # rate_limit_delay=2.0, parallel=5 => 5 * 30 = 150 rpm
+    # rate_limit_delay=2.0, parallel=5 => 5 * 60 / (1 + 2) = 100 rpm
     # Tavily 80% = 80 -> dispara. Exa 80% = 240 -> não dispara.
     with _warnings.catch_warnings(record=True) as w:
         _warnings.simplefilter("always")
@@ -2287,3 +2321,68 @@ def test_warn_search_rate_limit_nao_sugere_delay_ja_suficiente():
         )
 
     assert str(record[0].message).endswith("Para evitar HTTP 429, use: parallel_requests=2.")
+
+
+def _aviso_de_busca(**kwargs) -> str | None:
+    """Mensagem do aviso de rate limit da busca, ou None quando ele não sai."""
+    with _warnings.catch_warnings(record=True) as avisos:
+        _warnings.simplefilter("always")
+        _warn_search_rate_limit(**kwargs)
+    return str(avisos[0].message) if avisos else None
+
+
+def test_pausa_entre_linhas_nao_faz_o_aviso_de_busca_aparecer():
+    """Com Exa, três campos e um worker, 0,5 s de pausa não pode estimar mais buscas."""
+    configuracao = {
+        "num_rows": 40,
+        "num_fields": 3,
+        "parallel_requests": 1,
+        "search_per_field": True,
+        "search_provider": "exa",
+    }
+
+    assert _aviso_de_busca(**configuracao, rate_limit_delay=0.0) is None
+    assert _aviso_de_busca(**configuracao, rate_limit_delay=0.5) is None
+
+
+def test_aviso_por_campo_nao_recomenda_mais_workers_que_os_atuais():
+    """Com um worker e três campos, a dica mantém um worker e pede pausa."""
+    mensagem = _aviso_de_busca(
+        num_rows=40,
+        num_fields=3,
+        parallel_requests=1,
+        search_per_field=True,
+        rate_limit_delay=0.0,
+    )
+
+    assert mensagem is not None
+    assert mensagem.endswith(
+        "Para evitar HTTP 429, use: parallel_requests=1, rate_limit_delay=2.6."
+    )
+
+
+@pytest.mark.parametrize("search_per_field", [False, True])
+@pytest.mark.parametrize("provedor", ["tavily", "exa"])
+def test_aviso_de_busca_cai_com_a_pausa_e_nunca_pede_mais_workers(provedor, search_per_field):
+    """Mais pausa nunca faz o aviso aparecer, e a dica nunca sobe parallel_requests."""
+    pausas = [0.0, 0.5, 1.0, 2.0, 10.0]
+    for workers in [1, 2, 3, 5, 10, 20]:
+        for campos in [1, 2, 3, 4, 11]:
+            mensagens = [
+                _aviso_de_busca(
+                    num_rows=40,
+                    num_fields=campos,
+                    parallel_requests=workers,
+                    search_per_field=search_per_field,
+                    rate_limit_delay=pausa,
+                    search_provider=provedor,
+                )
+                for pausa in pausas
+            ]
+            avisou = [mensagem is not None for mensagem in mensagens]
+            assert avisou == sorted(avisou, reverse=True), (workers, campos, avisou)
+            for mensagem in filter(None, mensagens):
+                recomendado = int(
+                    mensagem.split("use: parallel_requests=")[1].split(",")[0].rstrip(".")
+                )
+                assert recomendado <= workers, (workers, campos, mensagem)

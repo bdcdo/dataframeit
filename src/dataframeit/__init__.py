@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
 from .conditional import field_condition
-from .core import dataframeit
+from .core import RowResult, dataframeit
 from .errors import (
     ProviderAbortError,
     ProviderConfigurationError,
@@ -33,6 +33,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "dataframeit",
+    "RowResult",
     "field_condition",
     "read_df",
     "normalize_value",

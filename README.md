@@ -22,7 +22,7 @@ pip install dataframeit[anthropic]    # Anthropic Claude
 pip install dataframeit[groq]         # Groq
 pip install dataframeit[codex]        # Official Codex SDK (experimental)
 pip install dataframeit[claude-code]  # Claude Code via the Claude Agent SDK
-pip install dataframeit[all]          # all providers except Codex, web search, Polars and Excel
+pip install dataframeit[all]          # the providers above except Codex, plus web search, Polars and Excel
 ```
 
 Optional extras: `search` (Tavily), `search-exa` (Exa), `search-all`, `polars`, `excel`.
@@ -70,6 +70,8 @@ print(result)
 | Terrible service... | negative | high |
 | Delivery was fine... | neutral | medium |
 
+With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out of the table above.
+
 Field and class names are arbitrary; the examples in the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) notebooks use Portuguese ones.
 
 ## Features
@@ -78,7 +80,7 @@ Field and class names are arbitrary; the examples in the [`example/`](https://gi
 - **Multiple input types**: pandas or Polars DataFrame and Series, list, dict
 - **Structured output**: Pydantic validation; with the LangChain providers, a rejected answer goes back to the model with the error
 - **Resilience**: Automatic retry with exponential backoff, and periodic checkpoints (`batch_size` + `checkpoint_path`) to resume long runs
-- **Performance**: Parallel processing that halves workers on rate limits, configurable rate limiting
+- **Performance**: Continuous parallel queue that halves the rows in flight on rate limits, configurable rate limiting, and a per-row callback (`on_row_done`) that runs on the worker thread
 - **Web search**: Tavily or Exa, per field or per group of fields, with conditional fields (`condition`, `depends_on`)
 - **Tracking**: Token usage, search credits and throughput metrics
 

@@ -22,7 +22,7 @@ pip install dataframeit[anthropic]    # Anthropic Claude
 pip install dataframeit[groq]         # Groq
 pip install dataframeit[codex]        # Codex SDK oficial (experimental)
 pip install dataframeit[claude-code]  # Claude Code pelo Claude Agent SDK
-pip install dataframeit[all]          # todos os providers exceto Codex, busca web, Polars e Excel
+pip install dataframeit[all]          # os providers acima menos o Codex, mais busca web, Polars e Excel
 ```
 
 Extras opcionais: `search` (Tavily), `search-exa` (Exa), `search-all`, `polars`, `excel`.
@@ -70,6 +70,8 @@ print(resultado)
 | Péssimo atendimento... | negativo | alta |
 | Entrega ok... | neutro | media |
 
+Com `track_tokens=True`, o padrão, a saída traz também as colunas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` e `_reasoning_tokens`, omitidas da tabela acima.
+
 Os nomes de classes e campos são arbitrários: os notebooks de [`example/`](example/) usam nomes em português.
 
 ## Funcionalidades
@@ -78,7 +80,7 @@ Os nomes de classes e campos são arbitrários: os notebooks de [`example/`](exa
 - **Múltiplos tipos de entrada**: DataFrame e Series do pandas ou do Polars, list, dict
 - **Saída estruturada**: Validação com Pydantic; nos providers do LangChain, uma resposta recusada volta ao modelo com o erro
 - **Resiliência**: Retry automático com backoff exponencial e checkpoints periódicos (`batch_size` + `checkpoint_path`) para retomar execuções longas
-- **Performance**: Processamento paralelo que reduz os workers pela metade em rate limit, rate limiting configurável
+- **Performance**: Fila paralela contínua que reduz as linhas em voo pela metade em rate limit, rate limiting configurável e callback por linha (`on_row_done`), que roda na thread do worker
 - **Busca web**: Tavily ou Exa, por campo ou por grupo de campos, com campos condicionais (`condition`, `depends_on`)
 - **Tracking**: Uso de tokens, créditos de busca e métricas de throughput
 

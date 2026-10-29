@@ -4,7 +4,7 @@ Otimize o processamento com paralelismo, rate limiting e tracking de tokens.
 
 ## Processamento Paralelo
 
-Use `parallel_requests` para acelerar o processamento:
+Use `parallel_requests` para acelerar o processamento. Até `parallel_requests` linhas ficam em voo ao mesmo tempo, e uma linha nova é despachada assim que outra termina: o worker que acabou cedo não espera o mais lento.
 
 ```python
 resultado = dataframeit(
@@ -25,7 +25,7 @@ resultado = dataframeit(
 
 ### Auto-redução em Rate Limits
 
-Quando uma linha falha depois de todas as tentativas com erro de rate limit, o DataFrameIt reduz os workers pela metade:
+Quando uma linha falha depois de todas as tentativas com erro de rate limit, o DataFrameIt reduz pela metade o teto de linhas em voo; as que já estão em voo terminam:
 
 ```
 Início: 10 workers
@@ -38,6 +38,30 @@ No `codex`, o rate limit e a sobrecarga do app-server são reconhecidos pelo có
 
 !!! info "Segurança"
     Workers são apenas **reduzidos**, nunca aumentados automaticamente. Isso evita custos inesperados.
+
+### Callback por Linha
+
+`on_row_done` recebe um `RowResult` a cada linha processada nesta chamada, inclusive em erro, depois de a linha estar gravada no DataFrame. A linha pulada por `resume` não é entregue.
+
+```python
+from dataframeit import RowResult, dataframeit
+
+def ao_concluir(linha: RowResult) -> None:
+    print(linha.position, linha.index, linha.success, linha.values)
+
+resultado = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    parallel_requests=5,
+    on_row_done=ao_concluir,
+)
+```
+
+Os campos do `RowResult` estão na [referência da API](../reference/api.md#rowresult).
+
+!!! warning "Thread do worker"
+    Com `parallel_requests` > 1, o callback roda na thread do worker que processou a linha, enquanto as outras seguem gravando. O que ele compartilha (contador, fila, tela) precisa de sincronização própria, e o que ele precisa da linha vem do `RowResult`, não do DataFrame. Uma exceção dentro dele vira aviso, e a execução segue.
 
 No fim da execução, um `UserWarning` informa os workers do início e do fim e sugere usar o número final em `parallel_requests`.
 
@@ -107,7 +131,7 @@ resultado = dataframeit(
 )
 ```
 
-Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em qualquer formato, os campos de lista, dict e tupla do modelo são gravados como texto JSON, e o `Enum`, pelo valor; `read_df` devolve as estruturas, e a retomada devolve ao tipo declarado as estruturas e os campos de data, hora, `datetime`, `Enum`, `int` e `bool`, inclusive com `strict=True`: a data gravada como texto, o inteiro relido como float e a tupla relida como lista voltam a `date`, `int` e `tuple`. O XLSX guarda número como double, e um inteiro acima de 2**53 volta arredondado dele; para ids desse tamanho, use CSV ou parquet. Nenhum dos três formatos guarda o NaN de um campo `float` à parte do nulo: o CSV e o XLSX gravam os dois como célula vazia, e o parquet, como nulo. Na retomada, o NaN volta ausente, e o campo obrigatório que o recebeu é acusado para reprocessar. No parquet, o inteiro acima de 2**63 - 1 ao lado de uma linha pendente e o inteiro acima de 2**53 ao lado de um float na mesma coluna não são gravados, e a gravação do checkpoint falha com aviso. Em caso de interrupção, rode a mesma chamada de novo, com a mesma entrada: com `resume=True`, o padrão, e o arquivo presente, a execução continua do checkpoint. A cada gravação, `<checkpoint>.dataframeit.json` é gravado ao lado dele com a assinatura da execução (prompt, provider, modelo, `model_kwargs` menos `timeout`, schema, busca e as colunas de texto e de status), o hash do texto de cada linha e o hash do próprio checkpoint. O checkpoint só é retomado quando os três batem; com outra configuração, outra entrada ou um arquivo que não é o que a assinatura descreve, a execução avisa, começa do zero e o sobrescreve. Numa linha já concluída, com sucesso ou com erro, os campos do modelo vêm do checkpoint, sobre o que a entrada trazia neles; na linha com sucesso, é o que uma execução sem interrupção daria, porque ela grava a resposta por cima. Para manter uma saída corrigida à mão como está, passe-a com a coluna de status, e o checkpoint não é relido. A saída completa sai sem ela, e a coluna volta com `saida["_dataframeit_status"] = "processed"` (ou o nome passado em `status_column`). Com `resume=False`, o arquivo é ignorado e sobrescrito.
+Formato inferido pela extensão do arquivo (`.csv`, `.xlsx`, `.parquet`). Em qualquer formato, os campos de estrutura do modelo, isto é, lista, tupla, conjunto, dict, `Sequence`, `AbstractSet`, `Mapping`, `TypedDict`, `NamedTuple` e modelo aninhado, são gravados como texto JSON, o conjunto em ordem fixa, e o `Enum`, pelo valor; `read_df` devolve as estruturas, e a retomada devolve ao tipo declarado as estruturas e os campos de data, hora, `datetime`, `Enum`, `int` e `bool`, inclusive com `strict=True`: a data gravada como texto, o inteiro relido como float e a tupla relida como lista voltam a `date`, `int` e `tuple`. O CSV e o XLSX gravam o texto vazio e o `None` na mesma célula vazia. Na retomada, ela volta `""` no campo de texto que não admite `None`, como `str` ou `str = "padrão"`, e `None` no campo que o admite, como `Optional[str]`; para guardar o `""` de um campo opcional, use parquet. No campo `str` cujo default é `None`, dado direto ou pela fábrica, ela também volta `None`. O texto vazio do campo cuja fábrica lê os outros campos não é restaurado: a célula vazia conta como ausente, e a retomada a preenche com o valor da fábrica, mesmo onde a execução gravou `""`. O validador que troca uma resposta por `None` num campo `str` dá um valor que o tipo do campo recusa. No parquet, a retomada acusa esse `None` para reprocessar. No CSV e no XLSX, ela acusa o campo quando o validador troca o próprio texto vazio por `None`, e devolve `""` quando ele troca outra resposta, como `"N/A"`, porque a célula vazia não diz qual das duas foi gravada. Para guardar esse `None`, declare o campo como `Optional[str]`. Isso vale para a execução que aplica os validadores do modelo; no modo por campo (`search_per_field`), eles não rodam na execução, que grava o texto vazio como veio, e a retomada do CSV e do XLSX acusa o campo cujo validador troca o texto vazio por `None`, enquanto a do parquet devolve o `""` gravado. O parquet grava o texto vazio e o `None` à parte, e a retomada devolve o texto vazio como foi gravado. No XLSX, o texto que começa com `=` é gravado como texto, e não como fórmula. O XLSX guarda número como double, e um inteiro acima de 2**53 volta arredondado dele; para ids desse tamanho, use CSV ou parquet. Nenhum dos três formatos guarda o NaN de um campo `float` à parte do nulo: o CSV e o XLSX gravam os dois como célula vazia, e o parquet, como nulo. Na retomada, o NaN volta ausente, e o campo obrigatório que o recebeu é acusado para reprocessar. No parquet, o inteiro acima de 2**63 - 1 ao lado de uma linha pendente e o inteiro acima de 2**53 ao lado de um float na mesma coluna não são gravados, e a gravação do checkpoint falha com aviso. Em caso de interrupção, rode a mesma chamada de novo, com a mesma entrada: com `resume=True`, o padrão, e o arquivo presente, a execução continua do checkpoint. A cada gravação, `<checkpoint>.dataframeit.json` é gravado ao lado dele com a assinatura da execução (prompt, provider, modelo, `model_kwargs` menos `timeout`, schema, busca e as colunas de texto e de status), o hash do texto de cada linha e o hash do próprio checkpoint. O checkpoint só é retomado quando os três batem; com outra configuração, outra entrada ou um arquivo que não é o que a assinatura descreve, a execução avisa, começa do zero e o sobrescreve. Numa linha já concluída, com sucesso ou com erro, os campos do modelo vêm do checkpoint, sobre o que a entrada trazia neles; na linha com sucesso, é o que uma execução sem interrupção daria, porque ela grava a resposta por cima. Para manter uma saída corrigida à mão como está, passe-a com a coluna de status, e o checkpoint não é relido. A saída completa sai sem ela, e a coluna volta com `saida["_dataframeit_status"] = "processed"` (ou o nome passado em `status_column`). Com `resume=False`, o arquivo é ignorado e sobrescrito.
 
 Na assinatura, o schema é o JSON Schema do modelo. Quando o `json_schema_extra` de um campo, inclusive aninhado, tem uma função, como a condição de `field_condition`, ou um conjunto com valor que não é inteiro, como `{"in": {"pf", "mei"}}` numa `condition`, entram no lugar dele os atributos de cada campo, com o conjunto em ordem e a função pelo nome qualificado e pelo código: bytecode, constantes e nomes que ela lê. O `functools.partial` entra pela função que embrulha e pelos argumentos fixados; o objeto com `__call__`, pelo código do `__call__` e pelos atributos da instância, inclusive os de `__slots__`; e o método ligado, pelo código do método e pelo dono: o objeto entra pelos atributos, e a classe do `classmethod`, só pelo nome. Editar a função, o `__call__`, o método ou um argumento do `partial`, ou mudar um atributo do objeto, muda a assinatura, e a execução recomeça. O que ela lê de fora do próprio código não entra: com outro valor numa variável global ou do escopo de fora, outro valor padrão de argumento ou outro corpo numa função que ela chama, a assinatura é a mesma, e a retomada aceita as linhas já concluídas, em que o campo foi pedido ou pulado pela condição anterior. Para mudar a condição por um desses caminhos, passe `resume=False` ou outro `checkpoint_path`. O bytecode muda de uma versão menor do Python para outra, como da 3.11 para a 3.12, e o checkpoint de um modelo com função não é retomado depois dessa troca.
 
@@ -123,7 +147,7 @@ resultado = dataframeit(
 )
 ```
 
-Quando o provider informa uma falha que impede qualquer linha seguinte, como a cota de uso esgotada (`ProviderUsageLimitError`) ou o runtime do `codex` encerrado (`ProviderAbortError`), a execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status. As colunas de controle ficam na saída, e rodar de novo com `resume=True` processa só as pendentes. Com `reprocess_columns`, as linhas que a interrupção deixou sem reprocessar mantêm os valores anteriores e ficam marcadas em `_error_details`.
+Quando o provider informa uma falha que impede qualquer linha seguinte, como a cota de uso esgotada (`ProviderUsageLimitError`) ou o runtime do `codex` encerrado (`ProviderAbortError`), a execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status. As colunas de controle ficam na saída. Em que casos rodar de novo com `resume=True` processa só as pendentes, e o que acontece com `reprocess_columns`, está em [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
 
 ## Tracking de Tokens
 
@@ -159,7 +183,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
+A seção de throughput só aparece com `parallel_requests > 1`. Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
 
 Para silenciar o resumo e manter as colunas de uso, suba o nível do logger:
 

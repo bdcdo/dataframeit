@@ -114,24 +114,29 @@ def _raise_for_result_error(result: object) -> None:
     orçamento ou de turnos é definitivo; o status da API, quando o SDK o
     informa, decide entre sobrecarga (reduz o paralelismo), falha transitória
     e falha definitiva. Erro de execução sem status é tratado como transitório.
+
+    O status vai também no `status_code` da exceção, qualquer que seja a classe.
+    A mensagem leva o `result` do SDK, que pode ser texto do modelo, e a caixa
+    amigável sai do status, e não dela.
     """
     if result is None or not getattr(result, "is_error", False):
         return
 
     subtype = getattr(result, "subtype", None)
     status = getattr(result, "api_error_status", None)
+    status_code = status if isinstance(status, int) else None
     detail = getattr(result, "errors", None) or getattr(result, "result", None) or ""
     message = f"Claude Code SDK retornou erro ({subtype}, status {status}): {detail}".strip()
 
     if subtype in _FINAL_RESULT_SUBTYPES:
-        raise ProviderError(message)
-    if status in _OVERLOADED_STATUSES:
-        raise ProviderOverloadedError(message)
-    if isinstance(status, int) and status >= _SERVER_ERROR_MIN:
-        raise ProviderTransientError(message)
-    if isinstance(status, int):
-        raise ProviderError(message)
-    raise ProviderTransientError(message)
+        error_class = ProviderError
+    elif status in _OVERLOADED_STATUSES:
+        error_class = ProviderOverloadedError
+    elif status_code is None or status_code >= _SERVER_ERROR_MIN:
+        error_class = ProviderTransientError
+    else:
+        error_class = ProviderError
+    raise error_class(message, status_code=status_code)
 
 
 def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
@@ -140,15 +145,28 @@ def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
     ``asyncio.run`` recusa rodar quando o thread atual já tem um event loop
     ativo, caso do Jupyter. Nesse caso a corrotina roda num thread próprio,
     com loop novo, e este thread espera o resultado.
+
+    O executor fecha sem esperar o thread: um Ctrl-C que chega durante a
+    espera sai na hora para o chamador, e a query já em curso termina sozinha
+    no outro thread. O ``with`` do executor esperaria a query acabar antes de
+    deixar a interrupção sair.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         # O ty não propaga o tipo do resultado por submit(asyncio.run, coro).
         return executor.submit(asyncio.run, coro).result()  # ty: ignore[invalid-return-type]
+    finally:
+        # wait=False deixa a interrupção sair sem esperar o thread, e a query
+        # já submetida segue nele até o fim, por conta própria. cancel_futures
+        # só retira um futuro que ainda está na fila; com um único worker, ele
+        # sai da fila logo depois do submit, e na prática a interrupção já o
+        # encontra rodando.
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _usage_from_sdk(usage: dict | None, cost_usd: float | None = None) -> dict | None:
