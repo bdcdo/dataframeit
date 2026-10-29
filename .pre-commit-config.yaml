@@ -8,9 +8,8 @@ files: ^(src|tests|example)/
 repos:
   - repo: local
     hooks:
-      # Como no CI, a formatação de example/ não é conferida: o ruff format
-      # reescreveria quase todas as células dos notebooks e desfaria o
-      # alinhamento dos comentários que explicam cada argumento e linha de dado.
+      # Como no CI, a formatação de example/ não é conferida; o motivo está no
+      # passo Ruff format de tests.yml.
       - id: ruff-format
         name: ruff format
         entry: uv run --extra dev ruff format --force-exclude
