@@ -1951,7 +1951,7 @@ def _schema_form(questions: type[BaseModel]) -> object:
     """Forma canônica do modelo, para o lugar do JSON Schema na assinatura.
 
     Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
-    e a função entram pelo que `_schema_leaf` tira deles.
+    e o chamável entram pelo que `_schema_leaf` tira deles.
     """
     return _stable(
         {
@@ -1969,10 +1969,9 @@ def _schema_form(questions: type[BaseModel]) -> object:
 
 
 def _schema_leaf(value: object) -> object:
-    """Folha da forma canônica: tipo pelo nome e conteúdo, função pelo código.
+    """Folha da forma canônica: tipo pelo nome e conteúdo, chamável pelo código.
 
-    O resto fica para o `default` do json.dumps em `_run_signature`, que tira o
-    endereço do repr.
+    O que não é tipo vai a `_callable_leaf`.
     """
     if get_origin(value) is not None:
         return {
@@ -1994,9 +1993,36 @@ def _schema_leaf(value: object) -> object:
         }
     if isinstance(value, type):
         return value.__name__
+    return _callable_leaf(value)
+
+
+def _callable_leaf(value: object) -> object:
+    """Chamável pelo código e pelo que ele fixa; o que não é chamável, como veio.
+
+    A função entra pelo nome qualificado e pelo código; o `partial`, pela função
+    que embrulha e pelos argumentos fixados; o objeto chamável, pelo `__call__`
+    da classe, como a função, e pelos atributos da instância. O resto, inclusive
+    o chamável cujo `__call__` não é código Python, como a função embutida, fica
+    para o `default` do json.dumps em `_run_signature`, que tira o endereço do
+    repr.
+    """
+    if isinstance(value, partial):
+        return {
+            "partial": _schema_leaf(value.func),
+            "args": _stable(value.args, _schema_leaf),
+            "keywords": _stable(value.keywords, _schema_leaf),
+        }
     code = getattr(value, "__code__", None)
     if isinstance(code, CodeType):
         return {"function": getattr(value, "__qualname__", None), "code": _code_form(code)}
+    # Só o __call__ escrito em Python: o da classe embutida é outro chamável sem
+    # código, e descer nele não terminaria.
+    call = type(value).__call__ if callable(value) else None
+    if isinstance(getattr(call, "__code__", None), CodeType):
+        return {
+            "callable": _callable_leaf(call),
+            "state": _stable(getattr(value, "__dict__", {}), _schema_leaf),
+        }
     return value
 
 

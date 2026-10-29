@@ -1,6 +1,8 @@
 """Assinatura do checkpoint igual em qualquer processo, com condição callable e conjunto."""
 
+import functools
 import json
+import operator
 import os
 import subprocess
 import sys
@@ -42,11 +44,13 @@ def _roda_python(codigo, *argumentos, semente, cwd=None):
 
 
 # Um modelo por forma que o JSON Schema não serializa igual em todo processo: a
-# função da condição, o conjunto de texto na condição e o conjunto de texto num
-# campo aninhado. O Pedido traz também Literal, Enum e modelo aninhado, para que
-# toda a forma canônica dele passe pelas sementes.
+# função da condição, o conjunto de texto na condição, o conjunto de texto num
+# campo aninhado e o conjunto nos argumentos do partial e no estado do objeto
+# chamável. O Pedido traz também Literal, Enum e modelo aninhado, para que toda a
+# forma canônica dele passe pelas sementes.
 _MODELOS = textwrap.dedent(
     '''
+    import functools
     from enum import Enum
     from typing import Literal
 
@@ -93,8 +97,48 @@ _MODELOS = textwrap.dedent(
 
     class Entrega(BaseModel):
         bairro: Bairro
+
+
+    def _tipo_em(d, tipos):
+        return d.get("tipo") in tipos
+
+
+    class Oferta(BaseModel):
+        tipo: str
+        desconto: float | None = Field(
+            default=None,
+            json_schema_extra=field_condition(
+                functools.partial(_tipo_em, tipos={"vip", "ouro", "prata", "bronze"}),
+                depends_on="tipo",
+            ),
+        )
+
+
+    class TipoEm:
+        def __init__(self, tipos):
+            self.tipos = tipos
+
+        def __call__(self, d):
+            return d.get("tipo") in self.tipos
+
+        # O repr traz o conjunto na ordem de hash do processo, e a assinatura não
+        # pode sair dele.
+        def __repr__(self):
+            return f"TipoEm({self.tipos!r})"
+
+
+    class Promocao(BaseModel):
+        tipo: str
+        desconto: float | None = Field(
+            default=None,
+            json_schema_extra=field_condition(
+                TipoEm({"vip", "ouro", "prata", "bronze"}), depends_on="tipo"
+            ),
+        )
     '''
 )
+
+_NOMES = ("Pedido", "Cadastro", "Entrega", "Oferta", "Promocao")
 
 
 def test_assinatura_igual_em_processos_com_sementes_diferentes():
@@ -109,18 +153,15 @@ def test_assinatura_igual_em_processos_com_sementes_diferentes():
                 modelo, "{texto}", provider="openai", model="m", model_kwargs=None,
                 search_config=None, text_column="texto", status_col="_dataframeit_status",
             )
-            for modelo in (Pedido, Cadastro, Entrega)
+            for modelo in (Pedido, Cadastro, Entrega, Oferta, Promocao)
         }))
         """
     )
 
     por_semente = [_roda_python(codigo, semente=semente) for semente in ("0", "1", "2")]
 
-    distintas = {
-        nome: len({assinaturas[nome] for assinaturas in por_semente})
-        for nome in ("Pedido", "Cadastro", "Entrega")
-    }
-    assert distintas == {"Pedido": 1, "Cadastro": 1, "Entrega": 1}
+    distintas = {nome: len({assinaturas[nome] for assinaturas in por_semente}) for nome in _NOMES}
+    assert distintas == dict.fromkeys(_NOMES, 1)
 
 
 _EXECUCAO = _MODELOS + textwrap.dedent(
@@ -364,6 +405,75 @@ def test_mesmo_modelo_criado_duas_vezes_tem_a_mesma_assinatura():
 )
 def test_mudanca_no_modelo_com_condicao_callable_muda_a_assinatura(variacao):
     assert _assinatura(_pedido(**variacao)) != _assinatura(_pedido())
+
+
+_REGRA = "def regra(d, alvo): return d.get('tipo') == alvo"
+
+_REGRA_CHAMAVEL = textwrap.dedent(
+    """
+    class Regra:
+        def __init__(self, alvo):
+            self.alvo = alvo
+
+        def __call__(self, d):
+            return d.get("tipo") == self.alvo
+    """
+)
+
+
+def _parcial(fonte=_REGRA, *args, **keywords):
+    """`partial` da `regra` compilada de `fonte`, com os argumentos dados."""
+    return functools.partial(_funcao(fonte, "regra"), *args, **keywords)
+
+
+def _chamavel(alvo="vip", fonte=_REGRA_CHAMAVEL):
+    """Instância da `Regra` compilada de `fonte`, a classe editada com o mesmo nome."""
+    return _funcao(fonte, "Regra")(alvo)
+
+
+@pytest.mark.parametrize(
+    "condicao",
+    [
+        pytest.param(lambda: _parcial(alvo="vip"), id="partial"),
+        pytest.param(lambda: _chamavel("vip"), id="objeto-chamavel"),
+        pytest.param(lambda: operator.methodcaller("get", "tipo"), id="chamavel-embutido"),
+    ],
+)
+def test_condicao_partial_ou_objeto_criada_duas_vezes_tem_a_mesma_assinatura(condicao):
+    """A classe e a função compiladas de novo, em outro endereço, assinam igual.
+
+    O chamável embutido, sem código Python no `__call__`, entra pelo repr.
+    """
+    assert _assinatura(_pedido(condicao())) == _assinatura(_pedido(condicao()))
+
+
+@pytest.mark.parametrize(
+    ("antes", "depois"),
+    [
+        pytest.param(
+            lambda: _parcial(alvo="vip"),
+            lambda: _parcial(_REGRA.replace("==", "!="), alvo="vip"),
+            id="corpo-da-funcao-do-partial",
+        ),
+        pytest.param(
+            lambda: _parcial(alvo="vip"), lambda: _parcial(alvo="ouro"), id="keyword-do-partial"
+        ),
+        pytest.param(
+            lambda: _parcial(_REGRA, "vip"),
+            lambda: _parcial(_REGRA, "ouro"),
+            id="argumento-do-partial",
+        ),
+        pytest.param(
+            lambda: _chamavel("vip"),
+            lambda: _chamavel("vip", _REGRA_CHAMAVEL.replace("==", "!=")),
+            id="corpo-do-call",
+        ),
+        pytest.param(lambda: _chamavel("vip"), lambda: _chamavel("ouro"), id="estado-do-objeto"),
+    ],
+)
+def test_mudanca_no_partial_ou_no_objeto_chamavel_muda_a_assinatura(antes, depois):
+    """O partial e o objeto entram pelo código e pelo que fixam, e não pelo repr."""
+    assert _assinatura(_pedido(antes())) != _assinatura(_pedido(depois()))
 
 
 def test_mudanca_dentro_de_funcao_aninhada_na_condicao_muda_a_assinatura():
