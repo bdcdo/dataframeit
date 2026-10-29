@@ -387,6 +387,20 @@ def test_erro_do_claude_code(campos, classe, rate_limit, monkeypatch):
             ProviderTransientError,
             CAIXA_TIMEOUT,
         ),
+        (
+            {"subtype": "error_max_turns", "api_error_status": 401, "result": "Sessão encerrada."},
+            ProviderError,
+            CAIXA_AUTENTICACAO,
+        ),
+        (
+            {
+                "subtype": "error_max_budget_usd",
+                "api_error_status": 403,
+                "result": "Sessão encerrada.",
+            },
+            ProviderError,
+            CAIXA_PERMISSAO,
+        ),
     ],
     ids=[
         "api-key-no-result",
@@ -399,6 +413,8 @@ def test_erro_do_claude_code(campos, classe, rate_limit, monkeypatch):
         "status-401",
         "status-403",
         "status-504",
+        "status-401-em-max-turns",
+        "status-403-em-max-budget",
     ],
 )
 def test_caixa_do_claude_code_sai_do_status(campos, classe, caixa, monkeypatch):
@@ -407,6 +423,7 @@ def test_caixa_do_claude_code_sai_do_status(campos, classe, caixa, monkeypatch):
 
     erro = fabrica()
     assert type(erro) is classe
+    assert erro.status_code == campos.get("api_error_status")
     assert _titulo(get_friendly_error_message(erro, "claude_code")).startswith(caixa)
 
     execucao = _executar(fabrica, monkeypatch)
