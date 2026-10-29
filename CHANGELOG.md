@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- A condição em dict sobre um campo que é coleção, como `list[Tipo]`, `tuple[Tipo, ...]` ou `set[Tipo]` de `Enum`, ou `list[Item]` com `Enum` no item, compara cada item pelo valor do membro e conta a tupla e o conjunto como lista, no campo e no operando, e dá o mesmo resultado na execução e na retomada. Antes, `{"field": "tags", "equals": ["pf"]}` era falsa na execução, que recebe `[Tag.PF]`, e verdadeira na retomada, que relê `["pf"]`: o campo condicionado não era extraído, e a retomada devolvia `""` no CSV e recusava a linha no parquet. O conjunto é comparado com os itens na ordem em que o checkpoint o grava (#283).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido
