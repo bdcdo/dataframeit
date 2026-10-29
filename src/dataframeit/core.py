@@ -458,6 +458,25 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             if row_values[field_name] is None
             and (field_name not in df.columns or pd.isna(row[field_name]))
         }
+        # A fábrica que lê os outros campos dá o que a execução gravaria se a
+        # resposta omitisse o campo. Onde ela dá texto, a célula vazia só pode
+        # ser o texto vazio; onde dá None, é o None dela. Ela recebe a linha com
+        # o texto vazio das outras células, como a execução a validou.
+        factory_cells = {
+            field_name
+            for field_name in empty_cells
+            if pydantic_model.model_fields[field_name].default_factory_takes_validated_data
+        }
+        if factory_cells:
+            factory_data = {**row_values, **dict.fromkeys(empty_cells - factory_cells, "")}
+            empty_cells -= {
+                field_name
+                for field_name in factory_cells
+                if pydantic_model.model_fields[field_name].get_default(
+                    call_default_factory=True, validated_data=factory_data
+                )
+                is None
+            }
         # A condição vê o texto vazio de outro campo como a execução o viu.
         condition_values = {**row_values, **dict.fromkeys(empty_cells, "")}
         skipped_fields = set()
@@ -2089,8 +2108,9 @@ def _resume_from_checkpoint(
     célula vazia, que o leitor devolve ausente. O parquet guarda os dois à
     parte, e dele também não vem nenhum: a célula nula é o None gravado. A
     assinatura garante que o checkpoint foi gravado com este modelo, e nele o
-    campo que só aceita texto, não admite None e cujo default não pode ser None
-    (`_default_may_be_none`) só fica None quando a condição dele é falsa ou
+    campo que só aceita texto, não admite None e cujo default não é None
+    (`_default_may_be_none`; a fábrica que lê os outros campos se decide por
+    linha, em `_validate_processed_rows`) só fica None quando a condição dele é falsa ou
     quando um validador troca a resposta por None. A validação da retomada
     separa os dois casos do texto vazio. O campo com exclude=True fica de fora, porque o model_dump
     não o traz e a célula dele guarda o None que a execução pôs ao criar a
@@ -2136,16 +2156,16 @@ def _resume_from_checkpoint(
 
 
 def _default_may_be_none(field: FieldInfo) -> bool:
-    """Se o default do campo, dado direto ou pela fábrica, pode ser None.
+    """Se o default do campo, dado direto ou pela fábrica sem argumento, é None.
 
     O pydantic não valida o default, e o None dele fica no campo que o tipo
-    recusa. A fábrica que lê os outros campos só é chamada com eles, e pode
-    dar None em alguma linha.
+    recusa. A fábrica que lê os outros campos dá um valor por linha, e a
+    validação da retomada a chama com os valores de cada uma
+    (`_validate_processed_rows`).
     """
-    try:
-        return field.get_default(call_default_factory=True) is None
-    except ValueError:
-        return True
+    if field.default_factory_takes_validated_data:
+        return False
+    return field.get_default(call_default_factory=True) is None
 
 
 def _validate_checkpoint_extension(path: str | Path) -> None:
