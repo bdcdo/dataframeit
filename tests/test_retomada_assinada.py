@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from enum import Enum
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 from unittest.mock import patch
 
 import numpy as np
@@ -1350,6 +1350,11 @@ class ComFabricaPadrao(BaseModel):
     campo1: str = Field(default_factory=lambda: "padrão")
 
 
+class ComQualquer(BaseModel):
+    # Aceita texto, e também None: a célula vazia é o None da resposta.
+    campo1: Any
+
+
 class Decisao(BaseModel):
     # A forma do caso relatado, que o lint recusa por estilo.
     campo1: Literal["NA", "deferido", None]  # noqa: PYI061
@@ -1367,6 +1372,7 @@ class Decisao(BaseModel):
         (ComFabricaNone, {}, None),
         (ComFabricaDosDados, {}, None),
         (ComFabricaPadrao, {"campo1": ""}, ""),
+        (ComQualquer, {"campo1": None}, None),
         (ComOcultoNoDump, {"campo1": "x"}, None),
         (Decisao, {"campo1": "NA"}, "NA"),
         (Decisao, {"campo1": None}, None),
@@ -1380,6 +1386,7 @@ class Decisao(BaseModel):
         "str-com-fabrica-none-none",
         "str-com-fabrica-dos-dados-none",
         "str-com-fabrica-vazio",
+        "qualquer-none",
         "str-fora-do-dump-none",
         "literal-com-none-na",
         "literal-com-none-none",
