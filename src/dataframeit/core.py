@@ -1953,6 +1953,7 @@ def _schema_form(questions: type[BaseModel]) -> object:
     Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
     e o chamável entram pelo que `_schema_leaf` tira deles.
     """
+    leaf = partial(_schema_leaf, descent=_Descent())
     return _stable(
         {
             "model": questions,
@@ -1964,17 +1965,38 @@ def _schema_form(questions: type[BaseModel]) -> object:
                 for path, field_info, _ in _walk_fields(questions)
             },
         },
-        _schema_leaf,
+        leaf,
     )
 
 
-def _schema_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
+class _Descent:
+    """O que a descida no estado dos objetos chamáveis guarda durante uma assinatura.
+
+    `depth` dá, pelo `id`, a profundidade de cada objeto do caminho atual, de
+    cujo estado o valor faz parte. `lowest` traz, para cada objeto aberto, a
+    menor profundidade a que um marcador de ciclo da subárvore dele apontou.
+    `forms` guarda a forma do objeto cuja subárvore não apontou para ele nem para
+    cima dele, ao lado do próprio objeto, para que o `id` não passe a outro
+    objeto enquanto a assinatura dura.
+    """
+
+    def __init__(self) -> None:
+        self.depth: dict[int, int] = {}
+        self.lowest: list[int] = []
+        self.forms: dict[int, tuple[object, object]] = {}
+
+    def reach(self, depth: int) -> None:
+        """Registra, no objeto aberto mais fundo, um marcador que aponta para `depth`."""
+        if self.lowest:
+            self.lowest[-1] = min(self.lowest[-1], depth)
+
+
+def _schema_leaf(value: object, descent: _Descent) -> object:
     """Folha da forma canônica: tipo pelo nome e conteúdo, chamável pelo código.
 
-    O que não é tipo vai a `_callable_leaf`. `path` traz o `id` dos objetos de
-    cujo estado o valor faz parte, para a guarda de ciclo de `_instance_state`.
+    O que não é tipo vai a `_callable_leaf`.
     """
-    leaf = partial(_schema_leaf, path=path)
+    leaf = partial(_schema_leaf, descent=descent)
     if get_origin(value) is not None:
         return {
             "origin": leaf(get_origin(value)),
@@ -1995,10 +2017,10 @@ def _schema_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
         }
     if isinstance(value, type):
         return value.__name__
-    return _callable_leaf(value, path)
+    return _callable_leaf(value, descent)
 
 
-def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
+def _callable_leaf(value: object, descent: _Descent) -> object:
     """Chamável pelo código e pelo que ele fixa; o que não é chamável, como veio.
 
     A função entra pelo nome qualificado e pelo código; o `partial`, pela função
@@ -2010,17 +2032,17 @@ def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
     como a função embutida, fica para o `default` do json.dumps em
     `_run_signature`, que tira o endereço do repr.
     """
-    leaf = partial(_schema_leaf, path=path)
+    leaf = partial(_schema_leaf, descent=descent)
     # Antes do ramo da função: o método ligado repassa o `__code__` da função, e
     # por ele entraria sem o dono, que guarda o que a condição compara.
     if isinstance(value, MethodType):
         owner = value.__self__
         return {
-            "method": _callable_leaf(value.__func__, path),
-            "self": owner.__name__ if isinstance(owner, type) else _instance_state(owner, path),
+            "method": _callable_leaf(value.__func__, descent),
+            "self": owner.__name__ if isinstance(owner, type) else _instance_state(owner, descent),
         }
     if isinstance(value, (staticmethod, classmethod)):
-        return _callable_leaf(value.__func__, path)
+        return _callable_leaf(value.__func__, descent)
     if isinstance(value, partial):
         return {
             "partial": leaf(value.func),
@@ -2034,26 +2056,51 @@ def _callable_leaf(value: object, path: frozenset[int] = frozenset()) -> object:
     # código, e descer nele não terminaria.
     call = type(value).__call__ if callable(value) else None
     if isinstance(getattr(call, "__code__", None), CodeType):
-        return {"callable": _callable_leaf(call, path), "state": _instance_state(value, path)}
+        return {
+            "callable": _callable_leaf(call, descent),
+            "state": _instance_state(value, descent),
+        }
     return value
 
 
-def _instance_state(value: object, path: frozenset[int]) -> object:
+def _instance_state(value: object, descent: _Descent) -> object:
     """Atributos da instância, do `__dict__` e dos `__slots__`, pela folha da forma canônica.
 
     O atributo pode voltar ao próprio objeto, direto ou por outro objeto. O
-    objeto que já está em `path` entra por um marcador com o nome da classe, sem
-    o endereço, que muda a cada processo. `path` é só o caminho da descida, e não
-    tudo o que já foi visto: o mesmo objeto em dois atributos entra pelos dois,
-    como entrariam dois objetos iguais.
+    objeto que já está no caminho da descida entra por um marcador com o nome da
+    classe, sem o endereço, que muda a cada processo. O marcador depende só do
+    caminho, e não de tudo o que já foi visto: o mesmo objeto em dois atributos
+    entra pelos dois, como entrariam dois objetos iguais.
+
+    Por isso a forma do objeto que está num ciclo depende de por onde se chegou a
+    ele, e a dele é refeita a cada caminho. A do objeto fora de ciclo não depende:
+    nenhum objeto abaixo dele volta a ele, e nenhum objeto acima dele no caminho
+    é alcançado de novo. Ela é calculada uma vez e reaproveitada, e o objeto
+    alcançado por vários ramos não refaz a descida em cada um, o que dobraria o
+    tempo a cada nível. O que separa um do outro é o marcador mais alto da
+    subárvore: no objeto do ciclo, ele aponta para o próprio objeto ou para
+    cima dele.
     """
-    if id(value) in path:
+    key = id(value)
+    if key in descent.depth:
+        descent.reach(descent.depth[key])
         return {"cycle": type(value).__name__}
+    if key in descent.forms:
+        return descent.forms[key][1]
+    depth = len(descent.depth)
+    descent.depth[key] = depth
+    descent.lowest.append(depth + 1)
     # No objeto só com `__slots__`, o nome `__dict__` cai no `__getattr__` da
     # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
     own = _attribute_or_none(value, "__dict__")
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
-    return _stable(state, partial(_schema_leaf, path=path | {id(value)}))
+    form = _stable(state, partial(_schema_leaf, descent=descent))
+    del descent.depth[key]
+    lowest = descent.lowest.pop()
+    descent.reach(lowest)
+    if lowest > depth:
+        descent.forms[key] = (value, form)
+    return form
 
 
 def _attribute_or_none(value: object, name: str) -> object:

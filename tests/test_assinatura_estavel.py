@@ -13,7 +13,7 @@ from typing import Any, Literal
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from dataframeit import field_condition
+from dataframeit import core, field_condition
 from dataframeit.core import _run_signature
 
 
@@ -628,6 +628,48 @@ def test_mesmo_objeto_em_dois_atributos_assina_como_dois_objetos_iguais():
     igual.a, igual.b = outro, regra("vip")
 
     assert _assinatura(_pedido(repetido)) == _assinatura(_pedido(igual))
+
+
+def test_par_em_ciclo_em_dois_atributos_assina_como_dois_pares_separados():
+    """O objeto do ciclo entra pelo caminho por onde se chegou a ele, mesmo já visto por outro ramo.
+
+    Pelo atributo `a`, o par entra a partir de `x`, e o marcador fica em `x`;
+    pelo `b`, a partir de `z`, e o marcador fica em `z`. Os dois pares separados
+    entram do mesmo jeito.
+    """
+    regra = _funcao(_REGRA_CHAMAVEL, "Regra")
+
+    def par():
+        x, z = regra("x"), regra("z")
+        x.outra, z.outra = z, x
+        return x, z
+
+    compartilhado, separado = regra("vip"), regra("vip")
+    compartilhado.a, compartilhado.b = par()
+    separado.a, separado.b = par()[0], par()[1]
+
+    assert _assinatura(_pedido(compartilhado)) == _assinatura(_pedido(separado))
+
+
+def test_objeto_alcancado_por_varios_ramos_e_lido_uma_vez(monkeypatch):
+    """Fora de ciclo, a forma do objeto não depende do caminho, e a descida não a refaz.
+
+    Cada nível aponta duas vezes para o nível de baixo: descer de novo em cada
+    ramo leria o estado 2**13 - 1 vezes, e o tempo dobraria a cada nível.
+    """
+    regra = _funcao(_REGRA_CHAMAVEL, "Regra")
+    lidos = []
+    ler = core._slot_values
+    monkeypatch.setattr(core, "_slot_values", lambda valor: lidos.append(valor) or ler(valor))
+    nivel = regra("vip")
+    for _ in range(12):
+        acima = regra("z")
+        acima.a = acima.b = nivel
+        nivel = acima
+
+    _assinatura(_pedido(nivel))
+
+    assert len(lidos) == len({id(valor) for valor in lidos}) == 13
 
 
 # Objeto chamável sem __dict__, com o estado em __slots__: o slot da classe, o
