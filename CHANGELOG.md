@@ -57,6 +57,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Quando a entrada chega sem a coluna de status e não há checkpoint a reler, uma coluna da entrada com algum valor e com o nome de um campo do modelo levanta `ValueError` antes de qualquer chamada, com `resume=True` e com `resume=False`, a menos que esteja em `reprocess_columns`; na retomada de um `checkpoint_path`, a coluna acrescentada à entrada depois da interrupção não é checada. O `Decimal` NaN e o NaN de campo float em coluna object contam como valores, como na retomada. Antes, com `resume=True`, a resposta do LLM a sobrescrevia sem aviso quando só parte das colunas do modelo existia, e só avisava quando existiam todas; com `resume=False`, avisava e devolvia a entrada. `status_column` igual à coluna de texto, a um campo do modelo, ao nome de outra coluna de controle do dataframeit ou a uma coluna existente com valores que não são de status também levanta `ValueError`. Antes, a coluna sumia da saída com a resposta que ocupava, ou a execução terminava sem chamar o LLM e a coluna de texto ou a do usuário sumia (#197).
 - As anotações dos geradores usados como context managers são verificadas pelo ty 0.0.88 (#270).
 
 - A criação das colunas de saída usa a opção `mode.chained_assignment` só no pandas 2, preservando entradas fatiadas sem emitir aviso de depreciação no pandas 3.1 (#269).
