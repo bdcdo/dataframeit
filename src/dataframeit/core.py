@@ -2632,8 +2632,11 @@ def _completed_in_slices(futures: Collection[Future]) -> Iterator[Future]:
     com ele o kernel reinicia a espera sem prazo de um lock em vez de
     interrompê-la. O `as_completed` e a saída do `with ThreadPoolExecutor`
     esperam sem prazo, e com eles o Ctrl-C só vira `KeyboardInterrupt` quando
-    uma linha termina. Ao fim de cada fatia, o thread principal volta ao
-    interpretador, que levanta o `KeyboardInterrupt` pendente.
+    uma linha termina. O que corta a espera é haver prazo, e não a duração da
+    fatia: no Linux, a espera com prazo de um semáforo não é reiniciada nem
+    com SA_RESTART (ver signal(7)) e volta com EINTR assim que o sinal chega, e
+    o interpretador levanta o `KeyboardInterrupt` na hora. A fatia curta só
+    limita a demora numa plataforma que reinicie também a espera com prazo.
     """
     pending = set(futures)
     while pending:
