@@ -7,6 +7,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- O campo `deque`, de `collections` ou `typing.Deque`, passa a contar como estrutura em `get_complex_fields`: o checkpoint o grava em JSON, também dentro de outra estrutura, como `dict[str, deque[str]]`, e a retomada o devolve como `deque`. Antes, a retomada do CSV e do XLSX recusava a linha concluída e pedia `reprocess_columns`, e a do parquet, cuja gravação falhava, pagava de novo as linhas concluídas. A estrutura passa a ser reconhecida pelas ABCs `Sequence`, `Set` e `Mapping`, menos texto e bytes (#287).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido
