@@ -36,7 +36,7 @@ from .errors import (
 from .llm import LLMConfig, build_prompt
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator
 
     from openai_codex import Codex, CodexConfig, TurnHandle
     from openai_codex.client import CodexClient
@@ -82,6 +82,9 @@ _CODEX_CONFIG_OVERRIDES = (
     "features.image_generation=false",
     "features.sleep_tool=false",
     "features.view_image=false",
+    "features.api_key_cyber_access_programs=false",
+    "features.cli_daybreak=false",
+    "features.code_mode_interrupt=false",
     # Ligada, o runtime repete sem limite a conexão que falha, e o turno não
     # termina; desligada, o turno falha e a nova tentativa fica com o
     # `retry_with_backoff` da linha.
@@ -459,7 +462,7 @@ def _turn_timeout(config: LLMConfig) -> float | None:
 
 
 @contextmanager
-def _isolated_runtime() -> Iterator[tuple[Path, Path]]:
+def _isolated_runtime() -> Generator[tuple[Path, Path], None, None]:
     """Mantém lock, credencial e diretórios isolados pelo tempo da execução."""
     from filelock import FileLock, Timeout  # noqa: PLC0415 (extra codex opcional)
 
@@ -956,7 +959,7 @@ class _AttemptDeadline:
 @contextmanager
 def _attempt_deadline(
     client: Codex, timeout: float | None, stop: _AppServerStop
-) -> Iterator[_AttemptDeadline]:
+) -> Generator[_AttemptDeadline, None, None]:
     """Arma o relógio da tentativa e o desarma na saída, com ou sem erro."""
     deadline = _AttemptDeadline(client, timeout, stop)
     if timeout is None:
@@ -1185,7 +1188,7 @@ def open_codex_backend(
     config: LLMConfig,
     pydantic_model: type[BaseModel],
     user_prompt: str,
-) -> Iterator[CodexBackend]:
+) -> Generator[CodexBackend, None, None]:
     """Abre um backend ativo e fecha seus recursos na ordem inversa."""
     from openai_codex import CodexConfig  # noqa: PLC0415 (extra codex opcional)
 

@@ -15,7 +15,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -72,7 +72,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable, Iterator, Sequence
+    from collections.abc import Callable, Collection, Generator, Hashable, Sequence
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -156,6 +156,12 @@ _MAX_RESULTS_LIMIT = 20
 
 # Chamadas de busca por campo acima das quais vale avisar sobre rate limit.
 _PER_FIELD_SEARCH_WARNING_CALLS = 100
+
+# Segundos que o aviso de rate limit supõe para processar uma linha com busca,
+# além do rate_limit_delay. A estimativa do aviso é um piso calculado só da
+# configuração: supõe uma busca por execução do agente. Um agente que faz mais
+# buscas por linha, até max_search_calls, pode passar do limite sem aviso.
+_MIN_SEARCH_ROW_SECONDS = 1.0
 
 # Contadores de uso somados de cada linha para o resumo.
 _TOKEN_STAT_KEYS = (
@@ -249,7 +255,7 @@ def _is_missing_text(value: object) -> bool:
 
 def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list) -> None:
     """Avisa uma vez quantas linhas a processar não têm texto."""
-    missing = sum(1 for idx in rows if _is_missing_text(df.loc[idx, text_column]))
+    missing = sum(1 for idx in rows if _is_missing_text(_get_cell(df, idx, text_column)))
     if missing:
         warnings.warn(
             f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
@@ -606,7 +612,7 @@ def _provider_backend(
     pydantic_model: type[BaseModel],
     user_prompt: str,
     trace_mode: str | None,
-) -> Iterator[ProviderBackend]:
+) -> Generator[ProviderBackend, None, None]:
     """Seleciona e vincula uma única implementação para toda a execução.
 
     Os módulos de backend (agent, codex, claude_code) são importados na
@@ -700,12 +706,14 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
             f"(limite recomendado: {_RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES})"
         )
 
-    if rate_limit_delay > 0:
-        estimated_rpm = (60 / rate_limit_delay) * parallel_requests
-    else:
-        estimated_rpm = parallel_requests * 60
-    if search_per_field:
-        estimated_rpm *= num_fields
+    # Cada worker conclui uma linha a cada _MIN_SEARCH_ROW_SECONDS mais a pausa,
+    # e a conta supõe uma busca por execução do agente, queries_per_row por
+    # linha. É um piso: o agente pode fazer até max_search_calls buscas por
+    # execução, e então a taxa real passa da estimada sem aviso. Com a pausa
+    # somada ao tempo da linha, aumentar rate_limit_delay só baixa a estimativa.
+    estimated_rpm = (
+        60 * parallel_requests * queries_per_row / (_MIN_SEARCH_ROW_SECONDS + rate_limit_delay)
+    )
 
     if estimated_rpm > provider_limit * 0.8:
         issues.append(
@@ -716,14 +724,13 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
     if not issues:
         return
 
-    # Recomendações: reduzir paralelismo e sugerir delay adequado ao provedor.
-    if search_per_field:
-        recommended_parallel = max(1, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES // num_fields)
-        recommended_delay = (60 * recommended_parallel * num_fields) / (provider_limit * 0.7)
-    else:
-        recommended_parallel = min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES)
-        recommended_delay = (60 * recommended_parallel) / (provider_limit * 0.7)
-    recommended_parallel = max(1, recommended_parallel)
+    # A dica nunca sobe o paralelismo: o min com parallel_requests vale também
+    # no modo por campo. A pausa sugerida ignora o tempo da linha e, por isso,
+    # leva a taxa estimada abaixo de 70% do limite.
+    recommended_parallel = max(
+        1, min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES // queries_per_row)
+    )
+    recommended_delay = (60 * recommended_parallel * queries_per_row) / (provider_limit * 0.7)
     recommended_delay = max(0.5, round(recommended_delay, 1))
 
     recs = [f"parallel_requests={recommended_parallel}"]
@@ -1722,8 +1729,14 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    # Criar colunas
-    with pd.option_context("mode.chained_assignment", None):
+    # O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
+    # escrita substitui esse aviso e a opção que o controla não se aplica.
+    context = (
+        pd.option_context("mode.chained_assignment", None)
+        if hasattr(pd.errors, "SettingWithCopyWarning")
+        else nullcontext()
+    )
+    with context:
         for col in new_cols:
             df[col] = None
         if needs_status:
@@ -2240,11 +2253,21 @@ def _mark_unreached(
     as encontre.
     """
     for idx in indices:
-        if reprocess_columns and df.loc[idx, status_col] == "processed":
+        if reprocess_columns and _get_cell(df, idx, status_col) == "processed":
             _set_cell(df, idx, "_error_details", _INTERRUPTED_REPROCESS_DETAIL)
         else:
             _set_cell(df, idx, status_col, None)
             _set_cell(df, idx, "_error_details", None)
+
+
+def _get_cell(df: pd.DataFrame, idx: Hashable, column: str) -> object:
+    """Lê uma célula por rótulo.
+
+    `.at` lê também o rótulo-tupla da entrada dict, que `to_pandas` guarda num
+    Index simples; `.loc` toma a tupla por chave de vários níveis e levanta
+    AssertionError.
+    """
+    return df.at[idx, column]  # noqa: PD008 (ver a docstring)
 
 
 def _set_cell(df: pd.DataFrame, idx: Hashable, column: str, value: object) -> None:

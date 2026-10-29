@@ -891,6 +891,12 @@ def is_rate_limit_error(error: Exception) -> bool:
     return any(_matches_error_pattern(pattern, error_str) for pattern in rate_limit_patterns)
 
 
+# Maior expoente do backoff. Com base_delay float, base_delay * 2**1024
+# levanta OverflowError ao converter o int para float; com o expoente
+# limitado, o produto chega no máximo a inf, e o min o corta em max_delay.
+_MAX_BACKOFF_EXPONENT = 1023
+
+
 def retry_with_backoff(
     func: Callable[[], dict],
     max_retries: int = 3,
@@ -943,7 +949,7 @@ def retry_with_backoff(
                 raise
 
             # Calcular delay com backoff exponencial
-            delay = min(base_delay * (2**attempt), max_delay)
+            delay = min(base_delay * (2 ** min(attempt, _MAX_BACKOFF_EXPONENT)), max_delay)
             jitter = random.uniform(0, 0.1) * delay  # noqa: S311 (jitter de espera, sem uso criptográfico)
             total_delay = delay + jitter
 

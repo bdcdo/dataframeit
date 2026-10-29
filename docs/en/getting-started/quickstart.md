@@ -84,6 +84,8 @@ print(result)
 2               Delivery ok, average product.   neutral     medium
 ```
 
+With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out above; see [Added Columns](../reference/api.md#added-columns).
+
 ## Complete Example
 
 ```python
