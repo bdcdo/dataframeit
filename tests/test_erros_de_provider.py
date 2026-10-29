@@ -224,10 +224,6 @@ def test_caixa_generica_do_claude_code_mostra_o_texto_do_sdk():
     assert "Invalid API key · Please run /login" in detalhes
 
 
-def test_caixa_generica_mostra_mensagem_curta_numa_linha():
-    assert _detalhes(_caixa_generica("falhou")) == ["falhou"]
-
-
 def test_caixa_generica_quebra_a_mensagem_em_ate_tres_linhas_com_reticencias():
     texto = " ".join(f"palavra{i}" for i in range(60))
 
@@ -238,12 +234,15 @@ def test_caixa_generica_quebra_a_mensagem_em_ate_tres_linhas_com_reticencias():
     assert texto.startswith(" ".join(detalhes).removesuffix(" ..."))
 
 
-def test_caixa_generica_sem_corte_nao_poe_reticencias():
-    texto = " ".join(["palavra"] * 20)
-
+@pytest.mark.parametrize(
+    ("texto", "linhas"),
+    [("falhou", 1), (" ".join(["palavra"] * 20), 3)],
+    ids=["curta", "tres-linhas-exatas"],
+)
+def test_caixa_generica_sem_corte_nao_poe_reticencias(texto, linhas):
     detalhes = _detalhes(_caixa_generica(texto))
 
-    assert len(detalhes) == 3
+    assert len(detalhes) == linhas
     assert " ".join(detalhes) == texto
 
 
