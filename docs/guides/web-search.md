@@ -33,10 +33,12 @@ export EXA_API_KEY="sua-chave-exa"         # https://exa.ai/
 | Exa | `"exa"` | ignora `search_depth` | 1 crédito (US$ 0,005) por busca com até 25 resultados, 5 acima disso |
 
 ```python
-resultado = dataframeit(df, Model, PROMPT, use_search=True, search_provider="exa")
+resultado = dataframeit(df.copy(), Model, PROMPT, use_search=True, search_provider="exa")
 ```
 
 ## Uso Básico
+
+O `dataframeit()` grava os resultados e o status no próprio DataFrame pandas que recebe; ver [Entrada modificada no lugar](../reference/api.md#entrada-modificada-no-lugar). Por isso os exemplos desta página passam `df.copy()`: sem a cópia, cada exemplo encontraria o `df` já processado pelo anterior.
 
 ```python
 from pydantic import BaseModel, Field
@@ -61,7 +63,7 @@ extraia informações sobre a empresa mencionada.
 
 # Habilita busca web com use_search=True
 resultado = dataframeit(
-    df,
+    df.copy(),
     EmpresaInfo,
     PROMPT,
     use_search=True,      # Habilita busca web
@@ -90,7 +92,7 @@ Com busca, a saída ganha a coluna `_search_credits`, com os créditos gastos em
 
 ```python
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True
 )
 ```
@@ -101,7 +103,7 @@ Quando o modelo tem muitos campos, pode ser útil dar a cada campo um agente pr�
 
 ```python
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     search_per_field=True  # Um agente de busca por campo do modelo
 )
@@ -112,7 +114,7 @@ resultado = dataframeit(
 ```python
 # Busca mais detalhada (mais lenta, mais cara)
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     search_depth='advanced',
     max_results=10
@@ -162,7 +164,7 @@ class MedicamentoInfo(BaseModel):
     )
 
 resultado = dataframeit(
-    df,
+    df.copy(),
     MedicamentoInfo,
     "Analise o medicamento: {texto}",
     use_search=True,
@@ -243,12 +245,14 @@ Para debugar e auditar o raciocínio do agente, use o parâmetro `save_trace`.
 
 ### Exemplo: Trace Completo
 
+Com um agente por linha, o trace fica em `_trace`. O exemplo usa o `EmpresaInfo` de [Uso Básico](#uso-basico), que não tem configuração por campo:
+
 ```python
 import json
 
 resultado = dataframeit(
-    df,
-    MedicamentoInfo,
+    df.copy(),
+    EmpresaInfo,
     PROMPT,
     use_search=True,
     save_trace=True  # ou "full"
@@ -267,7 +271,7 @@ Para auditorias onde só importa saber o que foi buscado:
 
 ```python
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     save_trace="minimal"  # Não inclui conteúdo das buscas
 )
@@ -277,7 +281,7 @@ resultado = dataframeit(
 
 ```python
 resultado = dataframeit(
-    df,
+    df.copy(),
     MedicamentoInfo,
     PROMPT,
     use_search=True,
@@ -329,7 +333,7 @@ class MedicamentoRegulatorio(BaseModel):
     fabricante: str = Field(description="Laboratório fabricante")
 
 resultado = dataframeit(
-    df,
+    df.copy(),
     MedicamentoRegulatorio,
     "Pesquise sobre o medicamento: {texto}",
     use_search=True,
@@ -368,7 +372,7 @@ Com `save_trace=True`, os traces são organizados por grupo:
 
 ```python
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True,
     search_per_field=True,
     search_groups={"regulatory": {"fields": ["status_anvisa", "avaliacao_conitec"]}},
@@ -494,14 +498,14 @@ Com `parallel_requests=20` e `search_per_field=True` em um modelo de 4 campos, r
 ```python
 # Configuração segura com Tavily e múltiplos campos
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True, search_per_field=True,
     parallel_requests=3, rate_limit_delay=0.5,
 )
 
 # Maior throughput com Exa
 resultado = dataframeit(
-    df, Model, PROMPT,
+    df.copy(), Model, PROMPT,
     use_search=True, search_provider="exa",
     search_per_field=True,
     parallel_requests=5, rate_limit_delay=0.3,

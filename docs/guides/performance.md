@@ -121,7 +121,7 @@ resultado = dataframeit(
 )
 ```
 
-Quando o provider informa uma falha que impede qualquer linha seguinte, como a cota de uso esgotada (`ProviderUsageLimitError`) ou o runtime do `codex` encerrado (`ProviderAbortError`), a execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status. As colunas de controle ficam na saída, e rodar de novo com `resume=True` processa só as pendentes. Com `reprocess_columns`, as linhas que a interrupção deixou sem reprocessar mantêm os valores anteriores e ficam marcadas em `_error_details`.
+Quando o provider informa uma falha que impede qualquer linha seguinte, como a cota de uso esgotada (`ProviderUsageLimitError`) ou o runtime do `codex` encerrado (`ProviderAbortError`), a execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status. As colunas de controle ficam na saída. Em que casos rodar de novo com `resume=True` processa só as pendentes, e o que acontece com `reprocess_columns`, está em [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
 
 ## Tracking de Tokens
 
@@ -157,7 +157,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
+A seção de throughput só aparece com `parallel_requests > 1`. Linhas de cache e raciocínio aparecem quando o provider informa esses tokens. Com busca web, o resumo ganha a seção de buscas e créditos; com `claude_code`, o custo informado pelo SDK.
 
 Para silenciar o resumo e manter as colunas de uso, suba o nível do logger:
 

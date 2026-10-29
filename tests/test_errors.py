@@ -123,24 +123,22 @@ class TestFriendlyAuthErrorWithoutEnvVar:
 
 
 class _ResultadoQueFalhaAoAnotar(dict):
-    """Dict cuja primeira gravação de chave levanta um erro transitório."""
-
-    falhas = 0
+    """Dict cuja gravação de chave levanta um erro transitório."""
 
     def __setitem__(self, chave, valor):
-        if type(self).falhas == 0:
-            type(self).falhas += 1
-            msg = "falha ao anotar o resultado"
-            raise ProviderTransientError(msg)
-        super().__setitem__(chave, valor)
+        msg = "falha ao anotar o resultado"
+        raise ProviderTransientError(msg)
 
 
 def test_falha_ao_anotar_o_resultado_ganha_nova_tentativa():
     chamadas = []
 
     def funcao():
+        # Só o resultado da primeira tentativa falha ao ser anotado. A contagem
+        # fica na lista do teste, que nasce vazia a cada execução, e o teste
+        # passa também quando roda de novo no mesmo processo.
         chamadas.append(1)
-        return _ResultadoQueFalhaAoAnotar()
+        return _ResultadoQueFalhaAoAnotar() if len(chamadas) == 1 else {}
 
     with pytest.warns(UserWarning, match="Tentativa 1/2 falhou"):
         resultado = retry_with_backoff(funcao, max_retries=2, base_delay=0, max_delay=0)

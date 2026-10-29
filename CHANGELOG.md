@@ -13,9 +13,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - As exceções `ProviderError`, `ProviderTransientError`, `ProviderOverloadedError`, `ProviderRejectedOutputError`, `ProviderConfigurationError` e `ProviderOutputError` e o `__version__` passam a ser exportados por `dataframeit`.
 - `ProviderAbortError` e a subclasse `ProviderUsageLimitError`, também exportadas, marcam a falha que impede qualquer linha seguinte. A execução para de despachar linhas, grava o checkpoint e avisa quantas ficaram sem status; a linha que recebeu o erro e as que faltam ficam pendentes para `resume=True`, e as colunas de controle ficam na saída enquanto houver linha pendente. Com `reprocess_columns`, a linha que ficou sem reprocessar mantém os valores anteriores e é marcada em `_error_details`, e as marcas vão ao checkpoint.
 - No provider `codex`, uma thread sem turno confere na abertura que o runtime resolveu o `model` pedido, e a divergência levanta `ProviderConfigurationError` antes da primeira linha; sem `model`, um aviso diz qual será usado. Um turno reroteado para outro modelo é interrompido e a linha falha.
+- O pacote declara suporte a Python 3.14, e o CI roda os testes também nessa versão (#231).
 
 ### Alterado
 
+- Em `is_complex_type` e `resolve_forward_refs`, `typing.Union` e `X | Y` passam por um ramo só, escolhido pela origem da anotação, porque no 3.14 os dois são o mesmo objeto e o ramo de cada forma deixava código sem rodar. `resolve_forward_refs` remonta as duas formas com `typing.Union[...]`: antes do 3.14, um `X | Y` com referência resolvida volta na forma de `typing.Union`, igual a ele por `==` (#231).
+- O extra `codex` fixa `openai-codex==0.163.0`; as flags `api_key_cyber_access_programs`, `cli_daybreak` e `code_mode_interrupt` ficam desligadas no provider (#270).
+
+- O extra `dev` passa a trazer o `pytest-repeat`, e o CI roda a suíte duas vezes no mesmo processo (`pytest --count=2 --repeat-scope=session`), o que reprova o teste que só passa na primeira execução (#201).
 - `read_df(path, modelo)`, chamada sem argumentos de leitura extras, relê como `int` a célula que o CSV ou o parquet guarda como inteiro num campo `int` ou `Optional[int]`, e a coluna sai como `object`, com `None` na célula vazia, em vez de float64 com `NaN`. É o que faz a retomada devolver exato o inteiro acima de 2**53. A coluna que o leitor já devolve em tipo inteiro, como a `Int64` anulável do parquet, e a coluna só com células vazias ficam como lidas. Com argumento de leitura extra, que vai ao pandas, a função devolve o que ele lê, e o XLSX fica de fora, porque guarda número como double (#223).
 - O resumo de uso do fim da execução deixa de sair por `print` no stdout e passa ao logger `dataframeit.stats`, em nível INFO. Sem logging configurado, ele sai em stderr; `logging.getLogger("dataframeit.stats").setLevel(logging.WARNING)` o silencia e mantém as colunas de tokens. O aviso de workers reduzidos por rate limit vira `UserWarning`, e a mensagem amigável do provider passa a fazer parte do aviso de falha da linha, ambos filtráveis por `warnings` e `pytest -W` (#181).
 - `dataframeit()` declara o tipo de retorno pelo tipo da entrada: DataFrame ou Series do polars devolve DataFrame do polars, e DataFrame ou Series do pandas, `list` e `dict` devolvem DataFrame do pandas. Antes, o retorno era a união dos dois, e o checker de tipos recusava `resultado["coluna"].tolist()` (#155).
@@ -40,6 +45,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- As anotações dos geradores usados como context managers são verificadas pelo ty 0.0.88 (#270).
+
+- A criação das colunas de saída usa a opção `mode.chained_assignment` só no pandas 2, preservando entradas fatiadas sem emitir aviso de depreciação no pandas 3.1 (#269).
+
+- A documentação, os READMEs e os notebooks de exemplo deixam de descrever o que o código não faz. A referência da API traz `perguntas` na 4ª posição da assinatura, diz que a entrada `pd.DataFrame` é modificada no lugar e que a saída é sempre DataFrame; `basic-usage.md` e os notebooks 04 e 08 deixam de passar a uma segunda chamada o DataFrame que a primeira já processou, e o trace completo da busca web usa um modelo sem configuração por campo. A página de exceções lista `ProviderAbortError` e `ProviderUsageLimitError`, que param a execução; a FAQ mostra a mensagem de dependência que o código emite e diz que só o `codex` recusa `api_key`; o extra `all`, as colunas de tokens da saída e o resumo de throughput, que só sai com `parallel_requests > 1`, aparecem como são (#200).
 - O aviso de rate limit da busca estima a taxa com 1 s por linha mais o `rate_limit_delay` e uma busca por execução do agente. É um piso: o agente que faz mais buscas por linha, até `max_search_calls`, pode passar do limite sem aviso. Aumentar a pausa não faz mais o aviso aparecer, e a recomendação nunca passa do `parallel_requests` atual, também com `search_per_field=True`. Antes, com pausa, a conta supunha tempo de processamento zero: com Exa, três campos e um worker, `rate_limit_delay=0.5` avisava ~360 req/min e recomendava `parallel_requests=3` (#199).
 - A entrada `dict` com chaves-tupla deixa de levantar `AssertionError` no `dataframeit()`, antes da primeira chamada, e na interrupção de um reprocessamento (#199).
 - No provider `claude_code`, com um event loop ativo no thread principal, como no Jupyter, o Ctrl-C chega ao chamador na hora, sem esperar a query em curso terminar (#199).
@@ -80,6 +90,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - No provider `codex`, a thread efêmera de cada tentativa e a da sonda do modelo recebem `thread/unsubscribe` ao terminar, e o app-server as descarrega depois de cerca de 60 s sem assinante. Antes, todas ficavam carregadas até o fim da execução, e a memória do app-server crescia com o número de linhas: 100 threads sem turno ocupavam cerca de 330 MB. O pedido sai da thread da linha, e um app-server que não responde a ele não prende a linha (#156).
 - `depends_on` em tupla vale como a lista. Antes, era descartado em silêncio, e o aviso dizia que `depends_on` faltava. Forma diferente de texto, lista ou tupla de nomes levanta `ValueError` antes de processar (#150).
 - A configuração por campo declarada num modelo dentro de `Annotated` aninhado, como `list[Annotated[list["X"], ...]]`, é encontrada pela varredura e pelas validações. A referência adiantada dentro do `Annotated` é resolvida, e os metadados ficam como estavam (#151).
+
+### Segurança
+
+- Os workflows do CI fixam cada action pelo SHA do commit, com a versão em comentário; o `actions/checkout` deixa de gravar o token do GitHub no `.git/config` do runner (`persist-credentials: false`); e, no `docs.yml`, só o job que publica tem `pages: write` e `id-token: write`. O job `quality` roda o `zizmor`, que reprova a action referida por tag ou branch no lugar do SHA, o `actions/checkout` sem a chave `persist-credentials` e a permissão de escrita no nível do workflow (#209).
 
 ## [0.10.0] - 2026-09-24
 

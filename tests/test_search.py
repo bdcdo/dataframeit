@@ -367,7 +367,7 @@ def test_tavily_friendly_error_messages():
 
     error = TavilyMissingAPIKeyError("Missing API key for Tavily")
     msg = get_friendly_error_message(error)
-    assert "TAVILY" in msg.upper() or "API" in msg.upper()
+    assert "ERRO DE AUTENTICAÇÃO TAVILY" in msg
 
     # Erro de limite de uso
     class UsageLimitExceededError(Exception):
@@ -375,7 +375,7 @@ def test_tavily_friendly_error_messages():
 
     error = UsageLimitExceededError("Usage limit exceeded for Tavily")
     msg = get_friendly_error_message(error)
-    assert "LIMITE" in msg.upper() or "LIMIT" in msg.upper()
+    assert "LIMITE DE USO TAVILY EXCEDIDO" in msg
 
 
 # =============================================================================
@@ -1582,8 +1582,8 @@ def test_modo_por_campo_nested_search():
     assert len(pedidos) == 2
 
 
-def test_modo_por_campo_nested_context_in_prompt():
-    """Verifica que contexto de busca aninhada é incluído no prompt."""
+def test_modo_por_campo_prompt_da_lista_sem_contexto_aninhado():
+    """O prompt que extrai um List[Model] não leva o contexto de buscas aninhadas."""
 
     captured_prompts = []
 
@@ -1617,12 +1617,11 @@ def test_modo_por_campo_nested_context_in_prompt():
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
         field_extractor(AnaliseSentencaSaude, "Analise {texto}", config)("Medicamento X")
 
-    # Procurar prompt do campo 'pedidos' que deve ter contexto aninhado
+    # O campo com busca dentro do item de um List[Model] só existe depois que a
+    # lista é extraída e é buscado item a item; as buscas aninhadas que entram
+    # no prompt do campo de primeiro nível são as de modelo aninhado sem lista.
     prompts_pedidos = [p for p in captured_prompts if "pedidos" in p.lower()]
-
-    # Deve haver menção ao contexto de buscas aninhadas
-    pedidos_prompt = next((p for p in prompts_pedidos if "Contexto de buscas" in p), None)
-    assert pedidos_prompt is not None or len(prompts_pedidos) > 0
+    assert prompts_pedidos == ["Analise {texto}\n\nResponda APENAS o campo: pedidos"]
 
 
 def test_modo_por_campo_sums_nested_usage():

@@ -11,6 +11,7 @@ def dataframeit(
     data,
     questions,
     prompt,
+    perguntas=None,  # deprecated name of questions
     resume=True,
     reprocess_columns=None,
     model=None,
@@ -102,7 +103,7 @@ With `use_search=True` and `search_per_field=True`, model fields accept their ow
 
 ### Return
 
-Returns data in the same format as input with extracted columns added.
+Returns a DataFrame with the extracted columns: polars for polars input and pandas for the others.
 
 | Input | Output |
 |-------|--------|
@@ -135,6 +136,19 @@ if '_dataframeit_status' in result.columns:
 ```
 
 Rows with empty or missing text are not sent to the model: they get status `'error'` and the detail `"Texto ausente"`.
+
+### Input modified in place
+
+With `pd.DataFrame` input, `dataframeit()` writes the model columns and the [added columns](#added-columns) into the DataFrame it receives, including `_dataframeit_status`, which stays there even when the output drops it. That is why an interruption leaves the rows already processed in the DataFrame, and `resume=True` continues from them.
+
+For the same reason, a second call with the same DataFrame, or with a copy made after the first call, does not send the rows with status `'processed'` to the model. With a model that has the same fields, it returns the results of the first call. With a model that has other fields and `resume=True`, the default, the outcome depends on the fields the first call did not fill. If any of them does not accept `None`, such as `category: str`, the call raises `ValueError` for incompatible fields. If all of them accept `None`, such as `Optional[str]`, with or without a default, the call raises no error and gives no warning about the fields, sends no row to the model, and returns `None` in those fields for every row. The same happens with the first call's model plus an `Optional` field. The error therefore protects you only when the new field does not accept `None`. To apply another model or another prompt to the same texts, pass each call a new DataFrame or a copy made before the first one:
+
+```python
+result_a = dataframeit(df.copy(), ModelA, PROMPT_A)
+result_b = dataframeit(df.copy(), ModelB, PROMPT_B)
+```
+
+Polars input, `pd.Series`, `list` and `dict` are not changed.
 
 ### Examples
 

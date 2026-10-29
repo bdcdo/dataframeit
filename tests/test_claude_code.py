@@ -53,9 +53,10 @@ class TestValidateProviderDependencies:
     def test_claude_code_installed_passes(self):
         """Deve passar sem erro quando claude_agent_sdk está instalado."""
 
-        with patch("importlib.import_module", return_value=MagicMock()):
-            # Não deve levantar exceção
+        with patch("importlib.import_module", return_value=MagicMock()) as importar:
             validate_provider_dependencies("claude_code")
+
+        importar.assert_called_once_with("claude_agent_sdk")
 
     def test_claude_code_skips_langchain_validation(self):
         """Deve NÃO validar langchain quando provider é claude_code."""
@@ -114,7 +115,8 @@ class TestBuildJsonSystemPrompt:
         schema = SampleModel.model_json_schema()
         prompt = _build_json_system_prompt(schema)
 
-        assert "APENAS" in prompt or "JSON" in prompt
+        assert "Responda APENAS com JSON válido seguindo o schema abaixo." in prompt
+        assert "Não inclua texto antes ou depois do JSON." in prompt
 
 
 class TestJsonParsingVariants:
