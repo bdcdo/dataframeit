@@ -7,7 +7,13 @@ import operator
 from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
-from .utils import get_nested_pydantic_models, list_layers, resolve_forward_refs, submodels
+from .utils import (
+    _json_default,
+    get_nested_pydantic_models,
+    list_layers,
+    resolve_forward_refs,
+    submodels,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -216,14 +222,30 @@ def get_nested_value(data: dict[str, Any], field_path: str) -> Any:  # noqa: ANN
 
 
 def _by_value(value: object) -> object:
-    """O membro de Enum pelo valor dele; o resto como está.
+    """O valor na forma em que a retomada o relê do checkpoint.
 
-    Na execução, o campo Enum chega à condição como membro, porque o
-    `model_dump` da resposta o guarda assim; relido do checkpoint, chega como o
-    valor. Comparados os dois lados pelo valor, a condição dá o mesmo resultado
-    nos dois caminhos, com o operando escrito como valor ou como membro.
+    Na execução, o campo chega à condição pelo `model_dump` da resposta, que
+    guarda o membro de Enum como membro, a tupla como tupla e o conjunto como
+    conjunto. Relido do checkpoint, que grava a estrutura em JSON
+    (`_json_default`), o membro chega como o valor dele, e a tupla e o conjunto,
+    como lista. Levados o campo e o operando a essa forma, a condição dá o mesmo
+    resultado nos dois caminhos, com o operando escrito como valor ou como
+    membro. A conversão desce pelos itens da coleção e pelos valores do dict, que
+    é a forma em que o submodelo chega.
+
+    O conjunto sai na ordem em que o checkpoint o grava, a do texto JSON de cada
+    item. Por isso o conjunto do campo é igual ao conjunto do operando em
+    qualquer ordem, e igual à lista relida.
     """
-    return value.value if isinstance(value, Enum) else value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (set, frozenset)):
+        value = _json_default(value)
+    if isinstance(value, (list, tuple)):
+        return [_by_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _by_value(item) for key, item in value.items()}
+    return value
 
 
 def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
@@ -239,8 +261,9 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
         field_data: Dados dos campos já processados.
         field_name: Nome do campo atual (para logging).
 
-    O membro de Enum, no valor do campo e no operando, é comparado pelo valor
-    (ver `_by_value`).
+    O valor do campo e o operando são comparados na forma em que a retomada os
+    relê (ver `_by_value`). No `in` e no `not_in`, o operando é a coleção das
+    opções, e cada opção passa pela mesma conversão.
 
     Returns:
         True se a condição é satisfeita, False caso contrário.
@@ -277,12 +300,7 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
 
         for key, (symbol, compare) in _CONDITION_OPERATORS.items():
             if key in condition:
-                operand = condition[key]
-                if key in ("in", "not_in") and isinstance(operand, _MEMBERSHIP_OPERAND_TYPES):
-                    operand = [_by_value(option) for option in operand]
-                else:
-                    operand = _by_value(operand)
-                result = compare(compared, operand)
+                result = compare(compared, _by_value(condition[key]))
                 logger.debug(
                     "Campo '%s': %s=%s %s %s -> %s",
                     field_name,
