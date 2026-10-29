@@ -12,7 +12,7 @@ cd dataframeit
 
 uv run --extra dev pytest                     # suíte de testes
 uv run --extra dev --extra all --extra search-all --extra codex pytest --cov  # cobertura de ramos, exige 100%
-uv run --extra dev pytest --count=2 --repeat-scope=session  # suíte duas vezes no mesmo processo
+uv run --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex pytest --count=2 --repeat-scope=session  # suíte duas vezes no mesmo processo, sem pular teste
 uv run --extra dev ruff check src tests       # lint
 uv run --extra docs mkdocs serve              # documentação em http://127.0.0.1:8000
 ```
