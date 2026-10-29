@@ -492,7 +492,11 @@ def test_perguntas_emite_deprecation_warning():
 
 @pytest.mark.parametrize("valor", [np.int64(2), 3])
 def test_batch_size_aceita_inteiros(valor, tmp_path):
-    _rodar(pd.DataFrame({"texto": ["a"]}), batch_size=valor, checkpoint_path=tmp_path / "c.csv")
+    checkpoint = tmp_path / "c.csv"
+    _rodar(pd.DataFrame({"texto": ["a"]}), batch_size=valor, checkpoint_path=checkpoint)
+
+    # A única linha fica abaixo do batch_size e vai ao checkpoint na gravação final.
+    assert pd.read_csv(checkpoint)["x"].tolist() == ["x-a"]
 
 
 @pytest.mark.parametrize("valor", [True, 2.0, 0])

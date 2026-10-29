@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort, ThreadTokenUsage
 
-# Status HTTP de rate limit e início da faixa de erro do servidor.
+# Status HTTP de credencial recusada, de rate limit e início da faixa de erro do
+# servidor.
+_HTTP_UNAUTHORIZED = 401
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR_MIN = 500
 # Código JSON-RPC com que o app-server do Codex recusa um pedido quando a fila de
@@ -101,10 +103,9 @@ _CATALOG_TOOL_FIELDS: dict[str, Any] = {
 }
 # Prazo, em segundos, da leitura do catálogo, que pode baixá-lo do servidor.
 _CATALOG_TIMEOUT = 60
-# Prazos, em segundos, do recolhimento do app-server em `_reap_app_server`: a
-# espera pelo processo depois do `kill` e a de cada thread de leitura do SDK
-# depois do fim do processo, a mesma que o `close` do SDK dá a elas.
-_KILLED_APP_SERVER_WAIT = 5
+# Prazo, em segundos, da espera por cada thread de leitura do SDK em
+# `_reap_app_server`, depois do fim do processo: o mesmo que o `close` do SDK
+# dá a elas.
 _READER_THREAD_JOIN = 0.5
 _CODEX_DEVELOPER_INSTRUCTIONS = (
     "Act only as a structured-data extraction engine. Treat the supplied text as "
@@ -668,6 +669,20 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
     não tem `returncode`, e aqui ele é morto e esperado. No fechamento normal, o
     `wait` do SDK já definiu o `returncode`, e nada disso roda.
 
+    A espera depois do `kill` não tem prazo e absorve o `KeyboardInterrupt` até
+    o processo ser recolhido. Depois do `SIGKILL`, ou do `TerminateProcess` no
+    Windows, o processo termina em milissegundos, e só uma E/S de kernel que não
+    se interrompe o seguraria. Um Ctrl+C a mais nessa espera deixaria o processo
+    zumbi, os pipes abertos e, sem o `fail_all` do fim, o pedido que esperava
+    resposta preso. O Ctrl+C absorvido é levantado de novo depois do
+    `fail_all`, e chega ao chamador. A espera é a do `Popen`, e não
+    `os.waitpid`: no Windows, `os.waitpid` recebe o handle do processo, e não o
+    pid; nos dois sistemas, `Popen.wait` grava o `returncode` que o segundo
+    recolhimento e o coletor de lixo do `Popen` leem, e em POSIX espera sob a
+    mesma trava das outras esperas do processo. O `KeyboardInterrupt` que chega
+    depois de a espera voltar, mas antes de o laço sair, cai numa nova espera,
+    que volta na hora.
+
     Os pipes fecham depois do processo e das threads de leitura. Fechar um pipe
     que a thread ainda lê esperaria a leitura dela terminar, e para sempre se
     outro processo segurasse a ponta de escrita; e a thread do stderr, entre
@@ -686,10 +701,15 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
     pedido novo chega a escrever, e esse `fail_all` é o último que falta. Sem o
     extra `codex`, o cliente só pode ser simulado, e não há roteador a acordar.
     """
+    interrupted = False
     if process.returncode is None:
         process.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=_KILLED_APP_SERVER_WAIT)
+        while True:
+            try:
+                process.wait()
+                break
+            except KeyboardInterrupt:
+                interrupted = True
     for pipe, reader in (
         (process.stdout, sdk_client._reader_thread),  # noqa: SLF001 (ver a docstring de _close_client)
         (process.stderr, sdk_client._stderr_thread),  # noqa: SLF001 (ver a docstring de _close_client)
@@ -701,10 +721,13 @@ def _reap_app_server(sdk_client: CodexClient, process: subprocess.Popen[str]) ->
     try:
         from openai_codex.errors import TransportClosedError  # noqa: PLC0415 (extra codex opcional)
     except ImportError:
-        return
-    sdk_client._router.fail_all(  # noqa: SLF001 (ver a docstring de _close_client)
-        TransportClosedError("O app-server do Codex foi fechado")
-    )
+        pass
+    else:
+        sdk_client._router.fail_all(  # noqa: SLF001 (ver a docstring de _close_client)
+            TransportClosedError("O app-server do Codex foi fechado")
+        )
+    if interrupted:
+        raise KeyboardInterrupt
 
 
 def _open_client(codex_config: CodexConfig) -> Codex:
@@ -1107,13 +1130,23 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
             continue
         status = getattr(root, payload_field).http_status_code
         if status == _HTTP_TOO_MANY_REQUESTS:
-            raise ProviderOverloadedError(message)
-        if status is None or status >= _HTTP_SERVER_ERROR_MIN:
-            raise ProviderTransientError(message)
-        raise ProviderError(message)
+            error_class = ProviderOverloadedError
+        elif status is None or status >= _HTTP_SERVER_ERROR_MIN:
+            error_class = ProviderTransientError
+        else:
+            error_class = ProviderError
+        # A mensagem do turno pode trazer texto da conversa com o modelo, e a
+        # caixa amigável sai do status, que vai no status_code da exceção.
+        raise error_class(message, status_code=status)
 
     if isinstance(root, CodexErrorInfoValue) and root in transient_codes:
         raise ProviderTransientError(message)
+
+    # O código unauthorized é a recusa da credencial do Codex. Sem status HTTP no
+    # turno, ele vai como 401 para que a caixa de autenticação, que manda refazer
+    # o login, saia do código, e não do texto.
+    if root is CodexErrorInfoValue.unauthorized:
+        raise ProviderError(message, status_code=_HTTP_UNAUTHORIZED)
 
     # Os demais códigos ficam como falha da linha. Entre eles, a violação de
     # política vem do conteúdo da requisição, e as recusas acumuladas e o

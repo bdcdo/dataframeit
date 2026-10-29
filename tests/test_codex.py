@@ -2925,13 +2925,19 @@ class TestDescargaDaThread:
         # As duas tentativas usam a mesma thread simulada.
         assert threads_descarregadas(client) == ["thread-1", "thread-1"]
 
-    def test_fechamento_solta_a_descarga_escrita_depois_do_fim_do_leitor(self, codex_sdk):
+    @pytest.mark.parametrize("ctrl_c", [False, True], ids=["sem_ctrl_c", "ctrl_c_no_fechamento"])
+    def test_fechamento_solta_a_descarga_escrita_depois_do_fim_do_leitor(self, codex_sdk, ctrl_c):
         """A descarga que escreveu depois do `fail_all` do leitor termina no fechamento.
 
         O app-server morto ainda pode aceitar a escrita enquanto termina, e o SDK
         registra a espera da resposta sem conferir que o leitor do stdout já
         acordou os pedidos em voo e saiu. Ninguém responde nem acorda essa
         espera, e a thread da descarga ficaria presa para sempre.
+
+        Com Ctrl+C no `wait` do `close` do SDK e mais dois na espera do
+        recolhimento, que é a do `_close_client`, o processo é esperado sem
+        prazo até sair, e a descarga é solta antes de o `KeyboardInterrupt`
+        subir.
         """
         from openai_codex.client import CodexClient  # noqa: PLC0415 (SDK carregado pelo fixture)
         from openai_codex.errors import (  # noqa: PLC0415 (SDK carregado pelo fixture)
@@ -2940,7 +2946,11 @@ class TestDescargaDaThread:
 
         cliente_do_protocolo = CodexClient()
         processo = MagicMock()
-        processo.returncode = -9
+        if ctrl_c:
+            processo.returncode = None
+            processo.wait.side_effect = [KeyboardInterrupt()] * 3 + [0]
+        else:
+            processo.returncode = -9
         escrita = threading.Event()
         processo.stdin.write.side_effect = lambda _linha: escrita.set()
         leitor_encerrado = threading.Thread(target=lambda: None)
@@ -2962,10 +2972,16 @@ class TestDescargaDaThread:
         descarga.join(0.2)
         assert descarga.is_alive(), "sem o fechamento, nada acorda a espera da resposta"
 
-        _close_client(cliente)
+        with pytest.raises(KeyboardInterrupt) if ctrl_c else contextlib.nullcontext():
+            _close_client(cliente)
         descarga.join(5)
 
         assert not descarga.is_alive()
+        if ctrl_c:
+            # O primeiro `wait` é o do `close` do SDK; os do recolhimento não têm prazo.
+            assert processo.wait.call_args_list[1:] == [call()] * 3
+            processo.stdout.close.assert_called_once_with()
+            processo.stderr.close.assert_called_once_with()
 
     def test_turno_reroteado_tambem_descarrega_a_thread(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk

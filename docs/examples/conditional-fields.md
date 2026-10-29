@@ -127,6 +127,8 @@ Para somar outras chaves por campo, desempacote o dict: `json_schema_extra={**fi
 {'field': 'campo_opcional', 'exists': True}
 ```
 
+Num campo `Enum`, a comparação é pelo valor do membro: com `tipo: Tipo` e `Tipo.PF = 'pf'`, tanto `{'field': 'tipo', 'equals': 'pf'}` quanto `{'field': 'tipo', 'equals': Tipo.PF}` valem para `Tipo.PF`, na execução e na retomada. Em `in` e `not_in`, cada valor aceito é comparado do mesmo jeito.
+
 Sem `depends_on`, a ordem de um callable não é garantida.
 
 ## Campos Aninhados em Condições
@@ -148,6 +150,8 @@ class Entrega(BaseModel):
         },
     )
 ```
+
+O caminho é conferido inteiro antes de processar, em `condition` e em `depends_on`: enquanto atravessa submodelos, cada parte tem de ser campo do modelo anterior, e `endereco.cidadee` levanta `ValueError`, como uma raiz inexistente. Na união de modelos, como `Union[PessoaFisica, PessoaJuridica]`, o caminho segue cada modelo que tem a parte e vale quando um deles chega ao fim. Depois de um campo escalar, como `str`, `int` ou `Enum`, o resto do caminho levanta `ValueError`, porque o valor não tem chave onde ele continue. O caminho também não entra em lista, tupla ou outra coleção: com `itens: list[Item]`, `itens.preco` e `itens.0.preco` levantam `ValueError`, porque a avaliação não segue o campo do item nem o índice. Depois de um campo que pode ter chave que nenhum modelo declara, como `dict` ou `Any`, o resto do caminho não é conferido, e o mesmo vale para um tipo que a biblioteca não reconhece como escalar nem como modelo, como `UUID`, `HttpUrl` ou um `NewType`.
 
 A condição fica no campo de nível superior. `condition` ou `depends_on` num campo de modelo aninhado, ou de item de lista, levanta `ValueError` antes de processar.
 
@@ -197,7 +201,7 @@ class InfoCompleta(BaseModel):
 
 1. Condicionais só funcionam com `use_search=True` e `search_per_field=True`; sem isso, `condition` ou `depends_on` no modelo levanta `ValueError`.
 2. Com `search_groups`, a condição de um campo agrupado é avaliada antes da chamada do grupo, e o campo com condição falsa fica fora dela; se a condição depende de outro campo do mesmo grupo, ela é avaliada com a resposta do grupo, e o campo com condição falsa fica `None`.
-3. A condição só pode ler campos que existem no modelo.
+3. A condição só pode ler campos que existem no modelo, inclusive no caminho aninhado.
 4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele.
 5. Cada condição é avaliada uma vez: antes da chamada do campo, ou depois da resposta do grupo quando depende de outro campo do mesmo grupo.
 6. Os campos com condição são processados em sequência, na ordem das dependências; um campo pulado não consome busca.
