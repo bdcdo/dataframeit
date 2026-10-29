@@ -158,8 +158,9 @@ _MAX_RESULTS_LIMIT = 20
 _PER_FIELD_SEARCH_WARNING_CALLS = 100
 
 # Segundos que o aviso de rate limit supõe para processar uma linha com busca,
-# além do rate_limit_delay. A linha real leva mais (LLM e busca), e a taxa
-# estimada com esse piso fica acima da real.
+# além do rate_limit_delay. A estimativa do aviso é um piso calculado só da
+# configuração: supõe uma busca por execução do agente. Um agente que faz mais
+# buscas por linha, até max_search_calls, pode passar do limite sem aviso.
 _MIN_SEARCH_ROW_SECONDS = 1.0
 
 # Contadores de uso somados de cada linha para o resumo.
@@ -706,8 +707,10 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
         )
 
     # Cada worker conclui uma linha a cada _MIN_SEARCH_ROW_SECONDS mais a pausa,
-    # no mínimo, e cada linha faz queries_per_row buscas. Com a pausa somada ao
-    # tempo da linha, aumentar rate_limit_delay só baixa a taxa estimada.
+    # e a conta supõe uma busca por execução do agente, queries_per_row por
+    # linha. É um piso: o agente pode fazer até max_search_calls buscas por
+    # execução, e então a taxa real passa da estimada sem aviso. Com a pausa
+    # somada ao tempo da linha, aumentar rate_limit_delay só baixa a estimativa.
     estimated_rpm = (
         60 * parallel_requests * queries_per_row / (_MIN_SEARCH_ROW_SECONDS + rate_limit_delay)
     )

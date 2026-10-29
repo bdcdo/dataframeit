@@ -40,7 +40,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-- O aviso de rate limit da busca estima a taxa com 1 s por linha mais o `rate_limit_delay`, e aumentar a pausa não faz mais o aviso aparecer; a recomendação nunca passa do `parallel_requests` atual, também com `search_per_field=True`. Antes, com pausa, a conta supunha tempo de processamento zero: com Exa, três campos e um worker, `rate_limit_delay=0.5` avisava ~360 req/min e recomendava `parallel_requests=3` (#199).
+- O aviso de rate limit da busca estima a taxa com 1 s por linha mais o `rate_limit_delay` e uma busca por execução do agente. É um piso: o agente que faz mais buscas por linha, até `max_search_calls`, pode passar do limite sem aviso. Aumentar a pausa não faz mais o aviso aparecer, e a recomendação nunca passa do `parallel_requests` atual, também com `search_per_field=True`. Antes, com pausa, a conta supunha tempo de processamento zero: com Exa, três campos e um worker, `rate_limit_delay=0.5` avisava ~360 req/min e recomendava `parallel_requests=3` (#199).
 - A entrada `dict` com chaves-tupla deixa de levantar `AssertionError` no `dataframeit()`, antes da primeira chamada, e na interrupção de um reprocessamento (#199).
 - No provider `claude_code`, com um event loop ativo no thread principal, como no Jupyter, o Ctrl-C chega ao chamador na hora, sem esperar a query em curso terminar (#199).
 - Com `max_retries` a partir de 1026 e `base_delay` float, o backoff deixa de levantar `OverflowError` na tentativa 1025, e a linha falha com o erro original (#199).
