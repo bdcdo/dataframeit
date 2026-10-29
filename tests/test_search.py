@@ -367,7 +367,7 @@ def test_tavily_friendly_error_messages():
 
     error = TavilyMissingAPIKeyError("Missing API key for Tavily")
     msg = get_friendly_error_message(error)
-    assert "TAVILY" in msg.upper() or "API" in msg.upper()
+    assert "ERRO DE AUTENTICAÇÃO TAVILY" in msg
 
     # Erro de limite de uso
     class UsageLimitExceededError(Exception):
@@ -375,7 +375,7 @@ def test_tavily_friendly_error_messages():
 
     error = UsageLimitExceededError("Usage limit exceeded for Tavily")
     msg = get_friendly_error_message(error)
-    assert "LIMITE" in msg.upper() or "LIMIT" in msg.upper()
+    assert "LIMITE DE USO TAVILY EXCEDIDO" in msg
 
 
 # =============================================================================
