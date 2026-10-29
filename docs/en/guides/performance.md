@@ -4,7 +4,7 @@ Optimize processing with parallelism, rate limiting, and token tracking.
 
 ## Parallel Processing
 
-Use `parallel_requests` to speed up processing:
+Use `parallel_requests` to speed up processing. Up to `parallel_requests` rows are in flight at once, and a new row is dispatched as soon as another finishes: a worker that finishes early does not wait for the slowest one.
 
 ```python
 result = dataframeit(
@@ -25,7 +25,7 @@ result = dataframeit(
 
 ### Auto-reduction on Rate Limits
 
-When a row fails after all attempts with a rate limit error, DataFrameIt halves the workers:
+When a row fails after all attempts with a rate limit error, DataFrameIt halves the cap on rows in flight; the rows already in flight finish:
 
 ```
 Start: 10 workers
@@ -38,6 +38,30 @@ With `codex`, the rate limit and the app-server overload are recognized by the e
 
 !!! info "Safety"
     Workers are only **reduced**, never automatically increased. This prevents unexpected costs.
+
+### Per-Row Callback
+
+`on_row_done` receives a `RowResult` for each row processed in this call, including errors, after the row is written to the DataFrame. A row skipped by `resume` is not delivered.
+
+```python
+from dataframeit import RowResult, dataframeit
+
+def on_done(row: RowResult) -> None:
+    print(row.position, row.index, row.success, row.values)
+
+result = dataframeit(
+    df,
+    Model,
+    PROMPT,
+    parallel_requests=5,
+    on_row_done=on_done,
+)
+```
+
+The `RowResult` fields are in the [API reference](../reference/api.md#rowresult).
+
+!!! warning "Worker thread"
+    With `parallel_requests` > 1, the callback runs on the worker thread that processed the row while the others keep writing. Whatever it shares (a counter, a queue, a screen) needs its own synchronization, and what it needs from the row comes from the `RowResult`, not from the DataFrame. An exception inside it becomes a warning, and the run continues.
 
 At the end of the run, a `UserWarning` reports the initial and final workers and suggests using the final number in `parallel_requests`.
 
@@ -105,7 +129,7 @@ result = dataframeit(
 )
 ```
 
-The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). In every format, the model's list, dict and tuple fields are saved as JSON text, and `Enum` values by their value; `read_df` turns the structures back, and resuming returns structures and date, time, `datetime`, `Enum`, `int` and `bool` fields with their declared type, also with `strict=True`: a date saved as text, an integer read back as a float and a tuple read back as a list come back as `date`, `int` and `tuple`. XLSX stores numbers as doubles, and an integer above 2**53 comes back rounded; for ids that large, use CSV or parquet. None of the three formats keeps the NaN of a `float` field apart from null: CSV and XLSX write both as an empty cell, and parquet as null. When resuming, the NaN comes back missing, and a required field that received it is flagged for reprocessing. In parquet, an integer above 2**63 - 1 next to a pending row and an integer above 2**53 next to a float in the same column are not saved, and the checkpoint save fails with a warning. If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. On every save, `<checkpoint>.dataframeit.json` is written next to it with the run's signature (prompt, provider, model, `model_kwargs` except `timeout`, schema, search, and the text and status columns), a hash of each row's text, and a hash of the checkpoint itself. The checkpoint is resumed only when all three match; with another configuration, another input, or a file that is not the one the signature describes, the run warns, starts over, and overwrites it. In a row already concluded, successfully or with an error, the model fields come from the checkpoint, over whatever the input carried in them; in a successful row, that is what an uninterrupted run would give, because it writes the answer over them. To keep an output corrected by hand as it is, pass it with the status column, and the checkpoint is not read again. A complete output is returned without it, and the column comes back with `output["_dataframeit_status"] = "processed"` (or the name passed in `status_column`). With `resume=False`, the file is ignored and overwritten.
+The format is inferred from the file extension (`.csv`, `.xlsx`, `.parquet`). In every format, the model's structure fields, that is, list, tuple, set, dict, `Sequence`, `AbstractSet`, `Mapping`, `TypedDict`, `NamedTuple` and nested model, are saved as JSON text, sets in a fixed order, and `Enum` values by their value; `read_df` turns the structures back, and resuming returns structures and date, time, `datetime`, `Enum`, `int` and `bool` fields with their declared type, also with `strict=True`: a date saved as text, an integer read back as a float and a tuple read back as a list come back as `date`, `int` and `tuple`. CSV and XLSX write an empty string and `None` as the same empty cell. When resuming, that cell comes back as `""` in a text field that does not accept `None`, such as `str` or `str = "default"`, and as `None` in a field that accepts it, such as `Optional[str]`; to keep the `""` of an optional field, use parquet. In a `str` field whose default is `None`, given directly or by a factory, it also comes back as `None`. The empty string of a field whose factory reads the other fields is not restored: the empty cell counts as missing, and resuming fills it with the factory's value, even where the run saved `""`. A validator that turns an answer into `None` in a `str` field gives a value that the field's type rejects. In parquet, resuming flags that `None` for reprocessing. In CSV and XLSX, it flags the field when the validator turns the empty string itself into `None`, and returns `""` when it turns another answer, such as `"N/A"`, into `None`, because the empty cell does not say which of the two was saved. To keep that `None`, declare the field as `Optional[str]`. This holds for a run that applies the model's validators; in per-field mode (`search_per_field`), they do not run during execution, which saves the empty string as it came, and resuming from CSV and XLSX flags the field whose validator turns the empty string into `None`, while resuming from parquet returns the saved `""`. Parquet stores the empty string and `None` apart, and resuming returns the empty string as it was saved. In XLSX, text that starts with `=` is saved as text, not as a formula. XLSX stores numbers as doubles, and an integer above 2**53 comes back rounded; for ids that large, use CSV or parquet. None of the three formats keeps the NaN of a `float` field apart from null: CSV and XLSX write both as an empty cell, and parquet as null. When resuming, the NaN comes back missing, and a required field that received it is flagged for reprocessing. In parquet, an integer above 2**63 - 1 next to a pending row and an integer above 2**53 next to a float in the same column are not saved, and the checkpoint save fails with a warning. If execution is interrupted, run the same call again with the same input: with `resume=True`, the default, and the file present, execution continues from the checkpoint. On every save, `<checkpoint>.dataframeit.json` is written next to it with the run's signature (prompt, provider, model, `model_kwargs` except `timeout`, schema, search, and the text and status columns), a hash of each row's text, and a hash of the checkpoint itself. The checkpoint is resumed only when all three match; with another configuration, another input, or a file that is not the one the signature describes, the run warns, starts over, and overwrites it. In a row already concluded, successfully or with an error, the model fields come from the checkpoint, over whatever the input carried in them; in a successful row, that is what an uninterrupted run would give, because it writes the answer over them. To keep an output corrected by hand as it is, pass it with the status column, and the checkpoint is not read again. A complete output is returned without it, and the column comes back with `output["_dataframeit_status"] = "processed"` (or the name passed in `status_column`). With `resume=False`, the file is ignored and overwritten.
 
 To inspect what has already been processed, `read_df` loads the file with lists, dicts and text in the model's types. That DataFrame also works as input for resuming, and then the file is not read again:
 
@@ -119,7 +143,7 @@ result = dataframeit(
 )
 ```
 
-When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output, and running again with `resume=True` processes only the pending rows. With `reprocess_columns`, rows the interruption left without reprocessing keep their previous values and are marked in `_error_details`.
+When the provider reports a failure that prevents any further row, such as an exhausted usage quota (`ProviderUsageLimitError`) or a terminated `codex` runtime (`ProviderAbortError`), execution stops dispatching rows, saves the checkpoint, and warns how many rows were left without status. The control columns stay in the output. When running again with `resume=True` processes only the pending rows, and what happens with `reprocess_columns`, is covered in [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
 
 ## Token Tracking
 
@@ -155,7 +179,7 @@ Requisicoes: 100
 ============================================================
 ```
 
-Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
+The throughput section appears only with `parallel_requests > 1`. Cache and reasoning lines appear when the provider reports those tokens. With web search, the summary gains a section on searches and credits; with `claude_code`, the cost reported by the SDK.
 
 To silence the summary and keep the usage columns, raise the logger level:
 

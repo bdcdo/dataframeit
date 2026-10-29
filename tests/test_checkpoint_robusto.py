@@ -14,7 +14,7 @@ from typing_extensions import TypeAliasType
 
 from dataframeit import read_df
 from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
-from dataframeit.utils import accepts_only_text, normalize_value
+from dataframeit.utils import _admits_none, accepts_only_text, normalize_value
 
 
 class ModeloSimples(BaseModel):
@@ -223,7 +223,11 @@ def test_retomada_aceita_campo_condicional_pulado_com_tipo_obrigatorio():
 
 
 def test_texto_obrigatorio_vazio_em_csv_continua_acusado(tmp_path):
-    """CSV grava "" e None do mesmo jeito; a retomada não adivinha qual era."""
+    """Passado como entrada, o CSV relido não traz a assinatura que diz que o modelo é o mesmo.
+
+    O CSV grava "" e None do mesmo jeito, e com outro modelo a célula vazia pode
+    ser o None de um campo que o admitia; a retomada não adivinha qual era.
+    """
 
     class ComObservacao(BaseModel):
         observacao: str
@@ -304,6 +308,78 @@ def test_campo_condicional_presente_mantem_as_restricoes():
     assert incompativeis == ["cpf"]
 
 
+def test_texto_vazio_do_checkpoint_respeita_a_condicao_do_campo():
+    """A célula vazia só vira texto vazio quando a condição do campo é verdadeira na linha."""
+
+    class Pessoa(BaseModel):
+        tipo: str
+        cpf: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
+
+    df = pd.DataFrame(
+        {
+            "tipo": ["pf", "pj"],
+            "cpf": [None, None],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", Pessoa, set(), empty_text_fields={"cpf"}
+    )
+
+    assert incompativeis == []
+    assert valores[(0, "cpf")] == ""
+    assert valores[(1, "cpf")] is None
+
+
+@pytest.mark.parametrize(
+    "condicao", [{"field": "motivo", "exists": True}, {"field": "motivo", "equals": ""}]
+)
+def test_condicao_le_o_texto_vazio_restaurado_de_outro_campo(condicao):
+    """A condição vê o texto vazio do campo de que depende, como a execução o viu."""
+
+    class Pedido(BaseModel):
+        motivo: str
+        obs: str = Field(json_schema_extra={"condition": condicao})
+
+    df = pd.DataFrame({"motivo": [None], "obs": [None], "_dataframeit_status": ["processed"]})
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", Pedido, set(), empty_text_fields={"motivo", "obs"}
+    )
+
+    assert incompativeis == []
+    assert valores[(0, "motivo")] == ""
+    assert valores[(0, "obs")] == ""
+
+
+def test_condicao_le_o_none_do_campo_pulado_antes_dela():
+    """O campo pulado fica None para as condições que dependem dele, em qualquer ordem do modelo.
+
+    O obs vem antes do motivo, de que depende, e o motivo só existe quando o
+    tipo é "pf". Na linha "pj", o motivo pulado é None, e o obs também é pulado.
+    """
+
+    class Pedido(BaseModel):
+        obs: str = Field(json_schema_extra={"condition": {"field": "motivo", "exists": True}})
+        motivo: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
+        tipo: str
+
+    df = pd.DataFrame(
+        {
+            "obs": [None, None],
+            "motivo": [None, None],
+            "tipo": ["pf", "pj"],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", Pedido, set(), empty_text_fields={"motivo", "obs"}
+    )
+
+    assert incompativeis == []
+    assert [valores[(0, "motivo")], valores[(0, "obs")]] == ["", ""]
+    assert [valores[(1, "motivo")], valores[(1, "obs")]] == [None, None]
+
+
 @pytest.mark.parametrize("parallel_requests", [1, 3])
 def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, parallel_requests):
     gravacoes = []
@@ -368,6 +444,36 @@ def test_checkpoint_textual_serializa_array_e_enum_como_json(tmp_path):
     assert relido["interno"][0] == '{"itens": ["a"], "cor": "azul"}'
 
 
+def test_checkpoint_textual_grava_conjunto_em_ordem_fixa(tmp_path):
+    """A ordem de um set muda de um processo para outro; o JSON dele sai sempre na mesma.
+
+    O {8, 0} é percorrido como 8, 0 no CPython, porque os dois caem na mesma
+    posição da tabela e o 8 entra primeiro.
+    """
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame(
+        {"numeros": [{8, 0}], "textos": [frozenset({"b", "a"})], "dentro": [{"s": {8, 0}}]}
+    )
+    _save_checkpoint(df, ckpt)
+
+    relido = pd.read_csv(ckpt)
+    assert relido["numeros"][0] == "[0, 8]"
+    assert relido["textos"][0] == '["a", "b"]'
+    assert relido["dentro"][0] == '{"s": [0, 8]}'
+
+
+def test_checkpoint_xlsx_grava_como_texto_o_que_comeca_com_igual(tmp_path):
+    """O openpyxl tomaria o texto por fórmula, que o pandas relê vazia."""
+    pytest.importorskip("openpyxl")
+    ckpt = tmp_path / "ckpt.xlsx"
+    df = pd.DataFrame({"resposta": ["=1+1", "=SOMA(A1;A2)"], "_error_details": [None, "=x"]})
+    _save_checkpoint(df, ckpt)
+
+    relido = pd.read_excel(ckpt)
+    assert relido["resposta"].tolist() == ["=1+1", "=SOMA(A1;A2)"]
+    assert relido["_error_details"].tolist()[1] == "=x"
+
+
 @pytest.mark.parametrize("texto", ["{[1]: 2} petição", "{[1], [2]}", "[1, 2"])
 def test_normalize_value_devolve_o_texto_quando_nao_e_estrutura(texto):
 
@@ -400,6 +506,9 @@ def test_accepts_only_text_cobre_optional_e_literal():
     assert accepts_only_text(Optional[str])
     assert accepts_only_text(Literal["a", "b"])
     assert accepts_only_text(Optional[Literal["a"]])
+    # A forma que o lint recusa por estilo é a que o usuário escreve no modelo.
+    assert accepts_only_text(Literal["NA", "deferido", None])  # noqa: PYI061
+    assert not accepts_only_text(Literal[None])  # noqa: PYI061
     assert not accepts_only_text(Literal["a", 1])
     assert not accepts_only_text(Optional[int])
     assert not accepts_only_text(list[str])
@@ -414,6 +523,29 @@ def test_accepts_only_text_cobre_optional_e_literal():
 
     assert accepts_only_text(Optional[Texto])
     assert not accepts_only_text(Numero)
+
+
+# O None dentro do Literal, que o lint recusa por estilo, é a forma que o usuário escreve.
+_LITERAL_COM_NONE = Literal["NA", "deferido", None]  # noqa: PYI061
+_ANOTADO_COM_NONE = Annotated[Literal["NA", None], Field(description="x")]  # noqa: PYI061
+_APELIDO_COM_NONE = TypeAliasType("_APELIDO_COM_NONE", _ANOTADO_COM_NONE)
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "admite"),
+    [
+        (str, False),
+        (Optional[str], True),
+        (_LITERAL_COM_NONE, True),
+        (Literal["NA"], False),
+        (_ANOTADO_COM_NONE | Literal["y"], True),
+        (Annotated[str, Field(min_length=1)] | Literal["y"], False),
+        (_APELIDO_COM_NONE, True),
+    ],
+)
+def test_admits_none_ve_o_none_na_uniao_no_literal_e_no_annotated(anotacao, admite):
+    """O pydantic tira só o Annotated de cima; o de dentro da união e o do apelido ficam."""
+    assert _admits_none(anotacao) is admite
 
 
 class Inteiros(BaseModel):

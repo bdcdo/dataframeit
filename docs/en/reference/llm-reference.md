@@ -62,6 +62,7 @@ result = dataframeit(
     model_kwargs=None,       # Extra parameters (temperature, etc)
     batch_size=None,         # Save a checkpoint every N rows
     checkpoint_path=None,    # Checkpoint file (.csv, .xlsx, .parquet)
+    on_row_done=None,        # Called per processed row with a RowResult (worker thread when parallel)
     # Web search (requires TAVILY_API_KEY or EXA_API_KEY)
     use_search=False,        # Enable web search
     search_provider='tavily',  # 'tavily' or 'exa'

@@ -11,6 +11,7 @@ def dataframeit(
     data,
     questions,
     prompt,
+    perguntas=None,  # deprecated name of questions
     resume=True,
     reprocess_columns=None,
     model=None,
@@ -36,6 +37,7 @@ def dataframeit(
     save_trace=None,
     batch_size=None,
     checkpoint_path=None,
+    on_row_done=None,
 ) -> Any
 ```
 
@@ -84,6 +86,7 @@ def dataframeit(
 | `track_tokens` | bool | `True` | Track token usage |
 | `batch_size` | int | `None` | Save checkpoint every N processed rows (requires `checkpoint_path`) |
 | `checkpoint_path` | str \| Path | `None` | Checkpoint file destination; extension sets format (`.csv`, `.xlsx`, `.parquet`) |
+| `on_row_done` | Callable | `None` | Called once per processed row, including errors, with a [`RowResult`](#rowresult); on the worker thread when `parallel_requests` > 1 |
 
 #### Web Search
 
@@ -102,7 +105,7 @@ With `use_search=True` and `search_per_field=True`, model fields accept their ow
 
 ### Return
 
-Returns data in the same format as input with extracted columns added.
+Returns a DataFrame with the extracted columns: polars for polars input and pandas for the others.
 
 | Input | Output |
 |-------|--------|
@@ -116,6 +119,21 @@ Returns data in the same format as input with extracted columns added.
 With polars input, the input columns that are not model fields and do not have the name of one of the [added columns](#added-columns) come back as they went in, with the same type and the same values. In polars output, an `Enum` field comes out as the member's value. When the answers of a field do not fit a typed polars column, such as a `Union[int, str]` that received a number in one row and text in another, the column comes out with the `Object` type, holding the Python objects the model returned, except an `Enum` member outside a list or dict, which comes out as its value there too, and a warning names the columns; convert them before writing to a file. A field whose annotation combines `date`, `datetime`, `time` or `timedelta` with another type, `float` with `bool` or `bytes` with `str`, such as `Union[date, int]`, `Union[timedelta, int]`, `Union[float, bool]`, `tuple[date, int]` or `list[Union[date, datetime]]`, comes out as `Object` when the input has rows, with that warning, because a column type inferred from the first value would convert the others. For the same reason, with any annotation, a column comes out as `Object` when those combinations appear in its values, in the same field of a nested model or in the items of a list, such as `Any` with `1.5` in one row and `True` in another, and so does a column whose dicts in the same field have different keys, such as `Any` with `{"a": 1}` in one row and `{}` in another, which as a `Struct` would get the union of the keys, and a column with `datetime` values with and without a time zone, `time` values with a time zone, or a `Decimal` NaN. The NaN of a `float` field, or of a union with `float`, comes out as NaN, apart from null, also when the output is passed back with `resume=True`. Read back from a [checkpoint](../guides/performance.md), it counts as missing, like a pending row, because none of the formats keeps it apart from null. In `Any`, in list items and in the fields of a nested model, the NaN comes out as null; in a `dict` field, which comes out as JSON text, it stays `NaN` in the text. Because of that, when the polars output of a `list[float]` field, or of a nested model with a `float` field, that received a NaN is passed back with `resume=True`, the row is flagged as incompatible, since null is not a `float`, and resuming asks for `reprocess_columns`; resuming from the checkpoint, which writes the list as JSON with the NaN, and from the pandas output does not flag it. Some values change type without changing value: an integer next to a float in the same column or list comes out as a float (`[1.5, 2]` comes out as `[1.5, 2.0]`), a `Decimal` comes out with the column's common scale (`1.5` next to `2.25` comes out as `1.50`), and a `datetime` with a time zone other than the first one's comes out in that zone, at the same instant. In the output, when resuming and in [`read_df()`](#read_df), a `NewType` and a `type` alias count as the type they refer to, including a generic alias used with arguments, such as `Maybe[int]` from `type Maybe[T] = T | None`.
 
 A field annotated as `dict`, such as `dict[str, int]` or `Optional[dict[str, Any]]`, comes out in polars output as JSON text, with null where the row has no answer. The text is the same the checkpoint writes, and values that JSON does not represent come out in it as text. The type of the other model columns comes from the answers. A column with no value at all, all null or holding only empty lists, comes out with the type of the annotation when it is `str`, `int`, `float`, `bool`, `date`, `datetime`, or a list of one of them: `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, or a `List` of one of these. With any other annotation, the column with no value keeps the type polars infers. With input that has no rows, a model column the input already has keeps its type, and one it does not have comes out as `String`.
+
+### RowResult
+
+Frozen dataclass that `on_row_done` receives for each row processed in this call, after the row is written to the DataFrame. A row skipped by `resume` and a row that an interruption left without status are not delivered.
+
+| Field | Type | Content |
+|-------|------|---------|
+| `index` | Any | The row's label in the DataFrame index |
+| `position` | int | 0-based order among the rows processed in this call |
+| `success` | bool | `True` when the row ended as `'processed'` |
+| `error` | str \| None | Text written to `_error_details`; on a successful row it may record the retries |
+| `values` | dict | Model fields this call wrote to the row, only those in `reprocess_columns` on a reprocessed row; empty on error |
+| `elapsed_seconds` | float | Seconds since the row started processing, including retries and rate-limit pauses |
+
+The call on the worker thread, with `parallel_requests` > 1, and an exception inside the callback are covered in [Performance](../guides/performance.md#per-row-callback).
 
 ### Added Columns
 
@@ -135,6 +153,19 @@ if '_dataframeit_status' in result.columns:
 ```
 
 Rows with empty or missing text are not sent to the model: they get status `'error'` and the detail `"Texto ausente"`.
+
+### Input modified in place
+
+With `pd.DataFrame` input, `dataframeit()` writes the model columns and the [added columns](#added-columns) into the DataFrame it receives, including `_dataframeit_status`, which stays there even when the output drops it. That is why an interruption leaves the rows already processed in the DataFrame, and `resume=True` continues from them.
+
+For the same reason, a second call with the same DataFrame, or with a copy made after the first call, does not send the rows with status `'processed'` to the model. With a model that has the same fields, it returns the results of the first call. With a model that has other fields and `resume=True`, the default, the outcome depends on the fields the first call did not fill. If any of them does not accept `None`, such as `category: str`, the call raises `ValueError` for incompatible fields. If all of them accept `None`, such as `Optional[str]`, with or without a default, the call raises no error and gives no warning about the fields, sends no row to the model, and returns `None` in those fields for every row. The same happens with the first call's model plus an `Optional` field. The error therefore protects you only when the new field does not accept `None`. To apply another model or another prompt to the same texts, pass each call a new DataFrame or a copy made before the first one:
+
+```python
+result_a = dataframeit(df.copy(), ModelA, PROMPT_A)
+result_b = dataframeit(df.copy(), ModelB, PROMPT_B)
+```
+
+Polars input, `pd.Series`, `list` and `dict` are not changed.
 
 ### Examples
 
@@ -184,7 +215,7 @@ def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataF
 | `normalize` | bool | If `False`, no column is converted |
 | `**kwargs` | | Arguments passed to pandas. With one that makes the reader return something other than a DataFrame, such as `chunksize`, `iterator` or `sheet_name=None` or a list, the function returns the pandas object, such as a `TextFileReader`, a `JsonReader`, a dict of sheets or the `Series` from `typ="series"`, without normalizing or rereading any column, even with `model` and `normalize=True` |
 
-CSV and XLSX store `""` and missing values the same way. A required text field that was `""` comes back missing, and resuming flags it for reprocessing; use a `.parquet` checkpoint to keep that difference.
+CSV and XLSX store `""` and missing values the same way, and `read_df` returns the empty cell as missing. Resuming through `checkpoint_path`, whose signature guarantees that the model is the same, gives `""` back to a text field that neither accepts `None` nor has it as default. Passed as input, the file read back carries no such guarantee, and resuming flags the required field for reprocessing. In a field that accepts `None`, the empty cell comes back as `None`; use a `.parquet` checkpoint to keep that difference.
 
 Called with `model` and no extra read arguments, the `**kwargs` passed to pandas, the function rereads from `.csv` and `.parquet` the column of an `int` field, a `Literal` of integers only, or one of them with `None`, that pandas does not return as an integer dtype: it comes back as `object`, with the exact `int` and `None` in empty cells, instead of float64 with `NaN`, which rounds integers above 2**53. A cell the file stores as a float, such as `7.5`, stays as read. A nullable `Int64` parquet column stays `Int64`, and a column with only empty cells stays as read: float in CSV and, in the null column the checkpoint writes to parquet, `object` with `None`. An extra read argument turns this reread off; `normalize` does not. `.xlsx`, which stores numbers as doubles, is left out.
 
@@ -246,7 +277,7 @@ Identifies the fields of a Pydantic model that hold a structure instead of a sim
 def get_complex_fields(pydantic_model) -> set
 ```
 
-Returns the set of names of the fields whose type is `list`, `dict`, `tuple` or a nested Pydantic model, including inside `Optional` and `Union`.
+Returns the set of names of the fields whose type is a structure: `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` and `Mapping` and their mutable versions, `TypedDict`, `NamedTuple` or a nested Pydantic model, including inside `Optional` and `Union`.
 
 ```python
 from dataframeit import get_complex_fields, normalize_complex_columns, read_df

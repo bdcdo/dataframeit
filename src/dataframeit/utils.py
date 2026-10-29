@@ -13,11 +13,9 @@ from __future__ import annotations
 import ast
 import collections.abc
 import datetime
-import functools
 import json
 import math
 import numbers
-import operator
 import re
 import sys
 import types
@@ -407,12 +405,21 @@ def _enums_by_value(values: pd.Series) -> pd.Series:
 
 
 def _json_default(value: object) -> object:
-    """O que json.dumps não serializa: numpy pelo tolist, Enum pelo valor, o resto texto.
+    """O que json.dumps não serializa: conjunto como lista, numpy pelo tolist, Enum pelo valor.
+
+    O conjunto vira lista em ordem fixa, a do texto JSON de cada item. A ordem
+    em que um set de textos é percorrido muda de um processo para outro, com o
+    hash dos textos, e a lista que a retomada relê do checkpoint só diz o mesmo
+    que o conjunto validado (`_same_json`) quando os dois saem na mesma ordem.
+    O texto JSON também ordena itens de tipos que não se comparam, como 1 e "a".
 
     O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
     que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
     a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
+    O resto vai como texto.
     """
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=lambda item: json.dumps(item, default=_json_default))
     if isinstance(value, Enum):
         return value.value
     tolist = getattr(value, "tolist", None)
@@ -780,16 +787,35 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") 
 # =============================================================================
 
 
+# Origens abstratas cujo valor o model_dump devolve como lista, conjunto ou dict.
+# A busca é por identidade: o str e o bytes também são Sequence para o
+# collections.abc, e a célula guarda o valor inteiro deles.
+_ABSTRACT_STRUCTURES = (
+    collections.abc.Sequence,
+    collections.abc.MutableSequence,
+    collections.abc.Set,
+    collections.abc.MutableSet,
+    collections.abc.Mapping,
+    collections.abc.MutableMapping,
+)
+# Classes cujas instâncias a célula guarda como estrutura. O TypedDict e o
+# NamedTuple contam pela subclasse, de dict e de tuple, e o modelo aninhado
+# porque a célula guarda o seu model_dump, um dict.
+_STRUCTURE_CLASSES = (list, tuple, set, frozenset, dict, BaseModel)
+
+
 def is_complex_type(field_type: object) -> bool:
-    """Verifica se um tipo é complexo (list, dict, tuple ou modelo Pydantic).
+    """Verifica se um tipo é estrutura: lista, tupla, conjunto, dict ou modelo Pydantic.
 
     Args:
         field_type: Tipo a verificar (pode ser tipo simples ou genérico).
 
     Returns:
-        True se o tipo for list, dict, tuple ou subclasse de BaseModel, direto
-        ou dentro de Optional/Union. Um modelo aninhado conta como complexo
-        porque a célula guarda o seu model_dump, um dict.
+        True se o tipo, direto ou dentro de Optional/Union, é uma das classes
+        de `_STRUCTURE_CLASSES` ou subclasse dela, como o TypedDict e o
+        NamedTuple, ou um genérico com uma delas ou com uma das origens de
+        `_ABSTRACT_STRUCTURES`. É o que decide quais campos o checkpoint grava
+        em JSON e a retomada normaliza de volta.
     """
     field_type = _resolved(field_type)
     origin = get_origin(field_type)
@@ -799,31 +825,21 @@ def is_complex_type(field_type: object) -> bool:
     if origin is typing.Annotated:
         return is_complex_type(get_args(field_type)[0])
 
-    # Tipos genéricos: list[str], dict[str, int], tuple[int, str], etc.
-    if origin in (list, dict, tuple):
-        return True
-
-    # Union types (Optional, Union) - verificar os argumentos internos
-    # typing.Union para sintaxe Union[X, Y] e Optional[X]
-    if origin is typing.Union:
+    # Union[X, Y], Optional[X] e X | Y: verificar os argumentos internos.
+    # Antes do 3.14, get_origin de X | Y é types.UnionType; a partir dele, os
+    # dois nomes são o mesmo objeto, e a tupla cobre as duas versões.
+    if origin in (typing.Union, types.UnionType):
         args = get_args(field_type)
         return any(is_complex_type(arg) for arg in args if arg is not type(None))
 
-    # types.UnionType para sintaxe X | Y
-    if isinstance(field_type, types.UnionType):
-        args = get_args(field_type)
-        return any(is_complex_type(arg) for arg in args if arg is not type(None))
-
-    # Tipos diretos
-    if field_type in (list, dict, tuple):
+    container = field_type if origin is None else origin
+    if container in _ABSTRACT_STRUCTURES:
         return True
-
-    # Modelo aninhado: a linha guarda o model_dump, um dict
-    return bool(isinstance(field_type, type) and issubclass(field_type, BaseModel))
+    return isinstance(container, type) and issubclass(container, _STRUCTURE_CLASSES)
 
 
 def get_complex_fields(pydantic_model: type[BaseModel]) -> set:
-    """Retorna os nomes dos campos que são tipos complexos (list, dict, tuple).
+    """Retorna os nomes dos campos que são estruturas (ver `is_complex_type`).
 
     Args:
         pydantic_model: Modelo Pydantic a analisar.
@@ -841,7 +857,11 @@ def get_complex_fields(pydantic_model: type[BaseModel]) -> set:
 
 
 def accepts_only_text(field_type: object) -> bool:
-    """True se o tipo só aceita texto: str, Literal ou Enum de textos, ou esses com None."""
+    """True se o tipo só aceita texto: str, Literal ou Enum de textos, ou esses com None.
+
+    O None vale também dentro do Literal, como em Literal["NA", None], que diz o
+    mesmo que Optional[Literal["NA"]].
+    """
     field_type = _resolved(field_type)
     if field_type is str:
         return True
@@ -851,10 +871,26 @@ def accepts_only_text(field_type: object) -> bool:
     if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
         return accepts_only_text(get_args(field_type)[0])
     if origin is typing.Literal:
-        return all(isinstance(arg, str) for arg in get_args(field_type))
+        args = [arg for arg in get_args(field_type) if arg is not None]
+        return bool(args) and all(isinstance(arg, str) for arg in args)
     if origin is typing.Union or isinstance(field_type, types.UnionType):
         args = [arg for arg in get_args(field_type) if arg is not type(None)]
         return bool(args) and all(accepts_only_text(arg) for arg in args)
+    return False
+
+
+def _admits_none(field_type: object) -> bool:
+    """Se o tipo aceita None: o próprio None, a união com ele ou o Literal com ele."""
+    field_type = _resolved(field_type)
+    if field_type is type(None):
+        return True
+    origin = get_origin(field_type)
+    if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
+        return _admits_none(get_args(field_type)[0])
+    if origin is typing.Literal:
+        return None in get_args(field_type)
+    if origin is typing.Union or isinstance(field_type, types.UnionType):
+        return any(_admits_none(arg) for arg in get_args(field_type))
     return False
 
 
@@ -1362,10 +1398,11 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
 ) -> Any:  # noqa: ANN401
     """Devolve a anotação com as referências adiantadas trocadas pelas classes.
 
-    Referência que não se resolve fica como está. A forma de cada tipo é
-    preservada: `typing.Union` continua `typing.Union` e `X | Y` continua
-    `types.UnionType`, porque os helpers deste módulo tratam os dois em ramos
-    distintos.
+    Referência que não se resolve fica como está. Uma união resolvida volta
+    montada por `typing.Union[...]`, tenha sido escrita com `typing.Union` ou
+    com `X | Y`. Antes do 3.14, isso leva `X | Y` à forma de `typing.Union`,
+    igual a ela por `==` e tratada pelos helpers deste módulo junto com
+    `types.UnionType`; a partir do 3.14, as duas formas são o mesmo objeto.
     """
     if isinstance(annotation, str):
         return _lookup_forward_ref(annotation, owner) or annotation
@@ -1388,10 +1425,8 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
     resolved = tuple(resolve_forward_refs(arg, owner) for arg in args)
     if resolved == args:
         return annotation
-    if isinstance(annotation, types.UnionType):
-        return functools.reduce(operator.or_, resolved)
-    if origin is typing.Union:
-        return typing.Union[resolved]  # noqa: UP007 (preserva a forma typing.Union)
+    if origin in (typing.Union, types.UnionType):
+        return typing.Union[resolved]  # noqa: UP007 (`|` daria types.UnionType antes do 3.14)
     if isinstance(annotation, types.GenericAlias):
         return types.GenericAlias(origin, resolved)
     return annotation.copy_with(resolved)

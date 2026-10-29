@@ -444,8 +444,8 @@ def test_exa_authentication_error_message():
     error = ExaError("Exa: Invalid api_key provided")
     msg = get_friendly_error_message(error)
 
-    # Verificar que é uma mensagem de erro de autenticação (genérica ou específica)
-    assert "AUTENTICAÇÃO" in msg.upper() or "EXA" in msg.upper() or "API" in msg.upper()
+    # O título é o da Exa; a caixa genérica de autenticação do LLM não serve.
+    assert "ERRO DE AUTENTICAÇÃO EXA" in msg
 
 
 def test_exa_limit_error_message():
@@ -457,7 +457,7 @@ def test_exa_limit_error_message():
     error = ExaLimitError("Exa quota exceeded")
     msg = get_friendly_error_message(error)
 
-    assert "LIMITE" in msg.upper() or "EXA" in msg.upper()
+    assert "LIMITE DE USO EXA EXCEDIDO" in msg
 
 
 # =============================================================================

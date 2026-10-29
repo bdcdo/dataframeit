@@ -1,6 +1,7 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError, create_model
@@ -122,30 +123,45 @@ class TestFriendlyAuthErrorWithoutEnvVar:
 
 
 class _ResultadoQueFalhaAoAnotar(dict):
-    """Dict cuja primeira gravação de chave levanta um erro transitório."""
-
-    falhas = 0
+    """Dict cuja gravação de chave levanta um erro transitório."""
 
     def __setitem__(self, chave, valor):
-        if type(self).falhas == 0:
-            type(self).falhas += 1
-            msg = "falha ao anotar o resultado"
-            raise ProviderTransientError(msg)
-        super().__setitem__(chave, valor)
+        msg = "falha ao anotar o resultado"
+        raise ProviderTransientError(msg)
 
 
 def test_falha_ao_anotar_o_resultado_ganha_nova_tentativa():
     chamadas = []
 
     def funcao():
+        # Só o resultado da primeira tentativa falha ao ser anotado. A contagem
+        # fica na lista do teste, que nasce vazia a cada execução, e o teste
+        # passa também quando roda de novo no mesmo processo.
         chamadas.append(1)
-        return _ResultadoQueFalhaAoAnotar()
+        return _ResultadoQueFalhaAoAnotar() if len(chamadas) == 1 else {}
 
     with pytest.warns(UserWarning, match="Tentativa 1/2 falhou"):
         resultado = retry_with_backoff(funcao, max_retries=2, base_delay=0, max_delay=0)
 
     assert len(chamadas) == 2
     assert resultado["_retry_info"]["retries"] == 1
+
+
+def test_backoff_acima_de_1024_tentativas_fica_no_teto_e_devolve_o_erro_original():
+    def funcao():
+        msg = "falha transitória"
+        raise ProviderTransientError(msg)
+
+    esperas = []
+    with (
+        patch("dataframeit.errors.time.sleep", side_effect=esperas.append),
+        pytest.warns(UserWarning, match="Tentativa"),
+        pytest.raises(ProviderTransientError, match="falha transitória"),
+    ):
+        retry_with_backoff(funcao, max_retries=1100, base_delay=1.0, max_delay=2.0)
+
+    assert len(esperas) == 1099
+    assert 2.0 <= min(esperas[1:]) <= max(esperas) <= 2.2
 
 
 # O resumo de um erro de validação pode trazer texto da resposta, como a
