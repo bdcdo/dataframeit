@@ -7,6 +7,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### Corrigido
+
+- O aviso de rate limit da busca no modo por campo (`search_per_field=True`) estima `parallel_requests` agentes simultâneos, e não `parallel_requests` vezes o número de campos, porque os agentes de uma linha rodam em sequência. A taxa estimada conta as execuções da linha no tempo que elas levam, e a dica de `parallel_requests` e `rate_limit_delay` sai da mesma conta. Com 4 campos e `parallel_requests=3`, o aviso estimava 12 queries concorrentes e ~720 req/min; agora estima ~180 req/min, perto das 176 execuções por minuto medidas (#272).
+- A tabela de configurações recomendadas da busca web, em `docs/guides/web-search.md` e na versão em inglês, recomenda faixas que o aviso de rate limit não acusa; antes, as 12 pontas das faixas disparavam o aviso. Um teste roda as pontas das duas tabelas contra o aviso (#273).
+
 ## [0.11.1] - 2026-10-29
 
 ### Corrigido

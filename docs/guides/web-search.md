@@ -475,43 +475,45 @@ Se você precisa de maior throughput, considere `search_provider="exa"`.
 | `search_per_field=False` | 1 | `max_search_calls` |
 | `search_per_field=True` | 1 por campo ou grupo | `max_search_calls` por agente |
 
-Com `parallel_requests=20` e `search_per_field=True` em um modelo de 4 campos, rodam 80 agentes ao mesmo tempo, muito acima dos limites dos provedores.
+Os agentes de uma linha rodam um depois do outro. Com `parallel_requests=20` e `search_per_field=True` em um modelo de 4 campos, rodam 20 agentes ao mesmo tempo, e cada linha faz 4 execuções do agente em sequência. Com 1 s e uma busca por execução, são até 1.200 buscas por minuto, muito acima dos limites dos provedores.
 
 ### Configurações Recomendadas
+
+As faixas abaixo mantêm em até 70% do limite do provedor a taxa que o aviso automático estima. A estimativa supõe ao menos 1 s e uma busca por execução do agente; o agente que faz mais buscas, até `max_search_calls`, chega mais perto do limite.
 
 **Tavily (padrão):**
 
 | Cenário | `parallel_requests` | `rate_limit_delay` |
 |---------|---------------------|--------------------|
-| `search_per_field=False` | 5–10 | 0.5s |
-| `search_per_field=True` (2–3 campos) | 3–5 | 0.5s |
-| `search_per_field=True` (4+ campos) | 2–3 | 1.0s |
+| `search_per_field=False` | 2–3 | 2.0s |
+| `search_per_field=True` (2–3 campos) | 2 | 2.5s |
+| `search_per_field=True` (4+ campos) | 1 | 0s |
 
 **Exa:**
 
 | Cenário | `parallel_requests` | `rate_limit_delay` |
 |---------|---------------------|--------------------|
-| `search_per_field=False` | 10–15 | 0.3s |
-| `search_per_field=True` (2–3 campos) | 5–8 | 0.3s |
-| `search_per_field=True` (4+ campos) | 3–5 | 0.5s |
+| `search_per_field=False` | 5–10 | 2.0s |
+| `search_per_field=True` (2–3 campos) | 3–5 | 1.5s |
+| `search_per_field=True` (4+ campos) | 2–3 | 0s |
 
 ```python
-# Configuração segura com Tavily e múltiplos campos
+# Configuração segura com Tavily e 2 ou 3 campos
 resultado = dataframeit(
     df.copy(), Model, PROMPT,
     use_search=True, search_per_field=True,
-    parallel_requests=3, rate_limit_delay=0.5,
+    parallel_requests=2, rate_limit_delay=2.5,
 )
 
-# Maior throughput com Exa
+# Maior throughput com Exa e 2 ou 3 campos
 resultado = dataframeit(
     df.copy(), Model, PROMPT,
     use_search=True, search_provider="exa",
     search_per_field=True,
-    parallel_requests=5, rate_limit_delay=0.3,
+    parallel_requests=5, rate_limit_delay=1.5,
 )
 ```
 
 ### Aviso Automático
 
-O DataFrameIt emite um `UserWarning` quando a configuração parece arriscada (queries concorrentes altas ou taxa estimada perto do limite), incluindo recomendações de `parallel_requests` e `rate_limit_delay` para evitar HTTP 429. O gatilho também dispara em execuções sequenciais quando `search_per_field=True` produz muitas queries (>100 no total).
+O DataFrameIt emite um `UserWarning` quando a configuração parece arriscada (queries concorrentes altas ou taxa estimada perto do limite), incluindo recomendações de `parallel_requests` e `rate_limit_delay` para evitar HTTP 429. A conta também roda em execuções sequenciais quando `search_per_field=True` produz muitas queries (>100 no total); com um worker só, a taxa estimada fica em até 60 buscas por minuto, abaixo do gatilho dos dois provedores.
