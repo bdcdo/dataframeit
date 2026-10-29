@@ -336,15 +336,18 @@ def check_dependencies_exist(depends_on: list[str], pydantic_model: type[BaseMod
 def _path_exists(path: str, pydantic_model: type[BaseModel]) -> bool:
     """Se cada segmento do caminho é campo do modelo a que o segmento anterior leva.
 
-    O caminho é conferido enquanto o valor do segmento só pode ser modelo
-    (`submodels`): o seguinte tem de ser campo de um deles. Na união, como
+    O caminho é conferido enquanto o valor do segmento só pode ser modelo ou
+    escalar (`submodels`): o seguinte tem de ser campo de um dos modelos. O
+    escalar, como `str`, `int` ou `Enum`, não tem chave, e o caminho que segue
+    depois dele é recusado, porque nunca teria valor. Na união, como
     `Union[PessoaFisica, PessoaJuridica]`, cada modelo que tem o segmento é um
     ramo, e o caminho vale quando algum ramo chega ao fim: os dois modelos
     podem ter `documento` com submodelos diferentes, e `documento.cnpj` existe
-    pelo segundo. Depois de um campo que pode não ser modelo, como `dict`,
-    `Any` ou a lista, não há campo declarado contra o qual conferir o resto, e
-    ele é aceito. Na avaliação, `get_nested_value` segue esse resto pelas
-    chaves do dict, e o caminho que atravessa a lista fica sem valor.
+    pelo segundo. Depois de um campo que pode ter chave que nenhum modelo
+    declara, como `dict`, `Any` ou a lista, não há campo contra o qual
+    conferir o resto, e ele é aceito. Na avaliação, `get_nested_value` segue
+    esse resto pelas chaves do dict, e o caminho que atravessa a lista fica
+    sem valor.
     """
     models = [pydantic_model]
     for part in path.split("."):
@@ -354,7 +357,7 @@ def _path_exists(path: str, pydantic_model: type[BaseModel]) -> bool:
         models = []
         for owner in owners:
             branch = submodels(resolve_forward_refs(owner.model_fields[part].annotation, owner))
-            if not branch:
+            if branch is None:
                 return True
             models.extend(branch)
     return True

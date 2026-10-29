@@ -1266,16 +1266,47 @@ def list_layers(annotation: object, target: type) -> int | None:
     return max(depths, default=None)
 
 
-def submodels(annotation: object) -> list[type[BaseModel]]:
-    """Os modelos Pydantic que o valor pode ser, quando ele só pode ser modelo.
+# Os tipos cujo valor não tem chave: no `model_dump`, eles ficam como estão, e
+# `get_nested_value` não segue caminho dentro deles. `datetime.datetime` entra
+# por ser subclasse de `datetime.date`, e `bool`, por ser de `int`.
+_KEYLESS_TYPES = (
+    str,
+    bytes,
+    int,
+    float,
+    complex,
+    Decimal,
+    Enum,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+)
 
-    `Optional[Endereco]` dá `[Endereco]`, e `Union[A, B]`, `[A, B]`. Vazio
-    quando algum tipo do valor não é modelo, como `dict`, `Any`, `str`, a lista
-    ou `Union[Endereco, dict[str, str]]`: o valor pode ter chaves que nenhum
-    modelo declara.
+
+def _is_keyless(value_type: object) -> bool:
+    """Se o valor desse tipo é escalar, sem chave que um caminho possa seguir."""
+    if get_origin(value_type) is typing.Literal:
+        return True
+    return isinstance(value_type, type) and issubclass(value_type, _KEYLESS_TYPES)
+
+
+def submodels(annotation: object) -> list[type[BaseModel]] | None:
+    """Os modelos Pydantic em que pode estar a chave seguinte de um caminho no valor.
+
+    `Optional[Endereco]` dá `[Endereco]`, e `Union[A, B]`, `[A, B]`. O tipo
+    escalar (`_KEYLESS_TYPES` e `Literal`) não tem chave e fica de fora:
+    `Union[Endereco, str]` dá `[Endereco]`, e `str`, a lista vazia, em que
+    nenhuma chave existe. None quando algum tipo do valor pode ter chave que
+    nenhum modelo declara, como `dict`, `Any`, a lista, a tupla,
+    `Union[Endereco, dict[str, str]]` ou um tipo que esta função não conhece.
     """
-    value_types = _value_types(annotation)
-    return value_types if all(_is_pydantic_model(t) for t in value_types) else []
+    models = []
+    for value_type in _value_types(annotation):
+        if _is_pydantic_model(value_type):
+            models.append(value_type)
+        elif not _is_keyless(value_type):
+            return None
+    return models
 
 
 def _lookup_forward_ref(name: str, owner: type[BaseModel]) -> type | None:

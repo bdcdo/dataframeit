@@ -151,7 +151,7 @@ class Entrega(BaseModel):
     )
 ```
 
-The whole path is checked before processing, in `condition` and in `depends_on`: while it goes through nested models, each part must be a field of the previous model, and `endereco.cidadee` raises `ValueError`, like a root that does not exist. In a union of models, such as `Union[PessoaFisica, PessoaJuridica]`, the path follows every model that has the part and holds when one of them reaches the end. After a field that is not a model, such as a `dict`, the rest of the path is not checked.
+The whole path is checked before processing, in `condition` and in `depends_on`: while it goes through nested models, each part must be a field of the previous model, and `endereco.cidadee` raises `ValueError`, like a root that does not exist. In a union of models, such as `Union[PessoaFisica, PessoaJuridica]`, the path follows every model that has the part and holds when one of them reaches the end. After a scalar field, such as `str`, `int` or `Enum`, the rest of the path raises `ValueError`, because the value has no key for it to continue. After a field that can have keys no model declares, such as `dict`, `Any` or a list, the rest of the path is not checked.
 
 The condition belongs to a top-level field. `condition` or `depends_on` on a field of a nested model, or of a list item, raises `ValueError` before processing.
 

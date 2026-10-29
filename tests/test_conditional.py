@@ -1,12 +1,13 @@
 """Testes para funcionalidade de execução condicional de campos."""
 
+import datetime
 import logging
 import os
 import re
 import subprocess
 import sys
 from enum import Enum
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 from unittest.mock import patch
 
 import pandas as pd
@@ -1361,6 +1362,12 @@ def test_caminho_aninhado_com_campo_inexistente_e_recusado(anotacao, configuraca
         (dict[str, str], "endereco.cidade"),
         (Any, "endereco.cidade.nome"),
         (Union[_EnderecoDeEntrega, dict[str, str]], "endereco.bairro"),
+        # O caminho que atravessa a lista ou a tupla é aceito e fica sem valor.
+        (list[_EnderecoDeEntrega], "endereco.cidadee"),
+        (list[_EnderecoDeEntrega], "endereco.0.cidade"),
+        (tuple[_EnderecoDeEntrega, ...], "endereco.0.cidade"),
+        # O texto da união não tem chave, e o caminho segue pelo modelo.
+        (Union[_EnderecoDeEntrega, str], "endereco.cidade"),
     ],
 )
 def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
@@ -1413,6 +1420,60 @@ def test_caminho_segue_todos_os_modelos_da_uniao_que_tem_o_segmento(caminho, exi
         mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
         with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
             get_field_execution_order(modelo, {"taxa": configuracao})
+
+
+class _Situacao(Enum):
+    ATIVA = "ativa"
+
+
+class _Cadastro(BaseModel):
+    cidade: str
+    numero: int
+    area: float | None = None
+    ativo: bool = True
+    situacao: _Situacao = _Situacao.ATIVA
+    porte: Literal["pequeno", "grande"] = "pequeno"
+    rotulo: Annotated[str, "rótulo"] = ""
+    codigo: str | int = ""
+    inicio: datetime.date | None = None
+
+
+@pytest.mark.parametrize(
+    "caminho",
+    [
+        "endereco.cidade.nome",
+        "endereco.numero.x",
+        "endereco.area.valor",
+        "endereco.ativo.x",
+        "endereco.situacao.value",
+        "endereco.porte.x",
+        "endereco.rotulo.x",
+        "endereco.codigo.x",
+        "endereco.inicio.year",
+        "nome.primeiro",
+    ],
+)
+def test_caminho_depois_de_campo_escalar_e_recusado(caminho):
+    """O valor que só pode ser escalar não tem chave: o resto do caminho nunca teria valor."""
+    configuracao: JsonDict = {"condition": {"field": caminho, "exists": True}}
+    modelo = create_model(
+        "Entrega",
+        endereco=(_Cadastro, None),
+        nome=(str, ""),
+        taxa=(Optional[float], Field(None, json_schema_extra=configuracao)),
+    )
+
+    mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
+    with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
+        get_field_execution_order(modelo, {"taxa": configuracao})
+
+
+def test_caminho_que_so_o_texto_da_uniao_poderia_ter_e_recusado():
+    configuracao = {"condition": {"field": "endereco.cidadee", "exists": True}}
+    modelo = _entrega(Union[_EnderecoDeEntrega, str], configuracao)
+
+    with pytest.raises(ValueError, match=re.escape("inexistentes: ['endereco.cidadee']")):
+        get_field_execution_order(modelo, {"taxa": configuracao})
 
 
 def test_caminho_aninhado_inexistente_falha_antes_de_processar():
