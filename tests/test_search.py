@@ -5,6 +5,8 @@ import inspect
 import logging
 import os
 import sys
+import threading
+import time
 import types
 import warnings as _warnings
 from typing import (  # noqa: UP035 (List usado de propósito, ver NodoArvore)
@@ -2062,7 +2064,8 @@ def test_warn_search_rate_limit_triggers_on_high_concurrent():
     assert len(record) == 1
     msg = str(record[0].message)
     assert "rate limit" in msg.lower()
-    assert "80" in msg  # 20 * 4 = 80 queries concorrentes
+    # Os 4 agentes de cada linha rodam em sequência: 20 workers, 20 agentes.
+    assert "queries concorrentes estimadas: 20 " in msg
     assert "parallel_requests=" in msg
     assert "rate_limit_delay=" in msg
 
@@ -2317,10 +2320,10 @@ def test_warn_search_rate_limit_nao_sugere_delay_ja_suficiente():
             num_fields=4,
             parallel_requests=20,
             search_per_field=True,
-            rate_limit_delay=10.0,
+            rate_limit_delay=40.0,
         )
 
-    assert str(record[0].message).endswith("Para evitar HTTP 429, use: parallel_requests=2.")
+    assert str(record[0].message).endswith("Para evitar HTTP 429, use: parallel_requests=10.")
 
 
 def _aviso_de_busca(**kwargs) -> str | None:
@@ -2346,18 +2349,18 @@ def test_pausa_entre_linhas_nao_faz_o_aviso_de_busca_aparecer():
 
 
 def test_aviso_por_campo_nao_recomenda_mais_workers_que_os_atuais():
-    """Com um worker e três campos, a dica mantém um worker e pede pausa."""
+    """Com dois workers e três campos, a dica mantém dois workers e pede pausa."""
     mensagem = _aviso_de_busca(
         num_rows=40,
         num_fields=3,
-        parallel_requests=1,
+        parallel_requests=2,
         search_per_field=True,
         rate_limit_delay=0.0,
     )
 
     assert mensagem is not None
     assert mensagem.endswith(
-        "Para evitar HTTP 429, use: parallel_requests=1, rate_limit_delay=2.6."
+        "Para evitar HTTP 429, use: parallel_requests=2, rate_limit_delay=2.2."
     )
 
 
@@ -2386,3 +2389,94 @@ def test_aviso_de_busca_cai_com_a_pausa_e_nunca_pede_mais_workers(provedor, sear
                     mensagem.split("use: parallel_requests=")[1].split(",")[0].rstrip(".")
                 )
                 assert recomendado <= workers, (workers, campos, mensagem)
+
+
+def test_aviso_por_campo_conta_os_agentes_da_linha_em_sequencia():
+    """Quatro campos e três workers: três agentes ao mesmo tempo e ~180 buscas por minuto.
+
+    Os agentes de uma linha rodam um depois do outro, e cada linha leva um piso
+    por agente. Medido com agentes falsos de 1 s, deu pico de 3 agentes e 176
+    execuções por minuto.
+    """
+    mensagem = _aviso_de_busca(
+        num_rows=6,
+        num_fields=4,
+        parallel_requests=3,
+        search_per_field=True,
+        rate_limit_delay=0.0,
+    )
+
+    assert mensagem is not None
+    assert "queries concorrentes" not in mensagem
+    assert "taxa estimada ~180 req/min" in mensagem
+    assert mensagem.endswith(
+        "Para evitar HTTP 429, use: parallel_requests=3, rate_limit_delay=6.3."
+    )
+
+
+def test_aviso_por_campo_estima_o_pico_de_agentes_que_a_execucao_atinge(monkeypatch):
+    """Onze workers e dois campos: o aviso estima 11 agentes, e o pico medido não passa disso."""
+    trava = threading.Lock()
+    estado = {"ativos": 0, "pico": 0}
+
+    def agente_falso(texto, model, prompt, config, save_trace=None):
+        with trava:
+            estado["ativos"] += 1
+            estado["pico"] = max(estado["pico"], estado["ativos"])
+        time.sleep(0.02)
+        with trava:
+            estado["ativos"] -= 1
+        return {"data": dict.fromkeys(model.model_fields, "x"), "usage": {}}
+
+    monkeypatch.setenv("TAVILY_API_KEY", "falsa")
+    df = pd.DataFrame({"texto": [f"t{i}" for i in range(22)]})
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=agente_falso),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        _warnings.catch_warnings(record=True) as avisos,
+    ):
+        _warnings.simplefilter("always")
+        dataframeit(
+            df,
+            questions=MedicamentoInfo,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+            parallel_requests=11,
+            rate_limit_delay=0.0,
+            track_tokens=False,
+        )
+
+    mensagem = next(str(a.message) for a in avisos if "rate limits de busca" in str(a.message))
+    assert "queries concorrentes estimadas: 11 " in mensagem
+    assert 1 <= estado["pico"] <= 11
+
+
+@pytest.mark.parametrize("search_per_field", [False, True])
+@pytest.mark.parametrize("provedor", ["tavily", "exa"])
+def test_dica_do_aviso_de_busca_aplicada_cala_o_aviso(provedor, search_per_field):
+    """A configuração que o aviso recomenda, usada como está, não dispara o aviso de novo."""
+    for workers in [1, 2, 3, 5, 10, 20]:
+        for campos in [1, 2, 3, 4, 11]:
+            for pausa in [0.0, 0.5, 2.0]:
+                configuracao = {
+                    "num_rows": 40,
+                    "num_fields": campos,
+                    "search_per_field": search_per_field,
+                    "search_provider": provedor,
+                }
+                mensagem = _aviso_de_busca(
+                    **configuracao, parallel_requests=workers, rate_limit_delay=pausa
+                )
+                if mensagem is None:
+                    continue
+                dica = dict(
+                    item.split("=") for item in mensagem.split("use: ")[1].rstrip(".").split(", ")
+                )
+                seguida = _aviso_de_busca(
+                    **configuracao,
+                    parallel_requests=int(dica["parallel_requests"]),
+                    rate_limit_delay=float(dica.get("rate_limit_delay", pausa)),
+                )
+                assert seguida is None, (workers, campos, pausa, mensagem, seguida)
