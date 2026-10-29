@@ -1696,28 +1696,23 @@ def test_tupla_que_nao_e_de_enum_e_igual_a_lista_relida():
         assert evaluate_condition(condicao, {"nomes": valor}, "cpf") is True
 
 
-class _TagDaColecao(Enum):
-    PF = "pf"
-    PJ = "pj"
-
-
 class _ComLista(BaseModel):
-    tags: list[_TagDaColecao]
+    tags: list[_Tipo]
     cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "equals": ["pf"]}})
 
 
 class _ComTupla(BaseModel):
-    tags: tuple[_TagDaColecao, ...]
+    tags: tuple[_Tipo, ...]
     cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "equals": ["pf"]}})
 
 
 class _ComConjunto(BaseModel):
-    tags: set[_TagDaColecao]
+    tags: set[_Tipo]
     cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "in": [["pf"], ["pj"]]}})
 
 
 class _ItemComTag(BaseModel):
-    tag: _TagDaColecao
+    tag: _Tipo
 
 
 class _ComListaDeSubmodelo(BaseModel):
