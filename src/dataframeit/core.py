@@ -66,6 +66,7 @@ from .utils import (
     ConversionInfo,
     _admits_none,
     _column_rank,
+    _is_structure_class,
     _json_default,
     _keeps_nan,
     accepts_only_text,
@@ -2641,7 +2642,7 @@ def _array_as_list(value: object) -> object:
 
 
 def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
-    """Cópia com listas, dicts, tuplas, conjuntos e arrays do numpy serializados como JSON.
+    """Cópia com as coleções de `_is_structure_class` e os arrays do numpy serializados como JSON.
 
     CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
     de volta, e o de um array ("['a' 'b']") o literal_eval lê como ['ab']. O
@@ -2665,7 +2666,7 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 
     def to_json(value: object) -> object:
         value = _array_as_list(value)
-        if isinstance(value, (list, dict, tuple, set, frozenset)):
+        if _is_structure_class(type(value)):
             return json.dumps(value, ensure_ascii=False, default=_json_default)
         return enum_as_value(value)
 

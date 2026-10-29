@@ -5,11 +5,21 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 """
 
 import importlib.util
+import json
 import tempfile
+from collections import Counter, OrderedDict, UserString, defaultdict, deque
 from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet, Sequence
 from collections.abc import Set as AbstractSet
+from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal, NamedTuple, Optional
+from typing import (  # noqa: UP035 (os apelidos do typing são casos testados)
+    Annotated,
+    DefaultDict,
+    Deque,
+    Literal,
+    NamedTuple,
+    Optional,
+)
 
 import pandas as pd
 import pytest
@@ -17,6 +27,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from dataframeit.utils import (
+    _json_default,
     _normalize_all_json_columns,
     get_complex_fields,
     is_complex_type,
@@ -152,6 +163,13 @@ class Ponto(NamedTuple):
         Ponto,
         Optional[set[str]],
         Annotated[Sequence[str], Field(min_length=1)] | None,
+        deque[str],
+        Deque[str],  # noqa: UP006 (o apelido do typing é caso testado)
+        deque,
+        Counter[str],
+        OrderedDict[str, int],
+        defaultdict[str, int],
+        DefaultDict[str, int],  # noqa: UP006 (o apelido do typing é caso testado)
     ],
 )
 def test_is_complex_type_colecao_que_o_model_dump_devolve_como_estrutura(anotacao):
@@ -159,7 +177,14 @@ def test_is_complex_type_colecao_que_o_model_dump_devolve_como_estrutura(anotaca
     assert is_complex_type(anotacao) is True
 
 
-@pytest.mark.parametrize("anotacao", [bytes, Literal["a", "b"], Optional[Literal["a"]]])
+class CorTexto(StrEnum):
+    AZUL = "azul"
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [bytes, bytearray, UserString, CorTexto, Literal["a", "b"], Optional[Literal["a"]]],
+)
 def test_is_complex_type_texto_e_bytes_nao_sao_estrutura(anotacao):
     """O str e o bytes são Sequence para o collections.abc, mas a célula guarda o valor inteiro."""
     assert is_complex_type(anotacao) is False
@@ -551,3 +576,14 @@ def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():
 
     assert list(sem_json["misto"]) == [1, "x"]
     assert list(com_json["misto"]) == [1, ["a"]]
+
+
+def test_json_default_monta_a_lista_aninhada_da_memoryview_de_duas_dimensoes():
+    """O tolist vem antes do ramo de sequência: o list() não percorre buffer de mais de uma dimensão."""
+    visao = memoryview(bytearray(4)).cast("b", (2, 2))
+
+    assert json.loads(json.dumps([visao], default=_json_default)) == [[[0, 0], [0, 0]]]
+
+
+def test_json_default_grava_a_userstring_como_texto():
+    assert json.dumps([UserString("ola")], default=_json_default) == '["ola"]'

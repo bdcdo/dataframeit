@@ -2,6 +2,7 @@
 
 import datetime
 import warnings
+from collections import UserString
 from enum import Enum
 from typing import Annotated, Literal, NewType, Optional, TypeVar
 from unittest.mock import patch
@@ -12,7 +13,7 @@ import pytest
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import TypeAliasType
 
-from dataframeit import read_df
+from dataframeit import ProviderUsageLimitError, read_df
 from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
 from dataframeit.utils import _admits_none, accepts_only_text, normalize_value
 
@@ -1118,3 +1119,54 @@ def test_retomada_de_checkpoint_csv_com_newtype_e_apelido(tmp_path):
             assert pd.isna(linha[campo])
         else:
             assert linha[campo] == valor
+
+
+# =============================================================================
+# Coluna do usuário com texto que é Sequence
+# =============================================================================
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx"])
+@pytest.mark.parametrize(
+    "valores",
+    [
+        [UserString("ola"), UserString("oi")],
+        [{"k": UserString("x")}, {"k": UserString("y")}],
+    ],
+    ids=["userstring", "userstring-num-dict"],
+)
+def test_coluna_do_usuario_com_userstring_vai_ao_checkpoint(tmp_path, formato, valores):
+    """A UserString é Sequence, mas é texto: o checkpoint a grava, e a retomada paga só a pendente."""
+    caminho = tmp_path / f"ck.{formato}"
+    chamadas = []
+
+    def call_langchain(text, *args, **kwargs):
+        chamadas.append(text)
+        if text == "b" and len(chamadas) == 2:
+            mensagem = "cota"
+            raise ProviderUsageLimitError(mensagem)
+        return {"data": {"campo": f"v-{text}"}, "usage": None}
+
+    def roda():
+        df = pd.DataFrame({"texto": ["a", "b"], "extra": valores})
+        with (
+            patch("dataframeit.core.call_langchain", side_effect=call_langchain),
+            patch("dataframeit.core.validate_provider_dependencies"),
+            warnings.catch_warnings(record=True) as avisos,
+        ):
+            warnings.simplefilter("always")
+            dataframeit(
+                df,
+                ModeloSimples,
+                "{texto}",
+                checkpoint_path=caminho,
+                batch_size=1,
+                track_tokens=False,
+            )
+        return [str(a.message) for a in avisos if "Falha ao gravar" in str(a.message)]
+
+    assert roda() == []
+    assert caminho.exists()
+    chamadas.clear()
+    assert roda() == []
+    assert chamadas == ["b"]

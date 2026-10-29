@@ -4,11 +4,17 @@ import contextlib
 import csv
 import datetime
 import warnings
+from collections import Counter, OrderedDict, defaultdict, deque
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import (  # noqa: UP035 (o apelido do typing é caso testado)
+    Any,
+    Deque,
+    Literal,
+    NamedTuple,
+)
 from unittest.mock import patch
 
 import numpy as np
@@ -1638,6 +1644,30 @@ class ComConjuntoNoDict(BaseModel):
     itens: dict[str, set[str]]
 
 
+class ComDeque(BaseModel):
+    itens: deque[str]
+
+
+class ComDequeDoTyping(BaseModel):
+    itens: Deque[str]  # noqa: UP006 (o apelido do typing é caso testado)
+
+
+class ComDequeNoDict(BaseModel):
+    itens: dict[str, deque[str]]
+
+
+class ComCounter(BaseModel):
+    itens: Counter[str]
+
+
+class ComOrderedDict(BaseModel):
+    itens: OrderedDict[str, int]
+
+
+class ComDefaultdict(BaseModel):
+    itens: defaultdict[str, int]
+
+
 _COLECOES = {
     ComSequencia: lambda text: [text, "z"],
     ComConjunto: lambda text: {text, "z"},
@@ -1646,6 +1676,12 @@ _COLECOES = {
     ComMapping: lambda text: {text: 1},
     ComNamedTuple: lambda text: (1, text),
     ComConjuntoNoDict: lambda text: {"partes": {text, "z"}},
+    ComDeque: lambda text: [text, "z"],
+    ComDequeDoTyping: lambda text: [text, "z"],
+    ComDequeNoDict: lambda text: {"partes": [text, "z"]},
+    ComCounter: lambda text: {text: 2, "z": 1},
+    ComOrderedDict: lambda text: {text: 2, "z": 1},
+    ComDefaultdict: lambda text: {text: 2, "z": 1},
 }
 
 
@@ -1655,7 +1691,7 @@ def _com_tipos(valor):
         return type(valor).__name__, sorted(map(_com_tipos, valor), key=repr)
     if isinstance(valor, dict):
         return type(valor).__name__, [(_com_tipos(k), _com_tipos(v)) for k, v in valor.items()]
-    if isinstance(valor, (list, tuple)):
+    if isinstance(valor, (list, tuple, deque)):
         return type(valor).__name__, [_com_tipos(v) for v in valor]
     return type(valor).__name__, valor
 
@@ -1663,7 +1699,7 @@ def _com_tipos(valor):
 @pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
 @pytest.mark.parametrize("modelo", list(_COLECOES), ids=lambda modelo: modelo.__name__)
 def test_colecao_volta_do_checkpoint_com_o_valor_e_o_tipo_gravados(tmp_path, formato, modelo):
-    """Sequence, conjunto, TypedDict, Mapping e NamedTuple são estruturas do checkpoint.
+    """Sequence, conjunto, deque, TypedDict, Mapping, NamedTuple e as subclasses de dict são estruturas do checkpoint.
 
     O checkpoint as grava em JSON, e a retomada as devolve ao tipo do campo,
     inclusive nas partes: o parquet gravaria o dict como struct e relê o int dele

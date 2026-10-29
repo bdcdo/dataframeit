@@ -277,7 +277,7 @@ Identifies the fields of a Pydantic model that hold a structure instead of a sim
 def get_complex_fields(pydantic_model) -> set
 ```
 
-Returns the set of names of the fields whose type is a structure: `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` and `Mapping` and their mutable versions, `TypedDict`, `NamedTuple` or a nested Pydantic model, including inside `Optional` and `Union`.
+Returns the set of names of the fields whose type is a structure: `list`, `tuple`, `deque`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` and `Mapping` and their mutable versions, `TypedDict`, `NamedTuple` or a nested Pydantic model, including inside `Optional` and `Union`.
 
 ```python
 from dataframeit import get_complex_fields, normalize_complex_columns, read_df
