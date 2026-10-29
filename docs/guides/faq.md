@@ -4,19 +4,21 @@
 
 ### `ImportError` pedindo para instalar um pacote
 
-O provider escolhido precisa do extra correspondente. A mensagem diz qual instalar, por exemplo:
+O provider escolhido precisa do pacote dele, e a mensagem diz o que instalar. Nos providers do LangChain, ela sugere o pacote do provider ou o extra `all`:
 
 ```bash
-pip install dataframeit[anthropic]
+pip install langchain-anthropic
+# ou
+pip install dataframeit[all]
 ```
 
-Os extras estão em [Instalação](../getting-started/installation.md). Providers do LangChain sem extra próprio, como Cohere e Mistral, pedem o pacote `langchain-<provider>`.
+O extra do provider, como `dataframeit[anthropic]`, instala o mesmo pacote. O `all` traz os providers que têm extra, menos o Codex; os providers do LangChain sem extra próprio, como Cohere e Mistral, precisam do pacote `langchain-<provider>`, que o `all` não inclui. No `claude_code` e no `codex`, a mensagem pede o extra do provider (`dataframeit[claude-code]`, `dataframeit[codex]`), e na busca web, o pacote do provedor de busca. Os extras estão em [Instalação](../getting-started/installation.md).
 
 ### Erro de autenticação (401 ou 403)
 
 A chave de API não foi encontrada ou foi recusada. Confira a variável de ambiente do provider (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`) no mesmo processo que roda o Python; num notebook, defina-a antes de chamar `dataframeit()`. Erro de autenticação não ganha nova tentativa: todas as linhas terminam com status `'error'`.
 
-Os providers `codex` e `claude_code` usam a autenticação local das ferramentas e não aceitam `api_key`; ver [Provedores](providers.md).
+Os providers `codex` e `claude_code` usam a autenticação local das ferramentas. O `codex` recusa `api_key` com `ProviderConfigurationError`, e o `claude_code` a ignora; ver [Provedores](providers.md).
 
 ## Resultado
 
@@ -62,3 +64,5 @@ Rode primeiro uma amostra (`df.sample(30)`) com `track_tokens=True`. O resumo ao
 ### Uma execução longa foi interrompida
 
 Use `batch_size` e `checkpoint_path` para gravar o progresso durante a execução, e retome rodando a mesma chamada de novo, que continua do arquivo; ver [Checkpoints em Execuções Longas](performance.md#checkpoints-em-execucoes-longas).
+
+Um Ctrl-C grava no checkpoint as linhas concluídas desde a última gravação antes de interromper, e a retomada não as chama de novo. A linha cuja chamada o Ctrl-C cortou fica pendente. Com `parallel_requests`, a interrupção espera as chamadas em andamento terminarem, e elas entram na gravação; um segundo Ctrl-C corta essa espera, e as chamadas que não terminaram ficam pendentes.

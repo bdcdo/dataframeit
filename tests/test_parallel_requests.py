@@ -280,12 +280,18 @@ def test_parallel_with_reprocess_columns():
 
 
 class _TimerFalso:
-    """Registra o intervalo sem iniciar a thread que limparia o evento."""
+    """Registra o intervalo sem iniciar a thread que limparia o evento.
+
+    O construtor roda logo depois da redução de workers, na thread que tratou
+    o 429; `reduzido` deixa o teste esperar por esse instante.
+    """
 
     intervalos: list
+    reduzido: threading.Event
 
     def __init__(self, intervalo, funcao):
         _TimerFalso.intervalos.append(intervalo)
+        _TimerFalso.reduzido.set()
 
     def start(self):
         pass
@@ -294,19 +300,25 @@ class _TimerFalso:
 def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch):
     """'a' e 'c' batem no rate limit; só a primeira reduz, porque já resta um worker."""
     esperas = []
+    eventos = []
     _TimerFalso.intervalos = []
+    _TimerFalso.reduzido = threading.Event()
     monkeypatch.setattr(core.time, "sleep", esperas.append)
     monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
 
-    # 'b' roda no mesmo lote que 'a'; a espera garante que ele passe pela
-    # checagem do evento antes que a falha de 'a' o acione.
+    # 'a' e 'b' entram juntas. 'a' só falha depois de 'b' passar pela checagem
+    # do evento, e 'b' só termina depois da redução: assim 'c', que entra na
+    # vaga de 'b', já encontra o teto em 1 e o evento de rate limit ativo.
     b_chamado = threading.Event()
 
     def llm(text, *args, **kwargs):
+        eventos.append(f"{text} início")
         if text == "b":
             b_chamado.set()
+            _TimerFalso.reduzido.wait(timeout=5)
         if text == "a":
             b_chamado.wait(timeout=5)
+        eventos.append(f"{text} fim")
         if text in {"a", "c"}:
             msg = "429 too many requests"
             raise ProviderOverloadedError(msg)
@@ -331,6 +343,8 @@ def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch):
     assert _TimerFalso.intervalos == [5.0]
     # 'c' e 'd' rodam depois da redução, com o evento de rate limit ainda ativo.
     assert esperas == [2.0, 2.0]
+    # Com o teto em 1, 'c' só entra quando 'b' sai: a vaga que 'a' abriu não é reposta.
+    assert eventos.index("c início") > eventos.index("b fim")
     assert resultado["_dataframeit_status"].tolist() == ["error", "processed", "error", "processed"]
     finais = [str(a.message) for a in avisos if "reduzidos por rate limit" in str(a.message)]
     assert finais == [
@@ -341,12 +355,124 @@ def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch):
     ]
 
 
+def test_rate_limit_baixa_o_teto_da_reposicao(monkeypatch):
+    """Com 4 em voo, 'a' bate no rate limit e o teto cai para 2: a vaga de 'a' não é reposta.
+
+    'b', 'c' e 'd' ficam presas até o maestro soltá-las, uma de cada vez. Com o
+    teto em 2, 'e' só é despachada quando sobra uma em voo; com o teto ainda em
+    4, entraria na vaga de 'a', com duas ou três das outras presas. O maestro só
+    solta 'b' quando o laço de reposição volta a esperar depois de recolher 'a',
+    porque é nessa volta que ele decide se repõe a vaga; soltar antes deixaria
+    'b' e 'c' terminarem antes da decisão, e o teste passaria com qualquer teto.
+    """
+    _TimerFalso.intervalos = []
+    _TimerFalso.reduzido = threading.Event()
+    monkeypatch.setattr(core.time, "sleep", lambda _segundos: None)
+    monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
+
+    liberar = {texto: threading.Event() for texto in "bcd"}
+    terminou = {texto: threading.Event() for texto in "bcd"}
+    trava = threading.Lock()
+    em_voo: set = set()
+    em_voo_quando_e_comecou = []
+
+    # A primeira espera do laço volta com 'a', a única que não fica presa; a
+    # segunda começa depois de o laço recolher 'a' e decidir a reposição.
+    espera_original = core.wait
+    esperas_do_laco = []
+    laco_recolheu_a = threading.Event()
+
+    def espera_contada(futures, **kwargs):
+        esperas_do_laco.append(len(futures))
+        if len(esperas_do_laco) == 2:
+            laco_recolheu_a.set()
+        return espera_original(futures, **kwargs)
+
+    monkeypatch.setattr(core, "wait", espera_contada)
+
+    def llm(text, *args, **kwargs):
+        with trava:
+            if text == "e":
+                em_voo_quando_e_comecou.append(len(em_voo))
+            em_voo.add(text)
+        try:
+            if text == "a":
+                msg = "429 too many requests"
+                raise ProviderOverloadedError(msg)
+            if text in liberar:
+                liberar[text].wait(timeout=5)
+            return {"data": {"campo1": text, "campo2": text}, "usage": None}
+        finally:
+            with trava:
+                em_voo.discard(text)
+            if text in terminou:
+                terminou[text].set()
+
+    def maestro():
+        laco_recolheu_a.wait(timeout=5)
+        for texto in "bc":
+            liberar[texto].set()
+            terminou[texto].wait(timeout=5)
+        liberar["d"].set()
+
+    thread_maestro = threading.Thread(target=maestro)
+    thread_maestro.start()
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        resultado = dataframeit(
+            pd.DataFrame({"texto": list("abcde")}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=4,
+            track_tokens=False,
+        )
+    thread_maestro.join(timeout=5)
+
+    assert len(em_voo_quando_e_comecou) == 1
+    assert em_voo_quando_e_comecou[0] <= 1
+    assert resultado["_dataframeit_status"].tolist() == ["error"] + ["processed"] * 4
+
+
 class _ErroIlegivel(Exception):
     """Erro cujo texto não pode ser montado, como o de um SDK com __str__ quebrado."""
 
     def __str__(self):
         msg = "sem texto"
         raise RuntimeError(msg)
+
+
+def test_linha_nova_entra_assim_que_uma_vaga_abre_sem_esperar_a_onda():
+    """Com 2 em voo, 'c' começa enquanto 'a', a mais lenta, ainda roda."""
+    liberar_a = threading.Event()
+    a_liberada_por_c = []
+
+    def llm(text, *args, **kwargs):
+        if text == "a":
+            # Termina quando 'c' começa; o timeout deixa o teste reprovar, em vez
+            # de travar, quando 'c' só é despachada depois de 'a' terminar.
+            a_liberada_por_c.append(liberar_a.wait(timeout=5))
+        if text == "c":
+            liberar_a.set()
+        return {"data": {"campo1": text, "campo2": text}, "usage": None}
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=2,
+            track_tokens=False,
+        )
+
+    assert a_liberada_por_c == [True]
+    assert resultado["campo1"].tolist() == ["a", "b", "c"]
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
