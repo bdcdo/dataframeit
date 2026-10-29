@@ -25,7 +25,7 @@ result = dataframeit(
 
 ### Auto-reduction on Rate Limits
 
-When a row fails after all attempts with a rate limit error, DataFrameIt halves the workers:
+When a row fails after all attempts with a rate limit error, DataFrameIt halves the cap on rows in flight; the rows already in flight finish:
 
 ```
 Start: 10 workers

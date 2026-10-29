@@ -122,7 +122,7 @@ Um campo anotado como `dict`, como `dict[str, int]` ou `Optional[dict[str, Any]]
 
 ### RowResult
 
-Dataclass imutável que `on_row_done` recebe a cada linha processada nesta chamada, depois de a linha estar gravada no DataFrame. A linha pulada por `resume` não é entregue.
+Dataclass imutável que `on_row_done` recebe a cada linha processada nesta chamada, depois de a linha estar gravada no DataFrame. A linha pulada por `resume` e a que uma interrupção deixou sem status não são entregues.
 
 | Campo | Tipo | Conteúdo |
 |-------|------|----------|

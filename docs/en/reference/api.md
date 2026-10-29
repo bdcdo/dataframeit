@@ -122,7 +122,7 @@ A field annotated as `dict`, such as `dict[str, int]` or `Optional[dict[str, Any
 
 ### RowResult
 
-Frozen dataclass that `on_row_done` receives for each row processed in this call, after the row is written to the DataFrame. A row skipped by `resume` is not delivered.
+Frozen dataclass that `on_row_done` receives for each row processed in this call, after the row is written to the DataFrame. A row skipped by `resume` and a row that an interruption left without status are not delivered.
 
 | Field | Type | Content |
 |-------|------|---------|

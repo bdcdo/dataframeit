@@ -1220,10 +1220,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             em erro, depois de a linha estar gravada no DataFrame, com um `RowResult`
             (rótulo do índice, posição entre as linhas processadas, sucesso, texto de
             `_error_details`, campos gravados e segundos decorridos). A linha pulada por
-            `resume` não é entregue. Com `parallel_requests` > 1, a chamada vem da thread
-            do worker que processou a linha, enquanto as outras seguem gravando: a função
-            sincroniza o que compartilhar e lê o que precisa do `RowResult`, e não do
-            DataFrame. Uma exceção dentro dela vira aviso, e a execução segue.
+            `resume` e a que uma interrupção deixou sem status não são entregues. Com
+            `parallel_requests` > 1, a chamada vem da thread do worker que processou a
+            linha, enquanto as outras seguem gravando: a função sincroniza o que
+            compartilhar e lê o que precisa do `RowResult`, e não do DataFrame. Uma
+            exceção dentro dela vira aviso, e a execução segue.
 
     Returns:
         DataFrame (polars para entrada polars, pandas nos demais casos) com uma

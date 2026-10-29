@@ -355,6 +355,88 @@ def test_rate_limit_reduz_workers_e_pausa_as_linhas_seguintes(monkeypatch):
     ]
 
 
+def test_rate_limit_baixa_o_teto_da_reposicao(monkeypatch):
+    """Com 4 em voo, 'a' bate no rate limit e o teto cai para 2: a vaga de 'a' não é reposta.
+
+    'b', 'c' e 'd' ficam presas até o maestro soltá-las, uma de cada vez. Com o
+    teto em 2, 'e' só é despachada quando sobra uma em voo; com o teto ainda em
+    4, entraria na vaga de 'a', com duas ou três das outras presas. O maestro só
+    solta 'b' quando o laço de reposição volta a esperar depois de recolher 'a',
+    porque é nessa volta que ele decide se repõe a vaga; soltar antes deixaria
+    'b' e 'c' terminarem antes da decisão, e o teste passaria com qualquer teto.
+    """
+    _TimerFalso.intervalos = []
+    _TimerFalso.reduzido = threading.Event()
+    monkeypatch.setattr(core.time, "sleep", lambda _segundos: None)
+    monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
+
+    liberar = {texto: threading.Event() for texto in "bcd"}
+    terminou = {texto: threading.Event() for texto in "bcd"}
+    trava = threading.Lock()
+    em_voo: set = set()
+    em_voo_quando_e_comecou = []
+
+    # A primeira espera do laço volta com 'a', a única que não fica presa; a
+    # segunda começa depois de o laço recolher 'a' e decidir a reposição.
+    espera_original = core.wait
+    esperas_do_laco = []
+    laco_recolheu_a = threading.Event()
+
+    def espera_contada(futures, **kwargs):
+        esperas_do_laco.append(len(futures))
+        if len(esperas_do_laco) == 2:
+            laco_recolheu_a.set()
+        return espera_original(futures, **kwargs)
+
+    monkeypatch.setattr(core, "wait", espera_contada)
+
+    def llm(text, *args, **kwargs):
+        with trava:
+            if text == "e":
+                em_voo_quando_e_comecou.append(len(em_voo))
+            em_voo.add(text)
+        try:
+            if text == "a":
+                msg = "429 too many requests"
+                raise ProviderOverloadedError(msg)
+            if text in liberar:
+                liberar[text].wait(timeout=5)
+            return {"data": {"campo1": text, "campo2": text}, "usage": None}
+        finally:
+            with trava:
+                em_voo.discard(text)
+            if text in terminou:
+                terminou[text].set()
+
+    def maestro():
+        laco_recolheu_a.wait(timeout=5)
+        for texto in "bc":
+            liberar[texto].set()
+            terminou[texto].wait(timeout=5)
+        liberar["d"].set()
+
+    thread_maestro = threading.Thread(target=maestro)
+    thread_maestro.start()
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        resultado = dataframeit(
+            pd.DataFrame({"texto": list("abcde")}),
+            questions=SimpleModel,
+            prompt="{texto}",
+            parallel_requests=4,
+            track_tokens=False,
+        )
+    thread_maestro.join(timeout=5)
+
+    assert len(em_voo_quando_e_comecou) == 1
+    assert em_voo_quando_e_comecou[0] <= 1
+    assert resultado["_dataframeit_status"].tolist() == ["error"] + ["processed"] * 4
+
+
 class _ErroIlegivel(Exception):
     """Erro cujo texto não pode ser montado, como o de um SDK com __str__ quebrado."""
 
