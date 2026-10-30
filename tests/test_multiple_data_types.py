@@ -7,7 +7,7 @@ Testa conversão de/para:
 - dict
 """
 
-import datetime
+import datetime as dt
 import importlib.util
 import sys
 import warnings
@@ -305,13 +305,13 @@ class TestEntradaPolars:
         assert from_pandas(df, info)["id"].dtype == pl.UInt8
 
     def test_coluna_de_data_continua_data(self):
-        data = pl.DataFrame({"texto": ["a"], "dia": [datetime.date(2024, 1, 2)]})
+        data = pl.DataFrame({"texto": ["a"], "dia": [dt.date(2024, 1, 2)]})
 
         df, info = to_pandas(data)
         result = from_pandas(df, info)
 
         assert result["dia"].dtype == pl.Date
-        assert result["dia"].to_list() == [datetime.date(2024, 1, 2)]
+        assert result["dia"].to_list() == [dt.date(2024, 1, 2)]
 
     def test_campo_do_modelo_que_estava_na_entrada_sai_do_pandas(self):
         data = pl.DataFrame({"texto": ["a"], "nota": [7]})
