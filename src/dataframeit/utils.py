@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import ast
 import collections.abc
-import datetime
+import datetime as dt
 import json
 import math
 import numbers
@@ -491,7 +491,7 @@ def _without_optional(annotation: object) -> object:
 # Data, hora e duração: o pyarrow converte cada um destes tipos nos outros e o
 # número em cada um deles. O datetime depois de um date perde a hora, e o int
 # depois de um date ou de um timedelta vira data ou duração.
-_TEMPORAL = (datetime.date, datetime.datetime, datetime.time, datetime.timedelta)
+_TEMPORAL = (dt.date, dt.datetime, dt.time, dt.timedelta)
 # Pares que o pyarrow converte um no outro quando o primeiro vem antes: o True
 # depois de um float vira 1.0, e o texto depois de um bytes vira bytes.
 _CONVERTED_PAIRS = ((float, bool), (bytes, str))
@@ -534,10 +534,10 @@ _KINDS = (
     Decimal,
     str,
     bytes,
-    datetime.datetime,
-    datetime.date,
-    datetime.time,
-    datetime.timedelta,
+    dt.datetime,
+    dt.date,
+    dt.time,
+    dt.timedelta,
 )
 _NUMBERS = (int, float, Decimal)
 # A classe de `_KINDS` do número que não é subclasse de nenhuma delas, como o
@@ -571,16 +571,15 @@ def _group_kinds(group: list, classes: set) -> set | None:
         if cls is type(None) or cls is type(pd.NaT) or issubclass(cls, (dict, *_SEQUENCES)):
             continue
         members = [value for value in group if type(value) is cls]
-        if issubclass(cls, datetime.datetime):
+        if issubclass(cls, dt.datetime):
             kinds.update(
-                _AWARE_DATETIME if value.tzinfo is not None else datetime.datetime
-                for value in members
+                _AWARE_DATETIME if value.tzinfo is not None else dt.datetime for value in members
             )
         elif issubclass(cls, float):
             if not all(math.isnan(value) for value in members):
                 kinds.add(float)
         elif (issubclass(cls, Decimal) and any(value.is_nan() for value in members)) or (
-            issubclass(cls, datetime.time) and any(value.tzinfo is not None for value in members)
+            issubclass(cls, dt.time) and any(value.tzinfo is not None for value in members)
         ):
             return None
         else:
@@ -683,8 +682,8 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
         (int, polars.Int64),
         (float, polars.Float64),
         (bool, polars.Boolean),
-        (datetime.date, polars.Date),
-        (datetime.datetime, polars.Datetime),
+        (dt.date, polars.Date),
+        (dt.datetime, polars.Datetime),
     )
     if _mixes_converted_types(annotation):
         msg = f"A anotação {annotation} junta tipos que o pyarrow converte uns nos outros."
@@ -1314,9 +1313,9 @@ _KEYLESS_TYPES = (
     complex,
     Decimal,
     Enum,
-    datetime.date,
-    datetime.time,
-    datetime.timedelta,
+    dt.date,
+    dt.time,
+    dt.timedelta,
 )
 
 
