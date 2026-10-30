@@ -2,7 +2,7 @@
 
 import contextlib
 import csv
-import datetime
+import datetime as dt
 import warnings
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -633,7 +633,7 @@ def test_array_dentro_de_modelo_aninhado_volta_igual_do_checkpoint(tmp_path, for
 
 
 class ComData(BaseModel):
-    quando: dict[str, datetime.date]
+    quando: dict[str, dt.date]
 
 
 class ComTupla(BaseModel):
@@ -645,7 +645,7 @@ class ComChaveInt(BaseModel):
 
 
 _TIPADOS = {
-    ComData: ("quando", lambda texto: {texto: datetime.date(2024, 1, 2)}),
+    ComData: ("quando", lambda texto: {texto: dt.date(2024, 1, 2)}),
     ComTupla: ("par", lambda texto: (1, texto)),
     ComChaveInt: ("mapa", lambda texto: {1: texto, 10: texto, 2: texto}),
 }
@@ -736,8 +736,8 @@ class FiltraPorOutroCampo(BaseModel):
 
 
 class DatasDepoisDoInicio(BaseModel):
-    inicio: datetime.date
-    datas: list[datetime.date]
+    inicio: dt.date
+    datas: list[dt.date]
 
     @model_validator(mode="after")
     def depois_do_inicio(self):
@@ -748,7 +748,7 @@ class DatasDepoisDoInicio(BaseModel):
 
 
 class DatasEmTexto(BaseModel):
-    datas: list[datetime.date]
+    datas: list[dt.date]
 
     @field_serializer("datas")
     def em_texto(self, valor):
@@ -787,10 +787,10 @@ _POR_EXECUCAO = {
     ExclamaAteDuasVezes: lambda texto: {"n": [texto]},
     FiltraPorOutroCampo: lambda texto: {"tem_itens": True, "itens": [texto]},
     DatasDepoisDoInicio: lambda texto: {
-        "inicio": datetime.date(2024, 1, 1),
-        "datas": [datetime.date(2024, 1, 2)],
+        "inicio": dt.date(2024, 1, 1),
+        "datas": [dt.date(2024, 1, 2)],
     },
-    DatasEmTexto: lambda texto: {"datas": [datetime.date(2024, 1, 2)]},
+    DatasEmTexto: lambda texto: {"datas": [dt.date(2024, 1, 2)]},
 }
 
 
@@ -987,11 +987,11 @@ class Nota(Enum):
 
 class Estrito(BaseModel):
     model_config = ConfigDict(strict=True)
-    datas: list[datetime.date]
+    datas: list[dt.date]
     par: tuple[int, str]
     cores: list[Cor]
-    dia: datetime.date
-    quando: datetime.datetime
+    dia: dt.date
+    quando: dt.datetime
     cor: Cor
     nivel: Nivel
     nota: Nota
@@ -1000,8 +1000,8 @@ class Estrito(BaseModel):
 
 
 class Escalares(BaseModel):
-    dia: datetime.date
-    quando: datetime.datetime
+    dia: dt.date
+    quando: dt.datetime
     cor: Cor
     nivel: Nivel
     nota: Nota
@@ -1010,11 +1010,11 @@ class Escalares(BaseModel):
 
 
 _RESPOSTA_TIPADA = {
-    "datas": [datetime.date(2024, 1, 2)],
+    "datas": [dt.date(2024, 1, 2)],
     "par": (1, "a"),
     "cores": [Cor.AZUL],
-    "dia": datetime.date(2024, 1, 2),
-    "quando": datetime.datetime(2024, 1, 2, 3, 4, 5),  # noqa: DTZ001 (o XLSX não guarda fuso)
+    "dia": dt.date(2024, 1, 2),
+    "quando": dt.datetime(2024, 1, 2, 3, 4, 5),  # noqa: DTZ001 (o XLSX não guarda fuso)
     "cor": Cor.AZUL,
     "nivel": Nivel.BAIXO,
     "nota": Nota.A,
@@ -1064,7 +1064,7 @@ def test_retomada_devolve_o_tipo_declarado_em_todo_campo(tmp_path, modelo, forma
 
 class EstritoComNumero(BaseModel):
     model_config = ConfigDict(strict=True)
-    datas: list[datetime.date]
+    datas: list[dt.date]
     n: int
 
 

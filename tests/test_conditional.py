@@ -2,7 +2,7 @@
 
 import collections
 import collections.abc
-import datetime
+import datetime as dt
 import logging
 import os
 import re
@@ -1487,12 +1487,12 @@ class _Cadastro(BaseModel):
     porte: Literal["pequeno", "grande"] = "pequeno"
     rotulo: Annotated[str, "rótulo"] = ""
     codigo: str | int = ""
-    inicio: datetime.date | None = None
+    inicio: dt.date | None = None
     bruto: bytes = b""
     fase: complex = 0j
     preco: Decimal | None = None
-    hora: datetime.time | None = None
-    prazo: datetime.timedelta | None = None
+    hora: dt.time | None = None
+    prazo: dt.timedelta | None = None
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,6 @@
 """Checkpoint que falha ao gravar e retomada a partir de CSV/XLSX."""
 
-import datetime
+import datetime as dt
 import warnings
 from enum import Enum
 from typing import Annotated, Literal, NewType, Optional, TypeVar
@@ -418,7 +418,7 @@ def test_falha_na_ultima_gravacao_intermediaria_e_coberta_pela_final(tmp_path, p
 def test_checkpoint_textual_serializa_data_dentro_de_dict(tmp_path):
 
     ckpt = tmp_path / "ckpt.csv"
-    _save_checkpoint(pd.DataFrame({"meta": [{"quando": datetime.date(2026, 9, 24)}]}), ckpt)
+    _save_checkpoint(pd.DataFrame({"meta": [{"quando": dt.date(2026, 9, 24)}]}), ckpt)
     assert pd.read_csv(ckpt)["meta"][0] == '{"quando": "2026-09-24"}'
 
 

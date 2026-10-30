@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-import datetime
+import datetime as dt
 import hashlib
 import importlib.util
 import itertools
@@ -672,8 +672,8 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
         and abs(value) >= _EXACT_INT_IN_FLOAT
     ):
         return False
-    if type(validated) is datetime.date and isinstance(value, datetime.datetime):
-        return value == datetime.datetime.combine(validated, datetime.time())
+    if type(validated) is dt.date and isinstance(value, dt.datetime):
+        return value == dt.datetime.combine(validated, dt.time())
     return bool(validated == value)
 
 
