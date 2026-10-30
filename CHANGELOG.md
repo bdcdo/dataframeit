@@ -17,6 +17,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Os imports de `datetime` usam o alias `dt`, exigido pelo Ruff 0.17, para manter a verificação de lint aprovada (#319).
+
 
 
 ## [0.11.1] - 2026-10-29
