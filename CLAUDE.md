@@ -35,7 +35,7 @@ git checkout -b <tipo>/<descricao>
 
 ### Revisão antes do merge
 
-Todo PR passa por revisão de um subagente novo antes de ser mesclado, inclusive quando o Bruno já aprovou. O agente que implementou não revisa o próprio diff, porque carrega as mesmas suposições que produziram o código. O briefing traz o branch, o SHA, a issue e o diff contra a `main`, mas não o raciocínio da implementação, e pede evidência reproduzível de cada achado (arquivo:linha e script com a saída observada). O agente principal confere a evidência antes de aceitar um achado; o achado confirmado é corrigido no branch, e o recusado ganha o motivo no PR. Só depois disso, e com o CI verde, o PR é mesclado.
+PR de risco médio ou alto passa por revisão de um subagente novo antes de ser mesclado, inclusive quando o Bruno já aprovou. Risco baixo é documentação, texto, teste novo e código aditivo sem consumidor: nele o CI verde basta. Na revisão, o agente que implementou não revisa o próprio diff, porque carrega as mesmas suposições que produziram o código. O briefing traz o branch, o SHA, a issue e o diff contra a `main`, mas não o raciocínio da implementação, e pede evidência reproduzível de cada achado (arquivo:linha e script com a saída observada). O agente principal confere a evidência antes de aceitar um achado; o achado confirmado é corrigido no branch, e o recusado ganha o motivo no PR. Só depois disso, e com o CI verde, o PR é mesclado.
 
 ## Versionamento
 
