@@ -32,7 +32,7 @@ from dataframeit.conditional import (
     should_skip_field,
     topological_sort,
 )
-from dataframeit.core import _validate_processed_rows
+from dataframeit.core import _executed_form, _validate_processed_rows
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -1719,8 +1719,8 @@ class _ComListaDeSubmodelo(BaseModel):
     cpf: str = Field(json_schema_extra={"condition": {"field": "itens", "equals": [{"tag": "pf"}]}})
 
 
-def _rodar_com_parada(modelo, parar_em=None, **kwargs):
-    """Roda dataframeit por campo em duas linhas; a cota acaba ao chegar em `parar_em`."""
+def _rodar_com_parada(modelo, parar_em=None, df=None, **kwargs):
+    """Roda dataframeit por campo em `df`, ou em duas linhas; a cota acaba ao chegar em `parar_em`."""
     resposta = {
         "tags": ["pf"],
         "itens": [{"tag": "pf"}],
@@ -1746,7 +1746,7 @@ def _rodar_com_parada(modelo, parar_em=None, **kwargs):
     ):
         warnings.simplefilter("ignore")
         return dataframeit(
-            pd.DataFrame({"texto": ["a", "b"]}),
+            pd.DataFrame({"texto": ["a", "b"]}) if df is None else df,
             questions=modelo,
             prompt="{texto}",
             use_search=True,
@@ -1837,65 +1837,28 @@ def test_condicao_sobre_valor_gravado_como_texto_pula_o_campo_na_execucao_e_na_r
     assert retomada["cpf"].tolist() == [None, None]
 
 
-def test_valor_relido_que_o_tipo_recusa_chega_a_condicao_como_foi_relido():
-    """A data que não valida vai à condição como texto, e a linha é acusada pelo campo dela."""
-    df = pd.DataFrame(
-        {
-            "data": ["2024-01-01", "não é data"],
-            "cpf": [None, None],
-            "_dataframeit_status": ["processed"] * 2,
-        }
-    )
-
-    with patch("dataframeit.core._condition_holds", return_value=False) as condicao:
-        incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", _ComData, set())
-
-    assert [chamada.args[1]["data"] for chamada in condicao.call_args_list] == [
-        dt.date(2024, 1, 1),
-        "não é data",
-    ]
-    assert incompativeis == ["data"]
-
-
-def test_validador_que_muda_o_valor_a_cada_passada_nao_roda_de_novo_na_retomada():
-    """A condição vê o valor gravado, que já passou pelo validador, e não o de uma segunda passada."""
-
-    class Marcado(BaseModel):
-        tag: Annotated[str, AfterValidator(lambda texto: texto + "!")]
-        cpf: str = Field(json_schema_extra={"condition": {"field": "tag", "equals": "pf!!"}})
-
-    df = pd.DataFrame({"tag": ["pf!"], "cpf": [None], "_dataframeit_status": ["processed"]})
-
-    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", Marcado, set())
-
-    assert incompativeis == []
-
-
-def test_campo_excluido_chega_a_condicao_como_none_sem_passar_pelo_validador():
-    """A célula do campo com exclude=True, que a execução não grava, não é validada para a condição."""
-
-    class ComExcluido(BaseModel):
-        nota: Annotated[str, BeforeValidator(lambda valor: valor.strip())] = Field(
-            "x", exclude=True
-        )
-        cpf: str = Field(
-            json_schema_extra=field_condition(
-                lambda dados: dados["nota"] is not None, depends_on="nota"
-            )
-        )
-
-    df = pd.DataFrame({"nota": [3], "cpf": [None], "_dataframeit_status": ["processed"]})
-
-    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", ComExcluido, set())
-
-    assert incompativeis == []
-
-
-class _ComDataComoOperando(BaseModel):
+class _ComValidadorEExcluido(BaseModel):
     data: dt.date
-    cpf: str = Field(
-        json_schema_extra={"condition": {"field": "data", "equals": dt.date(2024, 1, 1)}}
-    )
+    tag: Annotated[str, AfterValidator(lambda texto: texto + "!")]
+    nota: Annotated[str, BeforeValidator(lambda valor: valor.strip())] = Field("x", exclude=True)
+
+
+@pytest.mark.parametrize(
+    ("campo", "relido", "esperado"),
+    [
+        ("data", "2024-01-01", dt.date(2024, 1, 1)),
+        # O valor que o tipo recusa vai como foi relido.
+        ("data", "não é data", "não é data"),
+        # O validador que muda o valor a cada passada não roda de novo.
+        ("tag", "pf!", "pf!"),
+        # O campo com exclude=True é None para a execução, e a célula nem é validada.
+        ("nota", 3, None),
+        ("data", None, None),
+    ],
+)
+def test_valor_relido_chega_a_condicao_na_forma_da_execucao(campo, relido, esperado):
+    """Cada valor relido é convertido à forma em que a execução o passa às condições."""
+    assert _executed_form(_ComValidadorEExcluido)(campo, relido) == esperado
 
 
 def test_reprocessamento_passa_a_condicao_o_valor_ja_gravado_no_tipo_do_campo():
@@ -1904,6 +1867,14 @@ def test_reprocessamento_passa_a_condicao_o_valor_ja_gravado_no_tipo_do_campo():
     A linha é recusada pelo cpf ausente com a condição verdadeira, e a célula
     da data fica como foi relida; a condição do reprocessamento a vê como data.
     """
+
+    # O operando date não é JsonValue, o tipo que o pydantic declara.
+    condicao: Any = {"field": "data", "equals": dt.date(2024, 1, 1)}
+
+    class ComDataComoOperando(BaseModel):
+        data: dt.date
+        cpf: str = Field(json_schema_extra={"condition": condicao})
+
     df = pd.DataFrame(
         {
             "texto": ["a"],
@@ -1913,25 +1884,8 @@ def test_reprocessamento_passa_a_condicao_o_valor_ja_gravado_no_tipo_do_campo():
         }
     )
 
-    def call_agent(text, model, *args, **kw):
-        return {"data": {campo: "123" for campo in model.model_fields}, "usage": {}}
-
-    with (
-        patch("dataframeit.agent.call_agent", side_effect=call_agent),
-        patch("dataframeit.core.validate_provider_dependencies"),
-        patch("dataframeit.core.validate_search_dependencies"),
-        warnings.catch_warnings(),
-    ):
-        warnings.simplefilter("ignore")
-        resultado = dataframeit(
-            df,
-            questions=_ComDataComoOperando,
-            prompt="{texto}",
-            use_search=True,
-            search_per_field=True,
-            track_tokens=False,
-            resume=True,
-            reprocess_columns=["cpf"],
-        )
+    resultado = _rodar_com_parada(
+        ComDataComoOperando, df=df, resume=True, reprocess_columns=["cpf"]
+    )
 
     assert resultado["cpf"].tolist() == ["123"]
