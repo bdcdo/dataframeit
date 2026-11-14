@@ -368,6 +368,52 @@ def _is_absent(value: object, *, nan_is_value: bool) -> bool:
     return not (nan_is_value and isinstance(value, float))
 
 
+def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], object]:
+    """Converte o valor relido de um campo à forma em que a execução o passa às condições.
+
+    A execução dá às condições o model_dump da resposta, validada pelo modelo
+    do campo; o checkpoint grava a data, o Decimal e a chave de dict como
+    texto, e o arquivo relê assim. Validado de novo pelo modelo do campo, sem
+    strict, o valor volta ao tipo declarado, e a condição em dict ou callable
+    dá o mesmo resultado na execução, na retomada e no reprocessamento.
+
+    O valor validado só substitui o relido quando diz o mesmo (`_same_value`):
+    um validador que muda o valor a cada passada não roda duas vezes. O valor
+    que o tipo recusa vai como foi relido. O campo com exclude=True não sai no
+    dump, e a execução o viu como None. O modelo de cada campo é montado na
+    primeira vez que o campo é convertido.
+    """
+    from .agent import _llm_field_spec, _query_model  # noqa: PLC0415 (ver _provider_backend)
+
+    excluded_fields = _excluded_fields(pydantic_model)
+    field_models: dict[str, type[BaseModel]] = {}
+
+    def convert(field_name: str, value: object) -> object:
+        if value is None or field_name in excluded_fields:
+            return None
+        if field_name not in field_models:
+            field_models[field_name] = _query_model(
+                f"{pydantic_model.__name__}_{field_name}",
+                {
+                    field_name: _llm_field_spec(
+                        pydantic_model.model_fields[field_name], pydantic_model
+                    )
+                },
+            )
+        try:
+            validated = (
+                field_models[field_name]
+                .model_validate({field_name: value}, strict=False, by_alias=False, by_name=True)
+                .model_dump(by_alias=False)
+                .get(field_name)
+            )
+        except ValidationError:
+            return value
+        return validated if _same_value(validated, value) else value
+
+    return convert
+
+
 def _condition_holds(condition: object, row_values: dict, field_name: str) -> bool:
     """Avalia a condição com os valores da linha; erro conta como verdadeira.
 
@@ -449,6 +495,8 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 for field_name in execution_order
                 if field_name in conditions
             }
+        as_executed = _executed_form(pydantic_model)
+
     skipping_models: dict[tuple[frozenset, frozenset], Any] = {}
     # O campo com exclude=True não sai no model_dump, e a execução não grava a
     # coluna dele: a célula guarda o None com que a coluna foi criada ou o que a
@@ -555,13 +603,19 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             if row_values[field_name] is None
             and (field_name not in df.columns or pd.isna(row[field_name]))
         }
-        # A condição vê o texto vazio de outro campo como a execução o viu.
-        condition_values = {**row_values, **dict.fromkeys(empty_cells, "")}
         skipped_fields = set()
+        condition_values = None
         for field_name, condition in conditions.items():
-            if row_values[field_name] is None and not _condition_holds(
-                condition, condition_values, field_name
-            ):
+            if row_values[field_name] is not None:
+                continue
+            if condition_values is None:
+                # A condição vê os valores, e o texto vazio de outro campo,
+                # como a execução os viu.
+                condition_values = {
+                    **{name: as_executed(name, value) for name, value in row_values.items()},
+                    **dict.fromkeys(empty_cells, ""),
+                }
+            if not _condition_holds(condition, condition_values, field_name):
                 skipped_fields.add(field_name)
                 condition_values[field_name] = None
         skipped = frozenset(skipped_fields)
@@ -815,7 +869,15 @@ def _provider_backend(
             return
 
         extract = field_extractor(pydantic_model, user_prompt, config, trace_mode)
-        yield ProviderBackend(label="langchain", invoke=extract, invoke_partial=extract)
+        # Os valores já gravados chegam às condições como a execução os deixa.
+        as_executed = _executed_form(pydantic_model)
+        yield ProviderBackend(
+            label="langchain",
+            invoke=extract,
+            invoke_partial=lambda text, only_fields, known: extract(
+                text, only_fields, {name: as_executed(name, value) for name, value in known.items()}
+            ),
+        )
         return
 
     if config.provider == "codex":
