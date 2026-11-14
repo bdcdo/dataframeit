@@ -11,13 +11,21 @@ git clone https://github.com/bdcdo/dataframeit.git
 cd dataframeit
 
 uv run --extra dev pytest                     # suíte de testes
-uv run --extra dev --extra all --extra search-all --extra codex pytest --cov  # cobertura de ramos, exige 100%
 uv run --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex pytest --count=2 --repeat-scope=session  # suíte duas vezes no mesmo processo, sem pular teste
 uv run --extra dev ruff check src tests example  # lint
 uv run --extra docs mkdocs serve              # documentação em http://127.0.0.1:8000
 ```
 
 Os testes não chamam nenhum provider de verdade e não precisam de chave de API. Alguns testes só rodam com o extra correspondente instalado, como `--extra codex` ou `--extra search-all`; sem ele, são pulados.
+
+A cobertura de ramos exigida, 100%, é a soma de duas execuções, como no CI: o ramo de `codex.py` que trata o SDK ausente só roda sem o extra `codex`, e o código que usa o SDK só roda com ele. O `--exact` tira do ambiente os pacotes dos extras não pedidos, que o `uv run` deixaria instalados. O relatório confronta as linhas gravadas com o fonte no disco quando é gerado, e um arquivo de `src/` editado durante a execução sai com linhas executadas dadas como não cobertas.
+
+```bash
+COVERAGE_FILE=.coverage.unit uv run --exact --extra dev --extra all --extra search-all pytest --cov --cov-report= --cov-fail-under=0
+COVERAGE_FILE=.coverage.codex uv run --exact --extra dev --extra codex pytest --cov --cov-report= --cov-fail-under=0
+uv run --extra dev coverage combine .coverage.unit .coverage.codex
+uv run --extra dev coverage report  # exige 100%
+```
 
 ### Pre-commit
 
