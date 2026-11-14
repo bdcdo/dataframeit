@@ -2446,7 +2446,11 @@ def _instance_state(value: object, descent: _Descent) -> object:
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
     form = _stable(state, descent)
     builtin = _builtin_value(value)
-    if builtin is not None:
+    if isinstance(value, _TABLES):
+        # A subclasse chamável de tabela ou de array guarda os dados fora do
+        # estado (no `_mgr` do pandas, que o repr resume, e no buffer do numpy).
+        form = {"value": _data_form(value, descent), "state": form}
+    elif builtin is not None:
         form = {"value": _stable(builtin, descent), "state": form}
     descent.containers = outer
     del descent.depth[key]
@@ -2607,10 +2611,8 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     if key in descent.containers:
         return {"cycle": type(value).__name__}
     descent.containers.add(key)
-    if isinstance(value, (pd.DataFrame, pd.Series)):
-        form: object = _table_form(value, descent)
-    elif isinstance(value, _ARRAYS):
-        form = _array_form(value, descent)
+    if isinstance(value, _TABLES):
+        form: object = _data_form(value, descent)
     elif isinstance(value, collections.abc.Mapping):
         form = {_key_form(name, descent): _stable(item, descent) for name, item in value.items()}
     elif isinstance(value, collections.abc.Set):
@@ -2624,12 +2626,27 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
 def _key_form(name: object, descent: _Descent) -> str:
     """Chave de Mapping pelo `str`, sem o endereço de memória que ele leve.
 
-    O conjunto entra pela lista ordenada, e não pela ordem de iteração, que muda
-    com a semente de hash do processo.
+    O conjunto, sozinho ou dentro de uma tupla, entra pela lista ordenada, e não
+    pela ordem de iteração, que muda com a semente de hash do processo. A tupla
+    sem conjunto entra pelo `str` dela.
     """
-    if isinstance(name, (set, frozenset)):
+    if _holds_set(name):
         name = _stable(name, descent)
     return _without_address(str(name))
+
+
+def _holds_set(name: object) -> bool:
+    """Se a chave é um conjunto ou uma tupla que contém um, em qualquer nível."""
+    if isinstance(name, (set, frozenset)):
+        return True
+    return isinstance(name, tuple) and any(_holds_set(item) for item in name)
+
+
+def _data_form(value: object, descent: _Descent) -> object:
+    """DataFrame e Series por `_table_form`; ndarray, Index e array do pandas, por `_array_form`."""
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        return _table_form(value, descent)
+    return _array_form(cast("np.ndarray | pd.Index | ExtensionArray", value), descent)
 
 
 def _table_form(value: pd.DataFrame | pd.Series, descent: _Descent) -> object:

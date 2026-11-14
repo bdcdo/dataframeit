@@ -1620,6 +1620,21 @@ class Regra:
         return d.get("tipo") in set(self.valores)
 
 
+class Vetor(np.ndarray):
+    def __call__(self, d):
+        return d.get("tipo") in self
+
+
+class Quadro(pd.DataFrame):
+    def __call__(self, d):
+        return d.get("tipo") in set(self["tipo"])
+
+
+class Coluna(pd.Series):
+    def __call__(self, d):
+        return d.get("tipo") in set(self)
+
+
 class Piso(Decimal):
     def __call__(self, d):
         return d.get("valor", 0) > self
@@ -1767,6 +1782,16 @@ PARES = {
         lambda: Momento(2021, 10, 31, 1, 30),
         lambda: Momento(2021, 10, 31, 1, 30, fold=1),
     ),
+    "ndarray-chamavel": (
+        lambda: np.array(textos()).view(Vetor),
+        lambda: np.array(textos("pro")).view(Vetor),
+    ),
+    "dataframe-chamavel": (lambda: Quadro({"tipo": textos()}), lambda: Quadro({"tipo": textos("pro")})),
+    "series-chamavel": (lambda: Coluna(textos()), lambda: Coluna(textos("pro"))),
+    "conjunto-em-chave-tupla-no-estado": (
+        lambda: Regra({(frozenset(BAIRROS), 1): "vip"}),
+        lambda: Regra({(frozenset(BAIRROS | {"bras"}), 1): "vip"}),
+    ),
 }
 ESTAVEIS = {nome: antes() for nome, (antes, _) in PARES.items()}
 """
@@ -1833,6 +1858,7 @@ def test_chave_entra_pelo_str_sem_endereco_e_conjunto_em_ordem():
         str(chave).split(" at 0x")[0] + ">": 3,
     }
     assert core._stable({frozenset({"b", "a"}): 1}, core._Descent()) == {"['a', 'b']": 1}
+    assert core._stable({(("c", frozenset({"b", "a"})), 1): 1}) == {"[['c', ['a', 'b']], 1]": 1}
 
 
 # Modelo cujo JSON Schema falha sem função nem conjunto de texto no
