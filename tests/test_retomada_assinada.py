@@ -2137,16 +2137,30 @@ class SerializadorQueSoAcrescenta(BaseModel):
         return {**handler(self), "extra": 1}
 
 
+class PosInitQueCaiComNone(BaseModel):
+    outro: str
+    obs: str
+
+    def model_post_init(self, context):
+        self.outro.strip()
+
+    @model_serializer(mode="wrap")
+    def sem_obs(self, handler):
+        dados = handler(self)
+        del dados["obs"]
+        return dados
+
+
 @pytest.mark.parametrize(
     "modelo",
-    [SerializadorQueCaiComNone, SerializadorQueSoAcrescenta],
-    ids=["cai-com-none", "so-acrescenta"],
+    [SerializadorQueCaiComNone, SerializadorQueSoAcrescenta, PosInitQueCaiComNone],
+    ids=["cai-com-none", "so-acrescenta", "post-init-cai-com-none"],
 )
 def test_serializador_que_nao_tira_o_campo_com_none_mantem_a_conferencia(modelo):
     """Só o campo que o @model_serializer tira com None em tudo fica fora da conferência.
 
-    O serializador que cai com None não tira nenhum, e a célula vazia do
-    campo obrigatório continua acusada.
+    O serializador ou o model_post_init que cai com None não tira nenhum, e
+    a célula vazia do campo obrigatório continua acusada.
     """
     df = pd.DataFrame(
         {"outro": ["a"], "obs": [None], "_dataframeit_status": ["processed"]}, dtype=object
