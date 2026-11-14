@@ -405,7 +405,7 @@ def _enums_by_value(values: pd.Series) -> pd.Series:
 
 
 def _json_default(value: object) -> object:
-    """O que json.dumps não serializa: conjunto e deque como lista, numpy pelo tolist, Enum pelo valor.
+    """O que json.dumps não serializa: conjunto e deque como lista, mapping como dict, numpy pelo tolist, Enum pelo valor.
 
     O conjunto vira lista em ordem fixa, a do texto JSON de cada item. A ordem
     em que um set de textos é percorrido muda de um processo para outro, com o
@@ -418,20 +418,26 @@ def _json_default(value: object) -> object:
     porque sabe montar a lista aninhada de um buffer de mais de uma dimensão,
     como a memoryview, que o list() não percorre.
 
-    A sequência que não é lista nem tupla, como o deque, vira lista na ordem
-    dela. O texto não é coleção para a célula (`_TEXT_CLASSES`): a UserString
+    As coleções de `_is_structure_class` que o json.dumps não conhece vão
+    como as que ele conhece, para a célula que `_structures_as_json` manda a
+    JSON não sair com o repr: o Set, como o KeysView, vai como o conjunto; o
+    Mapping que não é dict, como o UserDict, o ChainMap ou o MappingProxyType,
+    vira dict; e a sequência que não é lista nem tupla, como o deque, vira
+    lista na ordem dela. O texto não é coleção para a célula (`_TEXT_CLASSES`): a UserString
     é Sequence, e cada item que o list() tira dela é outra UserString, então
     descer nela não termina. O Enum vai pelo valor porque é o que
     a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
     O resto vai como texto.
     """
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, collections.abc.Set):
         return sorted(value, key=lambda item: json.dumps(item, default=_json_default))
     if isinstance(value, Enum):
         return value.value
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
         return tolist()
+    if isinstance(value, collections.abc.Mapping):
+        return dict(value)
     if isinstance(value, collections.abc.Sequence) and not isinstance(value, _TEXT_CLASSES):
         return list(value)
     return str(value)
