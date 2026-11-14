@@ -13,12 +13,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- O piso do pyarrow nos extras `polars` e `all` sobe para 12.0.0: até a 11, o processo que lê ou grava parquet pode cair com segfault ao terminar (apache/arrow GH-15054).
 - O pre-commit roda também a suíte de testes sem os mais lentos (hook `pytest-rapido`, menos de um minuto); a suíte completa continua no CI. O `CLAUDE.md` traz os comandos de lint, typecheck e pre-commit e as convenções do histórico (#324).
 - O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
 
 ### Corrigido
 
-- O piso do `pyarrow` nos extras `polars` e `all` sobe para 12.0.0. Até a 11, importar `pyarrow.fs`, como o pandas faz ao ler e gravar parquet, deixa o S3 inicializado sem finalização, e o processo pode cair com segfault depois de terminar, como acontecia de forma intermitente no job `lowest-direct` do CI (apache/arrow GH-15054).
 - Os imports de `datetime` usam o alias `dt`, exigido pelo Ruff 0.17, para manter a verificação de lint aprovada (#319).
 - Nos providers `claude_code` e `codex`, o status HTTP 408 ou 409 dá `ProviderTransientError`, e a linha é repetida com backoff, como no erro de SDK que chega pelo LangChain; no 408, o aviso sai com a caixa de timeout. Antes, os dois status davam `ProviderError` definitivo, e a linha ficava com erro na primeira falha (#274).
 - A caixa genérica de erro (`ERRO NO PROCESSAMENTO`) mostra a mensagem em até três linhas, terminada em reticências quando passa disso, e a moldura fica alinhada nas linhas do tipo e dos detalhes. Antes, a mensagem era cortada em 66 caracteres sem aviso, e no `claude_code` o corte caía dentro do prefixo `Claude Code SDK retornou erro (subtipo, status N): `, sem mostrar nada do texto do SDK (#275).
