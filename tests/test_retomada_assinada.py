@@ -1854,6 +1854,70 @@ def test_campo_excluido_do_dump_volta_none_como_na_execucao(tmp_path, entrada, f
     assert retomada["obs"].dtype == direta["obs"].dtype
 
 
+class ExcluidoComPadraoLidoNoValidador(BaseModel):
+    outro: str
+    obs: str = Field(default="padrão", exclude=True)
+
+    @model_validator(mode="after")
+    def le_o_excluido(self):
+        if not self.obs.startswith("p"):
+            msg = "obs sem o padrão"
+            raise ValueError(msg)
+        return self
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_validador_do_modelo_ve_o_padrao_do_campo_excluido_na_retomada(tmp_path, formato):
+    """O campo excluído com default chega ao validador do modelo com o default, como na execução."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, ExcluidoComPadraoLidoNoValidador, lambda text: {"outro": text}
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["outro"]) == list(direta["outro"]) == ["a", "b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, None]
+
+
+class OpcionalComValidadorDeTexto(BaseModel):
+    obs: str | None = None
+
+    @field_validator("obs")
+    @classmethod
+    def sem_espacos(cls, valor):
+        return valor.strip()
+
+
+class OpcionalQueRecusaNone(BaseModel):
+    obs: str | None = None
+
+    @field_validator("obs")
+    @classmethod
+    def recusa_none(cls, valor):
+        if valor is None:
+            msg = "None recusado"
+            raise ValueError(msg)
+        return valor
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx"])
+@pytest.mark.parametrize(
+    "modelo",
+    [OpcionalComValidadorDeTexto, OpcionalQueRecusaNone],
+    ids=["validador-de-texto", "recusa-none"],
+)
+def test_celula_vazia_do_campo_opcional_com_padrao_none_nao_passa_pelo_validador(
+    tmp_path, formato, modelo
+):
+    """Com o default None, a célula vazia recebe o default sem passar pelos validadores do campo."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, modelo, lambda text: {"obs": ""}
+    )
+
+    assert chamadas == ["b"]
+    assert list(direta["obs"]) == ["", ""]
+    assert list(retomada["obs"]) == [None, ""]
+
+
 @pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
 def test_none_do_campo_opcional_com_padrao_volta_none_tambem_na_saida_polars(tmp_path, formato):
     """A saída polars sai da mesma coluna pandas, e o None também não vira o default nela."""
