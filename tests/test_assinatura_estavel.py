@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic_core import PydanticSerializationError
 
 from dataframeit import core, field_condition
 from dataframeit.core import _run_signature
@@ -320,7 +321,7 @@ class SemSchema(BaseModel):
         (Empresa, "199638f0467d90d7c55c6a7bd34bf8e33ca8e91cdfe87e1641c21c4ed27e91c5"),
         (ConjuntoDeInteiros, "c9b0940f4839c9cc73e8a358e15c7c886fc73b7f2f1e0ce47bf067056f90d400"),
         (ExtraEmFuncao, "7f8152ca65baaa0e5dd6f7b23803e8f8e23af2a8dbcb7d6eb871a04f9fd2816d"),
-        (SemSchema, "169f3ee5ca5a59b3eb231141f6d5a74c1cd4d1eccf1abd8fa51a8feb008aa070"),
+        (SemSchema, "b096221170f9c6f13e3abf5fe668455446cac1c0a70cbd3118e355e764739fcc"),
     ],
 )
 def test_modelo_sem_funcao_nem_conjunto_de_texto_mantem_a_assinatura(modelo, esperada):
@@ -1832,3 +1833,60 @@ def test_chave_entra_pelo_str_sem_endereco_e_conjunto_em_ordem():
         str(chave).split(" at 0x")[0] + ">": 3,
     }
     assert core._stable({frozenset({"b", "a"}): 1}, core._Descent()) == {"['a', 'b']": 1}
+
+
+# Modelo cujo JSON Schema falha sem função nem conjunto de texto no
+# json_schema_extra: a coleção só com JSON que o Pydantic não serializa, como a
+# UserList, o UserDict e o range. A assinatura sai da forma canônica, que desce
+# nos modelos aninhados. O código roda aqui e no processo filho do teste de
+# sementes.
+_SEM_JSON_SCHEMA = """
+from collections import UserDict, UserList
+
+from pydantic import BaseModel, Field
+
+EXTRAS = {"userlist": UserList([1, 2]), "userdict": UserDict(a=1), "range": range(3)}
+
+
+def cliente(extra, descricao="cidade do cliente"):
+    class Endereco(BaseModel):
+        cidade: str = Field(description=descricao)
+
+    class Cliente(BaseModel):
+        endereco: Endereco = Field(json_schema_extra={"regras": extra})
+
+    return Cliente
+"""
+_SEM_JSON_SCHEMA_ESPACO: dict[str, Any] = {}
+exec(_SEM_JSON_SCHEMA, _SEM_JSON_SCHEMA_ESPACO)  # noqa: S102 (fonte fixa do teste)
+
+
+@pytest.mark.parametrize("extra", ["userlist", "userdict", "range"])
+def test_modelo_sem_json_schema_assina_o_modelo_aninhado(extra):
+    cliente = _SEM_JSON_SCHEMA_ESPACO["cliente"]
+    valor = _SEM_JSON_SCHEMA_ESPACO["EXTRAS"][extra]
+    cidade, municipio = cliente(valor), cliente(valor, "município do cliente")
+
+    with pytest.raises(PydanticSerializationError):
+        cidade.model_json_schema()
+    assert not core._has_unstable_extra(cidade)
+    assert _assinatura(cidade) == _assinatura(cliente(valor)) != _assinatura(municipio)
+
+
+def test_modelo_com_model_json_schema_que_levanta_assina_o_modelo_aninhado():
+    def modelo(descricao):
+        class Endereco(BaseModel):
+            cidade: str = Field(description=descricao)
+
+        class Cliente(SemSchema):
+            endereco: Endereco
+
+        return Cliente
+
+    assert _assinatura(modelo("cidade")) != _assinatura(modelo("município"))
+
+
+def test_modelo_sem_json_schema_assina_igual_entre_sementes():
+    _assinaturas_em_tres_sementes(
+        _SEM_JSON_SCHEMA, "{nome: cliente(extra) for nome, extra in EXTRAS.items()}"
+    )
