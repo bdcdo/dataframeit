@@ -2202,8 +2202,8 @@ def _schema_signature(questions: type[BaseModel]) -> object:
     if not _has_unstable_extra(questions):
         try:
             schema = questions.model_json_schema()
-        except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
-            return repr(questions.model_fields)
+        except Exception:  # noqa: BLE001 (sem JSON Schema, a forma canônica, que desce nos aninhados, serve de assinatura)
+            return _schema_form(questions)
         try:
             json.dumps(schema, sort_keys=True, default=_stable_repr)
         except TypeError:
@@ -2218,14 +2218,14 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
 
     Contam os campos e os modelos, inclusive aninhados. Com função, conjunto ou
     contêiner que contém a si mesmo, o JSON Schema não serve de assinatura: a
-    função faz model_json_schema() falhar, e o fallback leva o endereço dela; o
-    conjunto vira lista na ordem de iteração, que muda com a semente de hash do
-    processo, também quando o Pydantic o deixa cru no schema, como faz com o do
-    model_config; e o ciclo derruba o json.dumps. A tabela e o array do pandas e
-    do numpy entram no JSON Schema pelo repr, que mostra só as primeiras e as
-    últimas posições. A busca desce em toda coleção de `_is_structure_class`,
-    como o deque e a UserList. Os outros modelos ficam com o JSON Schema, e a
-    assinatura deles é a mesma do checkpoint já gravado com eles.
+    função faz model_json_schema() falhar; o conjunto vira lista na ordem de
+    iteração, que muda com a semente de hash do processo, também quando o
+    Pydantic o deixa cru no schema, como faz com o do model_config; e o ciclo
+    derruba o json.dumps. A tabela e o array do pandas e do numpy entram no JSON
+    Schema pelo repr, que mostra só as primeiras e as últimas posições. A busca
+    desce em toda coleção de `_is_structure_class`, como o deque e a UserList.
+    Os outros modelos ficam com o JSON Schema, e a assinatura deles é a mesma do
+    checkpoint já gravado com eles.
 
     Cada modelo é reconstruído antes da leitura, como o Pydantic faz na
     validação: o campo guarda a referência adiantada até lá, e nem esta busca
@@ -2293,21 +2293,17 @@ def _schema_form(questions: type[BaseModel]) -> object:
     """Forma canônica do modelo, para o lugar do JSON Schema na assinatura.
 
     Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
-    e o chamável entram pelo que `_schema_leaf` tira deles.
+    e o chamável entram pelo que `_schema_leaf` tira deles. O caminho que se
+    repete, como o campo de mesmo nome em dois ramos de `A | B`, entra com a
+    lista dos campos, na ordem da união.
     """
-    return _stable(
-        {
-            "model": questions,
-            "fields": {
-                path: {
-                    attribute: getattr(field_info, attribute)
-                    for attribute in _SIGNED_FIELD_ATTRIBUTES
-                }
-                for path, field_info, _ in _walk_fields(questions)
-            },
-        },
-        _Descent(),
-    )
+    by_path: dict[str, list[dict[str, object]]] = {}
+    for path, field_info, _ in _walk_fields(questions):
+        by_path.setdefault(path, []).append(
+            {attribute: getattr(field_info, attribute) for attribute in _SIGNED_FIELD_ATTRIBUTES}
+        )
+    fields = {path: found[0] if len(found) == 1 else found for path, found in by_path.items()}
+    return _stable({"model": questions, "fields": fields}, _Descent())
 
 
 class _Descent:
