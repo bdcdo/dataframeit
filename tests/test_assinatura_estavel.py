@@ -857,7 +857,6 @@ def test_mudanca_no_slot_de_objeto_com_busca_propria_muda_a_assinatura(construto
 # alvo, com o mesmo nome, como a classe editada entre uma execução e outra.
 _METODOS = '''
 import functools
-from collections import deque
 
 FONTE = """
 class Regra:
@@ -968,7 +967,6 @@ def test_objeto_classmethod_em_chave_livre_assina_pelo_codigo():
 # do tipo também muda com a versão.
 _FORMAS_FIXADAS = """
 import functools
-from collections import deque
 from typing import NamedTuple
 
 from pydantic import BaseModel, Field
@@ -1077,7 +1075,6 @@ def test_forma_canonica_sem_os_casos_novos_mantem_a_assinatura(monkeypatch, nome
 # e o que está ao lado do ciclo continua contando.
 _CONTEINERES_COM_CICLO = """
 import functools
-from collections import deque
 
 
 class Regra:
@@ -1178,6 +1175,7 @@ def test_json_schema_extra_e_model_kwargs_que_contem_a_si_assinam_sem_recursao()
 # __slots__, e o NamedTuple seria lido como tupla, sem o __call__. A classe do
 # NamedTuple é compilada de novo a cada variação, com o mesmo nome qualificado.
 _EMBUTIDOS = '''
+from collections import deque
 from typing import NamedTuple
 
 FONTE = """
@@ -1218,6 +1216,11 @@ class Tabela(dict):
         return self.get(d.get("tipo"), False)
 
 
+class Fila(deque):
+    def __call__(self, d):
+        return d.get("tipo") in self
+
+
 TIPOS = {"vip", "ouro", "prata", "bronze"}
 VARIACOES = {
     "int": lambda: Limite(5),
@@ -1228,6 +1231,8 @@ VARIACOES = {
     "frozenset-mudado": lambda: Tipos(TIPOS | {"lata"}),
     "dict": lambda: Tabela(vip=True),
     "dict-mudado": lambda: Tabela(ouro=True),
+    "deque": lambda: Fila(["vip", "ouro"]),
+    "deque-mudado": lambda: Fila(["vip", "lata"]),
     "namedtuple": lambda: corte(5),
     "namedtuple-valor-mudado": lambda: corte(10),
     "namedtuple-call-mudado": lambda: corte(5, "<"),
@@ -1262,6 +1267,7 @@ def test_subclasse_chamavel_de_tipo_embutido_assina_igual_entre_sementes():
         ("str", "str-mudado"),
         ("frozenset", "frozenset-mudado"),
         ("dict", "dict-mudado"),
+        ("deque", "deque-mudado"),
         ("namedtuple", "namedtuple-valor-mudado"),
         ("namedtuple", "namedtuple-call-mudado"),
         ("metodo-de-namedtuple", "metodo-de-namedtuple-mudado"),
@@ -1512,6 +1518,10 @@ from dataframeit.core import _run_signature
 TIPOS = {"vip", "ouro", "prata", "bronze"}
 
 
+class Chave:
+    pass
+
+
 def regra(d):
     return d.get("tipo") == "vip"
 
@@ -1546,6 +1556,7 @@ def test_colecao_reconhecida_pela_abc_assina_igual_entre_sementes():
 
         assinaturas = {nome: assinatura(montar()) for nome, montar in EXTRAS.items()}
         assinaturas["model_kwargs"] = assinatura(1, {"extra": deque([TIPOS])})
+        assinaturas["chave-objeto"] = assinatura(1, {"extra": UserDict({Chave(): 1})})
         print(json.dumps(assinaturas))
         """
     )

@@ -2463,7 +2463,8 @@ def _instance_state(value: object, descent: _Descent) -> object:
 
 
 # Tipos embutidos cujo valor a subclasse guarda fora do `__dict__` e dos
-# `__slots__`, como o 5 de `Limite(5)` ou a tupla de um NamedTuple.
+# `__slots__`, como o 5 de `Limite(5)`, a tupla de um NamedTuple ou os itens
+# de uma subclasse de deque.
 _BUILTIN_VALUE_TYPES = (
     int,
     float,
@@ -2476,6 +2477,7 @@ _BUILTIN_VALUE_TYPES = (
     dict,
     set,
     frozenset,
+    collections.deque,
 )
 
 
@@ -2570,7 +2572,8 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
 
     As coleções são reconhecidas pela ABC, como em `_is_structure_class`: o
     deque e a UserList entram como a lista, e o UserDict, como o dict. Chaves de
-    Mapping viram texto, para ordenar dict com chaves int e str juntas, e Set
+    Mapping viram texto sem endereço, para ordenar dict com chaves int e str
+    juntas, e Set
     vira lista ordenada, porque a ordem de iteração dele muda com a semente de
     hash do processo. O DataFrame e a Series entram por `_table_form`.
     Com `descent`, o que não é contêiner passa por `_schema_leaf`; sem ele, fica
@@ -2601,7 +2604,7 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     if isinstance(value, _TABLES):
         form: object = _table_form(value, descent)
     elif isinstance(value, collections.abc.Mapping):
-        form = {str(name): _stable(item, descent) for name, item in value.items()}
+        form = {_without_address(str(name)): _stable(item, descent) for name, item in value.items()}
     elif isinstance(value, collections.abc.Set):
         form = sorted((_stable(item, descent) for item in value), key=_stable_repr)
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
@@ -2660,7 +2663,11 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
 
 def _stable_repr(value: object) -> str:
     """Repr sem endereço de memória, que muda a cada processo."""
-    return re.sub(r" at 0x[0-9a-fA-F]+", "", repr(value))
+    return _without_address(repr(value))
+
+
+def _without_address(text: str) -> str:
+    return re.sub(r" at 0x[0-9a-fA-F]+", "", text)
 
 
 def _text_hashes(texts: pd.Series) -> list[str | None]:
