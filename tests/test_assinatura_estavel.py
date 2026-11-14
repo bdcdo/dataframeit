@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections import deque
 from enum import Enum
 from typing import Any, Literal
 
@@ -856,6 +857,7 @@ def test_mudanca_no_slot_de_objeto_com_busca_propria_muda_a_assinatura(construto
 # alvo, com o mesmo nome, como a classe editada entre uma execução e outra.
 _METODOS = '''
 import functools
+from collections import deque
 
 FONTE = """
 class Regra:
@@ -966,6 +968,7 @@ def test_objeto_classmethod_em_chave_livre_assina_pelo_codigo():
 # do tipo também muda com a versão.
 _FORMAS_FIXADAS = """
 import functools
+from collections import deque
 from typing import NamedTuple
 
 from pydantic import BaseModel, Field
@@ -1074,6 +1077,7 @@ def test_forma_canonica_sem_os_casos_novos_mantem_a_assinatura(monkeypatch, nome
 # e o que está ao lado do ciclo continua contando.
 _CONTEINERES_COM_CICLO = """
 import functools
+from collections import deque
 
 
 class Regra:
@@ -1492,3 +1496,106 @@ def test_mudanca_no_conjunto_do_model_config_muda_a_assinatura(construtor):
     ]
 
     assert _assinatura(montar({"centro", "mooca"})) != _assinatura(montar({"centro", "lapa"}))
+
+
+# Coleção que não é dict, lista, tupla nem conjunto, reconhecida pela ABC: o
+# deque, a UserList e o UserDict, com a função e o conjunto de texto que o JSON
+# Schema não serializa igual em todo processo, no json_schema_extra e nos
+# model_kwargs.
+_COLECOES_ABC = """
+from collections import UserDict, UserList, deque
+
+from pydantic import BaseModel, Field
+
+from dataframeit.core import _run_signature
+
+TIPOS = {"vip", "ouro", "prata", "bronze"}
+
+
+def regra(d):
+    return d.get("tipo") == "vip"
+
+
+def modelo(extra):
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra={"regras": extra})
+
+    return Pedido
+
+
+def assinatura(extra, model_kwargs=None):
+    return _run_signature(
+        modelo(extra), "{texto}", provider="openai", model="m", model_kwargs=model_kwargs,
+        search_config=None, text_column="texto", status_col="_dataframeit_status",
+    )
+
+
+EXTRAS = {
+    "deque-funcao": lambda: deque([regra]),
+    "deque-conjunto": lambda: deque([TIPOS]),
+    "userlist-conjunto": lambda: UserList([TIPOS]),
+    "userdict-conjunto": lambda: UserDict(tipos=TIPOS),
+}
+"""
+
+
+def test_colecao_reconhecida_pela_abc_assina_igual_entre_sementes():
+    codigo = _COLECOES_ABC + textwrap.dedent(
+        """
+        import json
+
+        assinaturas = {nome: assinatura(montar()) for nome, montar in EXTRAS.items()}
+        assinaturas["model_kwargs"] = assinatura(1, {"extra": deque([TIPOS])})
+        print(json.dumps(assinaturas))
+        """
+    )
+
+    por_semente = [_roda_python(codigo, semente=semente) for semente in ("0", "1", "2")]
+
+    assert por_semente[0] == por_semente[1] == por_semente[2]
+
+
+@pytest.mark.parametrize(
+    ("antes", "depois"),
+    [
+        ("deque([lambda d: d.get('tipo') == 'vip'])", "deque([lambda d: d.get('tipo') == 'ouro'])"),
+        ("deque([TIPOS])", "deque([TIPOS | {'lata'}])"),
+        ("UserList([TIPOS])", "UserList([TIPOS | {'lata'}])"),
+        ("UserDict(tipos=TIPOS)", "UserDict(tipos=TIPOS | {'lata'})"),
+    ],
+)
+def test_mudanca_dentro_da_colecao_reconhecida_pela_abc_muda_a_assinatura(antes, depois):
+    espaco = {}
+    exec(_COLECOES_ABC, espaco)  # noqa: S102 (fonte fixa do teste)
+    assinatura = espaco["assinatura"]
+
+    assert assinatura(eval(antes, espaco)) != assinatura(eval(depois, espaco))  # noqa: S307
+
+
+def test_deque_nos_model_kwargs_entra_pelo_conteudo():
+    espaco = {}
+    exec(_COLECOES_ABC, espaco)  # noqa: S102 (fonte fixa do teste)
+    assinatura, deque = espaco["assinatura"], espaco["deque"]
+
+    assert assinatura(1, {"x": deque([{"vip"}])}) != assinatura(1, {"x": deque([{"ouro"}])})
+
+
+def test_deque_que_contem_a_si_no_json_schema_extra_assina_sem_recursao():
+    def modelo(alvo):
+        fila: deque[object] = deque([alvo])
+        fila.append(fila)
+
+        class Pedido(BaseModel):
+            tipo: str = Field(json_schema_extra={"fila": fila})  # ty: ignore[invalid-argument-type]
+
+        return Pedido
+
+    assert core._has_unstable_extra(modelo("vip"))
+    assert _assinatura(modelo("vip")) == _assinatura(modelo("vip")) != _assinatura(modelo("ouro"))
+
+
+def test_deque_so_com_json_mantem_o_json_schema():
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra={"fila": deque(["vip", 1, {"ouro": [2]}])})  # ty: ignore[invalid-argument-type]
+
+    assert not core._has_unstable_extra(Pedido)
