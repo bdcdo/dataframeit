@@ -18,6 +18,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- O piso do `pyarrow` nos extras `polars` e `all` sobe para 12.0.0. Até a 11, o AWS SDK embutido no `libarrow` derruba o processo com segfault no encerramento depois que o pandas lê ou grava parquet, às vezes na 10.0.1 e quase sempre na 11.0.0, e o job `lowest-direct` do CI falhava de forma intermitente com exit 139 depois de todos os testes passarem.
 - Os imports de `datetime` usam o alias `dt`, exigido pelo Ruff 0.17, para manter a verificação de lint aprovada (#319).
 - Nos providers `claude_code` e `codex`, o status HTTP 408 ou 409 dá `ProviderTransientError`, e a linha é repetida com backoff, como no erro de SDK que chega pelo LangChain; no 408, o aviso sai com a caixa de timeout. Antes, os dois status davam `ProviderError` definitivo, e a linha ficava com erro na primeira falha (#274).
 - A caixa genérica de erro (`ERRO NO PROCESSAMENTO`) mostra a mensagem em até três linhas, terminada em reticências quando passa disso, e a moldura fica alinhada nas linhas do tipo e dos detalhes. Antes, a mensagem era cortada em 66 caracteres sem aviso, e no `claude_code` o corte caía dentro do prefixo `Claude Code SDK retornou erro (subtipo, status N): `, sem mostrar nada do texto do SDK (#275).
