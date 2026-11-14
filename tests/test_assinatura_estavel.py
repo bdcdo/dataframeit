@@ -1474,6 +1474,17 @@ def test_conjunto_no_model_config_de_modelo_por_referencia_adiantada_muda_a_assi
     assert depois == reconstruido
 
 
+class _Regiao(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"exemplos": {"centro", "mooca"}})  # ty: ignore[invalid-argument-type]
+
+    subregioes: list["_Regiao"] = []
+
+
+def test_conjunto_no_model_config_de_modelo_recursivo_sai_do_json_schema():
+    """O modelo que aponta para si é lido uma vez, e a busca termina."""
+    assert core._has_unstable_extra(_Regiao)
+
+
 @pytest.mark.parametrize("construtor", ["raiz", "aninhado", "lista"])
 def test_mudanca_no_conjunto_do_model_config_muda_a_assinatura(construtor):
     montar = _funcao("from pydantic import BaseModel\n" + _CONFIG_COM_CONJUNTO, "CONSTRUTORES")[
