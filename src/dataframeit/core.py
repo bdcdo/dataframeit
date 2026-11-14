@@ -486,8 +486,8 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # volta None. A célula com valor é conferida como a de qualquer campo, e
     # a coluna ausente da entrada e do checkpoint, que não é célula gravada,
     # também.
-    omittable_fields = _omittable_fields(pydantic_model, excluded_fields)
-    serializer_dropped = _dropped_by_model_serializer(pydantic_model)
+    serializer_dropped = _dropped_by_model_serializer(pydantic_model, excluded_fields)
+    omittable_fields = _omittable_fields(pydantic_model, excluded_fields, serializer_dropped)
     # Na coluna que veio da entrada ou do checkpoint, a célula vazia do campo
     # que admite None e tem outro default, dado direto ou pela fábrica, é o
     # None que a execução gravou, e ele vai à validação: sem ele, ela
@@ -508,18 +508,18 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         """O modelo de validação com os campos pulados e os obrigatórios fora do dump trocados."""
         if not skipped and not hidden:
             return validation_model
-        key = (skipped - hidden, hidden)
+        key = (skipped, hidden)
         if key not in skipping_models:
             # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
             skipping_models[key] = create_model(  # ty: ignore[no-matching-overload]
                 f"{pydantic_model.__name__}CheckpointSkipped",
                 __base__=validation_model,
-                **dict.fromkeys(skipped - hidden, (Any, None)),
-                # O None no lugar do obrigatório fora do dump não passa pelos
-                # validadores do campo. O campo continua fora do dump, longe do
-                # serializador dele, salvo o que o @model_serializer tira, que
-                # chega a ele como na execução, com o None no lugar do valor.
                 **{
+                    # O None no lugar do obrigatório fora do dump não passa
+                    # pelos validadores do campo. O campo continua fora do
+                    # dump, longe do serializador dele, salvo o que o
+                    # @model_serializer tira, que chega a ele como na execução,
+                    # com o None no lugar do valor.
                     field_name: (
                         Any,
                         Field(
@@ -528,7 +528,9 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                             validate_default=False,
                         ),
                     )
-                    for field_name in hidden
+                    if field_name in hidden
+                    else (Any, None)
+                    for field_name in skipped | hidden
                 },
             )
         return skipping_models[key]
@@ -585,14 +587,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         projected = {}
         missing_values = set()
         restored = set()
-        omitted = set()
+        omitted_required = set()
         for field_name, field in pydantic_model.model_fields.items():
             if field_name in excluded_fields:
                 continue
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
                 if field_name in omittable_fields and field_name in df.columns:
-                    omitted.add(field_name)
+                    if field.is_required():
+                        omitted_required.add(field_name)
                     values_to_fill[(position, field_name)] = None
                     continue
                 if field_name in empty_cells and field_name not in skipped:
@@ -610,13 +613,8 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     continue
             projected[field_name] = value
 
-        omitted_required = frozenset(
-            field_name
-            for field_name in omitted
-            if pydantic_model.model_fields[field_name].is_required()
-        )
         validated_data, rejected = _validate_row(
-            model_skipping(skipped, required_excluded | omitted_required),
+            model_skipping(skipped, required_excluded | frozenset(omitted_required)),
             projected,
             rejected_fields,
         )
@@ -2650,7 +2648,9 @@ def _resume_from_checkpoint(
     # que trazer dele: a coluna fica como na execução, com o None da criação
     # ou o que a entrada trazia. Relida do CSV ou do XLSX, ela viria NaN.
     excluded_fields = _excluded_fields(questions)
-    omittable_fields = _omittable_fields(questions, excluded_fields)
+    omittable_fields = _omittable_fields(
+        questions, excluded_fields, _dropped_by_model_serializer(questions, excluded_fields)
+    )
     for column in saved.columns:
         target = by_name.get(str(column))
         if target == text_column or str(column) in excluded_fields:
@@ -2689,26 +2689,27 @@ def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     )
 
 
-def _omittable_fields(model: type[BaseModel], excluded_fields: frozenset[str]) -> frozenset[str]:
+def _omittable_fields(
+    model: type[BaseModel], excluded_fields: frozenset[str], serializer_dropped: frozenset[str]
+) -> frozenset[str]:
     """Os campos que o model_dump pode deixar de fora conforme a resposta.
 
     O campo com exclude_if sai do dump quando a condição vale para o valor, e
-    o @model_serializer do modelo pode tirar um campo dele
+    o @model_serializer do modelo tira os de `serializer_dropped`
     (`_dropped_by_model_serializer`). A execução não grava o campo que ficou
     de fora, e a célula dele guarda o None com que a coluna foi criada. O
     campo com exclude=True, que nunca sai no dump, fica em `excluded_fields`.
     """
-    return (
-        frozenset(
-            field_name
-            for field_name, field in model.model_fields.items()
-            if field.exclude_if is not None
-        )
-        | _dropped_by_model_serializer(model)
-    ) - excluded_fields
+    return serializer_dropped | frozenset(
+        field_name
+        for field_name, field in model.model_fields.items()
+        if field.exclude_if is not None and field_name not in excluded_fields
+    )
 
 
-def _dropped_by_model_serializer(model: type[BaseModel]) -> frozenset[str]:
+def _dropped_by_model_serializer(
+    model: type[BaseModel], excluded_fields: frozenset[str]
+) -> frozenset[str]:
     """Os campos que o @model_serializer do modelo tira do dump.
 
     O serializador recebe a instância com None em todos os campos, e o campo
@@ -2727,7 +2728,7 @@ def _dropped_by_model_serializer(model: type[BaseModel]) -> frozenset[str]:
             dumped = probe.model_dump().keys()
     except Exception:  # noqa: BLE001 (o serializador é do usuário e pode cair com o None)
         return frozenset()
-    return frozenset(model.model_fields) - dumped - _excluded_fields(model)
+    return frozenset(model.model_fields) - dumped - excluded_fields
 
 
 def _default_may_be_none(field: FieldInfo) -> bool:

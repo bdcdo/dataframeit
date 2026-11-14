@@ -430,7 +430,7 @@ def _resolved(annotation: object) -> object:
     """A anotação sem NewType, apelido `type` e TypeVar, pelo tipo a que eles se referem.
 
     É o ponto único em que os helpers deste módulo que inspecionam anotação
-    resolvem os dois, a cada nível, antes de olhar a origem ou os argumentos.
+    resolvem os três, a cada nível, antes de olhar a origem ou os argumentos.
     O NewType guarda o tipo em `__supertype__`, e o apelido, em `__value__`. O
     apelido é reconhecido pelo nome da classe, porque o de `type X = ...` e o
     `TypeAliasType` do typing_extensions são classes diferentes com esse mesmo
@@ -463,7 +463,8 @@ def _typevar_validated_as(typevar: typing.TypeVar) -> object:
     """
     # O has_default só existe no TypeVar do typing_extensions e do Python 3.13+.
     if getattr(typevar, "has_default", lambda: False)():
-        return typevar.__default__  # ty: ignore[unresolved-attribute]
+        default = typevar.__default__  # ty: ignore[unresolved-attribute]
+        return type(None) if default is None else default
     if typevar.__constraints__:
         return typing.Union[typevar.__constraints__]  # noqa: UP007 (união montada em tempo de execução)
     if typevar.__bound__ is not None:
@@ -900,8 +901,7 @@ def accepts_only_text(field_type: object) -> bool:
 def _admits_none(field_type: object) -> bool:
     """Se o tipo aceita None: o próprio None, Any, object, a união com ele ou o Literal com ele."""
     field_type = _resolved(field_type)
-    # O None na anotação, como no default do TypeVar, é o tipo dele.
-    if any(field_type is accepted for accepted in (None, type(None), typing.Any, object)):
+    if field_type is type(None) or field_type is typing.Any or field_type is object:
         return True
     origin = get_origin(field_type)
     if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type

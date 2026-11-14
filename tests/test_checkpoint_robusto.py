@@ -552,7 +552,6 @@ _DefaultInteiro = TypeVarComDefault("_DefaultInteiro", bound=Optional[int], defa
         (_ANOTADO_COM_NONE | Literal["y"], True),
         (Annotated[str, Field(min_length=1)] | Literal["y"], False),
         (_APELIDO_COM_NONE, True),
-        (None, True),
         (_Livre, True),
         (_LimiteInteiro, False),
         (_LimiteOpcional, True),
