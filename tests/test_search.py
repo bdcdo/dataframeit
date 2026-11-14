@@ -2189,10 +2189,10 @@ def test_dataframeit_warns_when_search_and_parallel():
         assert kwargs["search_per_field"] is True
 
 
-def test_dataframeit_warns_per_field_large_dataset_without_parallel():
-    """Mesmo sem paralelismo, search_per_field com muitas queries aciona o warning."""
+def test_dataframeit_nao_confere_rate_limit_com_um_worker():
+    """Com um worker, nem search_per_field com muitas queries chama o aviso."""
 
-    # 100 linhas * 2 campos = 200 queries -> > 100, aciona gatilho estendido.
+    # 100 linhas * 2 campos = 200 queries, em série: até 60 buscas por minuto.
     df = pd.DataFrame({"texto": ["item"] * 100})
 
     with (
@@ -2211,7 +2211,7 @@ def test_dataframeit_warns_per_field_large_dataset_without_parallel():
                 search_per_field=True,
                 parallel_requests=1,
             )
-        mock_warn.assert_called_once()
+        mock_warn.assert_not_called()
 
 
 def test_dataframeit_no_warn_without_search():

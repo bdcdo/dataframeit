@@ -516,4 +516,4 @@ resultado = dataframeit(
 
 ### Aviso Automático
 
-O DataFrameIt emite um `UserWarning` quando a configuração parece arriscada (queries concorrentes altas ou taxa estimada perto do limite), incluindo recomendações de `parallel_requests` e `rate_limit_delay` para evitar HTTP 429. A conta também roda em execuções sequenciais quando `search_per_field=True` produz muitas queries (>100 no total); com um worker só, a taxa estimada fica em até 60 buscas por minuto, abaixo do gatilho dos dois provedores.
+O DataFrameIt emite um `UserWarning` quando a configuração parece arriscada (queries concorrentes altas ou taxa estimada perto do limite), incluindo recomendações de `parallel_requests` e `rate_limit_delay` para evitar HTTP 429. Com um worker só (`parallel_requests=1`), a taxa estimada fica em até 60 buscas por minuto, abaixo do gatilho dos dois provedores, e o aviso não sai.
