@@ -1164,6 +1164,8 @@ def test_retomada_de_checkpoint_csv_com_newtype_e_apelido(tmp_path):
 )
 def test_coluna_do_usuario_com_userstring_vai_ao_checkpoint(tmp_path, formato, valores):
     """A UserString é Sequence, mas é texto: o checkpoint a grava, e a retomada paga só a pendente."""
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
     caminho = tmp_path / f"ck.{formato}"
     chamadas = []
 
