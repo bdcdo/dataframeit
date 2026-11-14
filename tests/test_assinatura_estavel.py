@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections import deque
+from collections import UserList, deque
 from enum import Enum
 from typing import Any, Literal
 
@@ -1890,3 +1890,24 @@ def test_modelo_sem_json_schema_assina_igual_entre_sementes():
     _assinaturas_em_tres_sementes(
         _SEM_JSON_SCHEMA, "{nome: cliente(extra) for nome, extra in EXTRAS.items()}"
     )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [UserList([1, 2]), {"condicao": lambda d: d.get("cidade") == "SP"}],
+    ids=["sem-json-schema", "com-funcao"],
+)
+def test_campo_de_mesmo_nome_em_dois_ramos_da_uniao_entra_na_assinatura(extra):
+    def modelo(descricao):
+        class Urbano(BaseModel):
+            cidade: str = Field(description=descricao)
+
+        class Rural(BaseModel):
+            cidade: str
+
+        class Imovel(BaseModel):
+            endereco: Urbano | Rural = Field(json_schema_extra={"regras": extra})
+
+        return Imovel
+
+    assert _assinatura(modelo("cidade")) != _assinatura(modelo("município"))

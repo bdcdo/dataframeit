@@ -2293,21 +2293,17 @@ def _schema_form(questions: type[BaseModel]) -> object:
     """Forma canônica do modelo, para o lugar do JSON Schema na assinatura.
 
     Cada campo, inclusive aninhado, entra pelo caminho; o modelo aninhado, o Enum
-    e o chamável entram pelo que `_schema_leaf` tira deles.
+    e o chamável entram pelo que `_schema_leaf` tira deles. O caminho que se
+    repete, como o campo de mesmo nome em dois ramos de `A | B`, entra com a
+    lista dos campos, na ordem da união.
     """
-    return _stable(
-        {
-            "model": questions,
-            "fields": {
-                path: {
-                    attribute: getattr(field_info, attribute)
-                    for attribute in _SIGNED_FIELD_ATTRIBUTES
-                }
-                for path, field_info, _ in _walk_fields(questions)
-            },
-        },
-        _Descent(),
-    )
+    by_path: dict[str, list[dict[str, object]]] = {}
+    for path, field_info, _ in _walk_fields(questions):
+        by_path.setdefault(path, []).append(
+            {attribute: getattr(field_info, attribute) for attribute in _SIGNED_FIELD_ATTRIBUTES}
+        )
+    fields = {path: found[0] if len(found) == 1 else found for path, found in by_path.items()}
+    return _stable({"model": questions, "fields": fields}, _Descent())
 
 
 class _Descent:
