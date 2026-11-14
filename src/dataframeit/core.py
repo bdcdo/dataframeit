@@ -2181,7 +2181,6 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
     linhas dele às desta execução misturaria respostas a perguntas diferentes.
     """
-    _complete_model(questions)
     if _has_unstable_extra(questions):
         schema = _schema_form(questions)
     else:
@@ -2212,16 +2211,6 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _complete_model(questions: type[BaseModel]) -> None:
-    """Troca a referência adiantada dos campos pela classe, como o Pydantic na validação.
-
-    Sem isso, o campo guarda o `ForwardRef` até a primeira validação, e a forma
-    canônica não chegaria ao modelo aninhado que ele nomeia. O modelo completo
-    não muda.
-    """
-    questions.model_rebuild(raise_errors=False)
-
-
 def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     """Se o json_schema_extra de um campo ou de um model_config tem o que não é JSON.
 
@@ -2232,9 +2221,15 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     processo, também quando o Pydantic o deixa cru no schema, como faz com o do
     model_config; e o ciclo derruba o json.dumps. Os outros modelos ficam com o
     JSON Schema, e a assinatura deles é a mesma do checkpoint já gravado com eles.
+
+    Cada modelo é reconstruído antes da leitura, como o Pydantic faz na
+    validação: o campo guarda a referência adiantada até lá, e nem esta busca
+    nem a forma canônica chegariam ao modelo que ela nomeia. O modelo completo
+    não muda.
     """
     models = [questions]
     for model in models:  # a lista cresce com os modelos aninhados achados
+        model.model_rebuild(raise_errors=False)
         for field_info in model.model_fields.values():
             for nested in get_nested_pydantic_models(field_info.annotation):
                 if nested not in models:

@@ -1438,22 +1438,35 @@ class _Endereco(BaseModel):
     bairro: "_BairroAdiantado"
 
 
+class _Trecho(BaseModel):
+    bairro: "_BairroAdiantado"
+
+
+class _Rota(BaseModel):
+    trecho: _Trecho
+
+
 class _BairroAdiantado(BaseModel):
     model_config = ConfigDict(json_schema_extra={"exemplos": {"centro", "mooca"}})  # ty: ignore[invalid-argument-type]
 
     nome: str
 
 
-def test_conjunto_no_model_config_de_modelo_por_referencia_adiantada_muda_a_assinatura():
+@pytest.mark.parametrize(
+    ("modelo", "aninhado"), [(_Endereco, _Endereco), (_Rota, _Trecho)], ids=["raiz", "aninhado"]
+)
+def test_conjunto_no_model_config_de_modelo_por_referencia_adiantada_muda_a_assinatura(
+    modelo, aninhado
+):
     """O campo guarda a referência adiantada até o `model_rebuild`, e a assinatura
-    lê o modelo aninhado pela classe que ela nomeia, antes e depois dele."""
+    lê o modelo que ela nomeia, antes e depois dele."""
     extra = _BairroAdiantado.model_config["json_schema_extra"]
-    antes = _assinatura(_Endereco)
+    antes = _assinatura(modelo)
     try:
         extra["exemplos"] = {"centro", "lapa"}  # ty: ignore[invalid-assignment]
-        depois = _assinatura(_Endereco)
-        _Endereco.model_rebuild(force=True)
-        reconstruido = _assinatura(_Endereco)
+        depois = _assinatura(modelo)
+        aninhado.model_rebuild(force=True)
+        reconstruido = _assinatura(modelo)
     finally:
         extra["exemplos"] = {"centro", "mooca"}  # ty: ignore[invalid-assignment]
 
