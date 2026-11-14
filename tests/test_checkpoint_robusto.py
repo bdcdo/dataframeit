@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import TypeAliasType
+from typing_extensions import TypeVar as TypeVarComDefault
 
 from dataframeit import read_df
 from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
@@ -529,6 +530,14 @@ def test_accepts_only_text_cobre_optional_e_literal():
 _LITERAL_COM_NONE = Literal["NA", "deferido", None]  # noqa: PYI061
 _ANOTADO_COM_NONE = Annotated[Literal["NA", None], Field(description="x")]  # noqa: PYI061
 _APELIDO_COM_NONE = TypeAliasType("_APELIDO_COM_NONE", _ANOTADO_COM_NONE)
+_Livre = TypeVar("_Livre")
+_LimiteTexto = TypeVar("_LimiteTexto", bound=str)
+_LimiteInteiro = TypeVar("_LimiteInteiro", bound=int)
+_LimiteOpcional = TypeVar("_LimiteOpcional", bound=Optional[int])
+_RestritoSemNone = TypeVar("_RestritoSemNone", str, int)
+_RestritoComNone = TypeVar("_RestritoComNone", str, None)
+_DefaultNone = TypeVarComDefault("_DefaultNone", default=None)
+_DefaultInteiro = TypeVarComDefault("_DefaultInteiro", bound=Optional[int], default=int)
 
 
 @pytest.mark.parametrize(
@@ -543,11 +552,27 @@ _APELIDO_COM_NONE = TypeAliasType("_APELIDO_COM_NONE", _ANOTADO_COM_NONE)
         (_ANOTADO_COM_NONE | Literal["y"], True),
         (Annotated[str, Field(min_length=1)] | Literal["y"], False),
         (_APELIDO_COM_NONE, True),
+        (_Livre, True),
+        (_LimiteInteiro, False),
+        (_LimiteOpcional, True),
+        (_RestritoSemNone, False),
+        (_RestritoComNone, True),
+        (_DefaultNone, True),
+        (_DefaultInteiro, False),
     ],
 )
 def test_admits_none_ve_o_none_na_uniao_no_literal_e_no_annotated(anotacao, admite):
-    """O pydantic tira só o Annotated de cima; o de dentro da união e o do apelido ficam."""
+    """O pydantic tira só o Annotated de cima; o de dentro da união e o do apelido ficam.
+
+    O TypeVar não ligado vale pelo tipo com que o pydantic o valida.
+    """
     assert _admits_none(anotacao) is admite
+
+
+def test_typevar_com_limite_de_texto_so_aceita_texto():
+    """O TypeVar não ligado vale o limite também para os outros helpers de anotação."""
+    assert accepts_only_text(_LimiteTexto)
+    assert not accepts_only_text(_Livre)
 
 
 class Inteiros(BaseModel):

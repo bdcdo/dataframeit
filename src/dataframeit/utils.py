@@ -427,10 +427,10 @@ def _json_default(value: object) -> object:
 
 
 def _resolved(annotation: object) -> object:
-    """A anotação sem NewType e sem apelido `type`, pelo tipo a que eles se referem.
+    """A anotação sem NewType, apelido `type` e TypeVar, pelo tipo a que eles se referem.
 
     É o ponto único em que os helpers deste módulo que inspecionam anotação
-    resolvem os dois, a cada nível, antes de olhar a origem ou os argumentos.
+    resolvem os três, a cada nível, antes de olhar a origem ou os argumentos.
     O NewType guarda o tipo em `__supertype__`, e o apelido, em `__value__`. O
     apelido é reconhecido pelo nome da classe, porque o de `type X = ...` e o
     `TypeAliasType` do typing_extensions são classes diferentes com esse mesmo
@@ -439,10 +439,14 @@ def _resolved(annotation: object) -> object:
 
     O apelido genérico usado com argumentos, como `Opcional[int]` de
     `type Opcional[T] = T | None`, tem o apelido como origem, e o `__value__`
-    dele traz os parâmetros por substituir (ver `_alias_applied`).
+    dele traz os parâmetros por substituir (ver `_alias_applied`). O TypeVar
+    que fica sem argumento, como o do modelo genérico sem parâmetro, vale o
+    tipo com que o pydantic o valida (`_typevar_validated_as`).
     """
     while True:
-        if isinstance(annotation, typing.NewType):
+        if isinstance(annotation, typing.TypeVar):
+            annotation = _typevar_validated_as(annotation)
+        elif isinstance(annotation, typing.NewType):
             annotation = annotation.__supertype__
         elif type(annotation).__name__ == "TypeAliasType":
             annotation = annotation.__value__  # ty: ignore[unresolved-attribute]
@@ -450,6 +454,22 @@ def _resolved(annotation: object) -> object:
             annotation = _alias_applied(get_origin(annotation), get_args(annotation))
         else:
             return annotation
+
+
+def _typevar_validated_as(typevar: typing.TypeVar) -> object:
+    """O tipo com que o pydantic valida o TypeVar não ligado.
+
+    O default dele, a união das restrições, o limite ou, sem nenhum dos três, Any.
+    """
+    # O has_default só existe no TypeVar do typing_extensions e do Python 3.13+.
+    if getattr(typevar, "has_default", lambda: False)():
+        default = typevar.__default__  # ty: ignore[unresolved-attribute]
+        return type(None) if default is None else default
+    if typevar.__constraints__:
+        return typing.Union[typevar.__constraints__]  # noqa: UP007 (união montada em tempo de execução)
+    if typevar.__bound__ is not None:
+        return typevar.__bound__
+    return typing.Any
 
 
 def _alias_applied(alias: object, args: tuple) -> object:

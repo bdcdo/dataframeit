@@ -467,7 +467,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 for field_name in execution_order
                 if field_name in conditions
             }
-    skipping_models: dict[frozenset, Any] = {}
+    skipping_models: dict[tuple[frozenset, frozenset], Any] = {}
     # O campo com exclude=True não sai no model_dump, e a execução não grava a
     # coluna dele: a célula guarda o None com que a coluna foi criada ou o que a
     # entrada trazia. Não há resposta paga a conferir, e a célula fica fora da
@@ -479,6 +479,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         for field_name in excluded_fields
         if pydantic_model.model_fields[field_name].is_required()
     )
+    # O campo que o dump pode deixar de fora conforme a resposta, pelo
+    # exclude_if ou pelo @model_serializer, tem a célula vazia quando a
+    # execução não o gravou, e ela fica fora da validação como a do campo com
+    # exclude=True: o com default a recebe, o obrigatório sai, e a célula
+    # volta None. A célula com valor é conferida como a de qualquer campo, e
+    # a coluna ausente da entrada e do checkpoint, que não é célula gravada,
+    # também.
+    serializer_dropped = _dropped_by_model_serializer(pydantic_model, excluded_fields)
+    omittable_fields = _omittable_fields(pydantic_model, excluded_fields, serializer_dropped)
     # Na coluna que veio da entrada ou do checkpoint, a célula vazia do campo
     # que admite None e tem outro default, dado direto ou pela fábrica, é o
     # None que a execução gravou, e ele vai à validação: sem ele, ela
@@ -495,25 +504,36 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         and (field.default_factory is not None or field.default is not None)
     )
 
-    def model_skipping(skipped: frozenset) -> type[BaseModel]:
-        if not skipped:
+    def model_skipping(skipped: frozenset, hidden: frozenset) -> type[BaseModel]:
+        """O modelo de validação com os campos pulados e os obrigatórios fora do dump trocados."""
+        if not skipped and not hidden:
             return validation_model
-        if skipped not in skipping_models:
+        key = (skipped, hidden)
+        if key not in skipping_models:
             # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
-            skipping_models[skipped] = create_model(  # ty: ignore[no-matching-overload]
+            skipping_models[key] = create_model(  # ty: ignore[no-matching-overload]
                 f"{pydantic_model.__name__}CheckpointSkipped",
                 __base__=validation_model,
                 **{
-                    # O obrigatório excluído continua fora do dump, e o None que
-                    # ocupa o lugar dele não passa pelos validadores nem pelo
-                    # serializador do campo.
-                    field_name: (Any, Field(None, exclude=True, validate_default=False))
-                    if field_name in required_excluded
+                    # O None no lugar do obrigatório fora do dump não passa
+                    # pelos validadores do campo. O campo continua fora do
+                    # dump, longe do serializador dele, salvo o que o
+                    # @model_serializer tira, que chega a ele como na execução,
+                    # com o None no lugar do valor.
+                    field_name: (
+                        Any,
+                        Field(
+                            None,
+                            exclude=field_name not in serializer_dropped,
+                            validate_default=False,
+                        ),
+                    )
+                    if field_name in hidden
                     else (Any, None)
-                    for field_name in skipped
+                    for field_name in skipped | hidden
                 },
             )
-        return skipping_models[skipped]
+        return skipping_models[key]
 
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
@@ -567,11 +587,17 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         projected = {}
         missing_values = set()
         restored = set()
+        omitted_required = set()
         for field_name, field in pydantic_model.model_fields.items():
             if field_name in excluded_fields:
                 continue
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
+                if field_name in omittable_fields and field_name in df.columns:
+                    if field.is_required():
+                        omitted_required.add(field_name)
+                    values_to_fill[(position, field_name)] = None
+                    continue
                 if field_name in empty_cells and field_name not in skipped:
                     # Gravado também quando a linha é recusada por outro campo:
                     # com esse campo em reprocess_columns, a linha fica, e este
@@ -588,7 +614,9 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             projected[field_name] = value
 
         validated_data, rejected = _validate_row(
-            model_skipping(skipped | required_excluded), projected, rejected_fields
+            model_skipping(skipped, required_excluded | frozenset(omitted_required)),
+            projected,
+            rejected_fields,
         )
         if validated_data is None:
             incompatible_fields.update(rejected)
@@ -2594,7 +2622,9 @@ def _resume_from_checkpoint(
     texto vazio que ela gravou num campo cujo validador o troca por None é
     acusado do mesmo jeito no CSV e no XLSX, e volta "" do parquet. O campo com
     exclude=True fica de fora, porque o model_dump não o traz e a célula dele
-    guarda o None que a execução pôs ao criar a coluna. Sem essa garantia,
+    guarda o None que a execução pôs ao criar a coluna, e também o campo que o
+    dump pode deixar de fora conforme a resposta (`_omittable_fields`), cuja
+    célula vazia pode ser esse None. Sem essa garantia,
     como no checkpoint carregado à mão, a célula vazia continua ausente,
     porque com outro modelo ela pode ser o None de um campo que o admitia. No
     campo que admite None, ela volta None, e o texto vazio só sobrevive no
@@ -2618,11 +2648,22 @@ def _resume_from_checkpoint(
     # que trazer dele: a coluna fica como na execução, com o None da criação
     # ou o que a entrada trazia. Relida do CSV ou do XLSX, ela viria NaN.
     excluded_fields = _excluded_fields(questions)
+    omittable_fields = _omittable_fields(
+        questions, excluded_fields, _dropped_by_model_serializer(questions, excluded_fields)
+    )
     for column in saved.columns:
         target = by_name.get(str(column))
         if target == text_column or str(column) in excluded_fields:
             continue
-        if target is None:
+        if target is None and str(column) in omittable_fields:
+            # A linha pendente fica com o None da criação, que a execução
+            # mantém quando o dump deixa o campo de fora; relida do CSV ou do
+            # XLSX, ela viria NaN. A coluna é de objetos, como a criada pela
+            # execução, para o pandas não trocar o None por NaN.
+            values = pd.Series([None] * len(df), index=df.index, dtype=object)
+            values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
+            df[column] = values
+        elif target is None:
             df[column] = saved[column].to_numpy()
         elif target in model_fields:
             values = df[target].to_numpy(dtype=object).copy()
@@ -2637,6 +2678,7 @@ def _resume_from_checkpoint(
         and not _admits_none(field.annotation)
         and not _default_may_be_none(field)
         and field_name not in excluded_fields
+        and field_name not in omittable_fields
     )
 
 
@@ -2645,6 +2687,49 @@ def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     return frozenset(
         field_name for field_name, field in model.model_fields.items() if field.exclude
     )
+
+
+def _omittable_fields(
+    model: type[BaseModel], excluded_fields: frozenset[str], serializer_dropped: frozenset[str]
+) -> frozenset[str]:
+    """Os campos que o model_dump pode deixar de fora conforme a resposta.
+
+    O campo com exclude_if sai do dump quando a condição vale para o valor, e
+    o @model_serializer do modelo tira os de `serializer_dropped`
+    (`_dropped_by_model_serializer`). A execução não grava o campo que ficou
+    de fora, e a célula dele guarda o None com que a coluna foi criada. O
+    campo com exclude=True, que nunca sai no dump, fica em `excluded_fields`.
+    """
+    return serializer_dropped | frozenset(
+        field_name
+        for field_name, field in model.model_fields.items()
+        if field.exclude_if is not None and field_name not in excluded_fields
+    )
+
+
+def _dropped_by_model_serializer(
+    model: type[BaseModel], excluded_fields: frozenset[str]
+) -> frozenset[str]:
+    """Os campos que o @model_serializer do modelo tira do dump.
+
+    O serializador recebe a instância com None em todos os campos, e o campo
+    que falta no dump dela é o que ele tira sem olhar a resposta. O que ele
+    tira só com alguns valores não se separa assim e é conferido como os
+    outros; o serializador ou o model_post_init que cai com None não tira
+    nenhum. O campo com
+    exclude=True não chega ao serializador e não conta. Os avisos do pydantic
+    sobre o None num campo de outro tipo não saem ao usuário.
+    """
+    if not model.__pydantic_decorators__.model_serializers:
+        return frozenset()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            probe = model.model_construct(**dict.fromkeys(model.model_fields, None))
+            dumped = probe.model_dump().keys()
+    except Exception:  # noqa: BLE001 (o serializador e o model_post_init são do usuário e podem cair com o None)
+        return frozenset()
+    return frozenset(model.model_fields) - dumped - excluded_fields
 
 
 def _default_may_be_none(field: FieldInfo) -> bool:
