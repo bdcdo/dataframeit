@@ -440,7 +440,7 @@ def test_processo_que_importa_pyarrow_fs_termina_sem_segfault():
     isso o import roda num processo à parte e o teste confere o código de saída."""
     pytest.importorskip("pyarrow")
 
-    processo = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
+    processo = subprocess.run(
         [sys.executable, "-c", "import pyarrow.fs"],
         capture_output=True,
         text=True,
