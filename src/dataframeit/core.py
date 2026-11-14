@@ -2444,10 +2444,12 @@ def _instance_state(value: object, descent: _Descent) -> object:
     # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
     own = _attribute_or_none(value, "__dict__")
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        state = {name: item for name, item in state.items() if name not in _TABLE_INTERNALS}
     form = _stable(state, descent)
-    builtin = _builtin_value(value)
-    if builtin is not None:
-        form = {"value": _stable(builtin, descent), "state": form}
+    held = _held_value(value, descent)
+    if held is not None:
+        form = {"value": held, "state": form}
     descent.containers = outer
     del descent.depth[key]
     lowest = descent.lowest.pop()
@@ -2479,6 +2481,19 @@ _BUILTIN_VALUE_TYPES = (
 )
 _DATE_VALUE_TYPES = (dt.datetime, dt.date, dt.time, dt.timedelta)
 _VALUE_TYPES = _BUILTIN_VALUE_TYPES + _DATE_VALUE_TYPES
+
+
+def _held_value(value: object, descent: _Descent) -> object:
+    """O que a instância guarda fora dos atributos, na forma canônica; None no resto.
+
+    A subclasse de DataFrame, Series ou ndarray entra pelos dados inteiros
+    (`_data_form`), que o pandas guarda no `_mgr`, cujo repr só os resume, e o
+    numpy, no buffer; a subclasse de tipo embutido, pelo valor dele.
+    """
+    if isinstance(value, (pd.DataFrame, pd.Series, np.ndarray)):
+        return _data_form(value, descent)
+    builtin = _builtin_value(value)
+    return None if builtin is None else _stable(builtin, descent)
 
 
 def _builtin_value(value: object) -> object:
@@ -2572,6 +2587,13 @@ def _code_form(code: CodeType) -> list[object]:
 _ARRAYS = (np.ndarray, pd.Index, ExtensionArray)
 _TABLES = (pd.DataFrame, pd.Series, *_ARRAYS)
 
+# Atributos que o próprio pandas guarda na instância do DataFrame e da Series:
+# os dados, que entram por `_data_form`, e o que muda com o uso ou com o arranjo
+# dos blocos, como o `_item_cache` do pandas 2 e o repr do `_mgr`.
+_TABLE_INTERNALS = frozenset(
+    name for plain in (pd.DataFrame(), pd.Series(dtype=object)) for name in vars(plain)
+)
+
 
 def _stable(value: object, descent: _Descent | None = None) -> object:
     """Forma que serializa igual em qualquer processo.
@@ -2607,10 +2629,8 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     if key in descent.containers:
         return {"cycle": type(value).__name__}
     descent.containers.add(key)
-    if isinstance(value, (pd.DataFrame, pd.Series)):
-        form: object = _table_form(value, descent)
-    elif isinstance(value, _ARRAYS):
-        form = _array_form(value, descent)
+    if isinstance(value, _TABLES):
+        form: object = _data_form(value, descent)
     elif isinstance(value, collections.abc.Mapping):
         form = {_key_form(name, descent): _stable(item, descent) for name, item in value.items()}
     elif isinstance(value, collections.abc.Set):
@@ -2624,12 +2644,27 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
 def _key_form(name: object, descent: _Descent) -> str:
     """Chave de Mapping pelo `str`, sem o endereço de memória que ele leve.
 
-    O conjunto entra pela lista ordenada, e não pela ordem de iteração, que muda
-    com a semente de hash do processo.
+    O conjunto, sozinho ou dentro de uma tupla, entra pela lista ordenada, e não
+    pela ordem de iteração, que muda com a semente de hash do processo. A tupla
+    sem conjunto entra pelo `str` dela.
     """
-    if isinstance(name, (set, frozenset)):
+    if _holds_set(name):
         name = _stable(name, descent)
     return _without_address(str(name))
+
+
+def _holds_set(name: object) -> bool:
+    """Se a chave é um conjunto ou uma tupla que contém um, em qualquer nível."""
+    if isinstance(name, (set, frozenset)):
+        return True
+    return isinstance(name, tuple) and any(_holds_set(item) for item in name)
+
+
+def _data_form(value: object, descent: _Descent) -> object:
+    """DataFrame e Series por `_table_form`; ndarray, Index e array do pandas, por `_array_form`."""
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        return _table_form(value, descent)
+    return _array_form(cast("np.ndarray | pd.Index | ExtensionArray", value), descent)
 
 
 def _table_form(value: pd.DataFrame | pd.Series, descent: _Descent) -> object:

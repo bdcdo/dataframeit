@@ -1620,6 +1620,21 @@ class Regra:
         return d.get("tipo") in set(self.valores)
 
 
+class Vetor(np.ndarray):
+    def __call__(self, d):
+        return d.get("tipo") in self
+
+
+class Quadro(pd.DataFrame):
+    def __call__(self, d):
+        return d.get("tipo") in set(self["tipo"])
+
+
+class Coluna(pd.Series):
+    def __call__(self, d):
+        return d.get("tipo") in set(self)
+
+
 class Piso(Decimal):
     def __call__(self, d):
         return d.get("valor", 0) > self
@@ -1692,9 +1707,9 @@ def com_chave_no_campo(chave):
     return Pedido
 
 
-def com_config(chave):
+def com_config(chave, **outras):
     class Pedido(BaseModel):
-        model_config = ConfigDict(json_schema_extra={"mapa": {chave: "vip"}})
+        model_config = ConfigDict(json_schema_extra={"mapa": {chave: "vip", **outras}})
 
         tipo: str
 
@@ -1767,6 +1782,29 @@ PARES = {
         lambda: Momento(2021, 10, 31, 1, 30),
         lambda: Momento(2021, 10, 31, 1, 30, fold=1),
     ),
+    "ndarray-chamavel": (
+        lambda: np.array(textos()).view(Vetor),
+        lambda: np.array(textos("pro")).view(Vetor),
+    ),
+    "dataframe-chamavel": (lambda: Quadro({"tipo": textos()}), lambda: Quadro({"tipo": textos("pro")})),
+    "series-chamavel": (lambda: Coluna(textos()), lambda: Coluna(textos("pro"))),
+    "conjunto-em-chave-tupla-no-estado": (
+        lambda: Regra({(frozenset(BAIRROS), 1): "vip"}),
+        lambda: Regra({(frozenset(BAIRROS | {"bras"}), 1): "vip"}),
+    ),
+    "conjunto-em-chave-tupla-no-campo": (
+        lambda: com_chave_no_campo((frozenset(BAIRROS), 1)),
+        lambda: com_chave_no_campo((frozenset(BAIRROS | {"bras"}), 1)),
+    ),
+    "conjunto-em-chave-tupla-no-model-config": (
+        lambda: com_config((frozenset(BAIRROS), 1)),
+        lambda: com_config((frozenset(BAIRROS | {"bras"}), 1)),
+    ),
+    # O model_json_schema() levanta ao ordenar as chaves str e int.
+    "chaves-str-e-int-no-model-config": (
+        lambda: com_config(1, rotulo="vip"),
+        lambda: com_config(1, rotulo="ouro"),
+    ),
 }
 ESTAVEIS = {nome: antes() for nome, (antes, _) in PARES.items()}
 """
@@ -1833,6 +1871,7 @@ def test_chave_entra_pelo_str_sem_endereco_e_conjunto_em_ordem():
         str(chave).split(" at 0x")[0] + ">": 3,
     }
     assert core._stable({frozenset({"b", "a"}): 1}, core._Descent()) == {"['a', 'b']": 1}
+    assert core._stable({(("c", frozenset({"b", "a"})), 1): 1}) == {"[['c', ['a', 'b']], 1]": 1}
 
 
 # Modelo cujo JSON Schema falha sem função nem conjunto de texto no
@@ -1911,3 +1950,28 @@ def test_campo_de_mesmo_nome_em_dois_ramos_da_uniao_entra_na_assinatura(extra):
         return Imovel
 
     assert _assinatura(modelo("cidade")) != _assinatura(modelo("município"))
+
+
+class _Quadro(pd.DataFrame):
+    _metadata = ["limite"]  # noqa: RUF012 (atributo de classe do pandas)
+
+    def __call__(self, d):
+        return d.get("n") in set(self["n"])
+
+
+def test_subclasse_chamavel_do_pandas_assina_pelos_dados_e_nao_pelo_cache_nem_pelos_blocos():
+    """O estado leva os atributos do usuário, e não os que o pandas guarda na instância."""
+
+    def assinatura(condicao):
+        return _assinatura(_so_a_condicao(condicao))
+
+    usado = _Quadro({"n": [1], "m": [2]})
+    antes = assinatura(usado)
+    usado({"n": 1})
+    usado.sum()
+    em_partes = _Quadro({"n": [1]})
+    em_partes["m"] = [2]
+    com_limite = _Quadro({"n": [1], "m": [2]})
+    com_limite.limite = 5
+
+    assert assinatura(usado) == antes == assinatura(em_partes) != assinatura(com_limite)
