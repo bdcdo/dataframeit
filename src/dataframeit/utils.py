@@ -879,9 +879,16 @@ def accepts_only_text(field_type: object) -> bool:
 
 
 def _admits_none(field_type: object) -> bool:
-    """Se o tipo aceita None: o próprio None, Any, object, a união com ele ou o Literal com ele."""
+    """Se o tipo aceita None: o próprio None, Any, object, a união com ele ou o Literal com ele.
+
+    O TypeVar não ligado vale pelo tipo com que o pydantic o valida
+    (`_typevar_validated_as`).
+    """
     field_type = _resolved(field_type)
-    if field_type is type(None) or field_type is typing.Any or field_type is object:
+    if isinstance(field_type, typing.TypeVar):
+        return _admits_none(_typevar_validated_as(field_type))
+    # O None na anotação, como no default do TypeVar, é o tipo dele.
+    if any(field_type is accepted for accepted in (None, type(None), typing.Any, object)):
         return True
     origin = get_origin(field_type)
     if origin is typing.Annotated:  # dentro de Optional, como em is_complex_type
@@ -891,6 +898,21 @@ def _admits_none(field_type: object) -> bool:
     if origin is typing.Union or isinstance(field_type, types.UnionType):
         return any(_admits_none(arg) for arg in get_args(field_type))
     return False
+
+
+def _typevar_validated_as(typevar: typing.TypeVar) -> object:
+    """O tipo com que o pydantic valida o TypeVar não ligado.
+
+    O default dele, a união das restrições, o limite ou, sem nenhum dos três, Any.
+    """
+    # O has_default só existe no TypeVar do typing_extensions e do Python 3.13+.
+    if getattr(typevar, "has_default", lambda: False)():
+        return typevar.__default__  # ty: ignore[unresolved-attribute]
+    if typevar.__constraints__:
+        return typing.Union[typevar.__constraints__]  # noqa: UP007 (união montada em tempo de execução)
+    if typevar.__bound__ is not None:
+        return typevar.__bound__
+    return typing.Any
 
 
 def get_text_fields(pydantic_model: type[BaseModel]) -> set:

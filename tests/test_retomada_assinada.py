@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, Optional
+from typing import Any, Generic, Literal, NamedTuple, Optional, TypeVar
 from unittest.mock import patch
 
 import numpy as np
@@ -20,6 +20,7 @@ from pydantic import (
     Field,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from typing_extensions import TypedDict
@@ -1995,3 +1996,124 @@ def test_campo_excluido_do_dump_nao_e_conferido_na_retomada():
 
     assert incompativeis == []
     assert all(campo != "oculto" for _, campo in valores)
+
+
+class OcultoPorCondicaoObrigatorio(BaseModel):
+    outro: str
+    obs: str = Field(exclude_if=lambda valor: valor == "segredo")
+
+
+class OcultoPorCondicaoComPadrao(BaseModel):
+    outro: str
+    obs: str = Field(default="padrão", exclude_if=lambda valor: valor == "segredo")
+
+
+class SerializadorQueTiraOCampo(BaseModel):
+    outro: str
+    obs: str
+
+    @model_serializer(mode="wrap")
+    def sem_obs(self, handler):
+        dados = handler(self)
+        del dados["obs"]
+        return dados
+
+
+class SerializadorQueMontaODump(BaseModel):
+    outro: str
+    obs: str = "padrão"
+
+    @model_serializer
+    def so_outro(self):
+        return {"outro": self.outro}
+
+
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize(
+    "modelo",
+    [
+        OcultoPorCondicaoObrigatorio,
+        OcultoPorCondicaoComPadrao,
+        SerializadorQueTiraOCampo,
+        SerializadorQueMontaODump,
+    ],
+    ids=["exclude_if", "exclude_if-com-padrao", "serializador-wrap", "serializador-plain"],
+)
+def test_campo_que_o_dump_deixa_de_fora_volta_none_como_na_execucao(
+    tmp_path, entrada, formato, modelo
+):
+    """A execução não grava o campo que o dump deixou de fora, e a célula dele fica None.
+
+    A célula vazia desse campo não é recusada nem recebe o default ou o texto
+    vazio na retomada, e a da linha pendente não volta NaN do CSV e do XLSX.
+    """
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        modelo,
+        lambda text: {"outro": text, "obs": "segredo"},
+        entrada=entrada,
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["outro"]) == list(direta["outro"]) == ["a", "b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, None]
+    assert retomada["obs"].dtype == direta["obs"].dtype
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_campo_com_exclude_if_gravado_volta_como_foi_gravado(tmp_path, formato):
+    """Na linha em que o dump traz o campo com exclude_if, o valor gravado volta e é conferido."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        OcultoPorCondicaoObrigatorio,
+        lambda text: {"outro": text, "obs": "visível" if text == "a" else "segredo"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == ["visível", None]
+
+
+def test_valor_recusado_no_campo_com_exclude_if_continua_acusado():
+    """Só a célula vazia sai da validação; o valor que o tipo do campo recusa é acusado."""
+
+    class OcultoEstrito(BaseModel):
+        model_config = ConfigDict(strict=True)
+        n: int
+        oculto: int = Field(exclude_if=lambda valor: valor == 3)
+
+    df = pd.DataFrame(
+        {"n": [1, 2], "oculto": [None, "x"], "_dataframeit_status": ["processed"] * 2},
+        dtype=object,
+    )
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", OcultoEstrito, set()
+    )
+
+    assert incompativeis == ["oculto"]
+    assert valores[(0, "oculto")] is None
+
+
+_T = TypeVar("_T")
+
+
+class GenericoSemParametro(BaseModel, Generic[_T]):
+    # Sem parâmetro, o pydantic valida o _T como Any, e o default em texto vale.
+    obs: _T = "x"  # ty: ignore[invalid-assignment]
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_none_do_campo_typevar_com_padrao_volta_none(tmp_path, formato):
+    """O TypeVar não ligado é validado como Any, que admite None, e o None gravado não vira o default."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        GenericoSemParametro,
+        lambda text: {"obs": None} if text == "a" else {"obs": "y"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, "y"]
