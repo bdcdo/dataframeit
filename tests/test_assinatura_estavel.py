@@ -1434,6 +1434,22 @@ def test_conjunto_no_model_config_assina_igual_entre_sementes():
     )
 
 
+class _Endereco(BaseModel):
+    bairro: "_BairroAdiantado"
+
+
+class _BairroAdiantado(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"exemplos": {"centro", "mooca"}})  # ty: ignore[invalid-argument-type]
+
+    nome: str
+
+
+def test_conjunto_no_model_config_de_modelo_por_referencia_adiantada_sai_do_json_schema():
+    """Antes do `model_rebuild`, o campo guarda a referência adiantada, e o modelo
+    aninhado é achado pela classe que ela nomeia."""
+    assert core._has_unstable_extra(_Endereco)
+
+
 @pytest.mark.parametrize("construtor", ["raiz", "aninhado", "lista"])
 def test_mudanca_no_conjunto_do_model_config_muda_a_assinatura(construtor):
     montar = _funcao("from pydantic import BaseModel\n" + _CONFIG_COM_CONJUNTO, "CONSTRUTORES")[

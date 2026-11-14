@@ -79,6 +79,7 @@ from .utils import (
     normalize_complex_columns,
     normalize_value,
     read_df,
+    resolve_forward_refs,
     to_pandas,
 )
 
@@ -2222,18 +2223,17 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     model_config; e o ciclo derruba o json.dumps. Os outros modelos ficam com o
     JSON Schema, e a assinatura deles é a mesma do checkpoint já gravado com eles.
     """
-    fields = [field_info for _, field_info, _ in _walk_fields(questions)]
-    models = [
-        questions,
-        *(
-            model
-            for field_info in fields
-            for model in get_nested_pydantic_models(field_info.annotation)
-        ),
-    ]
-    extras = [field_info.json_schema_extra for field_info in fields] + [
-        model.model_config.get("json_schema_extra") for model in models
-    ]
+    models = [questions]
+    for model in models:  # a lista cresce com os modelos aninhados achados
+        for field_info in model.model_fields.values():
+            annotation = resolve_forward_refs(field_info.annotation, model)
+            for nested in get_nested_pydantic_models(annotation):
+                if nested not in models:
+                    models.append(nested)
+    extras = itertools.chain(
+        (model.model_config.get("json_schema_extra") for model in models),
+        (field.json_schema_extra for model in models for field in model.model_fields.values()),
+    )
     return any(isinstance(extra, dict) and _outside_json(extra) for extra in extras)
 
 
@@ -2250,7 +2250,8 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
         if id(value) in path:
             return True
         items = value.values() if isinstance(value, dict) else value
-        return any(_outside_json(item, path | {id(value)}) for item in items)
+        inner = path | {id(value)}
+        return any(_outside_json(item, inner) for item in items)
     if isinstance(value, (set, frozenset)):
         # O hash do inteiro é o próprio valor: o conjunto só de inteiros itera na
         # mesma ordem em todo processo, e o JSON Schema dele é estável.
@@ -2575,8 +2576,11 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     # O chamável vem antes do contêiner: o NamedTuple com `__call__` entraria
     # pela lista dos valores, sem o código, e a subclasse de dict, só pelos itens.
     # `_callable_leaf` o lê pelo `__call__` e pelo valor embutido ao lado do estado.
-    if not isinstance(value, _CONTAINERS) or (descent.leaves and _python_call(value) is not None):
-        return _schema_leaf(value, descent) if descent.leaves else value
+    is_container = isinstance(value, _CONTAINERS)
+    if descent.leaves and (not is_container or _python_call(value) is not None):
+        return _schema_leaf(value, descent)
+    if not is_container:
+        return value
     key = id(value)
     if key in descent.containers:
         return {"cycle": type(value).__name__}
