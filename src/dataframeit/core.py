@@ -10,6 +10,7 @@ import importlib.util
 import itertools
 import json
 import logging
+import math
 import numbers
 import re
 import sys
@@ -170,9 +171,6 @@ _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES = 10
 # Faixa aceita de max_results, global ou por grupo e campo.
 _MAX_RESULTS_LIMIT = 20
 
-# Chamadas de busca por campo acima das quais vale avisar sobre rate limit.
-_PER_FIELD_SEARCH_WARNING_CALLS = 100
-
 # Prazo de cada espera do laço paralelo pelas linhas em andamento; ver o wait
 # de _process_rows_parallel.
 _WAIT_SLICE_SECONDS = 0.1
@@ -181,11 +179,12 @@ _WAIT_SLICE_SECONDS = 0.1
 # threads de cada um não se confunda com o das de outro; ver _closing_in_slices.
 _executor_ids = itertools.count()
 
-# Segundos que o aviso de rate limit supõe para processar uma linha com busca,
-# além do rate_limit_delay. A estimativa do aviso é um piso calculado só da
+# Segundos que o aviso de rate limit supõe para cada execução do agente com
+# busca; a linha leva uma execução por campo no modo por campo, mais o
+# rate_limit_delay. A estimativa do aviso é um piso calculado só da
 # configuração: supõe uma busca por execução do agente. Um agente que faz mais
-# buscas por linha, até max_search_calls, pode passar do limite sem aviso.
-_MIN_SEARCH_ROW_SECONDS = 1.0
+# buscas, até max_search_calls, pode passar do limite sem aviso.
+_MIN_SEARCH_RUN_SECONDS = 1.0
 
 # Contadores de uso somados de cada linha para o resumo.
 _TOKEN_STAT_KEYS = (
@@ -862,7 +861,6 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
     """
     queries_per_row = num_fields if search_per_field else 1
     total_queries = num_rows * queries_per_row
-    concurrent_queries = parallel_requests * queries_per_row
 
     provider = get_provider(search_provider)
     provider_limit = provider.requests_per_minute
@@ -870,20 +868,22 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
 
     issues: list[str] = []
 
-    if concurrent_queries > _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES:
+    # _FieldExtractor roda os agentes de uma linha um depois do outro: cada
+    # worker tem um agente por vez, em qualquer modo.
+    if parallel_requests > _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES:
         issues.append(
-            f"queries concorrentes estimadas: {concurrent_queries} "
+            f"queries concorrentes estimadas: {parallel_requests} "
             f"(limite recomendado: {_RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES})"
         )
 
-    # Cada worker conclui uma linha a cada _MIN_SEARCH_ROW_SECONDS mais a pausa,
-    # e a conta supõe uma busca por execução do agente, queries_per_row por
-    # linha. É um piso: o agente pode fazer até max_search_calls buscas por
-    # execução, e então a taxa real passa da estimada sem aviso. Com a pausa
-    # somada ao tempo da linha, aumentar rate_limit_delay só baixa a estimativa.
-    estimated_rpm = (
-        60 * parallel_requests * queries_per_row / (_MIN_SEARCH_ROW_SECONDS + rate_limit_delay)
-    )
+    # Cada worker conclui uma linha a cada queries_per_row execuções do agente,
+    # de _MIN_SEARCH_RUN_SECONDS cada, mais a pausa, que vem uma vez por linha.
+    # A conta supõe uma busca por execução. É um piso: o agente pode fazer até
+    # max_search_calls buscas por execução, e então a taxa real passa da
+    # estimada sem aviso. Com search_groups a linha tem menos execuções que
+    # campos, e contar uma por campo só sobe a estimativa, que cresce com elas.
+    run_seconds = queries_per_row * _MIN_SEARCH_RUN_SECONDS
+    estimated_rpm = 60 * parallel_requests * queries_per_row / (run_seconds + rate_limit_delay)
 
     if estimated_rpm > provider_limit * 0.8:
         issues.append(
@@ -894,14 +894,14 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
     if not issues:
         return
 
-    # A dica nunca sobe o paralelismo: o min com parallel_requests vale também
-    # no modo por campo. A pausa sugerida ignora o tempo da linha e, por isso,
-    # leva a taxa estimada abaixo de 70% do limite.
-    recommended_parallel = max(
-        1, min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES // queries_per_row)
+    # A dica nunca sobe o paralelismo. A pausa sai da conta de estimated_rpm,
+    # invertida para levar a taxa a 70% do limite, abaixo dos 80% do gatilho; o
+    # arredondamento para cima não deixa a pausa ficar curta.
+    recommended_parallel = min(parallel_requests, _RECOMMENDED_MAX_CONCURRENT_SEARCH_QUERIES)
+    recommended_delay = (
+        60 * recommended_parallel * queries_per_row / (provider_limit * 0.7) - run_seconds
     )
-    recommended_delay = (60 * recommended_parallel * queries_per_row) / (provider_limit * 0.7)
-    recommended_delay = max(0.5, round(recommended_delay, 1))
+    recommended_delay = math.ceil(recommended_delay * 10) / 10
 
     recs = [f"parallel_requests={recommended_parallel}"]
     if rate_limit_delay < recommended_delay:
@@ -1802,11 +1802,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # Só execuções com trabalho pendente validam dependências e rate limits.
     if use_search:
         validate_search_dependencies(search_provider)
-        is_risky = parallel_requests > 1 or (
-            search_per_field
-            and len(expected_columns) * len(df_pandas) > _PER_FIELD_SEARCH_WARNING_CALLS
-        )
-        if is_risky:
+        # Com um worker só, a taxa estimada fica em até 60 buscas por minuto,
+        # abaixo do gatilho de todo provedor, e o aviso não teria o que dizer.
+        if parallel_requests > 1:
             _warn_search_rate_limit(
                 num_rows=len(df_pandas),
                 num_fields=len(expected_columns),
