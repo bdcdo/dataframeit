@@ -1,10 +1,8 @@
 """Checkpoint que falha ao gravar e retomada a partir de CSV/XLSX."""
 
 import datetime as dt
-import json
-import types
 import warnings
-from collections import ChainMap, UserDict, UserString
+from collections import UserString
 from enum import Enum
 from typing import Annotated, Any, Literal, NewType, Optional, TypeVar
 from unittest.mock import patch
@@ -18,7 +16,7 @@ from typing_extensions import TypeVar as TypeVarComDefault
 
 from dataframeit import ProviderUsageLimitError, read_df
 from dataframeit.core import _save_checkpoint, _validate_processed_rows, dataframeit
-from dataframeit.utils import _admits_none, _json_default, accepts_only_text, normalize_value
+from dataframeit.utils import _admits_none, accepts_only_text, normalize_value
 
 
 class ModeloSimples(BaseModel):
@@ -1199,18 +1197,3 @@ def test_coluna_do_usuario_com_userstring_vai_ao_checkpoint(tmp_path, formato, v
     chamadas.clear()
     assert roda() == []
     assert chamadas == ["b"]
-
-
-@pytest.mark.parametrize(
-    ("valor", "esperado"),
-    [
-        (UserDict({"q": 1}), '{"q": 1}'),
-        (types.MappingProxyType({"q": 1}), '{"q": 1}'),
-        (ChainMap({"x": 1}), '{"x": 1}'),
-        ({"b": 1, "a": 2}.keys(), '["a", "b"]'),
-    ],
-    ids=["userdict", "mappingproxy", "chainmap", "keysview"],
-)
-def test_json_default_grava_mapping_e_set_que_nao_sao_dict_nem_set(valor, esperado):
-    """O Mapping e o Set que `_structures_as_json` manda a JSON saem como dict e lista, e não pelo repr."""
-    assert json.dumps(valor, default=_json_default) == esperado

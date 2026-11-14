@@ -7,7 +7,8 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 import importlib.util
 import json
 import tempfile
-from collections import Counter, OrderedDict, UserString, defaultdict, deque
+import types
+from collections import ChainMap, Counter, OrderedDict, UserDict, UserString, defaultdict, deque
 from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet, Sequence
 from collections.abc import Set as AbstractSet
 from enum import StrEnum
@@ -578,12 +579,27 @@ def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():
     assert list(com_json["misto"]) == [1, ["a"]]
 
 
-def test_json_default_monta_a_lista_aninhada_da_memoryview_de_duas_dimensoes():
-    """O tolist vem antes do ramo de sequência: o list() não percorre buffer de mais de uma dimensão."""
-    visao = memoryview(bytearray(4)).cast("b", (2, 2))
-
-    assert json.loads(json.dumps([visao], default=_json_default)) == [[[0, 0], [0, 0]]]
-
-
-def test_json_default_grava_a_userstring_como_texto():
-    assert json.dumps([UserString("ola")], default=_json_default) == '["ola"]'
+@pytest.mark.parametrize(
+    ("valor", "esperado"),
+    [
+        # O tolist vem antes do ramo de estrutura: o list() não percorre buffer de mais de uma dimensão.
+        (memoryview(bytearray(4)).cast("b", (2, 2)), "[[0, 0], [0, 0]]"),
+        (UserString("ola"), '"ola"'),
+        (deque(["a", "b"]), '["a", "b"]'),
+        (UserDict({"q": 1}), '{"q": 1}'),
+        (types.MappingProxyType({"q": 1}), '{"q": 1}'),
+        (ChainMap({"x": 1}), '{"x": 1}'),
+        ({"b": 1, "a": 2}.keys(), '["a", "b"]'),
+    ],
+    ids=[
+        "memoryview-2d",
+        "userstring",
+        "deque",
+        "userdict",
+        "mappingproxy",
+        "chainmap",
+        "keysview",
+    ],
+)
+def test_json_default_grava_a_colecao_como_json_e_nao_pelo_repr(valor, esperado):
+    assert json.dumps(valor, default=_json_default) == esperado
