@@ -1878,6 +1878,44 @@ def test_validador_do_modelo_ve_o_padrao_do_campo_excluido_na_retomada(tmp_path,
     assert list(retomada["obs"]) == list(direta["obs"]) == [None, None]
 
 
+class ExcluidoObrigatorioComValidadorESerializador(BaseModel):
+    model_config = ConfigDict(validate_default=True)
+    outro: str
+    obs: str = Field(exclude=True)
+
+    @field_validator("obs")
+    @classmethod
+    def nao_vazio(cls, valor):
+        if not valor:
+            msg = "obs vazio"
+            raise ValueError(msg)
+        return valor
+
+    @field_serializer("obs")
+    def maiusculo(self, valor):
+        return valor.upper()
+
+
+class ExcluidoObrigatorioSemValidarDefault(ExcluidoObrigatorioComValidadorESerializador):
+    model_config = ConfigDict(validate_default=False)
+
+
+@pytest.mark.parametrize(
+    "modelo",
+    [ExcluidoObrigatorioComValidadorESerializador, ExcluidoObrigatorioSemValidarDefault],
+    ids=["valida-default", "sem-validar-default"],
+)
+def test_obrigatorio_excluido_nao_passa_pelo_validador_nem_pelo_serializador(modelo):
+    """O None no lugar do obrigatório excluído não é validado nem serializado, como na execução."""
+    df = pd.DataFrame(
+        {"outro": ["a"], "obs": [None], "_dataframeit_status": ["processed"]}, dtype=object
+    )
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", modelo, set())
+
+    assert incompativeis == []
+
+
 class OpcionalComValidadorDeTexto(BaseModel):
     obs: str | None = None
 

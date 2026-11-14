@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, over
 
 import pandas as pd
 from pandas.api.types import is_bool, is_scalar
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 from tqdm import tqdm
 
 from .conditional import (
@@ -503,7 +503,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             skipping_models[skipped] = create_model(  # ty: ignore[no-matching-overload]
                 f"{pydantic_model.__name__}CheckpointSkipped",
                 __base__=validation_model,
-                **dict.fromkeys(skipped, (Any, None)),
+                **{
+                    # O obrigatório excluído continua fora do dump, e o None que
+                    # ocupa o lugar dele não passa pelos validadores nem pelo
+                    # serializador do campo.
+                    field_name: (Any, Field(None, exclude=True, validate_default=False))
+                    if field_name in required_excluded
+                    else (Any, None)
+                    for field_name in skipped
+                },
             )
         return skipping_models[skipped]
 
