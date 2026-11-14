@@ -2097,6 +2097,77 @@ def test_valor_recusado_no_campo_com_exclude_if_continua_acusado():
     assert valores[(0, "oculto")] is None
 
 
+def test_coluna_ausente_do_campo_com_exclude_if_obrigatorio_continua_acusada():
+    """Sem a coluna na entrada e no checkpoint, não há célula que a execução deixou None."""
+
+    class NovoCampoOculto(BaseModel):
+        n: int
+        nova: int = Field(exclude_if=lambda valor: valor == 3)
+
+    df = pd.DataFrame({"n": [1], "_dataframeit_status": ["processed"]}, dtype=object)
+
+    incompativeis, valores = _validate_processed_rows(
+        df, "_dataframeit_status", NovoCampoOculto, set()
+    )
+
+    assert incompativeis == ["nova"]
+    assert valores == {}
+
+
+class SerializadorQueCaiComNone(BaseModel):
+    outro: str
+    obs: str
+
+    @model_serializer(mode="wrap")
+    def sem_traco(self, handler):
+        dados = handler(self)
+        if self.obs == "-":
+            del dados["obs"]
+        else:
+            dados["obs"] = self.obs.strip()
+        return dados
+
+
+class SerializadorQueSoAcrescenta(BaseModel):
+    outro: str
+    obs: str
+
+    @model_serializer(mode="wrap")
+    def com_extra(self, handler):
+        return {**handler(self), "extra": 1}
+
+
+@pytest.mark.parametrize(
+    "modelo",
+    [SerializadorQueCaiComNone, SerializadorQueSoAcrescenta],
+    ids=["cai-com-none", "so-acrescenta"],
+)
+def test_serializador_que_nao_tira_o_campo_com_none_mantem_a_conferencia(modelo):
+    """Só o campo que o @model_serializer tira com None em tudo fica fora da conferência.
+
+    O serializador que cai com None não tira nenhum, e a célula vazia do
+    campo obrigatório continua acusada.
+    """
+    df = pd.DataFrame(
+        {"outro": ["a"], "obs": [None], "_dataframeit_status": ["processed"]}, dtype=object
+    )
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", modelo, set())
+
+    assert incompativeis == ["obs"]
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx"])
+def test_texto_vazio_volta_no_modelo_com_serializador_que_nao_tira_campos(tmp_path, formato):
+    """O @model_serializer que não tira o campo do dump não muda a volta do texto vazio."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, SerializadorQueSoAcrescenta, lambda text: {"outro": text, "obs": ""}
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == ["", ""]
+
+
 _T = TypeVar("_T")
 
 

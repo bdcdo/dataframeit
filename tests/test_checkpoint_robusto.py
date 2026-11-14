@@ -531,6 +531,7 @@ _LITERAL_COM_NONE = Literal["NA", "deferido", None]  # noqa: PYI061
 _ANOTADO_COM_NONE = Annotated[Literal["NA", None], Field(description="x")]  # noqa: PYI061
 _APELIDO_COM_NONE = TypeAliasType("_APELIDO_COM_NONE", _ANOTADO_COM_NONE)
 _Livre = TypeVar("_Livre")
+_LimiteTexto = TypeVar("_LimiteTexto", bound=str)
 _LimiteInteiro = TypeVar("_LimiteInteiro", bound=int)
 _LimiteOpcional = TypeVar("_LimiteOpcional", bound=Optional[int])
 _RestritoSemNone = TypeVar("_RestritoSemNone", str, int)
@@ -567,6 +568,12 @@ def test_admits_none_ve_o_none_na_uniao_no_literal_e_no_annotated(anotacao, admi
     O TypeVar não ligado vale pelo tipo com que o pydantic o valida.
     """
     assert _admits_none(anotacao) is admite
+
+
+def test_typevar_com_limite_de_texto_so_aceita_texto():
+    """O TypeVar não ligado vale o limite também para os outros helpers de anotação."""
+    assert accepts_only_text(_LimiteTexto)
+    assert not accepts_only_text(_Livre)
 
 
 class Inteiros(BaseModel):

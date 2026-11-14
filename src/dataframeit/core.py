@@ -483,9 +483,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # exclude_if ou pelo @model_serializer, tem a célula vazia quando a
     # execução não o gravou, e ela fica fora da validação como a do campo com
     # exclude=True: o com default a recebe, o obrigatório sai, e a célula
-    # volta None. A célula com valor é conferida como a de qualquer campo.
-    omittable_fields = _omittable_fields(pydantic_model)
-    has_model_serializer = _has_model_serializer(pydantic_model)
+    # volta None. A célula com valor é conferida como a de qualquer campo, e
+    # a coluna ausente da entrada e do checkpoint, que não é célula gravada,
+    # também.
+    omittable_fields = _omittable_fields(pydantic_model, excluded_fields)
+    serializer_dropped = _dropped_by_model_serializer(pydantic_model)
     # Na coluna que veio da entrada ou do checkpoint, a célula vazia do campo
     # que admite None e tem outro default, dado direto ou pela fábrica, é o
     # None que a execução gravou, e ele vai à validação: sem ele, ela
@@ -515,14 +517,14 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 **dict.fromkeys(skipped - hidden, (Any, None)),
                 # O None no lugar do obrigatório fora do dump não passa pelos
                 # validadores do campo. O campo continua fora do dump, longe do
-                # serializador dele, salvo no modelo com @model_serializer, que
-                # o recebe como na execução, com o None no lugar do valor.
+                # serializador dele, salvo o que o @model_serializer tira, que
+                # chega a ele como na execução, com o None no lugar do valor.
                 **{
                     field_name: (
                         Any,
                         Field(
                             None,
-                            exclude=field_name in excluded_fields or not has_model_serializer,
+                            exclude=field_name not in serializer_dropped,
                             validate_default=False,
                         ),
                     )
@@ -589,7 +591,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 continue
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
-                if field_name in omittable_fields:
+                if field_name in omittable_fields and field_name in df.columns:
                     omitted.add(field_name)
                     values_to_fill[(position, field_name)] = None
                     continue
@@ -2648,7 +2650,7 @@ def _resume_from_checkpoint(
     # que trazer dele: a coluna fica como na execução, com o None da criação
     # ou o que a entrada trazia. Relida do CSV ou do XLSX, ela viria NaN.
     excluded_fields = _excluded_fields(questions)
-    omittable_fields = _omittable_fields(questions)
+    omittable_fields = _omittable_fields(questions, excluded_fields)
     for column in saved.columns:
         target = by_name.get(str(column))
         if target == text_column or str(column) in excluded_fields:
@@ -2687,28 +2689,45 @@ def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     )
 
 
-def _omittable_fields(model: type[BaseModel]) -> frozenset[str]:
+def _omittable_fields(model: type[BaseModel], excluded_fields: frozenset[str]) -> frozenset[str]:
     """Os campos que o model_dump pode deixar de fora conforme a resposta.
 
     O campo com exclude_if sai do dump quando a condição vale para o valor, e
-    o @model_serializer do modelo decide o dump inteiro, o que vale para
-    qualquer campo. A execução não grava o campo que ficou de fora, e a célula
-    dele guarda o None com que a coluna foi criada. O campo com exclude=True,
-    que nunca sai no dump, fica em `_excluded_fields`.
+    o @model_serializer do modelo pode tirar um campo dele
+    (`_dropped_by_model_serializer`). A execução não grava o campo que ficou
+    de fora, e a célula dele guarda o None com que a coluna foi criada. O
+    campo com exclude=True, que nunca sai no dump, fica em `excluded_fields`.
     """
-    excluded_fields = _excluded_fields(model)
-    has_model_serializer = _has_model_serializer(model)
-    return frozenset(
-        field_name
-        for field_name, field in model.model_fields.items()
-        if field_name not in excluded_fields
-        and (has_model_serializer or field.exclude_if is not None)
-    )
+    return (
+        frozenset(
+            field_name
+            for field_name, field in model.model_fields.items()
+            if field.exclude_if is not None
+        )
+        | _dropped_by_model_serializer(model)
+    ) - excluded_fields
 
 
-def _has_model_serializer(model: type[BaseModel]) -> bool:
-    """Se o modelo tem @model_serializer, próprio ou herdado."""
-    return bool(model.__pydantic_decorators__.model_serializers)
+def _dropped_by_model_serializer(model: type[BaseModel]) -> frozenset[str]:
+    """Os campos que o @model_serializer do modelo tira do dump.
+
+    O serializador recebe a instância com None em todos os campos, e o campo
+    que falta no dump dela é o que ele tira sem olhar a resposta. O que ele
+    tira só com alguns valores não se separa assim e é conferido como os
+    outros; o serializador que cai com None não tira nenhum. O campo com
+    exclude=True não chega ao serializador e não conta. Os avisos do pydantic
+    sobre o None num campo de outro tipo não saem ao usuário.
+    """
+    if not model.__pydantic_decorators__.model_serializers:
+        return frozenset()
+    probe = model.model_construct(**dict.fromkeys(model.model_fields, None))
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dumped = probe.model_dump().keys()
+    except Exception:  # noqa: BLE001 (o serializador é do usuário e pode cair com o None)
+        return frozenset()
+    return frozenset(model.model_fields) - dumped - _excluded_fields(model)
 
 
 def _default_may_be_none(field: FieldInfo) -> bool:
