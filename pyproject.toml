@@ -89,8 +89,10 @@ polars = [
     # Do 1.6 ao 1.9, a coluna só com dicts vazios sai do from_pandas sem linhas,
     # e a saída polars cai com ShapeError depois de todas as chamadas.
     "polars>=1.10",
-    # A 10.0.0 não tem wheel para Python 3.11, e a compilação do fonte falha.
-    "pyarrow>=10.0.1",
+    # Até a 11, importar pyarrow.fs, como o pandas faz ao ler e gravar parquet,
+    # inicializa o S3 sem finalizá-lo, e o processo pode cair com segfault na
+    # saída (apache/arrow GH-15054).
+    "pyarrow>=12.0.0",
 ]
 excel = [
     "openpyxl>=3.1",
@@ -114,7 +116,7 @@ all = [
     "langchain-exa>=1.0.0",
     "claude-agent-sdk>=0.1.48",
     "polars>=1.10",
-    "pyarrow>=10.0.1",
+    "pyarrow>=12.0.0",
     "openpyxl>=3.1",
 ]
 dev = [
