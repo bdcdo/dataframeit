@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, over
 
 import pandas as pd
 from pandas.api.types import is_bool, is_scalar
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 from tqdm import tqdm
 
 from .conditional import (
@@ -468,6 +468,32 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 if field_name in conditions
             }
     skipping_models: dict[frozenset, Any] = {}
+    # O campo com exclude=True não sai no model_dump, e a execução não grava a
+    # coluna dele: a célula guarda o None com que a coluna foi criada ou o que a
+    # entrada trazia. Não há resposta paga a conferir, e a célula fica fora da
+    # validação. O campo com default o recebe, como na execução; o obrigatório
+    # sai da validação como o campo pulado pela condição.
+    excluded_fields = _excluded_fields(pydantic_model)
+    required_excluded = frozenset(
+        field_name
+        for field_name in excluded_fields
+        if pydantic_model.model_fields[field_name].is_required()
+    )
+    # Na coluna que veio da entrada ou do checkpoint, a célula vazia do campo
+    # que admite None e tem outro default, dado direto ou pela fábrica, é o
+    # None que a execução gravou, e ele vai à validação: sem ele, ela
+    # preencheria o default, que a execução não gravou. No CSV e no XLSX, a
+    # célula pode ter sido também o texto vazio, e volta None, como no campo
+    # Optional[str] sem default. Com o default None, a célula fica fora da
+    # validação e recebe o próprio None, sem passar pelos validadores do campo.
+    # Só sem a coluna, a linha não tem resposta do campo, e ele recebe o default.
+    written_none_fields = frozenset(
+        field_name
+        for field_name, field in pydantic_model.model_fields.items()
+        if field_name in df.columns
+        and _admits_none(field.annotation)
+        and (field.default_factory is not None or field.default is not None)
+    )
 
     def model_skipping(skipped: frozenset) -> type[BaseModel]:
         if not skipped:
@@ -477,7 +503,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             skipping_models[skipped] = create_model(  # ty: ignore[no-matching-overload]
                 f"{pydantic_model.__name__}CheckpointSkipped",
                 __base__=validation_model,
-                **dict.fromkeys(skipped, (Any, None)),
+                **{
+                    # O obrigatório excluído continua fora do dump, e o None que
+                    # ocupa o lugar dele não passa pelos validadores nem pelo
+                    # serializador do campo.
+                    field_name: (Any, Field(None, exclude=True, validate_default=False))
+                    if field_name in required_excluded
+                    else (Any, None)
+                    for field_name in skipped
+                },
             )
         return skipping_models[skipped]
 
@@ -534,6 +568,8 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         missing_values = set()
         restored = set()
         for field_name, field in pydantic_model.model_fields.items():
+            if field_name in excluded_fields:
+                continue
             value = row_values[field_name]
             if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
                 if field_name in empty_cells and field_name not in skipped:
@@ -545,18 +581,24 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     restored.add(field_name)
                     continue
                 missing_values.add(field_name)
-                if not field.is_required() or field_name in skipped:
+                if field_name in skipped or not (
+                    field.is_required() or field_name in written_none_fields
+                ):
                     continue
             projected[field_name] = value
 
         validated_data, rejected = _validate_row(
-            model_skipping(skipped), projected, rejected_fields
+            model_skipping(skipped | required_excluded), projected, rejected_fields
         )
         if validated_data is None:
             incompatible_fields.update(rejected)
             for field_name in missing_values:
                 field = pydantic_model.model_fields[field_name]
                 if field.is_required():
+                    continue
+                if field_name in written_none_fields or field_name in skipped:
+                    # O None gravado, que a linha mantida mantém.
+                    values_to_fill[(position, field_name)] = None
                     continue
                 try:
                     default = field.get_default(call_default_factory=True)
@@ -571,7 +613,6 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             field_name for field_name in restored if validated_data[field_name] != ""
         )
 
-        # Campo com exclude=True não sai no dump, e não há o que completar nele.
         for field_name in missing_values & validated_data.keys():
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
@@ -625,8 +666,8 @@ def _validate_row(
         validated_data = model.model_validate(projected, strict=False).model_dump(by_alias=False)
     except ValidationError as error:
         return None, rejected_fields(error)
-    # Campo com exclude=True não sai no dump; sem o valor para comparar, ele
-    # continua recusado.
+    # O campo que o dump não traz, como o de exclude_if, fica sem o valor para
+    # comparar e continua recusado.
     changed = {
         field_name
         for field_name in rejected & projected.keys()
@@ -2520,9 +2561,10 @@ def _resume_from_checkpoint(
 
     Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
     execução acrescenta e os campos do modelo, sobre o que a entrada trazia
-    neles. Na linha com sucesso, é a resposta paga que o checkpoint gravou; na
-    linha com erro, são as respostas anteriores
-    que um reprocessamento guardou, ou o que a entrada daquela execução trazia.
+    neles, salvo o campo com exclude=True, que a execução não grava. Na linha
+    com sucesso, é a resposta paga que o checkpoint gravou; na linha com erro,
+    são as respostas anteriores que um reprocessamento guardou, ou o que a
+    entrada daquela execução trazia.
     A entrada não tem
     como dizer se um valor ali é correção à mão ou resposta de outra execução,
     e quem quer manter a saída como está a passa com a coluna de status, que o
@@ -2572,9 +2614,13 @@ def _resume_from_checkpoint(
     concluded = saved[status_col].notna().to_numpy()
     by_name = {str(column): column for column in df.columns}
     model_fields = set(questions.model_fields)
+    # A execução não grava o campo com exclude=True, e o checkpoint não tem o
+    # que trazer dele: a coluna fica como na execução, com o None da criação
+    # ou o que a entrada trazia. Relida do CSV ou do XLSX, ela viria NaN.
+    excluded_fields = _excluded_fields(questions)
     for column in saved.columns:
         target = by_name.get(str(column))
-        if target == text_column:
+        if target == text_column or str(column) in excluded_fields:
             continue
         if target is None:
             df[column] = saved[column].to_numpy()
@@ -2590,7 +2636,14 @@ def _resume_from_checkpoint(
         if accepts_only_text(field.annotation)
         and not _admits_none(field.annotation)
         and not _default_may_be_none(field)
-        and not field.exclude
+        and field_name not in excluded_fields
+    )
+
+
+def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
+    """Os campos com exclude=True, que não saem no model_dump e que a execução não grava."""
+    return frozenset(
+        field_name for field_name, field in model.model_fields.items() if field.exclude
     )
 
 
