@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dataframeit.llm import (
     LLMConfig,
@@ -301,3 +301,23 @@ class TestCallLangchain:
             result = call_langchain("t", SampleModel, "{texto}", _make_config())
 
         assert result["usage"] is None
+
+
+class ModeloQueSerializaPeloAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    campo: str = Field(alias="Campo")
+
+
+def test_call_langchain_devolve_o_campo_pelo_nome_com_serialize_by_alias():
+    """A coluna do campo tem o nome dele, e não o alias com que o dump o traz."""
+    structured_llm = MagicMock()
+    structured_llm.invoke.return_value = {
+        "parsed": ModeloQueSerializaPeloAlias(Campo="valor"),
+        "raw": None,
+        "parsing_error": None,
+    }
+
+    with _patch_call_langchain(structured_llm):
+        result = call_langchain("texto", ModeloQueSerializaPeloAlias, "{texto}", _make_config())
+
+    assert result["data"] == {"campo": "valor"}

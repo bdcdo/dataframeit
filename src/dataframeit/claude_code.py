@@ -304,7 +304,7 @@ def call_claude_code(
             raise ProviderRejectedOutputError(msg) from err
 
         usage = _usage_from_sdk(getattr(result, "usage", None), spent)
-        return {"data": validated.model_dump(), "usage": usage}
+        return {"data": validated.model_dump(by_alias=False), "usage": usage}
 
     try:
         return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)

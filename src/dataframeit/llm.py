@@ -269,7 +269,7 @@ def call_langchain(
         if parsed is None:
             _request_correction(pydantic_model, raw_message, None, correction)
 
-        return {"data": parsed.model_dump(), "usage": dict(usage_total) or None}
+        return {"data": parsed.model_dump(by_alias=False), "usage": dict(usage_total) or None}
 
     return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
 
