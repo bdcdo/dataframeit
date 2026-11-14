@@ -405,7 +405,7 @@ def _enums_by_value(values: pd.Series) -> pd.Series:
 
 
 def _json_default(value: object) -> object:
-    """O que json.dumps não serializa: conjunto como lista, numpy pelo tolist, Enum pelo valor.
+    """O que json.dumps não serializa: conjunto e sequência como lista, mapping como dict, numpy pelo tolist.
 
     O conjunto vira lista em ordem fixa, a do texto JSON de cada item. A ordem
     em que um set de textos é percorrido muda de um processo para outro, com o
@@ -414,16 +414,27 @@ def _json_default(value: object) -> object:
     O texto JSON também ordena itens de tipos que não se comparam, como 1 e "a".
 
     O tolist dá lista ao array e número ou bool do Python ao escalar do numpy,
-    que pelo texto voltaria "5" ou "True". O Enum vai pelo valor porque é o que
-    a validação do campo aceita de volta; o texto dele ("Cor.AZUL") não valida.
-    O resto vai como texto.
+    que pelo texto voltaria "5" ou "True". Ele vem antes do ramo de estrutura
+    porque sabe montar a lista aninhada de um buffer de mais de uma dimensão,
+    como a memoryview, que o list() não percorre.
+
+    A outra coleção de `_is_structure_class`, como o deque ou o UserDict, vai
+    como lista ou dict, e não pelo repr, que a retomada não lê de volta. O Enum
+    vai pelo valor porque é o que a validação do campo aceita de volta; o texto
+    dele ("Cor.AZUL") não valida. O resto vai como texto.
     """
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, collections.abc.Set):
         return sorted(value, key=lambda item: json.dumps(item, default=_json_default))
     if isinstance(value, Enum):
         return value.value
     tolist = getattr(value, "tolist", None)
-    return tolist() if callable(tolist) else str(value)
+    if callable(tolist):
+        return tolist()
+    if isinstance(value, collections.abc.Mapping):
+        return dict(value)
+    if isinstance(value, collections.abc.Sequence) and not isinstance(value, _TEXT_CLASSES):
+        return list(value)
+    return str(value)
 
 
 def _resolved(annotation: object) -> object:
@@ -806,21 +817,16 @@ def _reorder_columns(df: pd.DataFrame, status_col: str = "_dataframeit_status") 
 # =============================================================================
 
 
-# Origens abstratas cujo valor o model_dump devolve como lista, conjunto ou dict.
-# A busca é por identidade: o str e o bytes também são Sequence para o
-# collections.abc, e a célula guarda o valor inteiro deles.
-_ABSTRACT_STRUCTURES = (
-    collections.abc.Sequence,
-    collections.abc.MutableSequence,
-    collections.abc.Set,
-    collections.abc.MutableSet,
-    collections.abc.Mapping,
-    collections.abc.MutableMapping,
-)
-# Classes cujas instâncias a célula guarda como estrutura. O TypedDict e o
-# NamedTuple contam pela subclasse, de dict e de tuple, e o modelo aninhado
-# porque a célula guarda o seu model_dump, um dict.
-_STRUCTURE_CLASSES = (list, tuple, set, frozenset, dict, BaseModel)
+# Coleções que a célula guarda como estrutura, reconhecidas pela ABC. O texto e
+# os bytes também são Sequence e ficam de fora, inclusive o Enum de texto e a
+# UserString, cujo item é outra UserString: a célula guarda o valor inteiro.
+_STRUCTURE_ABCS = (collections.abc.Sequence, collections.abc.Set, collections.abc.Mapping)
+_TEXT_CLASSES = (str, bytes, bytearray, collections.UserString)
+
+
+def _is_structure_class(cls: type) -> bool:
+    """Se a classe é coleção que a célula guarda como estrutura (`_STRUCTURE_ABCS`)."""
+    return issubclass(cls, _STRUCTURE_ABCS) and not issubclass(cls, _TEXT_CLASSES)
 
 
 def is_complex_type(field_type: object) -> bool:
@@ -830,11 +836,11 @@ def is_complex_type(field_type: object) -> bool:
         field_type: Tipo a verificar (pode ser tipo simples ou genérico).
 
     Returns:
-        True se o tipo, direto ou dentro de Optional/Union, é uma das classes
-        de `_STRUCTURE_CLASSES` ou subclasse dela, como o TypedDict e o
-        NamedTuple, ou um genérico com uma delas ou com uma das origens de
-        `_ABSTRACT_STRUCTURES`. É o que decide quais campos o checkpoint grava
-        em JSON e a retomada normaliza de volta.
+        True se o tipo, direto ou dentro de Optional/Union, ou a origem dele,
+        quando genérico, é coleção de `_is_structure_class` ou modelo
+        Pydantic, que a célula guarda pelo model_dump, um dict. É o que decide
+        quais campos o checkpoint grava em JSON e a retomada normaliza de
+        volta.
     """
     field_type = _resolved(field_type)
     origin = get_origin(field_type)
@@ -852,9 +858,9 @@ def is_complex_type(field_type: object) -> bool:
         return any(is_complex_type(arg) for arg in args if arg is not type(None))
 
     container = field_type if origin is None else origin
-    if container in _ABSTRACT_STRUCTURES:
-        return True
-    return isinstance(container, type) and issubclass(container, _STRUCTURE_CLASSES)
+    return isinstance(container, type) and (
+        issubclass(container, BaseModel) or _is_structure_class(container)
+    )
 
 
 def get_complex_fields(pydantic_model: type[BaseModel]) -> set:

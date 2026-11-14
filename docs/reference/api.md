@@ -277,7 +277,7 @@ Identifica os campos de um modelo Pydantic que guardam estrutura em vez de valor
 def get_complex_fields(pydantic_model) -> set
 ```
 
-Retorna o conjunto de nomes dos campos cujo tipo é estrutura: `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` e `Mapping` e as versões mutáveis deles, `TypedDict`, `NamedTuple` ou modelo Pydantic aninhado, inclusive dentro de `Optional` e `Union`.
+Retorna o conjunto de nomes dos campos cujo tipo é estrutura: `list`, `tuple`, `deque`, `set`, `frozenset`, `dict`, `Sequence`, `AbstractSet` e `Mapping` e as versões mutáveis deles, `TypedDict`, `NamedTuple` ou modelo Pydantic aninhado, inclusive dentro de `Optional` e `Union`.
 
 ```python
 from dataframeit import get_complex_fields, normalize_complex_columns, read_df
