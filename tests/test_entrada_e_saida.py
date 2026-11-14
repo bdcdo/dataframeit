@@ -2045,21 +2045,21 @@ def test_saida_polars_ja_concluida_mantem_o_campo_dict_em_texto_json():
 
 # Anotação, um valor dela e o tipo polars da coluna, com ou sem valor.
 _TIPOS_PELA_ANOTACAO = {
-    "str": (str, "a", lambda pl: pl.Utf8),
-    "int": (int, 1, lambda pl: pl.Int64),
-    "float": (float, 1.5, lambda pl: pl.Float64),
-    "bool": (bool, True, lambda pl: pl.Boolean),
-    "date": (date, date(2024, 1, 2), lambda pl: pl.Date),
+    "str": (Optional[str], "a", lambda pl: pl.Utf8),
+    "int": (Optional[int], 1, lambda pl: pl.Int64),
+    "float": (Optional[float], 1.5, lambda pl: pl.Float64),
+    "bool": (Optional[bool], True, lambda pl: pl.Boolean),
+    "date": (Optional[date], date(2024, 1, 2), lambda pl: pl.Date),
     "datetime": (
-        datetime,
+        Optional[datetime],
         datetime.fromisoformat("2024-01-02T03:04"),
         lambda pl: pl.Datetime("us"),
     ),
-    "lista_de_str": (list[str], ["a"], lambda pl: pl.List(pl.Utf8)),
-    "lista_de_date": (list[date], [date(2024, 1, 2)], lambda pl: pl.List(pl.Date)),
-    "int_com_restricao": (Annotated[int, Field(ge=0)], 1, lambda pl: pl.Int64),
-    "newtype_de_int": (_Id, 1, lambda pl: pl.Int64),
-    "apelido_de_date": (_ApelidoDeData, date(2024, 1, 2), lambda pl: pl.Date),
+    "lista_de_str": (Optional[list[str]], ["a"], lambda pl: pl.List(pl.Utf8)),
+    "lista_de_date": (Optional[list[date]], [date(2024, 1, 2)], lambda pl: pl.List(pl.Date)),
+    "int_com_restricao": (Optional[Annotated[int, Field(ge=0)]], 1, lambda pl: pl.Int64),
+    "newtype_de_int": (Optional[_Id], 1, lambda pl: pl.Int64),
+    "apelido_de_date": (Optional[_ApelidoDeData], date(2024, 1, 2), lambda pl: pl.Date),
 }
 
 
@@ -2067,7 +2067,7 @@ _TIPOS_PELA_ANOTACAO = {
 def test_coluna_toda_nula_sai_com_o_tipo_da_anotacao(caso):
     pl = pytest.importorskip("polars")
     tipo, valor, esperado = _TIPOS_PELA_ANOTACAO[caso]
-    modelo = create_model("ModeloDoCaso", campo=(Optional[tipo], None))
+    modelo = create_model("ModeloDoCaso", campo=(tipo, None))
     entrada = pl.DataFrame({"texto": ["a", "b"]})
 
     com_valor, _ = _rodar(
