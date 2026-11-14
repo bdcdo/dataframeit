@@ -26,7 +26,9 @@ from pathlib import Path
 from types import CodeType, MethodType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, overload
 
+import numpy as np
 import pandas as pd
+from pandas.api.extensions import ExtensionArray
 from pandas.api.types import infer_dtype, is_bool, is_scalar
 
 # O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
@@ -2165,13 +2167,7 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
     linhas dele às desta execução misturaria respostas a perguntas diferentes.
     """
-    if _has_unstable_extra(questions):
-        schema = _schema_form(questions)
-    else:
-        try:
-            schema = questions.model_json_schema()
-        except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
-            schema = repr(questions.model_fields)
+    schema = _schema_signature(questions)
     payload = json.dumps(
         {
             "prompt": prompt,
@@ -2195,6 +2191,28 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _schema_signature(questions: type[BaseModel]) -> object:
+    """JSON Schema do modelo ou, quando ele não serve de assinatura, a forma canônica.
+
+    Além do que `_has_unstable_extra` acha, a forma canônica entra quando o JSON
+    Schema não serializa: a chave de dict que o JSON não aceita, como a tupla, o
+    Pydantic deixa crua no schema do model_config (no do campo, ele a converte
+    em texto).
+    """
+    if not _has_unstable_extra(questions):
+        try:
+            schema = questions.model_json_schema()
+        except Exception:  # noqa: BLE001 (sem JSON Schema, a estrutura dos campos serve de assinatura)
+            return repr(questions.model_fields)
+        try:
+            json.dumps(schema, sort_keys=True, default=_stable_repr)
+        except TypeError:
+            pass
+        else:
+            return schema
+    return _schema_form(questions)
+
+
 def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     """Se o json_schema_extra de um campo ou de um model_config tem o que não é JSON.
 
@@ -2203,10 +2221,11 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     função faz model_json_schema() falhar, e o fallback leva o endereço dela; o
     conjunto vira lista na ordem de iteração, que muda com a semente de hash do
     processo, também quando o Pydantic o deixa cru no schema, como faz com o do
-    model_config; e o ciclo derruba o json.dumps. A busca desce em toda coleção
-    de `_is_structure_class`, como o deque e a UserList. Os outros modelos ficam
-    com o JSON Schema, e a assinatura deles é a mesma do checkpoint já gravado
-    com eles.
+    model_config; e o ciclo derruba o json.dumps. A tabela e o array do pandas e
+    do numpy entram no JSON Schema pelo repr, que mostra só as primeiras e as
+    últimas posições. A busca desce em toda coleção de `_is_structure_class`,
+    como o deque e a UserList. Os outros modelos ficam com o JSON Schema, e a
+    assinatura deles é a mesma do checkpoint já gravado com eles.
 
     Cada modelo é reconstruído antes da leitura, como o Pydantic faz na
     validação: o campo guarda a referência adiantada até lá, e nem esta busca
@@ -2232,7 +2251,7 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
     # `__call__` é lido pelo código, e ler só os itens deixaria o modelo no JSON
     # Schema, que não leva o código; a iteração ainda passaria pelo `__iter__`
     # da classe do usuário.
-    if callable(value):
+    if callable(value) or isinstance(value, _TABLES):
         return True
     if not _is_structure_class(type(value)):
         return False
@@ -2446,7 +2465,9 @@ def _instance_state(value: object, descent: _Descent) -> object:
 
 # Tipos embutidos cujo valor a subclasse guarda fora do `__dict__` e dos
 # `__slots__`, como o 5 de `Limite(5)`, a tupla de um NamedTuple ou os itens
-# de uma subclasse de deque.
+# de uma subclasse de deque. Os primeiros saem pelo construtor da classe; os de
+# data, cujo construtor não recebe a própria instância, pelo `__repr__` da
+# classe, que leva também o fuso e o `fold`.
 _BUILTIN_VALUE_TYPES = (
     int,
     float,
@@ -2460,21 +2481,28 @@ _BUILTIN_VALUE_TYPES = (
     set,
     frozenset,
     collections.deque,
+    Decimal,
 )
+_DATE_VALUE_TYPES = (dt.datetime, dt.date, dt.time, dt.timedelta)
+_VALUE_TYPES = _BUILTIN_VALUE_TYPES + _DATE_VALUE_TYPES
 
 
 def _builtin_value(value: object) -> object:
     """O valor de tipo embutido da instância de subclasse dele; None no resto.
 
-    Sai pelo construtor da classe embutida mais próxima na MRO (`int(self)`,
-    `tuple(self)`). O construtor passa pelo `__int__` ou pelo `__iter__` que a
-    subclasse redefina, e a exceção dele deixa o valor de fora, como o atributo
-    que não se lê (ver `_attribute_or_none`).
+    Sai pela classe embutida mais próxima na MRO: pelo construtor dela
+    (`int(self)`, `tuple(self)`) ou, nos tipos de data, pelo `__repr__` dela,
+    sem o endereço que o repr do fuso possa levar. O construtor passa pelo
+    `__int__` ou pelo `__iter__` que a subclasse redefina, e a exceção dele
+    deixa o valor de fora, como o atributo que não se lê (ver
+    `_attribute_or_none`).
     """
-    base = next((cls for cls in type(value).__mro__ if cls in _BUILTIN_VALUE_TYPES), None)
+    base = next((cls for cls in type(value).__mro__ if cls in _VALUE_TYPES), None)
     if base is None:
         return None
     try:
+        if base in _DATE_VALUE_TYPES:
+            return _without_address(vars(base)["__repr__"](value))
         return base(value)
     except Exception:  # noqa: BLE001 (ver a docstring)
         return None
@@ -2546,7 +2574,9 @@ def _code_form(code: CodeType) -> list[object]:
     ]
 
 
-_TABLES = (pd.DataFrame, pd.Series)
+# O que o repr mostra só pelas primeiras e últimas posições: entra por todas.
+_ARRAYS = (np.ndarray, pd.Index, ExtensionArray)
+_TABLES = (pd.DataFrame, pd.Series, *_ARRAYS)
 
 
 def _stable(value: object, descent: _Descent | None = None) -> object:
@@ -2555,8 +2585,9 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     As coleções entram pela ABC (`_is_structure_class`): a Sequence como lista,
     o Mapping como dict e o Set como lista ordenada, porque a ordem de iteração
     dele muda com a semente de hash do processo. Chaves de Mapping viram texto
-    sem endereço, para ordenar dict com chaves int e str juntas. O DataFrame e a
-    Series entram por `_table_form`.
+    (ver `_key_form`), para ordenar dict com chaves int e str juntas. O DataFrame
+    e a Series entram por `_table_form`; o ndarray, o Index e o array do pandas,
+    por `_array_form`.
     Com `descent`, o que não é contêiner passa por `_schema_leaf`; sem ele, fica
     como está.
 
@@ -2582,10 +2613,12 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     if key in descent.containers:
         return {"cycle": type(value).__name__}
     descent.containers.add(key)
-    if isinstance(value, _TABLES):
+    if isinstance(value, (pd.DataFrame, pd.Series)):
         form: object = _table_form(value, descent)
+    elif isinstance(value, _ARRAYS):
+        form = _array_form(value, descent)
     elif isinstance(value, collections.abc.Mapping):
-        form = {_without_address(str(name)): _stable(item, descent) for name, item in value.items()}
+        form = {_key_form(name, descent): _stable(item, descent) for name, item in value.items()}
     elif isinstance(value, collections.abc.Set):
         form = sorted((_stable(item, descent) for item in value), key=_stable_repr)
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
@@ -2594,24 +2627,74 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     return form
 
 
+def _key_form(name: object, descent: _Descent) -> str:
+    """Chave de Mapping pelo `str`, sem o endereço de memória que ele leve.
+
+    O conjunto entra pela lista ordenada, e não pela ordem de iteração, que muda
+    com a semente de hash do processo.
+    """
+    if isinstance(name, (set, frozenset)):
+        name = _stable(name, descent)
+    return _without_address(str(name))
+
+
 def _table_form(value: pd.DataFrame | pd.Series, descent: _Descent) -> object:
-    """DataFrame ou Series pelo conteúdo inteiro, pelo índice e pelos nomes e tipos.
+    """DataFrame ou Series pelo conteúdo inteiro, pelos índices, pelos nomes e tipos e pelos `attrs`.
 
     O repr do pandas mostra só as primeiras e as últimas linhas, e a mudança
     numa célula do meio não apareceria nele.
     """
-    columns = list(value.items()) if isinstance(value, pd.DataFrame) else [(value.name, value)]
+    frame = isinstance(value, pd.DataFrame)
+    columns = list(value.items()) if frame else [(value.name, value)]
     return {
         "table": type(value).__name__,
-        "index": [
-            _stable(list(value.index.names), descent),
-            _column_cells(value.index.to_series(), descent),
-        ],
+        "index": _array_form(value.index, descent),
+        "labels": _array_form(value.columns, descent) if frame else None,
+        "attrs": _stable(value.attrs, descent),
         "columns": [
-            [_stable(label, descent), str(column.dtype), _column_cells(column, descent)]
+            [
+                _stable(label, descent),
+                _dtype_form(column.dtype, descent),
+                _column_cells(column, descent),
+            ]
             for label, column in columns
         ],
     }
+
+
+def _array_form(value: np.ndarray | pd.Index | ExtensionArray, descent: _Descent) -> object:
+    """ndarray, Index ou array do pandas pelo formato, pelo tipo, pelos nomes e por todas as células.
+
+    O ndarray entra pelos bytes, a custo linear; o de objetos, que não estão nos
+    bytes, e o Index e o array do pandas entram como coluna (ver
+    `_column_cells`); e o de tipo composto ou de float e complex estendidos, que
+    podem ter bytes de preenchimento sem valor definido, pelas células na forma
+    canônica.
+    """
+    names = _stable(list(value.names), descent) if isinstance(value, pd.Index) else None
+    if isinstance(value, pd.Index):
+        cells = _column_cells(value.to_series(), descent)
+    elif not isinstance(value, np.ndarray):
+        cells = _column_cells(pd.Series(value), descent)
+    elif value.dtype.names or _extended(value.dtype):
+        cells = _stable(value.tolist(), descent)
+    elif value.dtype.hasobject:
+        cells = _column_cells(pd.Series(np.asarray(value).ravel()), descent)
+    else:
+        cells = hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
+    return {
+        "shape": list(value.shape),
+        "names": names,
+        "dtype": _dtype_form(value.dtype, descent),
+        "cells": cells,
+    }
+
+
+def _dtype_form(dtype: object, descent: _Descent) -> object:
+    """Tipo pelo nome; o categórico, também pelas categorias, na ordem, e por `ordered`."""
+    if isinstance(dtype, pd.CategoricalDtype):
+        return {"category": _array_form(dtype.categories, descent), "ordered": dtype.ordered}
+    return str(dtype)
 
 
 def _column_cells(column: pd.Series, descent: _Descent) -> object:
@@ -2626,20 +2709,26 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
     `to_json` também escreve o conjunto na ordem de iteração, e o repr é truncado.
     O `hash_pandas_object` levanta com o float e o complex estendidos, como o
     `longdouble`, e dá o mesmo valor a todo nulo, como `None` e `NaN` numa
-    coluna de objetos; essas colunas também entram pelas células.
+    coluna de objetos; essas colunas também entram pelas células. A coluna
+    categórica entra pelo código de cada célula, e as categorias, pelo tipo (ver
+    `_dtype_form`).
     """
+    if isinstance(column.dtype, pd.CategoricalDtype):
+        column = column.cat.codes
     kind = column.dtype.kind
-    itemsize = getattr(column.dtype, "itemsize", 0)
-    hashable = (
-        kind in "biumM"
-        or (kind == "f" and itemsize <= 8)  # noqa: PLR2004 (float64)
-        or (kind == "c" and itemsize <= 16)  # noqa: PLR2004 (complex128)
-        or infer_dtype(column, skipna=False) == "string"
-    )
+    hashable = (kind in "biumMfc" and not _extended(column.dtype)) or infer_dtype(
+        column, skipna=False
+    ) == "string"
     if not hashable:
         return _stable(column.tolist(), descent)
     cells = hash_pandas_object(column, index=False).to_numpy()
     return hashlib.sha256(cells.tobytes()).hexdigest()
+
+
+def _extended(dtype: object) -> bool:
+    """Se o tipo é float ou complex estendido, como o `longdouble`, maior que o de 64 bits."""
+    kind, itemsize = getattr(dtype, "kind", ""), getattr(dtype, "itemsize", 0)
+    return (kind == "f" and itemsize > 8) or (kind == "c" and itemsize > 16)  # noqa: PLR2004 (float64, complex128)
 
 
 def _stable_repr(value: object) -> str:
