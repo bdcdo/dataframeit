@@ -102,7 +102,7 @@ uv run --extra dev --extra all --extra search-all --extra polars --extra excel -
 
 ## Lint e typecheck
 
-O job `quality` do `tests.yml` roda estes comandos, e o pre-commit roda os mesmos nos arquivos de `src/`, `tests/` e `example/`, mais a suíte sem os testes lentos (hook `pytest-rapido`, menos de um minuto):
+O job `quality` do `tests.yml` roda estes comandos. O pre-commit roda os mesmos, menos o `zizmor`, quando o commit toca `src/`, `tests/` ou `example/`, e roda também a suíte sem os testes lentos (hook `pytest-rapido`, menos de um minuto):
 
 ```bash
 EXTRAS="--extra dev --extra all --extra search-all --extra polars --extra excel --extra codex"
@@ -111,9 +111,9 @@ uv run $EXTRAS ruff check src tests example
 uv run $EXTRAS ty check
 uv run $EXTRAS vulture
 uv run $EXTRAS deptry src
-uvx zizmor@1.30.1 --offline .github/workflows   # auditoria dos workflows
+uvx zizmor@1.30.1 --offline .github/workflows   # auditoria dos workflows, fora do pre-commit
 
-# Tudo de uma vez, como no commit
+# Os hooks do pre-commit de uma vez, em todos os arquivos
 uv run --extra dev pre-commit run --all-files
 ```
 
