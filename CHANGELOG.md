@@ -13,7 +13,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- O piso do pyarrow nos extras `polars` e `all` sobe para 12.0.0: até a 11, o processo que lê ou grava parquet pode cair com segfault ao terminar (apache/arrow GH-15054).
+- O piso do pyarrow nos extras `polars` e `all` sobe para 12.0.0: até a 11, o processo que lê ou grava parquet pode cair com segfault ao terminar (apache/arrow GH-15054) (#328).
 - O pre-commit roda também a suíte de testes sem os mais lentos (hook `pytest-rapido`, menos de um minuto); a suíte completa continua no CI. O `CLAUDE.md` traz os comandos de lint, typecheck e pre-commit e as convenções do histórico (#324).
 - O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
 
