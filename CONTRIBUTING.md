@@ -19,6 +19,15 @@ uv run --extra docs mkdocs serve              # documentação em http://127.0.0
 
 Os testes não chamam nenhum provider de verdade e não precisam de chave de API. Alguns testes só rodam com o extra correspondente instalado, como `--extra codex` ou `--extra search-all`; sem ele, são pulados.
 
+### Pre-commit
+
+Os hooks do [pre-commit](https://pre-commit.com/), em `.pre-commit-config.yaml`, rodam a cada commit que toca `src/`, `tests/` ou `example/`. São os comandos do job `quality` do CI, menos o `zizmor`: `ruff format`, `ruff check`, `ty check`, `vulture` e `deptry`. O hook `pytest-rapido` roda a suíte sem os testes lentos, os que sobem outros processos Python e os do backend Codex, em menos de um minuto. A suíte completa fica para o CI e para o `uv run --extra dev pytest`. A instalação é uma vez por clone:
+
+```bash
+uv run --extra dev pre-commit install
+uv run --extra dev pre-commit run --all-files  # todos os hooks em todos os arquivos
+```
+
 ## Fluxo
 
 1. Abra uma issue antes de uma mudança grande, para combinar o desenho.
