@@ -1716,6 +1716,16 @@ def com_config(chave):
     return Pedido
 
 
+def com_config_misto(valor):
+    # O model_json_schema() levanta ao ordenar as chaves str e int.
+    class Pedido(BaseModel):
+        model_config = ConfigDict(json_schema_extra={"mapa": {"rotulo": valor, 1: "x"}})
+
+        tipo: str
+
+    return Pedido
+
+
 PARES = {
     "ndarray-celula-do-meio": (lambda: Regra(np.array(textos())), lambda: Regra(np.array(textos("pro")))),
     "ndarray-de-objetos": (
@@ -1791,6 +1801,18 @@ PARES = {
     "conjunto-em-chave-tupla-no-estado": (
         lambda: Regra({(frozenset(BAIRROS), 1): "vip"}),
         lambda: Regra({(frozenset(BAIRROS | {"bras"}), 1): "vip"}),
+    ),
+    "conjunto-em-chave-tupla-no-campo": (
+        lambda: com_chave_no_campo((frozenset(BAIRROS), 1)),
+        lambda: com_chave_no_campo((frozenset(BAIRROS | {"bras"}), 1)),
+    ),
+    "conjunto-em-chave-tupla-no-model-config": (
+        lambda: com_config((frozenset(BAIRROS), 1)),
+        lambda: com_config((frozenset(BAIRROS | {"bras"}), 1)),
+    ),
+    "chaves-str-e-int-no-model-config": (
+        lambda: com_config_misto("vip"),
+        lambda: com_config_misto("ouro"),
     ),
 }
 ESTAVEIS = {nome: antes() for nome, (antes, _) in PARES.items()}
