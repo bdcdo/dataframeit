@@ -1707,19 +1707,9 @@ def com_chave_no_campo(chave):
     return Pedido
 
 
-def com_config(chave):
+def com_config(chave, **outras):
     class Pedido(BaseModel):
-        model_config = ConfigDict(json_schema_extra={"mapa": {chave: "vip"}})
-
-        tipo: str
-
-    return Pedido
-
-
-def com_config_misto(valor):
-    # O model_json_schema() levanta ao ordenar as chaves str e int.
-    class Pedido(BaseModel):
-        model_config = ConfigDict(json_schema_extra={"mapa": {"rotulo": valor, 1: "x"}})
+        model_config = ConfigDict(json_schema_extra={"mapa": {chave: "vip", **outras}})
 
         tipo: str
 
@@ -1810,9 +1800,10 @@ PARES = {
         lambda: com_config((frozenset(BAIRROS), 1)),
         lambda: com_config((frozenset(BAIRROS | {"bras"}), 1)),
     ),
+    # O model_json_schema() levanta ao ordenar as chaves str e int.
     "chaves-str-e-int-no-model-config": (
-        lambda: com_config_misto("vip"),
-        lambda: com_config_misto("ouro"),
+        lambda: com_config(1, rotulo="vip"),
+        lambda: com_config(1, rotulo="ouro"),
     ),
 }
 ESTAVEIS = {nome: antes() for nome, (antes, _) in PARES.items()}
@@ -1959,3 +1950,28 @@ def test_campo_de_mesmo_nome_em_dois_ramos_da_uniao_entra_na_assinatura(extra):
         return Imovel
 
     assert _assinatura(modelo("cidade")) != _assinatura(modelo("município"))
+
+
+class _Quadro(pd.DataFrame):
+    _metadata = ["limite"]  # noqa: RUF012 (atributo de classe do pandas)
+
+    def __call__(self, d):
+        return d.get("n") in set(self["n"])
+
+
+def test_subclasse_chamavel_do_pandas_assina_pelos_dados_e_nao_pelo_cache_nem_pelos_blocos():
+    """O estado leva os atributos do usuário, e não os que o pandas guarda na instância."""
+
+    def assinatura(condicao):
+        return _assinatura(_so_a_condicao(condicao))
+
+    usado = _Quadro({"n": [1], "m": [2]})
+    antes = assinatura(usado)
+    usado({"n": 1})
+    usado.sum()
+    em_partes = _Quadro({"n": [1]})
+    em_partes["m"] = [2]
+    com_limite = _Quadro({"n": [1], "m": [2]})
+    com_limite.limite = 5
+
+    assert assinatura(usado) == antes == assinatura(em_partes) != assinatura(com_limite)

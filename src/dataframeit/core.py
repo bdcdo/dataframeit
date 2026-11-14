@@ -2444,14 +2444,12 @@ def _instance_state(value: object, descent: _Descent) -> object:
     # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
     own = _attribute_or_none(value, "__dict__")
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        state = {name: item for name, item in state.items() if name not in _TABLE_INTERNALS}
     form = _stable(state, descent)
-    builtin = _builtin_value(value)
-    if isinstance(value, _TABLES):
-        # A subclasse chamável de tabela ou de array guarda os dados fora do
-        # estado (no `_mgr` do pandas, que o repr resume, e no buffer do numpy).
-        form = {"value": _data_form(value, descent), "state": form}
-    elif builtin is not None:
-        form = {"value": _stable(builtin, descent), "state": form}
+    held = _held_value(value, descent)
+    if held is not None:
+        form = {"value": held, "state": form}
     descent.containers = outer
     del descent.depth[key]
     lowest = descent.lowest.pop()
@@ -2483,6 +2481,19 @@ _BUILTIN_VALUE_TYPES = (
 )
 _DATE_VALUE_TYPES = (dt.datetime, dt.date, dt.time, dt.timedelta)
 _VALUE_TYPES = _BUILTIN_VALUE_TYPES + _DATE_VALUE_TYPES
+
+
+def _held_value(value: object, descent: _Descent) -> object:
+    """O que a instância guarda fora dos atributos, na forma canônica; None no resto.
+
+    A subclasse de DataFrame, Series ou ndarray entra pelos dados inteiros
+    (`_data_form`), que o pandas guarda no `_mgr`, cujo repr só os resume, e o
+    numpy, no buffer; a subclasse de tipo embutido, pelo valor dele.
+    """
+    if isinstance(value, (pd.DataFrame, pd.Series, np.ndarray)):
+        return _data_form(value, descent)
+    builtin = _builtin_value(value)
+    return None if builtin is None else _stable(builtin, descent)
 
 
 def _builtin_value(value: object) -> object:
@@ -2575,6 +2586,13 @@ def _code_form(code: CodeType) -> list[object]:
 # O que o repr mostra só pelas primeiras e últimas posições: entra por todas.
 _ARRAYS = (np.ndarray, pd.Index, ExtensionArray)
 _TABLES = (pd.DataFrame, pd.Series, *_ARRAYS)
+
+# Atributos que o próprio pandas guarda na instância do DataFrame e da Series:
+# os dados, que entram por `_data_form`, e o que muda com o uso ou com o arranjo
+# dos blocos, como o `_item_cache` do pandas 2 e o repr do `_mgr`.
+_TABLE_INTERNALS = frozenset(
+    name for plain in (pd.DataFrame(), pd.Series(dtype=object)) for name in vars(plain)
+)
 
 
 def _stable(value: object, descent: _Descent | None = None) -> object:
