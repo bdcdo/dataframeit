@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from dataframeit import dataframeit
 from dataframeit.claude_code import _build_json_system_prompt, call_claude_code
@@ -975,3 +975,22 @@ def test_sdk_real_nao_repete_o_401(monkeypatch):
 
     assert chamadas == 1
     assert "status 401" in str(erro)
+
+
+class ModeloQueSerializaPeloAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    sentimento: str = Field(alias="Sentimento")
+
+
+def test_resposta_devolve_o_campo_pelo_nome_com_serialize_by_alias(sdk_falso):
+    """A coluna do campo tem o nome dele, e não o alias com que o dump o traz."""
+    sdk_falso["mensagens_do_sdk"] = [
+        _AssistantMessageFalso([_TextBlockFalso('{"Sentimento": "neutro"}')]),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    resultado = call_claude_code(
+        "texto", ModeloQueSerializaPeloAlias, "{texto}", _config_claude_code()
+    )
+
+    assert resultado["data"] == {"sentimento": "neutro"}

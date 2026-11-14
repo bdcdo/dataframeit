@@ -15,7 +15,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphRecursionError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dataframeit import dataframeit
 from dataframeit.agent import _blocked_tool_call_ids, _extract_trace, _recursion_limit, call_agent
@@ -181,14 +181,15 @@ def test_tavily_com_resultado_devolve_a_resposta_ao_modelo(tavily_disponivel, mo
 # =============================================================================
 
 
-def _chamar_agente(monkeypatch, config, mensagens=()):
+def _chamar_agente(monkeypatch, config, mensagens=(), resposta=None):
 
     capturado = {}
+    resposta = resposta if resposta is not None else Resposta(campo="ok")
 
     class AgenteFalso:
         def invoke(self, _payload, config=None):
             capturado["config"] = config
-            return {"structured_response": Resposta(campo="ok"), "messages": list(mensagens)}
+            return {"structured_response": resposta, "messages": list(mensagens)}
 
     def create_agent(**kwargs):
         capturado.update(kwargs)
@@ -205,8 +206,22 @@ def _chamar_agente(monkeypatch, config, mensagens=()):
         provider.create_tool = lambda **kwargs: FerramentaFalsa()
         provider.calculate_credits.side_effect = lambda search_count, **kw: search_count
         get_provider.return_value = provider
-        resultado = call_agent("t", Resposta, "Responda {texto}", config, save_trace="full")
+        resultado = call_agent("t", type(resposta), "Responda {texto}", config, save_trace="full")
     return capturado, resultado
+
+
+class RespostaQueSerializaPeloAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    campo: str = Field(alias="Campo")
+
+
+def test_agente_devolve_o_campo_pelo_nome_com_serialize_by_alias(monkeypatch):
+    """A resposta do agente chega à coluna do campo, e não sob o alias do dump."""
+    _, resultado = _chamar_agente(
+        monkeypatch, _config(), resposta=RespostaQueSerializaPeloAlias(Campo="ok")
+    )
+
+    assert resultado["data"] == {"campo": "ok"}
 
 
 def test_agente_recebe_o_teto_de_buscas(monkeypatch):

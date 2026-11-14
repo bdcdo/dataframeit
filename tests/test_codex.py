@@ -3045,3 +3045,22 @@ class TestDescargaDaThread:
         assert result["data"] == {"sentimento": "positivo", "confianca": 0.9}
         assert threads_descarregadas(client) == ["thread-1"]
         assert escapadas == []
+
+
+class ModeloQueSerializaPeloAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    sentimento: str = Field(alias="Sentimento")
+
+
+def test_resposta_devolve_o_campo_pelo_nome_com_serialize_by_alias(codex_sdk, tmp_path):
+    """A coluna do campo tem o nome dele, e não o alias com que o dump o traz."""
+    backend, _, _, _ = initialized_backend(
+        tmp_path, codex_sdk, make_result(codex_sdk, response='{"Sentimento": "neutro"}')
+    )
+    backend = dataclasses.replace(
+        backend,
+        _pydantic_model=ModeloQueSerializaPeloAlias,
+        _schema=_build_schema(ModeloQueSerializaPeloAlias),
+    )
+
+    assert backend.invoke("texto")["data"] == {"sentimento": "neutro"}

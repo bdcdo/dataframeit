@@ -32,10 +32,12 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.alias_generators import to_camel
 from typing_extensions import TypedDict
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
+    _dropped_by_model_serializer,
     _run_signature,
     _same_json,
     _save_checkpoint,
@@ -771,7 +773,7 @@ class NomePorAlias(BaseModel):
 
 
 class SubmodeloPorAlias(BaseModel):
-    """A execução grava o submodelo pelo alias, que o model_dump de fora não reescreve."""
+    """O submodelo com serialize_by_alias é gravado pelo nome dos campos, como o modelo."""
 
     subs: list[NomePorAlias]
 
@@ -813,7 +815,7 @@ def test_retomadas_seguidas_devolvem_o_que_a_execucao_gravou(tmp_path, modelo, f
     df = pd.DataFrame({"texto": ["a", "b", "c"]})
 
     def resposta(text):
-        return modelo(**_POR_EXECUCAO[modelo](text)).model_dump()
+        return modelo(**_POR_EXECUCAO[modelo](text)).model_dump(by_alias=False)
 
     direta = _roda(df, lambda text, *a, **k: {"data": resposta(text), "usage": None}, modelo=modelo)
     for _ in range(2):
@@ -1335,7 +1337,7 @@ def test_inteiro_grande_do_checkpoint_xlsx_volta_arredondado_e_strict_o_recusa(t
 def _direta_e_retomada(tmp_path, formato, modelo, resposta, *, entrada="pandas"):
     """(saída sem interrupção, saída da retomada, linhas chamadas na retomada).
 
-    A resposta passa pelo model_dump do modelo, como a dos providers. A primeira
+    A resposta passa pelo model_dump(by_alias=False), como a dos providers. A primeira
     execução com checkpoint responde a linha "a" e é interrompida na "b", e a
     retomada pelo mesmo checkpoint só tem a "b" por responder. Com `entrada`
     "polars", as três execuções recebem e devolvem DataFrame polars.
@@ -1350,7 +1352,7 @@ def _direta_e_retomada(tmp_path, formato, modelo, resposta, *, entrada="pandas")
         df = pytest.importorskip("polars").from_pandas(df)
 
     def dump(text):
-        return modelo.model_validate(resposta(text)).model_dump()
+        return modelo.model_validate(resposta(text)).model_dump(by_alias=False)
 
     chamadas = []
 
@@ -2241,3 +2243,182 @@ def test_none_do_campo_typevar_com_padrao_volta_none(tmp_path, formato):
 
     assert chamadas == ["b"]
     assert list(retomada["obs"]) == list(direta["obs"]) == [None, "y"]
+
+
+class ComAliasNoDump(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    outro: str
+    obs: str = Field(alias="Observação")
+
+
+class SubmodeloQueSerializaPeloAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    valor: int = Field(alias="Valor")
+    so_no_dump: int = Field(default=0, serialization_alias="SoNoDump")
+
+
+class SubmodeloComAlias(BaseModel):
+    nota: int = Field(alias="Nota")
+
+
+class ComAliasDeSerializacao(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True, alias_generator=to_camel)
+    outro_campo: str
+    obs: Optional[str] = Field(default=None, serialization_alias="Obs")
+    sub: SubmodeloQueSerializaPeloAlias
+    itens: list[SubmodeloComAlias]
+
+
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_campo_que_o_dump_traz_pelo_alias_e_gravado_e_retomado(tmp_path, entrada, formato):
+    """Com serialize_by_alias, a coluna do campo recebe o valor que o dump traz pelo alias."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        ComAliasNoDump,
+        lambda text: {"outro": text, "Observação": f"obs {text}"},
+        entrada=entrada,
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == ["obs a", "obs b"]
+    assert "Observação" not in direta.columns
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_submodelo_com_alias_e_gravado_pelo_nome_e_retomado(tmp_path, formato):
+    """O submodelo sai pelo nome dos campos, como o modelo, e a retomada o aceita."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        ComAliasDeSerializacao,
+        lambda text: {
+            "outroCampo": text,
+            "obs": None,
+            "sub": {"Valor": 1, "so_no_dump": 2},
+            "itens": [{"Nota": 3}],
+        },
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["outro_campo"]) == list(direta["outro_campo"]) == ["a", "b"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == [None, None]
+    assert list(retomada["sub"]) == list(direta["sub"]) == [{"valor": 1, "so_no_dump": 2}] * 2
+    assert list(retomada["itens"]) == list(direta["itens"]) == [[{"nota": 3}]] * 2
+
+
+class AliasComONomeDeOutroCampo(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    a: str = Field(serialization_alias="b")
+    b: str = Field(serialization_alias="c")
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_alias_com_o_nome_de_outro_campo_nao_troca_as_colunas(tmp_path, formato):
+    """Cada coluna recebe o valor do próprio campo, mesmo com o alias igual ao nome de outro."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        AliasComONomeDeOutroCampo,
+        lambda text: {"a": f"a{text}", "b": f"b{text}"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["a"]) == list(direta["a"]) == ["aa", "ab"]
+    assert list(retomada["b"]) == list(direta["b"]) == ["ba", "bb"]
+
+
+class AliasDeValidacaoComONomeDeOutroCampo(BaseModel):
+    a: int = Field(validation_alias="b")
+    b: str = Field(validation_alias="c")
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+def test_alias_de_validacao_com_o_nome_de_outro_campo_nao_le_o_valor_dele(tmp_path, formato):
+    """A linha relida se valida pelo nome: o `a` não lê o texto do campo `b`."""
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path,
+        formato,
+        AliasDeValidacaoComONomeDeOutroCampo,
+        lambda text: {"b": 1, "c": f"b{text}"},
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["a"]) == list(direta["a"]) == [1, 1]
+    assert list(retomada["b"]) == list(direta["b"]) == ["ba", "bb"]
+
+
+def test_submodelo_gravado_pelo_alias_e_acusado_na_retomada():
+    """O checkpoint traz o submodelo pelo nome dos campos; o dict pelo alias pede reprocessamento."""
+
+    class ComSubmodelo(BaseModel):
+        sub: SubmodeloComAlias
+
+    df = pd.DataFrame(
+        {"sub": [{"nota": 3}, {"Nota": 3}], "_dataframeit_status": ["processed"] * 2},
+        dtype=object,
+    )
+
+    incompativeis, _ = _validate_processed_rows(df, "_dataframeit_status", ComSubmodelo, {"sub"})
+
+    assert incompativeis == ["sub"]
+
+
+class SerializadorQueTiraOCampoPeloAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    outro: str = Field(alias="Outro")
+    obs: str = Field(alias="Obs")
+
+    @model_serializer(mode="wrap")
+    def sem_obs(self, handler):
+        dados = handler(self)
+        del dados["obs"]
+        return dados
+
+
+def test_serializador_com_serialize_by_alias_recebe_o_dump_pelo_nome_dos_campos():
+    """A sonda faz o dump pelo nome dos campos, como a execução, e acha o campo tirado."""
+    assert _dropped_by_model_serializer(SerializadorQueTiraOCampoPeloAlias, frozenset()) == {"obs"}
+
+
+class ComTextoOpcional(BaseModel):
+    obs: Optional[str] = None
+
+
+@pytest.mark.parametrize("na_entrada", [True, False], ids=["coluna-na-entrada", "sem-coluna"])
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_linha_pendente_com_erro_volta_none_na_retomada(tmp_path, formato, na_entrada):
+    """A linha que a retomada não conclui fica com o None da entrada ou da criação da coluna.
+
+    Com o pandas 3, a coluna de texto montada do checkpoint seria inferida
+    como `str`, que troca o None da linha com erro por NaN; o CSV e o XLSX
+    devolvem a célula da linha pendente como NaN.
+    """
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    if na_entrada:
+        df["obs"] = pd.Series(["e1", "e2", None], dtype=object)
+
+    def dump(text):
+        return {"obs": f"r{text}"}
+
+    def responde(text, *args, **kwargs):
+        if text == "c":
+            msg = "falha da linha c"
+            raise ValueError(msg)
+        return {"data": dump(text), "usage": None}
+
+    opcoes = {"modelo": ComTextoOpcional, "reprocess_columns": ["obs"], "max_retries": 1}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        direta = _roda(df, responde, **opcoes)
+        _roda(df, _uma_linha_por_execucao(dump), batch_size=1, checkpoint_path=ckpt, **opcoes)
+        retomada = _roda(df, responde, batch_size=1, checkpoint_path=ckpt, **opcoes)
+
+    assert list(retomada["_dataframeit_status"]) == ["processed", "processed", "error"]
+    assert list(retomada["obs"]) == list(direta["obs"]) == ["ra", "rb", None]

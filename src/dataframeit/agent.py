@@ -495,7 +495,11 @@ def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, 
             msg = "Agente não retornou resposta estruturada"
             raise ValueError(msg)
 
-        data = structured.model_dump() if hasattr(structured, "model_dump") else structured
+        data = (
+            structured.model_dump(by_alias=False)
+            if hasattr(structured, "model_dump")
+            else structured
+        )
 
         # Calcular usage (tokens + search credits via provider)
         usage = _extract_usage(result, provider, search_config, tool_name)

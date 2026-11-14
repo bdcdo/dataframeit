@@ -32,7 +32,7 @@ from pandas.api.types import infer_dtype, is_bool, is_scalar
 # O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
 # `__getattr__` que o checker de tipos lê como `object`.
 from pandas.core.util.hashing import hash_pandas_object
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, Field, ValidationError, create_model
 from tqdm import tqdm
 
 from .conditional import (
@@ -405,47 +405,21 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     incompatible_fields: set[str] = set()
     values_to_fill: dict[tuple[int, str], Any] = {}
     expected_columns = list(pydantic_model.model_fields)
-    field_by_alias = {field_name: field_name for field_name in expected_columns}
-    for field_name, field in pydantic_model.model_fields.items():
-        if isinstance(field.alias, str):
-            field_by_alias[field.alias] = field_name
-        if isinstance(field.validation_alias, str):
-            field_by_alias[field.validation_alias] = field_name
 
     def rejected_fields(error: ValidationError) -> set[str]:
         """Campos acusados pelo erro; o erro do modelo inteiro acusa todos."""
         rejected = set()
         for detail in error.errors():
             location = detail.get("loc", ())
-            field_name = field_by_alias.get(location[0]) if location else None
-            if field_name is not None:
-                rejected.add(field_name)
+            # A linha se valida pelo nome (_validate_row), que o erro traz.
+            if location and location[0] in pydantic_model.model_fields:
+                rejected.add(str(location[0]))
             else:
                 rejected.update(expected_columns)
         return rejected
 
     if status_col not in df.columns:
         return [], values_to_fill
-
-    validation_model = pydantic_model
-    if any(
-        field.alias is not None or field.validation_alias is not None
-        for field in pydantic_model.model_fields.values()
-    ):
-        validation_model = type(
-            f"{pydantic_model.__name__}CheckpointValidation",
-            (pydantic_model,),
-            {
-                "model_config": ConfigDict(
-                    **{
-                        **pydantic_model.model_config,
-                        "populate_by_name": True,
-                        "validate_by_name": True,
-                    }
-                ),
-                "__module__": pydantic_model.__module__,
-            },
-        )
 
     # Campo com `condition` fica None quando a condição é falsa na linha, mesmo
     # que o tipo declarado seja obrigatório. Só nesse caso o None é aceito, e só
@@ -514,13 +488,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     def model_skipping(skipped: frozenset, hidden: frozenset) -> type[BaseModel]:
         """O modelo de validação com os campos pulados e os obrigatórios fora do dump trocados."""
         if not skipped and not hidden:
-            return validation_model
+            return pydantic_model
         key = (skipped, hidden)
         if key not in skipping_models:
             # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
             skipping_models[key] = create_model(  # ty: ignore[no-matching-overload]
                 f"{pydantic_model.__name__}CheckpointSkipped",
-                __base__=validation_model,
+                __base__=pydantic_model,
                 **{
                     # O None no lugar do obrigatório fora do dump não passa
                     # pelos validadores do campo. O campo continua fora do
@@ -655,8 +629,8 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         # model_dump da linha validada traz o tipo declarado de volta, com o
         # contexto da linha inteira para os validadores. Ele só substitui o
         # valor relido quando diz o mesmo (_same_value): a volta muda o tipo,
-        # nunca o conteúdo. Um validador que muda o valor de novo, ou um
-        # submodelo que grava pelo alias, deixa o valor como foi relido.
+        # nunca o conteúdo. Um validador que muda o valor de novo deixa o
+        # valor como foi relido.
         for field_name, value in projected.items():
             if field_name not in validated_data:
                 continue
@@ -692,13 +666,21 @@ def _validate_row(
     e cada campo recusado só é aceito se o valor validado diz o mesmo que o
     relido (_same_value): o "3" num campo int strict continua recusado,
     porque o conteúdo do checkpoint não é o que o modelo aceita.
+
+    A execução grava a resposta pelo nome dos campos, também dentro do
+    submodelo, e a linha se valida só pelo nome: o alias igual ao nome de
+    outro campo não lê o valor dele.
     """
     try:
-        return model.model_validate(projected).model_dump(by_alias=False), set()
+        return model.model_validate(projected, by_alias=False, by_name=True).model_dump(
+            by_alias=False
+        ), set()
     except ValidationError as error:
         rejected = rejected_fields(error)
     try:
-        validated_data = model.model_validate(projected, strict=False).model_dump(by_alias=False)
+        validated_data = model.model_validate(
+            projected, strict=False, by_alias=False, by_name=True
+        ).model_dump(by_alias=False)
     except ValidationError as error:
         return None, rejected_fields(error)
     # O campo que o dump não traz, como o de exclude_if, fica sem o valor para
@@ -2774,7 +2756,9 @@ def _resume_from_checkpoint(
     e quem quer manter a saída como está a passa com a coluna de status, que o
     checkpoint não relê. As demais colunas de entrada ficam como o usuário as
     passou, porque o CSV e o XLSX não preservam o tipo delas. As colunas se
-    casam pelo nome em texto, que é como o CSV as devolve.
+    casam pelo nome em texto, que é como o CSV as devolve. Na linha ainda
+    pendente, o campo do modelo fica com o que a entrada trazia ou com o None
+    com que a execução cria a coluna, que é de objetos.
 
     Devolve os campos cuja célula vazia, numa linha processada, é o texto
     vazio, para a validação da retomada (`_validate_processed_rows`); sem
@@ -2824,29 +2808,38 @@ def _resume_from_checkpoint(
     # que trazer dele: a coluna fica como na execução, com o None da criação
     # ou o que a entrada trazia. Relida do CSV ou do XLSX, ela viria NaN.
     excluded_fields = _excluded_fields(questions)
-    omittable_fields = _omittable_fields(
-        questions, excluded_fields, _dropped_by_model_serializer(questions, excluded_fields)
-    )
     for column in saved.columns:
         target = by_name.get(str(column))
         if target == text_column or str(column) in excluded_fields:
             continue
-        if target is None and str(column) in omittable_fields:
-            # A linha pendente fica com o None da criação, que a execução
-            # mantém quando o dump deixa o campo de fora; relida do CSV ou do
-            # XLSX, ela viria NaN. A coluna é de objetos, como a criada pela
-            # execução, para o pandas não trocar o None por NaN.
-            values = pd.Series([None] * len(df), index=df.index, dtype=object)
-            values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
-            df[column] = values
-        elif target is None:
-            df[column] = saved[column].to_numpy()
-        elif target in model_fields:
+        if str(column) not in model_fields:
+            if target is None:
+                df[column] = saved[column].to_numpy()
+            continue
+        # A linha pendente fica com o que a entrada trazia no campo ou com o
+        # None com que a execução cria a coluna, e que ela mantém na linha com
+        # erro e quando o dump deixa o campo de fora; relida do CSV ou do XLSX,
+        # ela viria NaN. A coluna é de objetos, como a criada pela execução,
+        # porque o pandas 3 infere a coluna de texto como `str`, que troca o
+        # None por NaN. Na coluna relida com outro dtype, como o float64 do
+        # parquet, a célula nula é o None que a execução gravou, e nos objetos
+        # o NaN contaria como valor.
+        if target is None:
+            values = pd.Series([None] * len(df), dtype=object).to_numpy().copy()
+        else:
             values = df[target].to_numpy(dtype=object).copy()
-            values[concluded] = saved[column].to_numpy(dtype=object)[concluded]
-            df[target] = values
+        saved_values = saved[column].to_numpy(dtype=object)
+        if saved[column].dtype != object:
+            saved_values[saved[column].isna().to_numpy()] = None
+        values[concluded] = saved_values[concluded]
+        df[column if target is None else target] = pd.Series(
+            values, index=df.index, dtype=object, copy=False
+        )
     if Path(checkpoint.path).suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
         return frozenset()
+    omittable_fields = _omittable_fields(
+        questions, excluded_fields, _dropped_by_model_serializer(questions, excluded_fields)
+    )
     return frozenset(
         field_name
         for field_name, field in questions.model_fields.items()
@@ -2902,7 +2895,7 @@ def _dropped_by_model_serializer(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             probe = model.model_construct(**dict.fromkeys(model.model_fields, None))
-            dumped = probe.model_dump().keys()
+            dumped = probe.model_dump(by_alias=False).keys()
     except Exception:  # noqa: BLE001 (o serializador e o model_post_init são do usuário e podem cair com o None)
         return frozenset()
     return frozenset(model.model_fields) - dumped - excluded_fields

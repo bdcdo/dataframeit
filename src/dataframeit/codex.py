@@ -879,7 +879,7 @@ class CodexBackend:
             msg = f"Resposta do Codex não corresponde ao schema: {validation_error_summary(err)}"
             raise ProviderOutputError(msg) from err
 
-        return {"data": validated.model_dump(), "usage": dict(usage_total) or None}
+        return {"data": validated.model_dump(by_alias=False), "usage": dict(usage_total) or None}
 
 
 def _interrupt_quietly(turn: TurnHandle) -> None:
