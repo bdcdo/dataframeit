@@ -1727,6 +1727,7 @@ def _rodar_com_parada(modelo, parar_em=None, df=None, **kwargs):
         "data": dt.date(2024, 1, 1),
         "datas": [dt.date(2024, 1, 1)],
         "valores": [Decimal("1.5")],
+        "valor": Decimal("0.1"),
         "mapa": {1: "a"},
         "cpf": "123",
     }
@@ -1796,6 +1797,15 @@ class _ComDictDeChaveInteira(BaseModel):
     cpf: str = Field(json_schema_extra={"condition": {"field": "mapa", "equals": {"1": "a"}}})
 
 
+# O operando Decimal não é JsonValue, o tipo que o pydantic declara.
+_DIFERENTE_DE_UM_DECIMO: Any = {"field": "valor", "not_equals": Decimal("0.1")}
+
+
+class _ComDecimal(BaseModel):
+    valor: Decimal
+    cpf: str = Field(json_schema_extra={"condition": _DIFERENTE_DE_UM_DECIMO})
+
+
 class _ComCondicaoCallableSobreData(BaseModel):
     data: dt.date
     cpf: str = Field(
@@ -1812,6 +1822,7 @@ class _ComCondicaoCallableSobreData(BaseModel):
         _ComData,
         _ComListaDeData,
         _ComListaDeDecimal,
+        _ComDecimal,
         _ComDictDeChaveInteira,
         _ComCondicaoCallableSobreData,
     ],
@@ -1840,6 +1851,7 @@ def test_condicao_sobre_valor_gravado_como_texto_pula_o_campo_na_execucao_e_na_r
 class _ComValidadorEExcluido(BaseModel):
     data: dt.date
     tag: Annotated[str, AfterValidator(lambda texto: texto + "!")]
+    valor: Decimal
     nota: Annotated[str, BeforeValidator(lambda valor: valor.strip())] = Field("x", exclude=True)
 
 
@@ -1847,6 +1859,8 @@ class _ComValidadorEExcluido(BaseModel):
     ("campo", "relido", "esperado"),
     [
         ("data", "2024-01-01", dt.date(2024, 1, 1)),
+        # O CSV relê o Decimal como float.
+        ("valor", 0.1, Decimal("0.1")),
         # O valor que o tipo recusa vai como foi relido.
         ("data", "não é data", "não é data"),
         # O validador que muda o valor a cada passada não roda de novo.
@@ -1861,31 +1875,38 @@ def test_valor_relido_chega_a_condicao_na_forma_da_execucao(campo, relido, esper
     assert _executed_form(_ComValidadorEExcluido)(campo, relido) == esperado
 
 
-def test_reprocessamento_passa_a_condicao_o_valor_ja_gravado_no_tipo_do_campo():
-    """No reprocess_columns, a data relida como texto chega à condição como data.
+@pytest.mark.parametrize(
+    ("tipo", "relido", "operando"),
+    [
+        (dt.date, "2024-01-01", dt.date(2024, 1, 1)),
+        (Decimal, 0.1, Decimal("0.1")),
+    ],
+)
+def test_reprocessamento_passa_a_condicao_o_valor_ja_gravado_no_tipo_do_campo(
+    tipo, relido, operando
+):
+    """No reprocess_columns, o valor relido em outro tipo chega à condição no tipo do campo.
 
     A linha é recusada pelo cpf ausente com a condição verdadeira, e a célula
-    da data fica como foi relida; a condição do reprocessamento a vê como data.
+    do valor fica como foi relida; a condição do reprocessamento a vê no tipo
+    do campo.
     """
-
-    # O operando date não é JsonValue, o tipo que o pydantic declara.
-    condicao: Any = {"field": "data", "equals": dt.date(2024, 1, 1)}
-
-    class ComDataComoOperando(BaseModel):
-        data: dt.date
-        cpf: str = Field(json_schema_extra={"condition": condicao})
-
+    # O operando date ou Decimal não é JsonValue, o tipo que o pydantic declara.
+    condicao: Any = {"field": "valor", "equals": operando}
+    modelo = create_model(
+        "ComOperandoTipado",
+        valor=(tipo, ...),
+        cpf=(str, Field(json_schema_extra={"condition": condicao})),
+    )
     df = pd.DataFrame(
         {
             "texto": ["a"],
-            "data": ["2024-01-01"],
+            "valor": [relido],
             "cpf": [None],
             "_dataframeit_status": ["processed"],
         }
     )
 
-    resultado = _rodar_com_parada(
-        ComDataComoOperando, df=df, resume=True, reprocess_columns=["cpf"]
-    )
+    resultado = _rodar_com_parada(modelo, df=df, resume=True, reprocess_columns=["cpf"])
 
     assert resultado["cpf"].tolist() == ["123"]

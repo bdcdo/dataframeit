@@ -747,14 +747,17 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
 
     O CSV, o XLSX e o parquet mudam o tipo de um escalar sem mudar o
     conteúdo, e a comparação em JSON, que distingue 1 de 1.0, não os
-    reconhece: o inteiro volta como float, o bool do XLSX como 1.0 e a data
-    do XLSX como datetime à meia-noite. O Enum é comparado pelo valor, que é
+    reconhece: o inteiro volta como float, o Decimal do CSV e do XLSX como
+    float, o bool do XLSX como 1.0 e a data do XLSX como datetime à
+    meia-noite. O Enum é comparado pelo valor, que é
     o que o checkpoint grava.
 
     A igualdade do Python é mais larga do que essas mudanças, e fica restrita
     a elas: True == 1, mas o bool só diz o mesmo que outro bool ou que o
     float do XLSX; e o float só diz o mesmo que um int abaixo de 2**53, a
-    partir do qual a coluna em float pode ter perdido dígitos do inteiro.
+    partir do qual a coluna em float pode ter perdido dígitos do inteiro. O
+    Decimal diz o mesmo que o float que o representa: Decimal("0.1") é
+    diferente do float 0.1 em Python, e é o float que o arquivo relê.
     """
     if isinstance(validated, Enum) and not isinstance(value, Enum):
         return _same_value(validated.value, value)
@@ -774,6 +777,8 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
         return False
     if type(validated) is dt.date and isinstance(value, dt.datetime):
         return value == dt.datetime.combine(validated, dt.time())
+    if isinstance(validated, Decimal) and isinstance(value, float):
+        return float(validated) == value
     return bool(validated == value)
 
 
