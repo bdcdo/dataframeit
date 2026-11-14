@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import collections.abc
 import logging
 import operator
 from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
 from .utils import (
-    _TEXT_CLASSES,
+    _is_structure_class,
     _json_default,
     get_nested_pydantic_models,
     list_layers,
@@ -226,29 +225,26 @@ def get_nested_value(data: dict[str, Any], field_path: str) -> Any:  # noqa: ANN
 def _by_value(value: object) -> object:
     """O valor na forma em que a retomada o relê do checkpoint.
 
-    Na execução, o campo chega à condição pelo `model_dump` da resposta, que
-    guarda o membro de Enum como membro, a tupla como tupla, o conjunto como
-    conjunto e o deque como deque. Relido do checkpoint, que grava a estrutura
-    em JSON (`_json_default`), o membro chega como o valor dele, e a outra
-    sequência e o conjunto, como lista. As coleções são reconhecidas pelas ABCs,
-    como no `_json_default`. Levados o campo e o operando a essa forma, a condição dá o mesmo
+    Na execução, o campo chega à condição pelo `model_dump` da resposta, com o
+    membro de Enum como membro e a coleção no tipo do campo (tupla, conjunto,
+    deque). Relido do checkpoint, que grava a estrutura em JSON
+    (`_json_default`), o membro chega como o valor dele e a coleção, como lista
+    ou dict. Levados o campo e o operando a essa forma, a condição dá o mesmo
     resultado nos dois caminhos, com o operando escrito como valor ou como
-    membro. A conversão desce pelos itens da coleção e pelos valores do dict, que
-    é a forma em que o submodelo chega.
+    membro. A conversão desce pelos itens e pelos valores do dict, a forma em
+    que o submodelo chega.
 
-    O conjunto sai na ordem em que o checkpoint o grava, a do texto JSON de cada
-    item. Por isso o conjunto do campo é igual ao conjunto do operando em
-    qualquer ordem, e igual à lista relida.
+    O conjunto sai na ordem fixa do `_json_default`, e por isso é igual ao
+    conjunto do operando em qualquer ordem e à lista relida.
     """
     if isinstance(value, Enum):
         return value.value
-    if isinstance(value, collections.abc.Set):
-        value = _json_default(value)
-    if isinstance(value, collections.abc.Sequence) and not isinstance(value, _TEXT_CLASSES):
-        return [_by_value(item) for item in value]
-    if isinstance(value, collections.abc.Mapping):
+    if not _is_structure_class(type(value)):
+        return value
+    value = _json_default(value)
+    if isinstance(value, dict):
         return {key: _by_value(item) for key, item in value.items()}
-    return value
+    return [_by_value(item) for item in cast("list", value)]
 
 
 def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
@@ -299,11 +295,10 @@ def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
             return False
 
         value = get_nested_value(field_data, field_path)
-        compared = _by_value(value)
 
         for key, (symbol, compare) in _CONDITION_OPERATORS.items():
             if key in condition:
-                result = compare(compared, _by_value(condition[key]))
+                result = compare(_by_value(value), _by_value(condition[key]))
                 logger.debug(
                     "Campo '%s': %s=%s %s %s -> %s",
                     field_name,

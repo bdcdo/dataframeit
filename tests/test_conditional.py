@@ -1640,6 +1640,7 @@ _COLECOES_DE_ENUM = [
     pytest.param([_Tipo.PF, "outro", 3, None], ["pf", "outro", 3, None], id="misto"),
     pytest.param([{"tipo": _Tipo.PF}], [{"tipo": "pf"}], id="lista-de-submodelo"),
     pytest.param(collections.deque([_Tipo.PF]), ["pf"], id="deque"),
+    pytest.param(("a", "b"), ["a", "b"], id="tupla-sem-enum"),
 ]
 
 # Operandos que dizem o mesmo que o valor relido, escritos com valor, com membro
@@ -1687,14 +1688,6 @@ def test_conjunto_de_enum_e_igual_ao_conjunto_do_operando_em_qualquer_ordem():
 
     for valor in ({_Tipo.PJ, _Tipo.PF}, ["pf", "pj"]):
         assert evaluate_condition(condicao, {"tipos": valor}, "cpf") is True
-
-
-def test_tupla_que_nao_e_de_enum_e_igual_a_lista_relida():
-    """A tupla volta do checkpoint como lista, com Enum dentro ou não."""
-    condicao = {"field": "nomes", "equals": ["a", "b"]}
-
-    for valor in (("a", "b"), ["a", "b"]):
-        assert evaluate_condition(condicao, {"nomes": valor}, "cpf") is True
 
 
 class _ComLista(BaseModel):
