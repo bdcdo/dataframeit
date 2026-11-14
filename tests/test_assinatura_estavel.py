@@ -10,6 +10,8 @@ import textwrap
 from enum import Enum
 from typing import Any, Literal
 
+import numpy as np
+import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -1333,6 +1335,10 @@ PARES = {
         lambda: pd.DataFrame({"tipo": ["ouro", "vip"]}, index=[0, 0]),
     ),
     "lista-na-celula-do-meio": (lambda: listas(), lambda: listas(("ouro",))),
+    "none-ou-nan-no-texto": (
+        lambda: pd.DataFrame({"tipo": ["vip", None]}, dtype=object),
+        lambda: pd.DataFrame({"tipo": ["vip", float("nan")]}, dtype=object),
+    ),
 }
 ESTAVEIS = {
     "texto": tabela(),
@@ -1363,6 +1369,7 @@ def test_tabela_no_estado_assina_igual_entre_sementes():
         "indice",
         "ordem-das-linhas",
         "lista-na-celula-do-meio",
+        "none-ou-nan-no-texto",
     ],
 )
 def test_mudanca_em_qualquer_celula_ou_rotulo_da_tabela_muda_a_assinatura(par):
@@ -1371,6 +1378,18 @@ def test_mudanca_em_qualquer_celula_ou_rotulo_da_tabela_muda_a_assinatura(par):
     antes, depois = _funcao(_TABELAS, "PARES")[par]
 
     assert _assinatura(_pedido(regra(antes()))) != _assinatura(_pedido(regra(depois())))
+
+
+@pytest.mark.parametrize("tipo", ["longdouble", "clongdouble"])
+def test_coluna_que_o_hash_do_pandas_recusa_entra_pelas_celulas(tipo):
+    """O `hash_pandas_object` levanta com float e complex estendidos, e a assinatura não."""
+    regra = _funcao(_TABELAS, "Regra")
+    dtype = getattr(np, tipo)
+
+    antes = pd.Series(np.array([1.0, 2.0], dtype=dtype))
+    depois = pd.Series(np.array([1.0, 3.0], dtype=dtype))
+
+    assert _assinatura(_pedido(regra(antes))) != _assinatura(_pedido(regra(depois)))
 
 
 # Conjunto de texto no json_schema_extra do model_config, na raiz, num modelo

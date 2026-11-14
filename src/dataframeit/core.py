@@ -2623,8 +2623,19 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
     célula ele levanta, e com outro objeto ele o converte por `str()`, que
     escreve o conjunto na ordem de iteração e leva o endereço do objeto. O
     `to_json` também escreve o conjunto na ordem de iteração, e o repr é truncado.
+    O `hash_pandas_object` levanta com o float e o complex estendidos, como o
+    `longdouble`, e dá o mesmo valor a todo nulo, como `None` e `NaN` numa
+    coluna de objetos; essas colunas também entram pelas células.
     """
-    if column.dtype.kind not in "biufcmM" and infer_dtype(column, skipna=True) != "string":
+    kind = column.dtype.kind
+    itemsize = getattr(column.dtype, "itemsize", 0)
+    hashable = (
+        kind in "biumM"
+        or (kind == "f" and itemsize <= 8)  # noqa: PLR2004 (float64)
+        or (kind == "c" and itemsize <= 16)  # noqa: PLR2004 (complex128)
+        or infer_dtype(column, skipna=False) == "string"
+    )
+    if not hashable:
         return _stable(column.tolist(), descent)
     cells = hash_pandas_object(column, index=False).to_numpy()
     return hashlib.sha256(cells.tobytes()).hexdigest()
