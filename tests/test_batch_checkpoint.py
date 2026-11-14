@@ -1,6 +1,8 @@
 """Testes para batch_size + checkpoint_path (issue #92)."""
 
 import importlib.util
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -429,6 +431,30 @@ def test_checkpoint_parquet_grava_o_resultado(tmp_path):
     assert salvo["campo1"].tolist() == ["v1", "v2"]
     assert salvo["_dataframeit_status"].tolist() == ["processed", "processed"]
     assert not ckpt.with_name(ckpt.name + ".tmp").exists()
+
+
+def test_processo_que_grava_e_le_parquet_termina_sem_segfault(tmp_path):
+    """O pandas importa pyarrow.fs ao gravar parquet; até o pyarrow 11, o S3
+    inicializado no import não era finalizado, e o processo caía com SIGSEGV
+    na saída (apache/arrow GH-15054). O crash vem depois do fim do Python,
+    por isso o teste roda o caminho num processo à parte e confere o código
+    de saída."""
+    pytest.importorskip("pyarrow")
+    script = (
+        "import sys, pandas as pd\n"
+        "pd.DataFrame({'a': [1]}).to_parquet(sys.argv[1])\n"
+        "assert pd.read_parquet(sys.argv[1])['a'].tolist() == [1]\n"
+    )
+
+    processo = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
+        [sys.executable, "-c", script, str(tmp_path / "ckpt.parquet")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert processo.returncode == 0, processo.stderr
 
 
 def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
