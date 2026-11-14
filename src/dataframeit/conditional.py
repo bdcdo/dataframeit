@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import collections.abc
 import logging
 import operator
 from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
 from .utils import (
+    _TEXT_CLASSES,
     _json_default,
     get_nested_pydantic_models,
     list_layers,
@@ -225,10 +227,11 @@ def _by_value(value: object) -> object:
     """O valor na forma em que a retomada o relê do checkpoint.
 
     Na execução, o campo chega à condição pelo `model_dump` da resposta, que
-    guarda o membro de Enum como membro, a tupla como tupla e o conjunto como
-    conjunto. Relido do checkpoint, que grava a estrutura em JSON
-    (`_json_default`), o membro chega como o valor dele, e a tupla e o conjunto,
-    como lista. Levados o campo e o operando a essa forma, a condição dá o mesmo
+    guarda o membro de Enum como membro, a tupla como tupla, o conjunto como
+    conjunto e o deque como deque. Relido do checkpoint, que grava a estrutura
+    em JSON (`_json_default`), o membro chega como o valor dele, e a outra
+    sequência e o conjunto, como lista. As coleções são reconhecidas pelas ABCs,
+    como no `_json_default`. Levados o campo e o operando a essa forma, a condição dá o mesmo
     resultado nos dois caminhos, com o operando escrito como valor ou como
     membro. A conversão desce pelos itens da coleção e pelos valores do dict, que
     é a forma em que o submodelo chega.
@@ -239,11 +242,11 @@ def _by_value(value: object) -> object:
     """
     if isinstance(value, Enum):
         return value.value
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, collections.abc.Set):
         value = _json_default(value)
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, collections.abc.Sequence) and not isinstance(value, _TEXT_CLASSES):
         return [_by_value(item) for item in value]
-    if isinstance(value, dict):
+    if isinstance(value, collections.abc.Mapping):
         return {key: _by_value(item) for key, item in value.items()}
     return value
 

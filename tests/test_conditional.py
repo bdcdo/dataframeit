@@ -1639,6 +1639,7 @@ _COLECOES_DE_ENUM = [
     pytest.param(set(), [], id="conjunto-vazio"),
     pytest.param([_Tipo.PF, "outro", 3, None], ["pf", "outro", 3, None], id="misto"),
     pytest.param([{"tipo": _Tipo.PF}], [{"tipo": "pf"}], id="lista-de-submodelo"),
+    pytest.param(collections.deque([_Tipo.PF]), ["pf"], id="deque"),
 ]
 
 # Operandos que dizem o mesmo que o valor relido, escritos com valor, com membro
@@ -1711,6 +1712,11 @@ class _ComConjunto(BaseModel):
     cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "in": [["pf"], ["pj"]]}})
 
 
+class _ComDeque(BaseModel):
+    tags: collections.deque[_Tipo]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "tags", "equals": ["pf"]}})
+
+
 class _ItemComTag(BaseModel):
     tag: _Tipo
 
@@ -1750,7 +1756,9 @@ def _rodar_com_parada(modelo, parar_em=None, **kwargs):
 
 
 @pytest.mark.parametrize("formato", ["csv", "parquet"])
-@pytest.mark.parametrize("modelo", [_ComLista, _ComTupla, _ComConjunto, _ComListaDeSubmodelo])
+@pytest.mark.parametrize(
+    "modelo", [_ComLista, _ComTupla, _ComConjunto, _ComDeque, _ComListaDeSubmodelo]
+)
 def test_condicao_sobre_colecao_de_enum_extrai_o_campo_na_execucao_e_na_retomada(
     modelo, formato, tmp_path
 ):
