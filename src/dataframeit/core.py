@@ -79,7 +79,6 @@ from .utils import (
     normalize_complex_columns,
     normalize_value,
     read_df,
-    resolve_forward_refs,
     to_pandas,
 )
 
@@ -2182,6 +2181,7 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     Um checkpoint gravado com outra assinatura não é retomado, porque juntar as
     linhas dele às desta execução misturaria respostas a perguntas diferentes.
     """
+    _complete_model(questions)
     if _has_unstable_extra(questions):
         schema = _schema_form(questions)
     else:
@@ -2212,6 +2212,16 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _complete_model(questions: type[BaseModel]) -> None:
+    """Troca a referência adiantada dos campos pela classe, como o Pydantic na validação.
+
+    Sem isso, o campo guarda o `ForwardRef` até a primeira validação, e a forma
+    canônica não chegaria ao modelo aninhado que ele nomeia. O modelo completo
+    não muda.
+    """
+    questions.model_rebuild(raise_errors=False)
+
+
 def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     """Se o json_schema_extra de um campo ou de um model_config tem o que não é JSON.
 
@@ -2226,8 +2236,7 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     models = [questions]
     for model in models:  # a lista cresce com os modelos aninhados achados
         for field_info in model.model_fields.values():
-            annotation = resolve_forward_refs(field_info.annotation, model)
-            for nested in get_nested_pydantic_models(annotation):
+            for nested in get_nested_pydantic_models(field_info.annotation):
                 if nested not in models:
                     models.append(nested)
     extras = itertools.chain(

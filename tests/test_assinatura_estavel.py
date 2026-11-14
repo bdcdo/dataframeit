@@ -1444,10 +1444,21 @@ class _BairroAdiantado(BaseModel):
     nome: str
 
 
-def test_conjunto_no_model_config_de_modelo_por_referencia_adiantada_sai_do_json_schema():
-    """Antes do `model_rebuild`, o campo guarda a referência adiantada, e o modelo
-    aninhado é achado pela classe que ela nomeia."""
-    assert core._has_unstable_extra(_Endereco)
+def test_conjunto_no_model_config_de_modelo_por_referencia_adiantada_muda_a_assinatura():
+    """O campo guarda a referência adiantada até o `model_rebuild`, e a assinatura
+    lê o modelo aninhado pela classe que ela nomeia, antes e depois dele."""
+    extra = _BairroAdiantado.model_config["json_schema_extra"]
+    antes = _assinatura(_Endereco)
+    try:
+        extra["exemplos"] = {"centro", "lapa"}  # ty: ignore[invalid-assignment]
+        depois = _assinatura(_Endereco)
+        _Endereco.model_rebuild(force=True)
+        reconstruido = _assinatura(_Endereco)
+    finally:
+        extra["exemplos"] = {"centro", "mooca"}  # ty: ignore[invalid-assignment]
+
+    assert antes != depois
+    assert depois == reconstruido
 
 
 @pytest.mark.parametrize("construtor", ["raiz", "aninhado", "lista"])
