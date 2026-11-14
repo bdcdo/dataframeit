@@ -1595,3 +1595,240 @@ def test_deque_so_com_json_mantem_o_json_schema():
         tipo: str = Field(json_schema_extra={"fila": deque(["vip", 1, {"ouro": [2]}])})  # ty: ignore[invalid-argument-type]
 
     assert not core._has_unstable_extra(Pedido)
+
+
+# Array e tabela que o repr mostra só pelas pontas, subclasse chamável de
+# Decimal e de data, e o que o DataFrame guarda fora das células: a ordem das
+# categorias, o nome do eixo das colunas e os `attrs`. No estado de um objeto
+# chamável e direto no json_schema_extra, com ou sem chamável ao lado.
+_ARRAYS_E_VALORES = """
+import datetime as dt
+import warnings
+from decimal import Decimal
+
+import numpy as np
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class Regra:
+    def __init__(self, valores):
+        self.valores = valores
+
+    def __call__(self, d):
+        return d.get("tipo") in set(self.valores)
+
+
+class Piso(Decimal):
+    def __call__(self, d):
+        return d.get("valor", 0) > self
+
+
+class Dia(dt.date):
+    def __call__(self, d):
+        return d.get("dia") == self
+
+
+class Momento(dt.datetime):
+    def __call__(self, d):
+        return d.get("momento") == self
+
+
+class Hora(dt.time):
+    def __call__(self, d):
+        return d.get("hora") == self
+
+
+class Prazo(dt.timedelta):
+    def __call__(self, d):
+        return d.get("prazo") == self
+
+
+BAIRROS = {"centro", "mooca", "liberdade", "lapa", "se"}
+
+
+def textos(meio="vip", n=10_000):
+    valores = ["vip"] * n
+    valores[n // 2] = meio
+    return valores
+
+
+def matriz(meio=0.0):
+    valores = np.zeros((100, 100))
+    valores[50, 50] = meio
+    return valores
+
+
+def matriz_do_numpy(valor):
+    # np.matrix, cujo `ravel` continua com duas dimensões.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", PendingDeprecationWarning)
+        return np.matrix([[1, valor]])
+
+
+def categorias(ordem=("vip", "ouro"), ordenada=True):
+    return pd.Categorical(["vip", "ouro"], categories=list(ordem), ordered=ordenada)
+
+
+def eixo(nome=None, **attrs):
+    tabela = pd.DataFrame({"tipo": ["vip"]})
+    tabela.columns.name = nome
+    tabela.attrs.update(attrs)
+    return tabela
+
+
+def com_extra(valor):
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra={"exemplos": valor})
+
+    return Pedido
+
+
+def com_chave_no_campo(chave):
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra={"mapa": {chave: "vip"}})
+
+    return Pedido
+
+
+def com_config(chave):
+    class Pedido(BaseModel):
+        model_config = ConfigDict(json_schema_extra={"mapa": {chave: "vip"}})
+
+        tipo: str
+
+    return Pedido
+
+
+PARES = {
+    "ndarray-celula-do-meio": (lambda: Regra(np.array(textos())), lambda: Regra(np.array(textos("pro")))),
+    "ndarray-de-objetos": (
+        lambda: Regra(np.array(textos(), dtype=object)),
+        lambda: Regra(np.array(textos("pro"), dtype=object)),
+    ),
+    "ndarray-formato": (lambda: Regra(matriz()), lambda: Regra(matriz().reshape(10, 1000))),
+    "ndarray-longdouble": (
+        lambda: Regra(np.array([1, 2, 3], dtype=np.longdouble)),
+        lambda: Regra(np.array([1, 2, 4], dtype=np.longdouble)),
+    ),
+    "ndarray-celula-da-matriz": (lambda: Regra(matriz()), lambda: Regra(matriz(1.0))),
+    "ndarray-composto": (
+        lambda: Regra(np.array([(1, "vip")] * 3, dtype=[("n", "i4"), ("t", "U3")])),
+        lambda: Regra(np.array([(1, "vip"), (2, "vip"), (1, "vip")], dtype=[("n", "i4"), ("t", "U3")])),
+    ),
+    "index-celula-do-meio": (lambda: Regra(pd.Index(textos())), lambda: Regra(pd.Index(textos("pro")))),
+    "index-nome": (lambda: Regra(pd.Index(textos())), lambda: Regra(pd.Index(textos(), name="tipo"))),
+    "array-do-pandas": (
+        lambda: Regra(pd.array(list(range(5_000)))),
+        lambda: Regra(pd.array([*range(2_500), None, *range(2_501, 5_000)])),
+    ),
+    "categorical-ordem": (lambda: Regra(categorias()), lambda: Regra(categorias(("ouro", "vip")))),
+    "categorical-ordenada": (lambda: Regra(categorias()), lambda: Regra(categorias(ordenada=False))),
+    "coluna-categorica-ordem": (
+        lambda: Regra(pd.Series(categorias())),
+        lambda: Regra(pd.Series(categorias(("ouro", "vip")))),
+    ),
+    "indice-categorico-ordem": (
+        lambda: Regra(pd.Series([1, 2], index=pd.CategoricalIndex(categorias()))),
+        lambda: Regra(pd.Series([1, 2], index=pd.CategoricalIndex(categorias(("ouro", "vip"))))),
+    ),
+    "nome-do-eixo-das-colunas": (lambda: Regra(eixo()), lambda: Regra(eixo("campo"))),
+    "attrs-do-dataframe": (lambda: Regra(eixo()), lambda: Regra(eixo(fonte="cadastro"))),
+    "attrs-da-series": (
+        lambda: Regra(eixo()["tipo"]),
+        lambda: Regra(eixo(fonte="cadastro")["tipo"]),
+    ),
+    "decimal": (lambda: Piso("1.5"), lambda: Piso("2.5")),
+    "date": (lambda: Dia(2020, 1, 1), lambda: Dia(2021, 1, 1)),
+    "datetime": (lambda: Momento(2020, 1, 1, 8), lambda: Momento(2020, 1, 1, 9)),
+    "datetime-fuso": (
+        lambda: Momento(2020, 1, 1, tzinfo=dt.timezone.utc),
+        lambda: Momento(2020, 1, 1, tzinfo=dt.timezone(dt.timedelta(hours=-3))),
+    ),
+    "time": (lambda: Hora(8), lambda: Hora(9)),
+    "timedelta": (lambda: Prazo(days=1), lambda: Prazo(days=2)),
+    "dataframe-no-extra": (
+        lambda: com_extra(pd.DataFrame({"tipo": textos()})),
+        lambda: com_extra(pd.DataFrame({"tipo": textos("pro")})),
+    ),
+    "ndarray-no-extra": (lambda: com_extra(np.array(textos())), lambda: com_extra(np.array(textos("pro")))),
+    "chave-tupla-no-model-config": (lambda: com_config((1, 2)), lambda: com_config((1, 3))),
+    "chave-conjunto-no-model-config": (
+        lambda: com_config(frozenset(BAIRROS)),
+        lambda: com_config(frozenset(BAIRROS | {"bras"})),
+    ),
+    "matriz-do-numpy": (lambda: Regra(matriz_do_numpy(2)), lambda: Regra(matriz_do_numpy(3))),
+    "datetime64-sem-unidade": (
+        lambda: Regra(np.array(["NaT"], dtype="datetime64")),
+        lambda: Regra(np.array(["NaT", "NaT"], dtype="datetime64")),
+    ),
+    "datetime-fold": (
+        lambda: Momento(2021, 10, 31, 1, 30),
+        lambda: Momento(2021, 10, 31, 1, 30, fold=1),
+    ),
+}
+ESTAVEIS = {nome: antes() for nome, (antes, _) in PARES.items()}
+"""
+
+
+def test_array_e_valor_de_subclasse_assinam_igual_entre_sementes():
+    _assinaturas_em_tres_sementes(_ARRAYS_E_VALORES, "ESTAVEIS")
+
+
+_PARES_DE_ARRAYS_E_VALORES = _funcao(_ARRAYS_E_VALORES, "PARES")
+
+
+@pytest.mark.parametrize("par", list(_PARES_DE_ARRAYS_E_VALORES))
+def test_mudanca_no_array_no_valor_ou_no_que_a_tabela_guarda_muda_a_assinatura(par):
+    """O array entra por todas as células e pelo tipo; a subclasse, pelo valor."""
+    antes, depois = _PARES_DE_ARRAYS_E_VALORES[par]
+    condicao_ou_modelo = antes()
+
+    def assinatura(valor):
+        return _assinatura(valor if isinstance(valor, type) else _so_a_condicao(valor))
+
+    assert assinatura(condicao_ou_modelo) != assinatura(depois())
+    assert assinatura(condicao_ou_modelo) == assinatura(antes())
+
+
+@pytest.mark.parametrize(
+    "chave",
+    [(1, 2), frozenset({1}), None, 1, 1.5],
+    ids=["tupla", "frozenset", "none", "int", "float"],
+)
+def test_chave_que_o_json_nao_aceita_leva_o_model_config_a_forma_canonica(chave):
+    """A tupla e o conjunto, que o Pydantic deixa crus no JSON Schema do model_config,
+    derrubariam o json.dumps; a chave que o JSON aceita fica no JSON Schema."""
+    modelo = _funcao(_ARRAYS_E_VALORES, "com_config")(chave)
+
+    forma = core._schema_signature(modelo)
+
+    assert isinstance(forma, dict)
+    assert ("properties" not in forma) == isinstance(chave, (tuple, frozenset))
+    _assinatura(modelo)
+
+
+def test_chave_tupla_no_campo_fica_no_json_schema():
+    """No campo, o Pydantic converte a chave em texto, e o JSON Schema serve de assinatura."""
+    modelo = _funcao(_ARRAYS_E_VALORES, "com_chave_no_campo")((1, 2))
+
+    forma = core._schema_signature(modelo)
+
+    assert isinstance(forma, dict)
+    assert "properties" in forma
+
+
+class _Chave:
+    pass
+
+
+def test_chave_entra_pelo_str_sem_endereco_e_conjunto_em_ordem():
+    """A chave tupla entra pelo `str`, como no checkpoint já gravado com ela."""
+    chave = _Chave()
+
+    assert core._stable({("a", 1): 1, 2: 2, chave: 3}) == {
+        "('a', 1)": 1,
+        "2": 2,
+        str(chave).split(" at 0x")[0] + ">": 3,
+    }
+    assert core._stable({frozenset({"b", "a"}): 1}, core._Descent()) == {"['a', 'b']": 1}

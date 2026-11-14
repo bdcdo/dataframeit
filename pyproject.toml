@@ -248,8 +248,9 @@ DEP002 = [
     "openpyxl",
 ]
 # O runtime empacotado chega pelo `openai-codex`, que fixa a versão exata dele;
-# declarar o pacote à parte no extra `codex` duplicaria esse pin.
-DEP003 = ["codex_cli_bin"]
+# declarar o pacote à parte no extra `codex` duplicaria esse pin. O numpy chega
+# pelo pandas, que o exige em toda versão e fixa o piso compatível com ela.
+DEP003 = ["codex_cli_bin", "numpy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
