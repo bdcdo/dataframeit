@@ -2570,12 +2570,11 @@ _TABLES = (pd.DataFrame, pd.Series)
 def _stable(value: object, descent: _Descent | None = None) -> object:
     """Forma que serializa igual em qualquer processo.
 
-    As coleções são reconhecidas pela ABC, como em `_is_structure_class`: o
-    deque e a UserList entram como a lista, e o UserDict, como o dict. Chaves de
-    Mapping viram texto sem endereço, para ordenar dict com chaves int e str
-    juntas, e Set
-    vira lista ordenada, porque a ordem de iteração dele muda com a semente de
-    hash do processo. O DataFrame e a Series entram por `_table_form`.
+    As coleções entram pela ABC (`_is_structure_class`): a Sequence como lista,
+    o Mapping como dict e o Set como lista ordenada, porque a ordem de iteração
+    dele muda com a semente de hash do processo. Chaves de Mapping viram texto
+    sem endereço, para ordenar dict com chaves int e str juntas. O DataFrame e a
+    Series entram por `_table_form`.
     Com `descent`, o que não é contêiner passa por `_schema_leaf`; sem ele, fica
     como está.
 
@@ -2666,8 +2665,11 @@ def _stable_repr(value: object) -> str:
     return _without_address(repr(value))
 
 
+_ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
 def _without_address(text: str) -> str:
-    return re.sub(r" at 0x[0-9a-fA-F]+", "", text)
+    return _ADDRESS.sub("", text)
 
 
 def _text_hashes(texts: pd.Series) -> list[str | None]:

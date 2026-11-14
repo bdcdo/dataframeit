@@ -1522,10 +1522,6 @@ class Chave:
     pass
 
 
-def regra(d):
-    return d.get("tipo") == "vip"
-
-
 def modelo(extra):
     class Pedido(BaseModel):
         tipo: str = Field(json_schema_extra={"regras": extra})
@@ -1540,11 +1536,18 @@ def assinatura(extra, model_kwargs=None):
     )
 
 
-EXTRAS = {
-    "deque-funcao": lambda: deque([regra]),
-    "deque-conjunto": lambda: deque([TIPOS]),
-    "userlist-conjunto": lambda: UserList([TIPOS]),
-    "userdict-conjunto": lambda: UserDict(tipos=TIPOS),
+VARIACOES = {
+    "deque-funcao": lambda: assinatura(deque([lambda d: d.get("tipo") == "vip"])),
+    "deque-funcao-mudado": lambda: assinatura(deque([lambda d: d.get("tipo") == "ouro"])),
+    "deque-conjunto": lambda: assinatura(deque([TIPOS])),
+    "deque-conjunto-mudado": lambda: assinatura(deque([TIPOS | {"lata"}])),
+    "userlist-conjunto": lambda: assinatura(UserList([TIPOS])),
+    "userlist-conjunto-mudado": lambda: assinatura(UserList([TIPOS | {"lata"}])),
+    "userdict-conjunto": lambda: assinatura(UserDict(tipos=TIPOS)),
+    "userdict-conjunto-mudado": lambda: assinatura(UserDict(tipos=TIPOS | {"lata"})),
+    "model_kwargs": lambda: assinatura(1, {"extra": deque([TIPOS])}),
+    "model_kwargs-mudado": lambda: assinatura(1, {"extra": deque([TIPOS | {"lata"}])}),
+    "chave-objeto": lambda: assinatura(1, {"extra": UserDict({Chave(): 1})}),
 }
 """
 
@@ -1554,10 +1557,7 @@ def test_colecao_reconhecida_pela_abc_assina_igual_entre_sementes():
         """
         import json
 
-        assinaturas = {nome: assinatura(montar()) for nome, montar in EXTRAS.items()}
-        assinaturas["model_kwargs"] = assinatura(1, {"extra": deque([TIPOS])})
-        assinaturas["chave-objeto"] = assinatura(1, {"extra": UserDict({Chave(): 1})})
-        print(json.dumps(assinaturas))
+        print(json.dumps({nome: assinar() for nome, assinar in VARIACOES.items()}))
         """
     )
 
@@ -1567,28 +1567,13 @@ def test_colecao_reconhecida_pela_abc_assina_igual_entre_sementes():
 
 
 @pytest.mark.parametrize(
-    ("antes", "depois"),
-    [
-        ("deque([lambda d: d.get('tipo') == 'vip'])", "deque([lambda d: d.get('tipo') == 'ouro'])"),
-        ("deque([TIPOS])", "deque([TIPOS | {'lata'}])"),
-        ("UserList([TIPOS])", "UserList([TIPOS | {'lata'}])"),
-        ("UserDict(tipos=TIPOS)", "UserDict(tipos=TIPOS | {'lata'})"),
-    ],
+    "nome",
+    ["deque-funcao", "deque-conjunto", "userlist-conjunto", "userdict-conjunto", "model_kwargs"],
 )
-def test_mudanca_dentro_da_colecao_reconhecida_pela_abc_muda_a_assinatura(antes, depois):
-    espaco = {}
-    exec(_COLECOES_ABC, espaco)  # noqa: S102 (fonte fixa do teste)
-    assinatura = espaco["assinatura"]
+def test_mudanca_dentro_da_colecao_reconhecida_pela_abc_muda_a_assinatura(nome):
+    variacoes = _funcao(_COLECOES_ABC, "VARIACOES")
 
-    assert assinatura(eval(antes, espaco)) != assinatura(eval(depois, espaco))  # noqa: S307
-
-
-def test_deque_nos_model_kwargs_entra_pelo_conteudo():
-    espaco = {}
-    exec(_COLECOES_ABC, espaco)  # noqa: S102 (fonte fixa do teste)
-    assinatura, deque = espaco["assinatura"], espaco["deque"]
-
-    assert assinatura(1, {"x": deque([{"vip"}])}) != assinatura(1, {"x": deque([{"ouro"}])})
+    assert variacoes[nome]() != variacoes[f"{nome}-mudado"]()
 
 
 def test_deque_que_contem_a_si_no_json_schema_extra_assina_sem_recursao():
