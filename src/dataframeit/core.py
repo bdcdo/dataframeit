@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import dataclasses
 import datetime as dt
 import hashlib
@@ -84,7 +85,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Generator, Hashable, Sequence
+    from collections.abc import Callable, Collection, Generator, Hashable, Iterable, Sequence
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -2220,8 +2221,10 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     função faz model_json_schema() falhar, e o fallback leva o endereço dela; o
     conjunto vira lista na ordem de iteração, que muda com a semente de hash do
     processo, também quando o Pydantic o deixa cru no schema, como faz com o do
-    model_config; e o ciclo derruba o json.dumps. Os outros modelos ficam com o
-    JSON Schema, e a assinatura deles é a mesma do checkpoint já gravado com eles.
+    model_config; e o ciclo derruba o json.dumps. A busca desce em toda coleção
+    de `_is_structure_class`, como o deque e a UserList. Os outros modelos ficam
+    com o JSON Schema, e a assinatura deles é a mesma do checkpoint já gravado
+    com eles.
 
     Cada modelo é reconstruído antes da leitura, como o Pydantic faz na
     validação: o campo guarda a referência adiantada até lá, e nem esta busca
@@ -2249,19 +2252,22 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
     # da classe do usuário.
     if callable(value):
         return True
-    if isinstance(value, (dict, list, tuple)):
-        # `path` traz os contêineres abertos acima deste: o que reaparece nele
-        # contém a si mesmo, o que o JSON não representa.
-        if id(value) in path:
-            return True
-        items = value.values() if isinstance(value, dict) else value
-        inner = path | {id(value)}
-        return any(_outside_json(item, inner) for item in items)
-    if isinstance(value, (set, frozenset)):
+    if not _is_structure_class(type(value)):
+        return False
+    if isinstance(value, collections.abc.Set):
         # O hash do inteiro é o próprio valor: o conjunto só de inteiros itera na
         # mesma ordem em todo processo, e o JSON Schema dele é estável.
         return not all(isinstance(item, int) for item in value)
-    return False
+    # `path` traz os contêineres abertos acima deste: o que reaparece nele
+    # contém a si mesmo, o que o JSON não representa.
+    if id(value) in path:
+        return True
+    if isinstance(value, collections.abc.Mapping):
+        items: Iterable[object] = value.values()
+    else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
+        items = cast("Sequence[object]", value)
+    inner = path | {id(value)}
+    return any(_outside_json(item, inner) for item in items)
 
 
 # Atributos do campo na forma canônica: os que o JSON Schema levaria ao LLM e a
@@ -2457,7 +2463,8 @@ def _instance_state(value: object, descent: _Descent) -> object:
 
 
 # Tipos embutidos cujo valor a subclasse guarda fora do `__dict__` e dos
-# `__slots__`, como o 5 de `Limite(5)` ou a tupla de um NamedTuple.
+# `__slots__`, como o 5 de `Limite(5)`, a tupla de um NamedTuple ou os itens
+# de uma subclasse de deque.
 _BUILTIN_VALUE_TYPES = (
     int,
     float,
@@ -2470,6 +2477,7 @@ _BUILTIN_VALUE_TYPES = (
     dict,
     set,
     frozenset,
+    collections.deque,
 )
 
 
@@ -2556,15 +2564,17 @@ def _code_form(code: CodeType) -> list[object]:
     ]
 
 
-_CONTAINERS = (dict, list, tuple, set, frozenset, pd.DataFrame, pd.Series)
+_TABLES = (pd.DataFrame, pd.Series)
 
 
 def _stable(value: object, descent: _Descent | None = None) -> object:
     """Forma que serializa igual em qualquer processo.
 
-    Chaves de dict viram texto, para ordenar dict com chaves int e str juntas, e
-    conjunto vira lista ordenada, porque a ordem de iteração dele muda com a
-    semente de hash do processo. O DataFrame e a Series entram por `_table_form`.
+    As coleções entram pela ABC (`_is_structure_class`): a Sequence como lista,
+    o Mapping como dict e o Set como lista ordenada, porque a ordem de iteração
+    dele muda com a semente de hash do processo. Chaves de Mapping viram texto
+    sem endereço, para ordenar dict com chaves int e str juntas. O DataFrame e a
+    Series entram por `_table_form`.
     Com `descent`, o que não é contêiner passa por `_schema_leaf`; sem ele, fica
     como está.
 
@@ -2581,7 +2591,7 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     # O chamável vem antes do contêiner: o NamedTuple com `__call__` entraria
     # pela lista dos valores, sem o código, e a subclasse de dict, só pelos itens.
     # `_callable_leaf` o lê pelo `__call__` e pelo valor embutido ao lado do estado.
-    is_container = isinstance(value, _CONTAINERS)
+    is_container = isinstance(value, _TABLES) or _is_structure_class(type(value))
     if descent.leaves and (not is_container or _python_call(value) is not None):
         return _schema_leaf(value, descent)
     if not is_container:
@@ -2590,14 +2600,14 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     if key in descent.containers:
         return {"cycle": type(value).__name__}
     descent.containers.add(key)
-    if isinstance(value, dict):
-        form: object = {str(name): _stable(item, descent) for name, item in value.items()}
-    elif isinstance(value, (set, frozenset)):
+    if isinstance(value, _TABLES):
+        form: object = _table_form(value, descent)
+    elif isinstance(value, collections.abc.Mapping):
+        form = {_without_address(str(name)): _stable(item, descent) for name, item in value.items()}
+    elif isinstance(value, collections.abc.Set):
         form = sorted((_stable(item, descent) for item in value), key=_stable_repr)
-    elif isinstance(value, (pd.DataFrame, pd.Series)):
-        form = _table_form(value, descent)
-    else:
-        form = [_stable(item, descent) for item in value]
+    else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
+        form = [_stable(item, descent) for item in cast("Sequence[object]", value)]
     descent.containers.remove(key)
     return form
 
@@ -2652,7 +2662,14 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
 
 def _stable_repr(value: object) -> str:
     """Repr sem endereço de memória, que muda a cada processo."""
-    return re.sub(r" at 0x[0-9a-fA-F]+", "", repr(value))
+    return _without_address(repr(value))
+
+
+_ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _without_address(text: str) -> str:
+    return _ADDRESS.sub("", text)
 
 
 def _text_hashes(texts: pd.Series) -> list[str | None]:

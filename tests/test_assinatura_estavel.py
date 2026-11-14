@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections import deque
 from enum import Enum
 from typing import Any, Literal
 
@@ -1174,6 +1175,7 @@ def test_json_schema_extra_e_model_kwargs_que_contem_a_si_assinam_sem_recursao()
 # __slots__, e o NamedTuple seria lido como tupla, sem o __call__. A classe do
 # NamedTuple é compilada de novo a cada variação, com o mesmo nome qualificado.
 _EMBUTIDOS = '''
+from collections import deque
 from typing import NamedTuple
 
 FONTE = """
@@ -1214,6 +1216,11 @@ class Tabela(dict):
         return self.get(d.get("tipo"), False)
 
 
+class Fila(deque):
+    def __call__(self, d):
+        return d.get("tipo") in self
+
+
 TIPOS = {"vip", "ouro", "prata", "bronze"}
 VARIACOES = {
     "int": lambda: Limite(5),
@@ -1224,6 +1231,8 @@ VARIACOES = {
     "frozenset-mudado": lambda: Tipos(TIPOS | {"lata"}),
     "dict": lambda: Tabela(vip=True),
     "dict-mudado": lambda: Tabela(ouro=True),
+    "deque": lambda: Fila(["vip", "ouro"]),
+    "deque-mudado": lambda: Fila(["vip", "lata"]),
     "namedtuple": lambda: corte(5),
     "namedtuple-valor-mudado": lambda: corte(10),
     "namedtuple-call-mudado": lambda: corte(5, "<"),
@@ -1258,6 +1267,7 @@ def test_subclasse_chamavel_de_tipo_embutido_assina_igual_entre_sementes():
         ("str", "str-mudado"),
         ("frozenset", "frozenset-mudado"),
         ("dict", "dict-mudado"),
+        ("deque", "deque-mudado"),
         ("namedtuple", "namedtuple-valor-mudado"),
         ("namedtuple", "namedtuple-call-mudado"),
         ("metodo-de-namedtuple", "metodo-de-namedtuple-mudado"),
@@ -1492,3 +1502,96 @@ def test_mudanca_no_conjunto_do_model_config_muda_a_assinatura(construtor):
     ]
 
     assert _assinatura(montar({"centro", "mooca"})) != _assinatura(montar({"centro", "lapa"}))
+
+
+# Coleção que não é dict, lista, tupla nem conjunto, reconhecida pela ABC: o
+# deque, a UserList e o UserDict, com a função e o conjunto de texto que o JSON
+# Schema não serializa igual em todo processo, no json_schema_extra e nos
+# model_kwargs.
+_COLECOES_ABC = """
+from collections import UserDict, UserList, deque
+
+from pydantic import BaseModel, Field
+
+from dataframeit.core import _run_signature
+
+TIPOS = {"vip", "ouro", "prata", "bronze"}
+
+
+class Chave:
+    pass
+
+
+def modelo(extra):
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra={"regras": extra})
+
+    return Pedido
+
+
+def assinatura(extra, model_kwargs=None):
+    return _run_signature(
+        modelo(extra), "{texto}", provider="openai", model="m", model_kwargs=model_kwargs,
+        search_config=None, text_column="texto", status_col="_dataframeit_status",
+    )
+
+
+VARIACOES = {
+    "deque-funcao": lambda: assinatura(deque([lambda d: d.get("tipo") == "vip"])),
+    "deque-funcao-mudado": lambda: assinatura(deque([lambda d: d.get("tipo") == "ouro"])),
+    "deque-conjunto": lambda: assinatura(deque([TIPOS])),
+    "deque-conjunto-mudado": lambda: assinatura(deque([TIPOS | {"lata"}])),
+    "userlist-conjunto": lambda: assinatura(UserList([TIPOS])),
+    "userlist-conjunto-mudado": lambda: assinatura(UserList([TIPOS | {"lata"}])),
+    "userdict-conjunto": lambda: assinatura(UserDict(tipos=TIPOS)),
+    "userdict-conjunto-mudado": lambda: assinatura(UserDict(tipos=TIPOS | {"lata"})),
+    "model_kwargs": lambda: assinatura(1, {"extra": deque([TIPOS])}),
+    "model_kwargs-mudado": lambda: assinatura(1, {"extra": deque([TIPOS | {"lata"}])}),
+    "chave-objeto": lambda: assinatura(1, {"extra": UserDict({Chave(): 1})}),
+}
+"""
+
+
+def test_colecao_reconhecida_pela_abc_assina_igual_entre_sementes():
+    codigo = _COLECOES_ABC + textwrap.dedent(
+        """
+        import json
+
+        print(json.dumps({nome: assinar() for nome, assinar in VARIACOES.items()}))
+        """
+    )
+
+    por_semente = [_roda_python(codigo, semente=semente) for semente in ("0", "1", "2")]
+
+    assert por_semente[0] == por_semente[1] == por_semente[2]
+
+
+@pytest.mark.parametrize(
+    "nome",
+    ["deque-funcao", "deque-conjunto", "userlist-conjunto", "userdict-conjunto", "model_kwargs"],
+)
+def test_mudanca_dentro_da_colecao_reconhecida_pela_abc_muda_a_assinatura(nome):
+    variacoes = _funcao(_COLECOES_ABC, "VARIACOES")
+
+    assert variacoes[nome]() != variacoes[f"{nome}-mudado"]()
+
+
+def test_deque_que_contem_a_si_no_json_schema_extra_assina_sem_recursao():
+    def modelo(alvo):
+        fila: deque[object] = deque([alvo])
+        fila.append(fila)
+
+        class Pedido(BaseModel):
+            tipo: str = Field(json_schema_extra={"fila": fila})  # ty: ignore[invalid-argument-type]
+
+        return Pedido
+
+    assert core._has_unstable_extra(modelo("vip"))
+    assert _assinatura(modelo("vip")) == _assinatura(modelo("vip")) != _assinatura(modelo("ouro"))
+
+
+def test_deque_so_com_json_mantem_o_json_schema():
+    class Pedido(BaseModel):
+        tipo: str = Field(json_schema_extra={"fila": deque(["vip", 1, {"ouro": [2]}])})  # ty: ignore[invalid-argument-type]
+
+    assert not core._has_unstable_extra(Pedido)
