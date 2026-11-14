@@ -8,6 +8,9 @@ Use `uv` para gerenciar dependências e executar comandos Python. O CI (`tests.y
 # Instalar dependências
 uv sync --extra dev
 
+# Instalar os hooks do pre-commit (uma vez por clone)
+uv run --extra dev pre-commit install
+
 # Executar testes
 uv run --extra dev pytest
 
@@ -74,10 +77,13 @@ Siga o [Versionamento Semântico](https://semver.org/lang/pt-BR/):
 ## Estrutura do Projeto
 
 ```
-src/dataframeit/    # Código fonte
+src/dataframeit/    # Código fonte: core.py (função dataframeit), llm.py, agent.py,
+                    # claude_code.py e codex.py (backends), search/ (Tavily, Exa)
 tests/              # Testes (pytest)
-docs/               # Documentação fonte (markdown)
+example/            # Notebooks e script de exemplo; ruff.toml próprio
+docs/               # Documentação fonte (markdown) em português; docs/en/ em inglês
 site/               # Build da documentação (gerado, não commitado)
+.github/workflows/  # tests.yml (CI do PR) e docs.yml (GitHub Pages)
 ```
 
 ## Testes
@@ -87,3 +93,34 @@ Execute os testes antes de finalizar alterações. O CI roda a mesma suíte no P
 ```bash
 uv run --extra dev pytest
 ```
+
+Os testes não chamam provider de verdade e não precisam de chave de API. Os que dependem de um extra, como `--extra codex` ou `--extra search-all`, são pulados sem ele. Para não pular nenhum, rode com os extras do job `quality`:
+
+```bash
+uv run --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex pytest
+```
+
+## Lint e typecheck
+
+O job `quality` do `tests.yml` roda estes comandos, e o pre-commit roda os mesmos nos arquivos de `src/`, `tests/` e `example/`, mais a suíte sem os testes lentos (hook `pytest-rapido`, menos de um minuto):
+
+```bash
+EXTRAS="--extra dev --extra all --extra search-all --extra polars --extra excel --extra codex"
+uv run $EXTRAS ruff format --check src tests
+uv run $EXTRAS ruff check src tests example
+uv run $EXTRAS ty check
+uv run $EXTRAS vulture
+uv run $EXTRAS deptry src
+uvx zizmor@1.30.1 --offline .github/workflows   # auditoria dos workflows
+
+# Tudo de uma vez, como no commit
+uv run --extra dev pre-commit run --all-files
+```
+
+## Convenções observadas no histórico
+
+- Comentários, docstrings, mensagens de erro e aviso, nomes de teste, títulos de PR e commits em português; os identificadores de `src/` ficam em inglês. O título do PR diz o comportamento novo numa frase afirmativa ("Retomada do CSV e do XLSX não cai com default_factory que levanta"), e o PR entra por squash com o número no fim (`(#292)`).
+- Os commits do Dependabot seguem o padrão `chore(deps): ...`.
+- Cobertura de ramos de `src/dataframeit` em 100%, somada entre os jobs do CI. Código novo vem com teste que cobre cada ramo.
+- A suíte precisa passar duas vezes no mesmo processo (`pytest --count=2 --repeat-scope=session`, job `repeat`): teste não deixa estado global para trás.
+- Actions dos workflows fixadas pelo SHA do commit, com a versão em comentário, e `persist-credentials: false` no `actions/checkout`; detalhes em `CONTRIBUTING.md`.

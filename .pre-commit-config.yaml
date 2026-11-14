@@ -4,6 +4,8 @@
 # Os hooks disparam com mudanças em src/, tests/ e example/. Os workflows de
 # .github/workflows/ não têm hook: o passo zizmor do job quality os confere, e
 # o comando dele roda também na máquina local.
+# O hook pytest roda a suíte sem os testes lentos, em menos de um minuto; a
+# suíte completa fica para o CI e para `uv run --extra dev pytest`.
 files: ^(src|tests|example)/
 repos:
   - repo: local
@@ -48,5 +50,20 @@ repos:
         entry: >-
           uv run --extra dev --extra all --extra search-all --extra polars
           --extra excel --extra codex deptry src
+        language: system
+        pass_filenames: false
+
+      # Fora ficam os testes que somam cerca de 70% do tempo da suíte: os que
+      # sobem outros processos Python (test_assinatura_estavel.py e o teste do
+      # PYTHONHASHSEED de test_conditional.py) e os do backend Codex
+      # (test_codex.py e test_codex_runtime.py). O CI roda todos.
+      - id: pytest-rapido
+        name: pytest (rápido)
+        entry: >-
+          uv run --extra dev pytest -q -x -p no:cacheprovider
+          --ignore=tests/test_assinatura_estavel.py
+          --ignore=tests/test_codex.py
+          --ignore=tests/test_codex_runtime.py
+          --deselect=tests/test_conditional.py::test_ordem_de_execucao_nao_depende_do_hash_seed
         language: system
         pass_filenames: false
