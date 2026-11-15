@@ -23,6 +23,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Um Ctrl-C durante uma execução com `reprocess_columns` trata as linhas não alcançadas como a interrupção por `ProviderAbortError`, no modo sequencial e no paralelo: a linha já processada mantém os valores anteriores com a marca em `_error_details`, a linha `'error'` sem valor volta a ficar sem status, e as marcas vão também ao checkpoint. Antes, as linhas com o valor antigo ficavam indistinguíveis das reprocessadas (#281).
 - Os avisos de nova tentativa e de erro não recuperável e os do provider `codex` ao abrir (anotações descartadas do schema e modelo resolvido sem `model`) apontam a chamada de `dataframeit` do usuário; antes, apontavam um quadro interno do pacote. Na thread do executor do modo paralelo, os dois avisos do `retry_with_backoff` apontam a própria função (#353).
 - O seletor de idioma do site leva à mesma página no outro idioma também depois de navegar entre páginas: o site deixa a navegação instantânea do Material (`navigation.instant` e `navigation.instant.prefetch`), com a qual o seletor mantinha o link da primeira página aberta, e o `mkdocs build --strict` volta a passar sem o aviso do `mkdocs-static-i18n` sobre essa incompatibilidade (#351).
 - No modo paralelo, os avisos de falha ao gravar o checkpoint e a assinatura dele na gravação feita no Ctrl-C, inclusive a que refaz a gravação final interrompida, apontam a chamada de `dataframeit` do usuário; antes, apontavam um quadro interno do `dataframeit` ou do `contextlib` (#280).

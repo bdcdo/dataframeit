@@ -1205,3 +1205,87 @@ def test_ctrl_c_dentro_do_on_row_done_no_sequencial_grava_a_linha_entregue(tmp_p
     retomada, llm_ok = _llm_com_ctrl_c()
     _roda(pd.DataFrame({"texto": textos}), llm_ok, batch_size=100, checkpoint_path=ckpt)
     assert retomada == ["b", "c"]
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_antigo(tmp_path, paralelo):
+    """5 linhas processadas e uma com erro, reprocess_columns e Ctrl-C durante a 3ª chamada.
+
+    Como na interrupção por limite de uso, a linha processada que não foi
+    alcançada mantém o valor antigo e ganha a marca em `_error_details`, e a
+    linha com erro que ia ser refeita volta a ficar sem status, no DataFrame do
+    usuário e no checkpoint. Com batch_size=2, as duas primeiras linhas já
+    estão gravadas quando o Ctrl-C chega no sequencial, e só as marcas mudaram
+    desde então.
+    """
+    df = pd.DataFrame(
+        {
+            "texto": [f"t{i}" for i in range(6)],
+            "campo1": ["antigo"] * 5 + [None],
+            "_dataframeit_status": ["processed"] * 5 + ["error"],
+            "_error_details": [None] * 5 + ["falha"],
+        }
+    )
+    ckpt = tmp_path / "ckpt.csv"
+    pagas, llm = _llm_com_ctrl_c(na_chamada=3)
+
+    with pytest.raises(KeyboardInterrupt):
+        _roda(
+            df,
+            llm,
+            reprocess_columns=["campo1"],
+            parallel_requests=paralelo,
+            batch_size=2,
+            checkpoint_path=ckpt,
+        )
+
+    for saida in (df, pd.read_csv(ckpt)):
+        alcancadas = saida["texto"].isin(pagas)
+        com_erro = saida["texto"].eq("t5") & ~alcancadas
+        antigas = ~alcancadas & ~com_erro
+        assert antigas.sum() >= 1
+        assert list(saida.loc[alcancadas, "campo1"]) == [
+            f"r-{texto}" for texto in saida.loc[alcancadas, "texto"]
+        ]
+        assert saida.loc[alcancadas, "_error_details"].isna().all()
+        assert saida.loc[antigas, "campo1"].eq("antigo").all()
+        assert saida.loc[antigas, "_error_details"].eq(core._INTERRUPTED_REPROCESS_DETAIL).all()
+        assert saida.loc[~com_erro, "_dataframeit_status"].eq("processed").all()
+        assert saida.loc[com_erro, ["_dataframeit_status", "_error_details"]].isna().all(axis=None)
+    if paralelo == 1:
+        assert pagas == ["t0", "t1"]
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_ao_marcar_um_reprocessamento_interrompido_completa_as_marcas(paralelo):
+    """A cota acaba na 3ª chamada, e o Ctrl-C chega quando as marcas da interrupção começam."""
+    df = pd.DataFrame(
+        {
+            "texto": [f"t{i}" for i in range(6)],
+            "campo1": ["antigo"] * 6,
+            "_dataframeit_status": ["processed"] * 6,
+        }
+    )
+    marca = core._mark_unreached
+    marcas = []
+
+    def interrompe_a_primeira_e_marca(*args, **kwargs):
+        marcas.append(1)
+        if len(marcas) == 1:
+            _ctrl_c()
+        return marca(*args, **kwargs)
+
+    _, llm = _llm_que_esgota(2, ProviderUsageLimitError("usage limit"))
+    with (
+        patch.object(core, "_mark_unreached", interrompe_a_primeira_e_marca),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(df, llm, reprocess_columns=["campo1"], parallel_requests=paralelo)
+
+    antigas = df["campo1"].eq("antigo")
+    assert antigas.sum() >= 1
+    assert df.loc[antigas, "_error_details"].eq(core._INTERRUPTED_REPROCESS_DETAIL).all()
+    assert df.loc[~antigas, "_error_details"].isna().all()
+    assert df["_dataframeit_status"].eq("processed").all()
