@@ -10,6 +10,7 @@ import time
 import types
 import warnings as _warnings
 from typing import (  # noqa: UP035 (List usado de propósito, ver NodoArvore)
+    TYPE_CHECKING,
     Annotated,
     List,
     Literal,
@@ -54,6 +55,9 @@ from dataframeit.utils import (
     get_nested_pydantic_models,
     is_list_of_pydantic_model,
 )
+
+if TYPE_CHECKING:
+    from dataframeit.conditional import FieldConfig
 
 
 class MedicamentoInfo(BaseModel):
@@ -642,7 +646,7 @@ def test_get_field_config_extracts_search_params():
 def test_build_field_prompt_replace():
     """Testa que prompt substitui completamente o prompt base."""
 
-    field_config = {"prompt": "Custom prompt: {texto}"}
+    field_config: FieldConfig = {"prompt": "Custom prompt: {texto}"}
     prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
 
     assert prompt == "Custom prompt: {texto}"
@@ -653,7 +657,7 @@ def test_build_field_prompt_replace():
 def test_build_field_prompt_append():
     """Testa que prompt_append adiciona ao prompt base."""
 
-    field_config = {"prompt_append": "Extra info"}
+    field_config: FieldConfig = {"prompt_append": "Extra info"}
     prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
 
     assert "Base {texto}" in prompt
@@ -665,7 +669,7 @@ def test_build_field_prompt_append():
 def test_build_field_prompt_default():
     """Testa comportamento padrão sem configuração."""
 
-    field_config = {}
+    field_config: FieldConfig = {}
     prompt = _build_field_prompt("Base {texto}", "campo", "Descrição", field_config)
 
     assert "Base {texto}" in prompt

@@ -18,6 +18,7 @@ from pydantic import BaseModel, create_model
 from .conditional import (
     _CONDITIONAL_KEYS,
     _FIELD_CONFIG_KEYS,
+    FieldConfig,
     _collect_configured_fields,
     get_field_execution_order,
     get_group_execution_units,
@@ -29,6 +30,7 @@ from .llm import (
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
+    Usage,
     _BuildOnce,
     _parse_usage_metadata,
     build_prompt,
@@ -62,8 +64,16 @@ _USAGE_COUNTERS = (
 )
 
 
-def _empty_usage(**metadata: object) -> dict[str, Any]:
-    return {**dict.fromkeys(_USAGE_COUNTERS, 0), **metadata}
+def _empty_usage() -> Usage:
+    return {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+        "search_credits": 0,
+        "search_count": 0,
+    }
 
 
 _LIBRARY_EXTRA_KEYS = frozenset(_FIELD_CONFIG_KEYS + _CONDITIONAL_KEYS)
@@ -138,7 +148,7 @@ def _llm_field_spec(field_info: FieldInfo, owner: type[BaseModel]) -> tuple[Any,
     return resolve_forward_refs(field_info.annotation, owner), _llm_field(field_info)
 
 
-def _get_field_config(extra: dict[str, Any]) -> dict[str, Any]:
+def _get_field_config(extra: dict[str, Any]) -> FieldConfig:
     """Extrai configurações relevantes do json_schema_extra.
 
     Args:
@@ -170,7 +180,7 @@ def _with_text_placeholder(prompt: str) -> str:
 
 
 def _build_field_prompt(
-    user_prompt: str, field_name: str, field_description: str | None, field_config: dict[str, Any]
+    user_prompt: str, field_name: str, field_description: str | None, field_config: FieldConfig
 ) -> str:
     """Constrói o prompt para um campo específico.
 
@@ -238,7 +248,7 @@ def _with_search_overrides(
     return new_config
 
 
-def _with_field_overrides(config: LLMConfig, field_config: dict[str, Any]) -> LLMConfig:
+def _with_field_overrides(config: LLMConfig, field_config: FieldConfig) -> LLMConfig:
     """Aplica os overrides de busca de um campo, lidos de _get_field_config."""
     return _with_search_overrides(
         config,
@@ -286,7 +296,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
     text: str,
     config: LLMConfig,
     save_trace: str | None = None,
-) -> tuple[list[Any], dict[str, Any], list[Any] | None]:
+) -> tuple[list[Any], Usage, list[Any] | None]:
     """Enriquece cada item de uma lista com buscas específicas.
 
     Args:
@@ -350,7 +360,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
 
             # Somar usage
             if result.get("usage"):
-                for key in total_usage:
+                for key in _USAGE_COUNTERS:
                     total_usage[key] += result["usage"].get(key, 0)
 
             # Coletar trace
@@ -538,7 +548,7 @@ def _run_nested_searches(
     nested_fields: list[ConfiguredField],
     config: LLMConfig,
     save_trace: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+) -> tuple[dict[str, Any], Usage, dict[str, Any] | None]:
     """Executa buscas para campos configurados em modelos aninhados.
 
     Args:
@@ -585,7 +595,7 @@ def _run_nested_searches(
 
         # Somar usage
         if result.get("usage"):
-            for key in total_usage:
+            for key in _USAGE_COUNTERS:
                 total_usage[key] += result["usage"].get(key, 0)
 
         # Coletar trace
@@ -616,7 +626,7 @@ class _Row:
     known: dict[str, Any]
     traces: dict[str, Any] | None
     data: dict[str, Any] = field(default_factory=dict)
-    usage: dict[str, Any] = field(default_factory=_empty_usage)
+    usage: Usage = field(default_factory=_empty_usage)
     nested_context: dict[str, Any] = field(default_factory=dict)
     # Os campos que o model_dump do modelo da chamada tirou da resposta.
     dropped: set[str] = field(default_factory=set)
@@ -624,7 +634,7 @@ class _Row:
     def wants(self, field_name: str) -> bool:
         return self.only_fields is None or field_name in self.only_fields
 
-    def add_usage(self, usage: dict[str, Any]) -> None:
+    def add_usage(self, usage: Usage) -> None:
         for key in _USAGE_COUNTERS:
             self.usage[key] += usage.get(key, 0)
 
@@ -664,7 +674,7 @@ class _FieldExtractor:
     user_prompt: str
     config: LLMConfig
     save_trace: str | None
-    field_configs: dict[str, dict[str, Any]]
+    field_configs: dict[str, FieldConfig]
     execution_order: list[str]
     dependencies: dict[str, list[str]]
     units: tuple[_Unit, ...]
@@ -907,7 +917,7 @@ def _extract_usage(  # noqa: C901 (o diagnóstico em DEBUG descreve cada mensage
     provider: SearchProvider,
     search_config: SearchConfig,
     search_tool_name: str,
-) -> dict[str, Any]:
+) -> Usage:
     """Extrai métricas de uso do resultado do agente.
 
     Args:
@@ -919,7 +929,8 @@ def _extract_usage(  # noqa: C901 (o diagnóstico em DEBUG descreve cada mensage
     Returns:
         Dicionário com tokens e créditos de busca.
     """
-    usage = _empty_usage(search_provider=provider.name)
+    usage = _empty_usage()
+    usage["search_provider"] = provider.name
 
     # Extrair token usage das mensagens
     messages = agent_result.get("messages", [])

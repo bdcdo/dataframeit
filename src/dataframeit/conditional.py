@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import operator
 from enum import Enum
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from .utils import (
     _is_structure_class,
@@ -44,6 +44,24 @@ _FIELD_CONFIG_KEYS = (
 # por campo ou por grupo (agent.field_extractor) as aplica, e só nos campos de
 # primeiro nível.
 _CONDITIONAL_KEYS = ("condition", "depends_on")
+
+
+class FieldConfig(TypedDict, total=False):
+    """Configuração de um campo lida do json_schema_extra (agent._get_field_config).
+
+    `prompt` traz o `prompt` ou o `prompt_replace` do campo. `condition` e
+    `depends_on` chegam como o usuário os escreveu, e a forma é conferida por
+    _check_condition e _declared_depends_on.
+    """
+
+    prompt: str | None
+    prompt_append: str | None
+    search_depth: str | None
+    max_results: int | None
+    max_search_calls: int | None
+    depends_on: object
+    condition: object
+
 
 # Operadores de comparação de uma condição em dict, na ordem em que são
 # procurados: símbolo usado no log e função que compara valor e operando.
@@ -547,7 +565,7 @@ def _check_condition(field_name: str, condition: object) -> None:
     raise ValueError(msg)
 
 
-def _resolve_depends_on(field_name: str, config: dict[str, Any]) -> list[str]:
+def _resolve_depends_on(field_name: str, config: FieldConfig) -> list[str]:
     """Resolve as dependências de um campo a partir de sua configuração.
 
     Regras:
@@ -591,7 +609,7 @@ def _resolve_depends_on(field_name: str, config: dict[str, Any]) -> list[str]:
 
 
 def get_field_execution_order(
-    pydantic_model: type[BaseModel], field_configs: dict[str, dict[str, Any]]
+    pydantic_model: type[BaseModel], field_configs: dict[str, FieldConfig]
 ) -> tuple[list[str], dict[str, list[str]]]:
     """Determina ordem de execução dos campos baseado em dependências.
 
@@ -697,7 +715,7 @@ def get_group_execution_units(
 
 
 def should_skip_field(
-    field_name: str, field_config: dict[str, Any], field_data: dict[str, Any]
+    field_name: str, field_config: FieldConfig, field_data: dict[str, Any]
 ) -> bool:
     """Verifica se um campo deve ser pulado baseado em suas condições.
 

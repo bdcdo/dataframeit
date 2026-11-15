@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypedDict, TypeVar, cast
 
 from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError
@@ -134,7 +134,35 @@ def build_prompt(user_prompt: str, text: str) -> str:
     return user_prompt.replace("{texto}", text)
 
 
-def _parse_usage_metadata(meta: object) -> dict[str, int]:
+class Usage(TypedDict, total=False):
+    """Uso de uma linha que o backend devolve em `usage`, e que o core soma.
+
+    Os backends LLM informam só os tokens; o de busca soma também as buscas e o
+    provider, e o Claude Code, o custo. A chave ausente conta como zero.
+    """
+
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    reasoning_tokens: int
+    search_credits: int
+    search_count: int
+    search_provider: str
+    cost_usd: float
+
+
+# Contadores de tokens, os que toda chamada ao LLM informa.
+_TOKEN_KEYS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+)
+
+
+def _parse_usage_metadata(meta: object) -> Usage:
     """Extrai tokens de um usage_metadata dict ou objeto.
 
     ``cache_read`` representa tokens lidos do cache. ``cache_creation`` não
@@ -232,7 +260,7 @@ def call_langchain(
     # tende a repetir o mesmo erro. O uso soma as tentativas cuja resposta chegou,
     # recusadas ou não, porque todas são cobradas.
     correction: dict[str, str | None] = {"ai": None, "human": None}
-    usage_total: dict[str, int] = {}
+    usage_total: Usage = {}
 
     def _call() -> dict[str, Any]:
         try:
@@ -281,12 +309,14 @@ def _model_title(pydantic_model: type[BaseModel]) -> str:
     return pydantic_model.model_config.get("title") or pydantic_model.__name__
 
 
-def _add_usage(total: dict[str, int], usage: dict[str, Any] | None) -> None:
-    for key, value in (usage or {}).items():
-        total[key] = total.get(key, 0) + (value or 0)
+def _add_usage(total: Usage, usage: Usage | None) -> None:
+    if usage is None:
+        return
+    for key in _TOKEN_KEYS:
+        total[key] = total.get(key, 0) + (usage.get(key) or 0)
 
 
-def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict[str, Any] | None]:
+def _sdk_rejected_response(error: ValidationError) -> tuple[str, Usage | None]:
     """Texto e uso da resposta que o SDK da OpenAI recusou, lidos da resposta HTTP.
 
     O langchain-openai anexa a resposta HTTP à exceção (`error.response`). Sem
@@ -299,7 +329,7 @@ def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict[str, Any] 
         return "", None
 
 
-def _read_sdk_body(body: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+def _read_sdk_body(body: dict[str, Any]) -> tuple[str, Usage | None]:
     """Chat Completions ou Responses API; falha de formato levanta, e quem chama ignora."""
     usage = body.get("usage") or {}
     if "choices" in body:

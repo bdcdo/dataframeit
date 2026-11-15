@@ -25,7 +25,17 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 from types import CodeType, MethodType
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_origin, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    NotRequired,
+    TypedDict,
+    cast,
+    get_args,
+    get_origin,
+    overload,
+)
 
 import numpy as np
 import pandas as pd
@@ -204,10 +214,38 @@ _TOKEN_STAT_KEYS = (
 )
 
 
-def _empty_token_stats() -> dict[str, Any]:
+class TokenStats(TypedDict):
+    """Uso somado de uma execução, que vai ao resumo do fim.
+
+    Os contadores começam zerados. As demais chaves só existem depois que o
+    laço as grava: `abort` quando a execução é interrompida, e as de tempo e
+    de workers ao fim do modo paralelo.
+    """
+
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    reasoning_tokens: int
+    search_credits: int
+    search_count: int
+    cost_usd: float
+    abort: NotRequired[str]
+    requests_completed: NotRequired[int]
+    elapsed_seconds: NotRequired[float]
+    initial_workers: NotRequired[int]
+    final_workers: NotRequired[int]
+    workers_reduced: NotRequired[bool]
+
+
+def _empty_token_stats() -> TokenStats:
     """Contadores zerados de tokens, busca e custo de uma execução."""
     return {
-        **dict.fromkeys(_TOKEN_STAT_KEYS, 0),
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
         "search_credits": 0,
         "search_count": 0,
         "cost_usd": 0.0,
@@ -480,11 +518,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # campo que outra condição pulou antes dela. A configuração que não tem
     # ordem é recusada antes de processar, e aqui fica a ordem do modelo.
     if conditions:
+        from .agent import _get_field_config  # noqa: PLC0415 (ver _provider_backend)
+
         with suppress(ValueError):
             execution_order, _ = get_field_execution_order(
                 pydantic_model,
                 {
-                    field_name: field.json_schema_extra
+                    field_name: _get_field_config(field.json_schema_extra)
                     for field_name, field in pydantic_model.model_fields.items()
                     if isinstance(field.json_schema_extra, dict)
                 },
@@ -2025,7 +2065,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             stacklevel=2,
         )
 
-    if track_tokens and token_stats and any(token_stats.values()):
+    if track_tokens and any(token_stats.values()):
         summary_text = _format_token_stats(
             token_stats,
             model,
@@ -2157,7 +2197,7 @@ def _get_processing_indices(
 
 
 def _format_token_stats(
-    token_stats: dict[str, Any],
+    token_stats: TokenStats,
     model: str | None,
     parallel_requests: int = 1,
     search_provider: str | None = None,
@@ -2170,9 +2210,7 @@ def _format_token_stats(
         parallel_requests: Número de workers paralelos usados.
         search_provider: Provedor de busca usado, que dá nome à seção de busca.
     """
-    if not token_stats or (
-        token_stats.get("total_tokens", 0) == 0 and not token_stats.get("cost_usd")
-    ):
+    if token_stats.get("total_tokens", 0) == 0 and not token_stats.get("cost_usd"):
         return ""
 
     lines = [
@@ -3478,7 +3516,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
     trace_mode: str | None,
-    token_stats: dict[str, Any],
+    token_stats: TokenStats,
 ) -> dict[str, Any]:
     """Grava na linha o resultado de uma chamada bem-sucedida e soma o uso.
 
@@ -3536,7 +3574,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     config: LLMConfig,
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
-    token_stats: dict[str, Any],
+    token_stats: TokenStats,
 ) -> str:
     """Grava a falha da linha, avisa com a mensagem amigável e devolve o erro em texto.
 
@@ -3602,7 +3640,7 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
     config: LLMConfig,
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
-    token_stats: dict[str, Any],
+    token_stats: TokenStats,
 ) -> str:
     """Grava a falha da linha por _record_error e, se o registro falhar, pelo mínimo.
 
@@ -3683,7 +3721,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     trace_mode: str | None = None,
     checkpoint: _Checkpoint | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
-) -> dict[str, Any]:
+) -> TokenStats:
     """Processa cada linha do DataFrame, em sequência.
 
     Args:
@@ -3935,7 +3973,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     trace_mode: str | None = None,
     checkpoint: _Checkpoint | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
-) -> dict[str, Any]:
+) -> TokenStats:
     """Processa linhas do DataFrame em paralelo, com fila contínua e auto-redução.
 
     Até `parallel_requests` linhas ficam em voo ao mesmo tempo, e uma linha
