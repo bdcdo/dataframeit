@@ -3629,8 +3629,8 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
     token_stats: TokenStats,
-) -> str:
-    """Grava a falha da linha, avisa com a mensagem amigável e devolve o erro em texto.
+) -> None:
+    """Grava a falha da linha e avisa com a mensagem amigável.
 
     O custo informado pelo provider entra no resumo mesmo com a linha falhando.
     """
@@ -3650,7 +3650,6 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     warnings.warn(f"Falha ao processar linha {idx}.\n{friendly_msg}", stacklevel=1)
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
-    return error_msg
 
 
 def _error_text(error: BaseException) -> str:
@@ -3695,7 +3694,7 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
     token_stats: TokenStats,
-) -> str:
+) -> None:
     """Grava a falha da linha por _record_error e, se o registro falhar, pelo mínimo.
 
     Sem isto, uma falha ao montar a mensagem (exceção com `__str__` quebrado,
@@ -3704,7 +3703,7 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
     e o texto da exceção original.
     """
     try:
-        return _record_error(
+        _record_error(
             df,
             idx,
             error,
@@ -3716,18 +3715,17 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
         )
     except Exception:  # noqa: BLE001 (ver a docstring)
         kept = _KEPT_VALUES_NOTE if row_already_processed and reprocess_columns else ""
-        return _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
+        _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
 
 
 def _record_unrecorded_error(
     df: pd.DataFrame, idx: Hashable, error: BaseException, *, status_col: str, note: str = ""
-) -> str:
+) -> None:
     """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
     error_msg = _error_text(error)
     warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
-    return error_msg
 
 
 def _progress_description(
