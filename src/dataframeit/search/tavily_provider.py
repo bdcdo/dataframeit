@@ -17,7 +17,7 @@ from typing import Any, Literal, TypeVar
 
 from langchain_core.tools import BaseTool, ToolException
 
-from .base import SearchProvider, register_provider
+from .base import SearchProvider, SearchToolError, register_provider
 
 T = TypeVar("T")
 
@@ -25,6 +25,8 @@ T = TypeVar("T")
 # conta ou do serviço. O wrapper do langchain_tavily só põe o status no texto:
 # "Error 400: ...".
 _ERROS_DO_MODELO = (400, 422)
+# Limite do plano (432) e do pay-as-you-go (433): só crédito na conta resolve.
+_LIMITES_DE_USO = (432, 433)
 _STATUS_NO_TEXTO = re.compile(r"^Error (\d{3}):")
 
 
@@ -33,12 +35,17 @@ def _levantar_erro(resultado: T) -> T:
     if not (isinstance(resultado, dict) and isinstance(resultado.get("error"), Exception)):
         return resultado
     erro = resultado["error"]
-    status = _STATUS_NO_TEXTO.match(str(erro))
-    if (status and int(status.group(1)) in _ERROS_DO_MODELO) or (
-        "can only be set during instantiation" in str(erro)
-    ):
+    encontrado = _STATUS_NO_TEXTO.match(str(erro))
+    status = int(encontrado.group(1)) if encontrado else None
+    if status in _ERROS_DO_MODELO or "can only be set during instantiation" in str(erro):
         raise ToolException(str(erro)) from erro
-    raise erro
+    if status in _LIMITES_DE_USO:
+        # Import local: errors importa search no topo do módulo.
+        from dataframeit.errors import ProviderUsageLimitError  # noqa: PLC0415
+
+        msg = f"limite de uso do plano do Tavily esgotado ({type(erro).__name__}: {erro})"
+        raise ProviderUsageLimitError(msg) from erro
+    raise SearchToolError(provider="tavily", error=erro, status_code=status) from erro
 
 
 @register_provider
@@ -119,10 +126,11 @@ class TavilyProvider(SearchProvider):
 
             O _run original devolve {"error": e} para qualquer falha, e o agente
             segue sem evidência, com a linha marcada como processada. Erro de
-            conta, quota, rede ou servidor sobe ao retry da biblioteca. Erro
-            causado pelos argumentos que o modelo escolheu (400, 422 ou
-            parâmetro proibido na chamada) vira ToolException, como "sem
-            resultados", e volta ao modelo para ele tentar outra consulta.
+            conta, quota, rede ou servidor sobe ao retry da biblioteca, como
+            SearchToolError. Erro causado pelos argumentos que o modelo
+            escolheu (400, 422 ou parâmetro proibido na chamada) vira
+            ToolException, como "sem resultados", e volta ao modelo para ele
+            tentar outra consulta.
             """
 
             def _run(self, *args: Any, **kwargs: Any) -> dict[str, Any]:

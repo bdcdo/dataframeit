@@ -88,6 +88,14 @@ With OpenAI, the SDK validates the response inside the call and raises before re
 - **Local configuration incompatible with the provider**
 - **Budget or turn limit of `claude_code` exhausted** (`max_budget_usd`, `max_turns`)
 
+### Quota exhausted (stops the run)
+
+OpenAI's `insufficient_quota`, which arrives as HTTP 429, and the Tavily plan or pay-as-you-go limit (status 432 or 433) are only solved by adding credit to the account. They become `ProviderUsageLimitError`, without a new attempt: the run stops and leaves the remaining rows without status, for resuming. See [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
+
+### Web search errors
+
+A search provider failure arrives as `SearchToolError` (from `dataframeit.search`), with the client error's type and message in its text. The row failure warning points to the Tavily or Exa key and plan, not to the LLM provider's. Its attributes are in [Exceptions](../reference/exceptions.md#errors-during-processing).
+
 ## Incremental Processing
 
 For large datasets, save checkpoints during the run and continue from where you left off:

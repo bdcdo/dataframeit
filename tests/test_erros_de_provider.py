@@ -1,8 +1,10 @@
 """Classificação e mensagens de erro dos providers."""
 
+import copy
 import importlib
 import importlib.metadata
 import importlib.util
+import pickle
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,11 +18,14 @@ from dataframeit.claude_code import _raise_for_result_error
 from dataframeit.errors import (
     ProviderError,
     ProviderTransientError,
+    ProviderUsageLimitError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
+    retry_with_backoff,
     validate_provider_dependencies,
 )
+from dataframeit.search import SearchToolError
 
 # =============================================================================
 # Mensagens amigáveis
@@ -107,6 +112,142 @@ def test_limite_do_tavily_escolhe_a_caixa_de_limite():
     assert "LIMITE DE USO TAVILY" in mensagem
 
 
+def _erro_do_tavily(status, texto):
+    # Como _levantar_erro do provedor Tavily o monta: o status só no texto do cliente.
+    return SearchToolError("tavily", ValueError(f"Error {status}: {texto}"), status)
+
+
+def _erro_do_exa(status, texto):
+    return SearchToolError(
+        "exa", ValueError(f"Request failed with status code {status}: {texto}"), status
+    )
+
+
+def test_chave_invalida_da_busca_aponta_a_chave_do_tavily_e_nao_a_do_llm():
+    # O cliente do Tavily não nomeia o serviço no texto.
+    mensagem = get_friendly_error_message(_erro_do_tavily(401, "Unauthorized"), "openai")
+    assert "AUTENTICAÇÃO TAVILY" in mensagem
+    assert "TAVILY_API_KEY" in mensagem
+    assert "OPENAI_API_KEY" not in mensagem
+
+
+def test_falha_da_busca_sem_status_e_sem_caixa_propria_aponta_a_chave_da_busca():
+    erro = SearchToolError("tavily", ValueError("401 unauthorized"))
+    mensagem = get_friendly_error_message(erro, "openai")
+    assert "AUTENTICAÇÃO" in mensagem
+    assert "TAVILY_API_KEY" in mensagem
+    assert "OPENAI_API_KEY" not in mensagem
+
+
+def test_chave_invalida_real_do_exa_escolhe_a_caixa_do_exa():
+    erro = _erro_do_exa(401, '{"error":"Unauthorized"}')
+    mensagem = get_friendly_error_message(erro, "anthropic")
+    assert "AUTENTICAÇÃO EXA" in mensagem
+    assert "ANTHROPIC_API_KEY" not in mensagem
+
+
+@pytest.mark.parametrize(
+    "erro",
+    [
+        _erro_do_tavily(500, "Invalid upstream response"),
+        _erro_do_tavily(500, "rate limit of upstream"),
+        _erro_do_exa(400, "Invalid numResults"),
+        _erro_do_exa(400, "numResults limit is 100"),
+    ],
+)
+def test_status_da_busca_decide_a_caixa_e_nao_o_texto(erro):
+    mensagem = get_friendly_error_message(erro, "openai")
+    assert "AUTENTICAÇÃO" not in mensagem
+    assert "LIMITE DE USO" not in mensagem
+
+
+def test_rate_limit_da_busca_nomeia_o_servico_da_busca():
+    mensagem = get_friendly_error_message(_erro_do_exa(429, "slow down"), "openai")
+    assert "LIMITE DE REQUISIÇÕES" in mensagem
+    assert "para o Exa" in mensagem
+
+
+def test_erro_da_busca_sobrevive_a_pickle_e_copy():
+    erro = _erro_do_tavily(401, "Unauthorized")
+    copias = (pickle.loads(pickle.dumps(erro)), copy.copy(erro))  # noqa: S301 (dado do próprio teste)
+    for copia in copias:
+        assert (copia.provider, copia.status_code, str(copia)) == (
+            "tavily",
+            401,
+            "ValueError: Error 401: Unauthorized",
+        )
+
+
+# =============================================================================
+# Cota de uso esgotada
+# =============================================================================
+
+
+def _falha_sempre(erro):
+    chamadas = []
+
+    def func():
+        chamadas.append(1)
+        raise erro
+
+    return chamadas, func
+
+
+def _cota_esgotada_da_openai():
+    httpx = pytest.importorskip("httpx")
+    openai = pytest.importorskip("openai")
+    requisicao = httpx.Request("POST", "https://api.openai.com/v1/x")
+    return openai.RateLimitError(
+        "Error code: 429 - {'error': {'message': 'You exceeded your current quota', "
+        "'type': 'insufficient_quota', 'code': 'insufficient_quota'}}",
+        response=httpx.Response(429, request=requisicao),
+        body={"code": "insufficient_quota"},
+    )
+
+
+def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
+    erro = _cota_esgotada_da_openai()
+    chamadas, func = _falha_sempre(erro)
+
+    with pytest.raises(ProviderUsageLimitError, match="adicione crédito") as levantado:
+        retry_with_backoff(func, max_retries=3, base_delay=0.0)
+
+    assert len(chamadas) == 1
+    assert levantado.value.__cause__ is erro
+
+
+def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
+    class ErroDaIntegracao(Exception):
+        pass
+
+    # Como um `raise ErroDaIntegracao(...) from causa`.
+    erro = ErroDaIntegracao("chamada ao modelo falhou")
+    erro.__cause__ = _cota_esgotada_da_openai()
+    chamadas, func = _falha_sempre(erro)
+
+    with pytest.raises(ProviderUsageLimitError):
+        retry_with_backoff(func, max_retries=3, base_delay=0.0)
+
+    assert len(chamadas) == 1
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.parametrize(
+    ("erro", "tentativas"),
+    [
+        (_erro_do_tavily(500, "Internal server error."), 2),
+        (_erro_do_exa(402, "x"), 1),
+    ],
+)
+def test_outras_falhas_da_busca_nao_viram_limite_de_uso(erro, tentativas):
+    chamadas, func = _falha_sempre(erro)
+
+    with pytest.raises(SearchToolError):
+        retry_with_backoff(func, max_retries=2, base_delay=0.0)
+
+    assert len(chamadas) == tentativas
+
+
 # =============================================================================
 # ModelError do langchain-core
 # =============================================================================
@@ -140,6 +281,19 @@ def test_model_rate_limit_error_reduz_workers(model_error_falso):
     assert is_rate_limit_error(_ModelErrorFalso("bad request")) is False
     # A classe decide, mesmo quando o texto parece de rate limit.
     assert is_rate_limit_error(_ModelErrorFalso("429 rate limit exceeded")) is False
+
+
+def test_sobrecarga_529_reduz_workers(model_error_falso):
+    class Sobrecarga(Exception):
+        status_code = 529
+
+    class SobrecargaDoLangChain(_ModelErrorFalso):
+        # O langchain-core classifica o 529 como ModelAPIError, e não como rate limit.
+        status_code = 529
+
+    assert is_rate_limit_error(Sobrecarga("overloaded")) is True
+    assert is_rate_limit_error(SobrecargaDoLangChain("overloaded")) is True
+    assert is_recoverable_error(Sobrecarga("overloaded")) is True
 
 
 def test_context_overflow_nao_e_re_tentado():
