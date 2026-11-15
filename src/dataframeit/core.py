@@ -1967,10 +1967,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         control_columns = [status_col, "_error_details"]
         _as_object_columns(df_pandas, expected_columns + control_columns, nan_columns)
-        # O status ausente que chega como pd.NA, como o da coluna `string` de
-        # convert_dtypes, vira None: a marca das linhas não alcançadas compara o
-        # status com o texto, e a comparação com o pd.NA não é booleana.
-        df_pandas[status_col] = df_pandas[status_col].where(df_pandas[status_col].notna(), None)
+        # O ausente que chega como pd.NA nas colunas de controle, como o da
+        # coluna `string` de convert_dtypes, vira None: a marca das linhas não
+        # alcançadas compara o status e o detalhe com texto, e a comparação com
+        # o pd.NA não é booleana.
+        for col in control_columns:
+            df_pandas[col] = df_pandas[col].where(df_pandas[col].notna(), None)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido

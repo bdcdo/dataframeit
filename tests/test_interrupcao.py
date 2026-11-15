@@ -1368,12 +1368,16 @@ def test_marcas_da_interrupcao_sem_reprocessamento_poupam_a_linha_gravada_pela_e
 @pytest.mark.parametrize("reprocess_columns", [None, ["campo1"]], ids=["retomada", "reprocesso"])
 @pytest.mark.parametrize("paralelo", [1, 3])
 def test_interrupcao_marca_as_linhas_com_status_pd_na(paralelo, reprocess_columns):
-    """A marca das linhas não alcançadas lê o status pd.NA de convert_dtypes como ausente."""
+    """A marca das linhas não alcançadas lê o pd.NA de convert_dtypes como ausente.
+
+    Vale para as duas colunas de controle, o status e o detalhe do erro.
+    """
     df = pd.DataFrame(
         {
             "texto": [f"linha{i}" for i in range(6)],
             "campo1": ["antigo"] + [None] * 5,
-            "_dataframeit_status": ["processed"] + [None] * 5,
+            "_dataframeit_status": ["processed", "error"] + [None] * 4,
+            "_error_details": [None, "falha antiga"] + [None] * 4,
         }
     ).convert_dtypes()
     _, llm = _llm_que_esgota(0, ProviderUsageLimitError("usage limit"))
@@ -1384,6 +1388,15 @@ def test_interrupcao_marca_as_linhas_com_status_pd_na(paralelo, reprocess_column
         )
 
     status = saida["_dataframeit_status"]
-    assert status.iloc[0] == "processed"
-    assert status.iloc[1:].isna().all()
+    detalhes = saida["_error_details"]
     assert saida["campo1"].iloc[0] == "antigo"
+    assert status.iloc[2:].isna().all()
+    if reprocess_columns is None:
+        # A linha 'error' não estava pendente e fica como estava.
+        assert status.iloc[:2].tolist() == ["processed", "error"]
+    else:
+        # A processada mantém o valor anterior com a marca; a 'error' sem valor
+        # volta a ficar sem status.
+        assert status.iloc[0] == "processed"
+        assert detalhes.iloc[0] == core._INTERRUPTED_REPROCESS_DETAIL
+        assert pd.isna(status.iloc[1])
