@@ -1215,7 +1215,8 @@ def test_campo_opcional_com_coluna_nas_linhas_processadas_nao_avisa():
     assert resultado["categoria"].tolist() == [None]
 
 
-def test_erro_de_campo_incompativel_sugere_tambem_o_campo_opcional_novo():
+@pytest.mark.parametrize("reprocess_columns", [None, ["extra"]])
+def test_erro_de_campo_incompativel_sugere_tambem_o_campo_opcional_novo(reprocess_columns):
     df = _ja_processado_com_nota()
 
     with pytest.raises(
@@ -1223,18 +1224,7 @@ def test_erro_de_campo_incompativel_sugere_tambem_o_campo_opcional_novo():
         match=r"campos incompatíveis \['categoria'\]\. "
         r"Inclua-os em reprocess_columns=\['categoria', 'extra'\]\.",
     ):
-        _rodar(df, questions=ModeloCategoriaComExtra)
-
-
-def test_erro_de_campo_incompativel_mantem_na_sugestao_o_reprocess_columns_passado():
-    df = _ja_processado_com_nota()
-
-    with pytest.raises(
-        ValueError,
-        match=r"campos incompatíveis \['categoria'\]\. "
-        r"Inclua-os em reprocess_columns=\['extra', 'categoria'\]\.",
-    ):
-        _rodar(df, questions=ModeloCategoriaComExtra, reprocess_columns=["extra"])
+        _rodar(df, questions=ModeloCategoriaComExtra, reprocess_columns=reprocess_columns)
 
 
 def test_seguir_a_sugestao_do_erro_preenche_todos_os_campos_novos():

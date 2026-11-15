@@ -1876,14 +1876,13 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # O campo sem coluna nunca foi perguntado às linhas já processadas, que só
     # o recebem pelo reprocessamento; sem ele, ficam com o padrão ou None.
     has_processed_rows = (
-        status_col in df_pandas.columns and df_pandas[status_col].eq("processed").any()
+        status_col in df_pandas.columns and df_pandas[status_col].isin(["processed"]).any()
     )
     new_columns = (
         [col for col in value_columns if col not in df_pandas.columns] if has_processed_rows else []
     )
-    suggested_columns = list(
-        dict.fromkeys([*(reprocess_columns or []), *incompatible_columns, *new_columns])
-    )
+    to_reprocess = {*reprocessed_columns, *incompatible_columns, *new_columns}
+    suggested_columns = [col for col in expected_columns if col in to_reprocess]
     uncovered_columns = [
         column for column in incompatible_columns if column not in reprocessed_columns
     ]
