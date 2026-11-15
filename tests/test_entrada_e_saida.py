@@ -20,7 +20,7 @@ from pydantic_core import core_schema
 from typing_extensions import TypeAliasType
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
-from dataframeit.core import _format_token_stats
+from dataframeit.core import _empty_token_stats, _format_token_stats
 
 
 class Modelo(BaseModel):
@@ -840,6 +840,7 @@ def test_batch_size_rejeita_nao_inteiros(valor, tmp_path):
 def test_estatisticas_de_busca_usam_o_provider_escolhido():
     saida = _format_token_stats(
         {
+            **_empty_token_stats(),
             "input_tokens": 1,
             "output_tokens": 1,
             "total_tokens": 2,
@@ -1244,6 +1245,7 @@ def test_rate_limit_delay_espera_depois_de_cada_linha(monkeypatch, parallel_requ
 def test_resumo_detalha_cache_e_raciocinio():
     saida = _format_token_stats(
         {
+            **_empty_token_stats(),
             "input_tokens": 100,
             "cached_input_tokens": 40,
             "output_tokens": 30,
@@ -1261,9 +1263,7 @@ def test_resumo_sem_requisicao_concluida_omite_a_taxa():
     """Linhas que falharam com custo informado entram no resumo sem uma taxa de requisições."""
     saida = _format_token_stats(
         {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
+            **_empty_token_stats(),
             "cost_usd": 0.02,
             "elapsed_seconds": 2.0,
             "requests_completed": 0,

@@ -34,7 +34,7 @@ from .errors import (
     retry_with_backoff,
     validation_error_summary,
 )
-from .llm import LLMConfig, build_prompt
+from .llm import LLMConfig, Usage, build_prompt
 from .utils import _user_stacklevel
 
 if TYPE_CHECKING:
@@ -810,7 +810,7 @@ class CodexBackend:
         prompt = build_prompt(self._user_prompt, text)
         # O uso soma todas as tentativas, inclusive as que falharam, estouraram
         # o prazo ou tiveram a resposta recusada, porque todas são cobradas.
-        usage_total: dict[str, int] = {}
+        usage_total: Usage = {}
         return retry_with_backoff(
             lambda: self._invoke_once(prompt, usage_total),
             self.config.max_retries,
@@ -818,7 +818,7 @@ class CodexBackend:
             self.config.max_delay,
         )
 
-    def _invoke_once(self, prompt: str, usage_total: dict[str, int]) -> dict[str, Any]:
+    def _invoke_once(self, prompt: str, usage_total: Usage) -> dict[str, Any]:
         from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
 
         # Função privada do SDK, fixado em versão exata no extra `codex`: é a
@@ -995,7 +995,7 @@ def _attempt_deadline(
         timer.cancel()
 
 
-def _add_usage(usage: ThreadTokenUsage | None, usage_total: dict[str, int]) -> None:
+def _add_usage(usage: ThreadTokenUsage | None, usage_total: Usage) -> None:
     if usage is None:
         return
     total = usage.total
@@ -1010,7 +1010,7 @@ def _add_usage(usage: ThreadTokenUsage | None, usage_total: dict[str, int]) -> N
 
 
 def _collect_turn(
-    turn: TurnHandle, deadline: _AttemptDeadline, usage_total: dict[str, int]
+    turn: TurnHandle, deadline: _AttemptDeadline, usage_total: Usage
 ) -> tuple[Turn, list[ThreadItem]]:
     """Consome o stream do turno e devolve o turno concluído e os itens.
 

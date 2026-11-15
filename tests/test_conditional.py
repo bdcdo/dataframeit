@@ -23,6 +23,8 @@ from pydantic.json_schema import JsonDict
 from dataframeit import ProviderUsageLimitError, dataframeit, field_condition
 from dataframeit.agent import field_extractor
 from dataframeit.conditional import (
+    FieldConfig,
+    _get_field_config,
     check_dependencies_exist,
     detect_circular_dependencies,
     evaluate_condition,
@@ -291,7 +293,7 @@ class TestGetFieldExecutionOrder:
             a: str
             b: str = Field(json_schema_extra={"condition": {"field": "a", "equals": "x"}})
 
-        field_configs = {
+        field_configs: dict[str, FieldConfig] = {
             "a": {},
             "b": {"condition": {"field": "a", "equals": "x"}},
         }
@@ -314,7 +316,7 @@ class TestGetFieldExecutionOrder:
                 )
             )
 
-        field_configs = {
+        field_configs: dict[str, FieldConfig] = {
             "tipo": {},
             "cpf": {"condition": {"field": "tipo", "equals": "pf"}},
             "cnpj": {"condition": {"field": "tipo", "equals": "pj"}},
@@ -336,7 +338,7 @@ class TestGetFieldExecutionOrder:
         class ModelWithInvalidDep(BaseModel):
             a: str = Field(json_schema_extra={"condition": {"field": "nonexistent", "equals": "x"}})
 
-        field_configs = {
+        field_configs: dict[str, FieldConfig] = {
             "a": {"condition": {"field": "nonexistent", "equals": "x"}},
         }
 
@@ -350,7 +352,7 @@ class TestGetFieldExecutionOrder:
             a: str = Field(json_schema_extra={"condition": {"field": "b", "equals": "x"}})
             b: str = Field(json_schema_extra={"condition": {"field": "a", "equals": "x"}})
 
-        field_configs = {
+        field_configs: dict[str, FieldConfig] = {
             "a": {"condition": {"field": "b", "equals": "x"}},
             "b": {"condition": {"field": "a", "equals": "x"}},
         }
@@ -365,7 +367,7 @@ class TestGetFieldExecutionOrder:
             tipo: str
             cpf: str = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "pf"}})
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "tipo": {},
             "cpf": {"condition": {"field": "tipo", "equals": "pf"}},
         }
@@ -386,7 +388,7 @@ class TestGetFieldExecutionOrder:
                 }
             )
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "a": {},
             "b": {},
             "c": {
@@ -412,7 +414,7 @@ class TestGetFieldExecutionOrder:
                 }
             )
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "tipo": {},
             "x": {},
             "c": {
@@ -435,7 +437,7 @@ class TestGetFieldExecutionOrder:
                 json_schema_extra={"condition": {"field": "endereco.cidade", "equals": "SP"}}
             )
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "endereco": {},
             "taxa": {"condition": {"field": "endereco.cidade", "equals": "SP"}},
         }
@@ -450,7 +452,7 @@ class TestGetFieldExecutionOrder:
             a: str
             b: str = Field(json_schema_extra={"depends_on": ["a"]})
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "a": {},
             "b": {"depends_on": ["a"]},
         }
@@ -471,7 +473,7 @@ class TestGetFieldExecutionOrder:
             a: str
             b: str = Field(json_schema_extra=sem_dependencia)
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "a": {},
             "b": {"condition": lambda data: bool(data.get("a"))},
         }
@@ -489,7 +491,7 @@ class TestGetFieldExecutionOrder:
             a: str
             b: str = Field(json_schema_extra=sem_dependencia)
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "a": {},
             "b": {"condition": lambda data: bool(data.get("a"))},
         }
@@ -510,7 +512,7 @@ class TestGetFieldExecutionOrder:
                 )
             )
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "a": {},
             "b": {
                 "depends_on": ["a"],
@@ -530,25 +532,25 @@ class TestShouldSkipField:
 
     def test_no_condition(self):
         """Testa campo sem condição (não deve pular)."""
-        field_config = {}
+        field_config: FieldConfig = {}
         field_data = {"tipo": "pf"}
         assert should_skip_field("cpf", field_config, field_data) is False
 
     def test_condition_satisfied(self):
         """Testa condição satisfeita (não deve pular)."""
-        field_config = {"condition": {"field": "tipo", "equals": "pf"}}
+        field_config: FieldConfig = {"condition": {"field": "tipo", "equals": "pf"}}
         field_data = {"tipo": "pf"}
         assert should_skip_field("cpf", field_config, field_data) is False
 
     def test_condition_not_satisfied(self):
         """Testa condição não satisfeita (deve pular)."""
-        field_config = {"condition": {"field": "tipo", "equals": "pf"}}
+        field_config: FieldConfig = {"condition": {"field": "tipo", "equals": "pf"}}
         field_data = {"tipo": "pj"}
         assert should_skip_field("cpf", field_config, field_data) is True
 
     def test_complex_condition(self):
         """Testa condição complexa."""
-        field_config = {"condition": {"field": "status", "in": ["ativo", "pendente"]}}
+        field_config: FieldConfig = {"condition": {"field": "status", "in": ["ativo", "pendente"]}}
 
         field_data = {"status": "ativo"}
         assert should_skip_field("campo", field_config, field_data) is False
@@ -580,7 +582,7 @@ class TestIntegrationScenarios:
                 },
             )
 
-        field_configs = {
+        field_configs: dict[str, FieldConfig] = {
             "tipo": {},
             "cpf": {"depends_on": ["tipo"], "condition": {"field": "tipo", "equals": "pf"}},
             "cnpj": {"depends_on": ["tipo"], "condition": {"field": "tipo", "equals": "pj"}},
@@ -618,7 +620,7 @@ class TestIntegrationScenarios:
                 }
             )
 
-        field_configs = {
+        field_configs: dict[str, FieldConfig] = {
             "pais": {},
             "estado": {"depends_on": ["pais"], "condition": {"field": "pais", "equals": "Brasil"}},
             "cep": {"depends_on": ["estado"], "condition": {"field": "estado", "exists": True}},
@@ -957,7 +959,10 @@ class TestCondicaoPelaApi:
         assert "depends_on" not in caplog.text
 
     def test_depends_on_em_tupla_se_une_a_condicao_em_dict(self):
-        config = {"condition": {"field": "tipo", "equals": "pf"}, "depends_on": ("cnpj",)}
+        config: FieldConfig = {
+            "condition": {"field": "tipo", "equals": "pf"},
+            "depends_on": ("cnpj",),
+        }
 
         _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
 
@@ -974,13 +979,13 @@ class TestCondicaoPelaApi:
 
     @pytest.mark.parametrize("depends_on", [5, {"tipo"}, {"tipo": 1}, ["tipo", 1], ("tipo", None)])
     def test_depends_on_de_forma_nao_aceita_levanta_erro(self, depends_on):
-        config = {"condition": lambda dados: True, "depends_on": depends_on}
+        config: FieldConfig = {"condition": lambda dados: True, "depends_on": depends_on}
 
         with pytest.raises(ValueError, match=r"Campo 'cpf'.*'depends_on'.*lista ou tupla"):
             get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
 
     def test_depends_on_em_texto_vazio_e_campo_inexistente(self):
-        config = {"condition": lambda dados: True, "depends_on": ""}
+        config: FieldConfig = {"condition": lambda dados: True, "depends_on": ""}
 
         with pytest.raises(ValueError, match=r"Campo 'cpf' depende de campos inexistentes: \[''\]"):
             get_field_execution_order(ModeloPessoaCondicional, {"cpf": config})
@@ -1118,7 +1123,7 @@ def test_condicao_avaliada_registra_a_comparacao_em_debug(caplog, condicao, mens
 
 @pytest.mark.parametrize(("tipo", "pulado"), [("pj", True), ("pf", False)])
 def test_campo_pulado_registra_em_info_so_quando_pula(caplog, tipo, pulado):
-    config = {"condition": {"field": "tipo", "equals": "pf"}}
+    config: FieldConfig = {"condition": {"field": "tipo", "equals": "pf"}}
 
     with caplog.at_level(logging.INFO, logger="dataframeit.conditional"):
         assert should_skip_field("x", config, {"tipo": tipo}) is pulado
@@ -1234,7 +1239,7 @@ def test_condicao_vazia_pula_o_campo_como_evaluate_condition():
 
 
 def test_depends_on_de_forma_nao_aceita_tem_a_mensagem_exata():
-    config = {"condition": lambda dados: True, "depends_on": 5}
+    config: FieldConfig = {"condition": lambda dados: True, "depends_on": 5}
 
     mensagem = (
         "Campo 'cpf' tem 'depends_on' 5: use o nome de um campo em texto, "
@@ -1281,7 +1286,9 @@ def test_field_condition_devolve_o_dict_que_o_motor_le():
     extra = field_condition(_tipo_pj, depends_on=["tipo"])
 
     assert extra == {"condition": _tipo_pj, "depends_on": ["tipo"]}
-    _, dependencias = get_field_execution_order(ModeloPessoaCondicional, {"cpf": extra})
+    _, dependencias = get_field_execution_order(
+        ModeloPessoaCondicional, {"cpf": _get_field_config(extra)}
+    )
     assert dependencias["cpf"] == ["tipo"]
 
 
@@ -1384,7 +1391,7 @@ def test_caminho_aninhado_que_existe_no_modelo_e_aceito(anotacao, caminho):
     configuracao = {"condition": {"field": caminho, "equals": "SP"}}
 
     _, dependencias = get_field_execution_order(
-        _entrega(anotacao, configuracao), {"taxa": configuracao}
+        _entrega(anotacao, configuracao), {"taxa": _get_field_config(configuracao)}
     )
 
     assert dependencias["taxa"] == ["endereco"]
@@ -1430,7 +1437,9 @@ def test_caminho_que_atravessa_colecao_e_recusado(anotacao, caminho):
 
     mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
     with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
-        get_field_execution_order(_entrega(anotacao, configuracao), {"taxa": configuracao})
+        get_field_execution_order(
+            _entrega(anotacao, configuracao), {"taxa": _get_field_config(configuracao)}
+        )
 
 
 class _DocumentoPF(BaseModel):
@@ -1467,12 +1476,14 @@ def test_caminho_segue_todos_os_modelos_da_uniao_que_tem_o_segmento(caminho, exi
     modelo = _entrega(Union[_PessoaFisica, _PessoaJuridica], configuracao)
 
     if existe:
-        _, dependencias = get_field_execution_order(modelo, {"taxa": configuracao})
+        _, dependencias = get_field_execution_order(
+            modelo, {"taxa": _get_field_config(configuracao)}
+        )
         assert dependencias["taxa"] == ["endereco"]
     else:
         mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
         with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
-            get_field_execution_order(modelo, {"taxa": configuracao})
+            get_field_execution_order(modelo, {"taxa": _get_field_config(configuracao)})
 
 
 class _Situacao(Enum):
@@ -1528,7 +1539,7 @@ def test_caminho_depois_de_campo_escalar_e_recusado(caminho):
 
     mensagem = f"Campo 'taxa' depende de campos inexistentes: ['{caminho}']"
     with pytest.raises(ValueError, match=f"^{re.escape(mensagem)}$"):
-        get_field_execution_order(modelo, {"taxa": configuracao})
+        get_field_execution_order(modelo, {"taxa": _get_field_config(configuracao)})
 
 
 def test_caminho_que_so_o_texto_da_uniao_poderia_ter_e_recusado():
@@ -1536,7 +1547,7 @@ def test_caminho_que_so_o_texto_da_uniao_poderia_ter_e_recusado():
     modelo = _entrega(Union[_EnderecoDeEntrega, str], configuracao)
 
     with pytest.raises(ValueError, match=re.escape("inexistentes: ['endereco.cidadee']")):
-        get_field_execution_order(modelo, {"taxa": configuracao})
+        get_field_execution_order(modelo, {"taxa": _get_field_config(configuracao)})
 
 
 def test_caminho_aninhado_inexistente_falha_antes_de_processar():

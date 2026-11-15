@@ -23,7 +23,7 @@ from .errors import (
     retry_with_backoff,
     validation_error_summary,
 )
-from .llm import LLMConfig, _parse_usage_metadata, build_prompt
+from .llm import LLMConfig, Usage, _parse_usage_metadata, build_prompt
 from .utils import parse_json
 
 if TYPE_CHECKING:
@@ -190,9 +190,7 @@ def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _usage_from_sdk(
-    usage: dict[str, Any] | None, cost_usd: float | None = None
-) -> dict[str, Any] | None:
+def _usage_from_sdk(usage: dict[str, Any] | None, cost_usd: float | None = None) -> Usage | None:
     """Converte ``ResultMessage.usage`` para o formato de tokens do core.
 
     O SDK repassa o usage da API da Anthropic, em que ``input_tokens`` exclui
@@ -208,16 +206,14 @@ def _usage_from_sdk(
     input_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
     output_tokens = usage.get("output_tokens") or 0
 
-    parsed: dict[str, float] = {
-        **_parse_usage_metadata(
-            {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-                "input_token_details": {"cache_read": cache_read},
-            }
-        )
-    }
+    parsed = _parse_usage_metadata(
+        {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "input_token_details": {"cache_read": cache_read},
+        }
+    )
     if cost_usd:
         parsed["cost_usd"] = cost_usd
     return parsed

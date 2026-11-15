@@ -23,6 +23,7 @@ from dataframeit.agent import (
     field_extractor,
 )
 from dataframeit.conditional import (
+    FieldConfig,
     _collect_configured_fields,
     _walk_fields,
     get_field_execution_order,
@@ -339,7 +340,7 @@ class TestOrdemDeExecucao:
             endereco: Optional[Endereco] = None
             campo: Optional[str] = None
 
-        configs = {
+        configs: dict[str, FieldConfig] = {
             "tipo": {},
             "endereco": {},
             "campo": {"condition": lambda dados: True, "depends_on": depends_on},

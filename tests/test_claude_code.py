@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dataframeit import dataframeit
 from dataframeit.claude_code import _build_json_system_prompt, call_claude_code
-from dataframeit.core import _format_token_stats
+from dataframeit.core import _empty_token_stats, _format_token_stats
 from dataframeit.errors import (
     ProviderError,
     ProviderOverloadedError,
@@ -530,7 +530,13 @@ def test_custo_informado_pelo_sdk_entra_no_usage(sdk_falso):
 
 def test_custo_somado_nas_estatisticas():
     resumo = _format_token_stats(
-        {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cost_usd": 0.25},
+        {
+            **_empty_token_stats(),
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cost_usd": 0.25,
+        },
         model=None,
     )
     assert "US$ 0.2500" in resumo
@@ -604,7 +610,10 @@ def test_resumo_soma_o_custo_das_linhas_e_das_falhas(caplog, parallel_requests):
 
 def test_custo_sem_tokens_aparece_no_resumo():
     resumo = _format_token_stats(
-        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.25},
+        {
+            **_empty_token_stats(),
+            "cost_usd": 0.25,
+        },
         model=None,
     )
     assert "US$ 0.2500" in resumo
