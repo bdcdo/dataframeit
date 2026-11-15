@@ -329,6 +329,7 @@ def _recusa(entrada, match, questions=ModeloCategoria, **opcoes):
     """Roda esperando o ValueError de `match`, sem chamar o LLM nem alterar a entrada."""
     antes = entrada.copy()
     opcoes.setdefault("track_tokens", False)
+    opcoes.setdefault("prompt", "{texto}")
     with (
         patch(
             "dataframeit.core.call_langchain", side_effect=_responde(categoria="llm", nota=1)
@@ -336,7 +337,7 @@ def _recusa(entrada, match, questions=ModeloCategoria, **opcoes):
         patch("dataframeit.core.validate_provider_dependencies"),
         pytest.raises(ValueError, match=match),
     ):
-        dataframeit(entrada, questions=questions, prompt="{texto}", **opcoes)
+        dataframeit(entrada, questions=questions, **opcoes)
     llm.assert_not_called()
     assert entrada.equals(antes)
 
@@ -360,6 +361,104 @@ def test_coluna_com_nome_de_campo_e_checkpoint_levanta_sem_gravar(tmp_path):
         checkpoint_path=checkpoint,
     )
     assert not checkpoint.exists()
+
+
+def _interrompe_na_segunda_linha(entrada, checkpoint, **opcoes):
+    """Grava em `checkpoint` a primeira linha processada e a segunda pendente."""
+    _rodar_sem_avisos(
+        entrada,
+        ModeloCategoria,
+        _responde_em_sequencia({"categoria": "llm-a", "nota": 1}, ProviderAbortError("limite")),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+        **opcoes,
+    )
+
+
+def test_coluna_com_nome_de_campo_acrescentada_antes_da_retomada_levanta(tmp_path):
+    checkpoint = tmp_path / "c.csv"
+    _interrompe_na_segunda_linha(_rotulos_humanos().drop(columns="categoria"), checkpoint)
+    gravado = checkpoint.read_bytes()
+
+    _recusa(
+        _rotulos_humanos(),
+        r"As colunas \['categoria'\] já existem no DataFrame com o nome de campos do modelo, "
+        r"e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que o checkpoint "
+        r"ainda não processou\. Renomeie ou remova essas colunas, ou passe "
+        r"reprocess_columns=\['categoria'\] para sobrescrevê-las de propósito\. Com "
+        r"reprocess_columns, a execução refaz essas colunas também nas linhas que o "
+        r"checkpoint concluiu\.$",
+        batch_size=1,
+        checkpoint_path=checkpoint,
+        prompt="Analise {texto}",
+    )
+    assert checkpoint.read_bytes() == gravado
+
+
+def test_retomada_sem_o_reprocess_columns_da_execucao_interrompida_levanta(tmp_path):
+    checkpoint = tmp_path / "c.csv"
+    _interrompe_na_segunda_linha(_rotulos_humanos(), checkpoint, reprocess_columns=["categoria"])
+
+    _recusa(
+        _rotulos_humanos(),
+        r"As colunas \['categoria'\] .* ainda não processou",
+        batch_size=1,
+        checkpoint_path=checkpoint,
+        prompt="Analise {texto}",
+    )
+    resultado, llm = _rodar(
+        _rotulos_humanos(),
+        questions=ModeloCategoria,
+        llm=_responde(categoria=lambda t: f"llm-{t}", nota=2),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+        reprocess_columns=["categoria"],
+    )
+    assert llm.call_count == 2
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
+
+
+def test_retomada_com_valor_so_na_linha_ja_processada_segue(tmp_path):
+    # A linha concluída recebe o que o checkpoint gravou, e a pendente, sem
+    # valor na entrada, não tem o que perder.
+    checkpoint = tmp_path / "c.csv"
+    _interrompe_na_segunda_linha(_rotulos_humanos().drop(columns="categoria"), checkpoint)
+    entrada = _rotulos_humanos().assign(categoria=["rótulo humano 1", None])
+
+    resultado, llm = _rodar(
+        entrada,
+        questions=ModeloCategoria,
+        llm=_responde(categoria=lambda t: f"llm-{t}", nota=2),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    assert llm.call_count == 1
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
+
+
+def test_retomada_com_coluna_float64_so_com_nan_segue(tmp_path):
+    # Na coluna float64 da entrada, o NaN da linha pendente é a célula vazia,
+    # e não o valor NaN de um campo float.
+    checkpoint = tmp_path / "c.csv"
+    _rodar_sem_avisos(
+        pd.DataFrame({"texto": ["a", "b"]}),
+        ModeloNotaDecimal,
+        _responde_em_sequencia({"nota": 1.5}, ProviderAbortError("limite")),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    resultado, llm = _rodar(
+        pd.DataFrame({"texto": ["a", "b"], "nota": [np.nan, np.nan]}),
+        questions=ModeloNotaDecimal,
+        llm=_responde(nota=2.5),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    assert llm.call_count == 1
+    assert resultado["nota"].tolist() == [1.5, 2.5]
 
 
 def test_coluna_de_campo_com_valor_em_uma_linha_levanta():
