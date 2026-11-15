@@ -13,7 +13,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- As marcas das linhas não alcançadas por uma interrupção, no abort e no Ctrl-C, são gravadas por coluna, e não célula a célula: em 100 mil linhas, levam centésimos de segundo em vez de um a três segundos, e um segundo Ctrl-C tem menos tempo para cortá-las (#281).
+- As marcas das linhas não alcançadas por uma interrupção, no abort e no Ctrl-C, são gravadas por coluna, e não célula a célula: em 100 mil linhas, levam de centésimos de segundo, com uma coluna do modelo, a menos de um segundo, com 30, em vez de 2 a 34 segundos, e um segundo Ctrl-C tem menos tempo para cortá-las (#281).
 - O exemplo rápido dos três READMEs e do site (página inicial e Início Rápido, em português e inglês) extrai o réu, o tipo de réu e o resultado de sentenças curtas, com um campo `str` e campos `Literal`, e passa `provider` e `text_column`, no lugar da análise de sentimento de avaliações de produto. Um teste roda o exemplo de cada página com o LLM simulado e confere a tabela de saída; no Início Rápido, roda os passos em sequência e o exemplo completo (#320, #350).
 - O piso do pyarrow nos extras `polars` e `all` sobe para 12.0.0: até a 11, o processo que lê ou grava parquet pode cair com segfault ao terminar (apache/arrow GH-15054) (#328).
 - O hook `pytest-rapido` do pre-commit dispara também com mudanças em `docs/` e nos READMEs, cujos exemplos os testes rodam; antes, a divergência entre o exemplo e a página só aparecia no CI (#351).
