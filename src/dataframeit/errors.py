@@ -583,6 +583,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911, PLR0912 (uma saída por 
 ║  COMO RESOLVER:                                                              ║
 ║  1. Adicione crédito ou mude de plano na conta do serviço                    ║
 ║  2. Rode de novo com resume=True para processar as linhas pendentes          ║
+║  3. Se a cota é da busca web, use_search=False ou outro search_provider      ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()

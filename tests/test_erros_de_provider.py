@@ -216,25 +216,20 @@ def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
     assert levantado.value.__cause__ is erro
 
 
-def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
-    class ErroDaIntegracao(Exception):
-        pass
+def _embrulhada(causa):
+    """Como um `raise ErroDaIntegracao(...) from causa`."""
+    erro = Exception("chamada ao modelo falhou")
+    erro.__cause__ = causa
+    return erro
 
-    # Como um `raise ErroDaIntegracao(...) from causa`.
-    erro = ErroDaIntegracao("chamada ao modelo falhou")
-    erro.__cause__ = _cota_esgotada_da_openai()
-    chamadas, func = _falha_sempre(erro)
+
+def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
+    chamadas, func = _falha_sempre(_embrulhada(_cota_esgotada_da_openai()))
 
     with pytest.raises(ProviderUsageLimitError):
         retry_with_backoff(func, max_retries=3, base_delay=0.0)
 
     assert len(chamadas) == 1
-
-
-def _embrulhada(causa):
-    erro = Exception("chamada ao modelo falhou")
-    erro.__cause__ = causa
-    return erro
 
 
 @pytest.mark.parametrize(

@@ -75,6 +75,22 @@ def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
     assert set(ferramenta.args) == {"query"}
 
 
+def _exa_que_falha(monkeypatch, erro_do_cliente):
+    """Cliente do Exa cuja busca levanta o erro; devolve uma entrada por chamada."""
+    pytest.importorskip("langchain_exa")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
+
+    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
+    chamadas = []
+
+    def falha(self, query, **kwargs):
+        chamadas.append(1)
+        raise erro_do_cliente
+
+    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
+    return chamadas
+
+
 @pytest.mark.parametrize(
     ("erro_do_cliente", "status"),
     [
@@ -84,15 +100,7 @@ def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
     ],
 )
 def test_exa_levanta_o_erro_do_provider(monkeypatch, erro_do_cliente, status):
-    pytest.importorskip("langchain_exa")
-    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
-
-    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
-
-    def falha(self, query, **kwargs):
-        raise erro_do_cliente
-
-    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
+    _exa_que_falha(monkeypatch, erro_do_cliente)
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
     with pytest.raises(SearchToolError) as erro:
@@ -107,19 +115,11 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch, erro_do_cliente, status):
     "tag", ["NO_MORE_CREDITS", "API_KEY_BUDGET_EXCEEDED", "TEAM_BUDGET_EXCEEDED"]
 )
 def test_exa_com_credito_esgotado_levanta_provider_usage_limit_error(monkeypatch, tag):
-    pytest.importorskip("langchain_exa")
-    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
-
-    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
     # Corpo da resposta 402 como a documentação do Exa o descreve (requestId, error, tag).
     erro_do_cliente = ValueError(
         f'Request failed with status code 402: {{"requestId":"r","error":"x","tag":"{tag}"}}'
     )
-
-    def falha(self, query, **kwargs):
-        raise erro_do_cliente
-
-    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
+    _exa_que_falha(monkeypatch, erro_do_cliente)
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
     with pytest.raises(
@@ -575,15 +575,20 @@ def _rodar_agente_real_com_tavily(tavily_disponivel, monkeypatch, mensagem, **kw
         raise ValueError(mensagem)
 
     monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
+    return _rodar_agente_real(monkeypatch, "tavily_search", **kwargs), chamadas
+
+
+def _rodar_agente_real(monkeypatch, ferramenta, **kwargs):
+    """Três linhas com o agente do LangChain de verdade e um modelo que sempre chama a ferramenta."""
     monkeypatch.setattr(
         "dataframeit.llm._create_langchain_llm",
-        lambda *a, **k: ModeloQueSempreBusca(messages=_sempre_busca("tavily_search")),
+        lambda *a, **k: ModeloQueSempreBusca(messages=_sempre_busca(ferramenta)),
     )
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
     ):
-        saida = dataframeit(
+        return dataframeit(
             pd.DataFrame({"texto": ["a", "b", "c"]}),
             questions=Resposta,
             prompt="{texto}",
@@ -596,7 +601,6 @@ def _rodar_agente_real_com_tavily(tavily_disponivel, monkeypatch, mensagem, **kw
             rate_limit_delay=1.0,
             **kwargs,
         )
-    return saida, chamadas
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
@@ -637,39 +641,15 @@ def test_limite_do_plano_do_tavily_interrompe_a_execucao(tavily_disponivel, monk
 
 @pytest.mark.parametrize("paralelo", [1, 2])
 def test_credito_esgotado_do_exa_interrompe_a_execucao(monkeypatch, paralelo):
-    pytest.importorskip("langchain_exa")
-    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
-
-    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
-    chamadas = []
-
-    def falha(self, query, **kwargs):
-        chamadas.append(1)
-        msg = 'Request failed with status code 402: {"error":"x","tag":"NO_MORE_CREDITS"}'
-        raise ValueError(msg)
-
-    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
-    monkeypatch.setattr(
-        "dataframeit.llm._create_langchain_llm",
-        lambda *a, **k: ModeloQueSempreBusca(messages=_sempre_busca("exa_search_results_json")),
+    chamadas = _exa_que_falha(
+        monkeypatch,
+        ValueError('Request failed with status code 402: {"error":"x","tag":"NO_MORE_CREDITS"}'),
     )
-    with (
-        patch("dataframeit.core.validate_provider_dependencies"),
-        patch("dataframeit.core.validate_search_dependencies"),
-        pytest.warns(UserWarning, match=r"interrompida.*crédito ou orçamento do Exa esgotado"),
-    ):
-        resultado = dataframeit(
-            pd.DataFrame({"texto": ["a", "b", "c"]}),
-            questions=Resposta,
-            prompt="{texto}",
-            provider="openai",
-            use_search=True,
+    with pytest.warns(UserWarning, match=r"interrompida.*crédito ou orçamento do Exa esgotado"):
+        resultado = _rodar_agente_real(
+            monkeypatch,
+            "exa_search_results_json",
             search_provider="exa",
-            max_retries=3,
-            base_delay=0.0,
-            max_delay=0.0,
-            track_tokens=False,
-            rate_limit_delay=1.0,
             parallel_requests=paralelo,
         )
 
