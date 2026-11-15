@@ -20,7 +20,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-- Um Ctrl-C durante a gravação final do checkpoint, a que leva a cauda menor que `batch_size` depois do laço, refaz a gravação antes de relançar a interrupção, no modo sequencial e no paralelo; antes, o arquivo ficava na última gravação de `batch_size`, e a retomada pagava a cauda de novo (#280).
+- Um Ctrl-C durante a gravação final do checkpoint, a que leva a cauda menor que `batch_size` depois do laço, refaz a gravação antes de relançar a interrupção, no modo sequencial e no paralelo, e no paralelo o Ctrl-C enquanto uma interrupção marca as linhas restantes também grava a cauda; antes, o arquivo ficava na última gravação de `batch_size`, e a retomada pagava a cauda de novo (#280).
 - `read_df` aceita o caminho como `os.PathLike`, como `pathlib.Path`, além de texto, com e sem modelo; antes, o `Path` levantava `AttributeError` (#314).
 - A retomada pelo `checkpoint_path` dado como `os.PathLike` que não é `pathlib.Path` encontra a assinatura gravada ao lado do checkpoint; antes, procurava-a pelo repr do objeto, avisava que faltava e recomeçava do zero (#347).
 - Na retomada de um `checkpoint_path`, a coluna da entrada com o nome de um campo do modelo e com valor numa linha que o checkpoint deixou pendente levanta `ValueError` antes de qualquer chamada e antes de a entrada receber o checkpoint, a menos que esteja em `reprocess_columns`, como na entrada nova. Antes, a resposta do LLM sobrescrevia esse valor sem aviso, como o rótulo acrescentado à entrada depois da interrupção ou o da coluna reprocessada na execução interrompida, retomada sem `reprocess_columns` (#291).
