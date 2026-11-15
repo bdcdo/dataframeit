@@ -625,7 +625,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         skipped = frozenset(skipped_fields)
 
         projected = {}
-        # Na ordem do modelo, que é a do preenchimento dos defaults.
+        # Na ordem do modelo, que o preenchimento dos defaults da linha recusada segue.
         missing_values = []
         restored = set()
         omitted_required = set()
@@ -1301,11 +1301,15 @@ def _validate_status_column(
     # linha teria dois valores numa célula. O nome fica recusado mesmo com a
     # opção que cria a coluna desligada, porque uma retomada com ela ligada
     # (track_tokens é o padrão) gravaria por cima do status.
-    # O segundo argumento de _column_rank só decide o rank do próprio status
-    # padrão, que a linha de cima já excluiu: trocá-lo não muda o resultado.
     if (
         status_col != "_dataframeit_status"
-        and _column_rank(status_col, "_dataframeit_status") != _USER_COLUMN  # pragma: no mutate
+        and _column_rank(
+            status_col,
+            # O segundo argumento só decide o rank do próprio status padrão, que a
+            # linha de cima já excluiu: o teste de mutação o troca à toa.
+            "_dataframeit_status",  # pragma: no mutate
+        )
+        != _USER_COLUMN
     ):
         msg = (
             f"status_column='{status_col}' é o nome de uma coluna de controle do dataframeit, "
@@ -3526,9 +3530,8 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
         holds = np.fromiter(
             (not _is_absent(cell, nan_is_value=nan_is_value) for cell in cells), bool
         )
-        # O numpy grava None como False num array de bool, e o teste de mutação
-        # troca um pelo outro à toa.
-        clear[errors[holds]] = False  # pragma: no mutate
+        # As linhas de `errors` estão marcadas em `clear`; fica só a que não tem valor.
+        clear[errors] = ~holds
         errors = errors[~holds]
     if flag.any():
         df.loc[flag, "_error_details"] = _INTERRUPTED_REPROCESS_DETAIL
@@ -4296,10 +4299,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         current_workers = max(1, current_workers // 2)
                         warnings.warn(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            # Na thread do executor, _user_stacklevel() devolve 1, o
-                            # padrão, e tirar o argumento, como faz o teste de mutação,
-                            # não muda nada.
-                            stacklevel=_user_stacklevel(),  # pragma: no mutate
+                            # Na thread do executor não há chamada do usuário na pilha, e
+                            # o stacklevel=1, o padrão, aponta o aviso para esta linha. O
+                            # teste de mutação o tira ou o troca por 2, o que só o aponta
+                            # para outra linha do pacote.
+                            stacklevel=1,  # pragma: no mutate
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo
