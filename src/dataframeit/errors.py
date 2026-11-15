@@ -20,6 +20,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from .search import SearchToolError, get_provider
+from .utils import _user_stacklevel
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -1084,7 +1085,7 @@ def retry_with_backoff(
             if not is_recoverable_error(e):
                 warnings.warn(
                     f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
-                    stacklevel=3,
+                    stacklevel=_user_stacklevel(),
                 )
                 raise
 
@@ -1103,7 +1104,7 @@ def retry_with_backoff(
             warnings.warn(
                 f"Tentativa {attempt + 1}/{max_retries} falhou ({error_name}). "
                 f"Aguardando {total_delay:.1f}s antes de tentar novamente...",
-                stacklevel=3,
+                stacklevel=_user_stacklevel(),
             )
 
             time.sleep(total_delay)

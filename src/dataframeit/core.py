@@ -7,7 +7,6 @@ import dataclasses
 import datetime as dt
 import hashlib
 import importlib.util
-import inspect
 import itertools
 import json
 import logging
@@ -81,6 +80,7 @@ from .utils import (
     _is_structure_class,
     _json_default,
     _keeps_nan,
+    _user_stacklevel,
     accepts_only_text,
     from_pandas,
     get_complex_fields,
@@ -3323,21 +3323,6 @@ def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
             for cell in row:
                 if cell.data_type == "f":
                     cell.data_type = "s"
-
-
-def _user_stacklevel() -> int:
-    """Devolve o stacklevel que leva o aviso à linha que chamou `dataframeit`.
-
-    Vale para o `warnings.warn` da função que chama esta, qualquer que seja o
-    caminho até ela, inclusive pelo `contextlib` de _on_ctrl_c. Na thread do
-    executor não há essa chamada na pilha, e o aviso aponta a própria função.
-    """
-    frame, level = inspect.currentframe(), 0
-    while frame is not None:
-        if frame.f_code is dataframeit.__code__:
-            return level + 1
-        frame, level = frame.f_back, level + 1
-    return 1
 
 
 def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:

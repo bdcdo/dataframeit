@@ -6,6 +6,7 @@ import contextlib
 import dataclasses
 import errno
 import json
+import linecache
 import os
 import subprocess
 import sys
@@ -1127,6 +1128,33 @@ class TestBackendLifecycle:
             )
 
         assert params.model is None
+
+    def test_avisos_da_abertura_apontam_a_chamada_do_usuario(
+        self, codex_sdk, monkeypatch, tmp_path
+    ):
+        class ComExemplo(BaseModel):
+            valor: str = Field(examples=["a"])
+
+        sdk, sdk_types, _ = codex_sdk
+        source_home = tmp_path / "source-home"
+        source_home.mkdir()
+        (source_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(source_home))
+        client = as_context_manager(MagicMock(spec=sdk.Codex), resolved_model="modelo-padrao")
+        client.account.return_value = sdk_types.GetAccountResponse(requiresOpenaiAuth=False)
+        avisos = ("Anotações sem efeito", "sem model")
+
+        with (
+            patch.object(codex_module, "_open_client", return_value=client),
+            patch("dataframeit.core.validate_provider_dependencies"),
+            pytest.warns(UserWarning, match="sem model") as registro,
+        ):
+            dataframeit([""], ComExemplo, "{texto}", provider="codex")
+
+        for aviso in avisos:
+            (achado,) = [a for a in registro if aviso in str(a.message)]
+            assert achado.filename == __file__
+            assert "dataframeit([" in linecache.getline(achado.filename, achado.lineno)
 
     def test_missing_auth_fails_before_runtime_or_client(self, codex_sdk, monkeypatch, tmp_path):
         source_home = tmp_path / "source-home"

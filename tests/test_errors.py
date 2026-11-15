@@ -1,11 +1,13 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
+import linecache
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import ValidationError, create_model
+from pydantic import BaseModel, ValidationError, create_model
 
+from dataframeit import dataframeit
 from dataframeit.claude_code import _raise_for_result_error
 from dataframeit.errors import (
     MAX_REJECTED_RULES,
@@ -162,6 +164,32 @@ def test_backoff_acima_de_1024_tentativas_fica_no_teto_e_devolve_o_erro_original
 
     assert len(esperas) == 1099
     assert 2.0 <= min(esperas[1:]) <= max(esperas) <= 2.2
+
+
+class _Modelo(BaseModel):
+    campo: str
+
+
+@pytest.mark.parametrize(
+    ("erro", "aviso"),
+    [
+        (ProviderTransientError("instável"), "Tentativa 1/2 falhou"),
+        (ProviderError("recusado"), "Erro não-recuperável detectado"),
+    ],
+)
+def test_aviso_do_retry_aponta_a_chamada_do_usuario(erro, aviso):
+    modelo = MagicMock()
+    modelo.invoke.side_effect = erro
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.build_structured_llm", return_value=modelo),
+        pytest.warns(UserWarning, match=aviso) as avisos,
+    ):
+        dataframeit(["a"], _Modelo, "{texto}", max_retries=2, base_delay=0, max_delay=0)
+
+    (registro,) = [a for a in avisos if aviso in str(a.message)]
+    assert registro.filename == __file__
+    assert "dataframeit([" in linecache.getline(registro.filename, registro.lineno)
 
 
 # O resumo de um erro de validação pode trazer texto da resposta, como a
