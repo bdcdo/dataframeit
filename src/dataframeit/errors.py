@@ -889,9 +889,14 @@ def _wrap_display(text: str, width: int, max_lines: int) -> list[str]:
     """
     placeholder = " ..."
     lines: list[str] = []
-    line = ""
+    # Qualquer valor falso serve de linha vazia, e os dois limites de linhas
+    # marcados abaixo só encurtam o trabalho: passando de max_lines, a última
+    # linha mostrada já está pronta. Ficam fora do teste de mutação, que
+    # trocaria o "" por None e mudaria um limite em uma linha sem mudar o
+    # resultado.
+    line = ""  # pragma: no mutate
     for word in text.split():
-        if len(lines) > max_lines:
+        if len(lines) > max_lines:  # pragma: no mutate
             break
         candidate = f"{line} {word}" if line else word
         if _cut_display(candidate, width) == candidate:
@@ -900,7 +905,10 @@ def _wrap_display(text: str, width: int, max_lines: int) -> list[str]:
         if line:
             lines.append(line)
         line = word
-        while (head := _cut_display(line, width)) != line and len(lines) <= max_lines:
+        while len(lines) <= max_lines:  # pragma: no mutate
+            head = _cut_display(line, width)
+            if head == line:
+                break
             lines.append(head)
             line = line[len(head) :]
     if line:
@@ -910,7 +918,7 @@ def _wrap_display(text: str, width: int, max_lines: int) -> list[str]:
     last = lines[max_lines - 1]
     room = width - len(placeholder)
     while " " in last and _display_width(last) > room:
-        last = last.rsplit(" ", 1)[0]
+        last = last[: last.rindex(" ")]
     return [*lines[: max_lines - 1], _cut_display(last, room) + placeholder]
 
 

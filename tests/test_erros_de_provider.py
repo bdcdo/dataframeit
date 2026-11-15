@@ -525,6 +525,35 @@ def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc(texto, esperado):
     mensagem.encode("utf-8")
 
 
+def test_largura_exibida_de_marca_que_envolve_e_de_caractere_cheio():
+    # U+20DD envolve o caractere anterior e não ocupa coluna; U+FF21, o A cheio,
+    # ocupa duas.
+    assert errors._display_width("a\u20dd") == 1
+    assert errors._display_width("\uff21") == 2
+
+
+def test_texto_que_cabe_exato_na_largura_nao_e_cortado():
+    assert errors._cut_display("abc", 3) == "abc"
+
+
+def test_primeira_palavra_da_linha_nao_ganha_espaco_antes():
+    assert errors._wrap_display("um dois", 20, 3) == ["um dois"]
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        # A última linha perde palavras inteiras, uma de cada vez, até caber ' ...'.
+        ("aaaa bbbb cccc dddd", ["aaaa ..."]),
+        ("aa bb cccc dddddddddd", ["aa bb ..."]),
+        # A que cabe exato na largura que sobra fica inteira.
+        ("aaa bbbb cccccccc", ["aaa bbbb ..."]),
+    ],
+)
+def test_corte_da_ultima_linha_tira_palavras_inteiras(texto, esperado):
+    assert errors._wrap_display(texto, 12, 1) == esperado
+
+
 def test_caixa_generica_de_erro_sem_mensagem_deixa_os_detalhes_em_branco():
     assert _detalhes(_caixa_generica("")) == [""]
 
