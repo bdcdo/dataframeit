@@ -1478,8 +1478,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Se False, processa toda linha que não esteja 'processed'. Com False e a
             coluna de status presente, se alguma coluna do modelo já existe no
             DataFrame e reprocess_columns não foi passado, emite um aviso e devolve
-            a entrada sem processar; se não existe, a linha 'processed' é validada
-            como com True, e o campo obrigatório que ela não tem levanta ValueError.
+            a entrada sem processar; fora desse caso, a linha 'processed' é
+            validada como com True: o campo obrigatório que ela não tem levanta
+            ValueError, e o que tem padrão o recebe.
             Quando a entrada chega sem a coluna de status e não há checkpoint a
             reler, com True ou False, toda linha conta como nova, e uma coluna com
             algum valor e com o nome de um campo do modelo levanta ValueError
@@ -1861,7 +1862,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         return from_pandas(df_pandas, conversion_info, status_col)
 
     # Com resume=False também: a linha 'processed' não vai ao modelo, e o campo
-    # que ela não tem sairia vazio sem aviso.
+    # obrigatório que ela não tem sairia vazio sem aviso.
     incompatible_columns, processed_values = _validate_processed_rows(
         df_pandas,
         status_col,

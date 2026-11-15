@@ -1129,15 +1129,22 @@ def test_resume_false_processa_o_dataframe_novo():
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
 def test_resume_false_nao_refaz_linha_ja_processada(parallel_requests):
-    """Com resume=False, só a linha que não está 'processed' vai ao LLM."""
+    """Com resume=False, só a linha que não está 'processed' vai ao LLM.
+
+    A linha 'processed' sem o campo é validada como com resume=True e recebe o padrão.
+    """
+
+    class ComPadrao(BaseModel):
+        x: str = "padrão"
+
     df = pd.DataFrame({"texto": ["a", "b"], "_dataframeit_status": ["processed", "processed"]})
 
     resultado, call_langchain = _rodar(
-        df, questions=ModeloOpcional, resume=False, parallel_requests=parallel_requests
+        df, questions=ComPadrao, resume=False, parallel_requests=parallel_requests
     )
 
     call_langchain.assert_not_called()
-    assert resultado["x"].isna().all()
+    assert resultado["x"].tolist() == ["padrão", "padrão"]
 
 
 def test_resume_false_com_campo_novo_obrigatorio_nas_linhas_processadas_levanta_erro():
