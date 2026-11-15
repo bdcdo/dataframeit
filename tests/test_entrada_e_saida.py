@@ -383,11 +383,11 @@ def test_coluna_com_nome_de_campo_acrescentada_antes_da_retomada_levanta(tmp_pat
     _recusa(
         _rotulos_humanos(),
         r"As colunas \['categoria'\] já existem no DataFrame com o nome de campos do modelo, "
-        r"e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que o checkpoint "
+        r"e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que a execução "
         r"ainda não processou\. Renomeie ou remova essas colunas, ou passe "
         r"reprocess_columns=\['categoria'\] para sobrescrevê-las de propósito\. Com "
-        r"reprocess_columns, a execução refaz essas colunas também nas linhas que o "
-        r"checkpoint concluiu\.$",
+        r"reprocess_columns, a execução refaz essas colunas também nas linhas já "
+        r"processadas\.$",
         batch_size=1,
         checkpoint_path=checkpoint,
         prompt="Analise {texto}",
@@ -464,6 +464,117 @@ def test_retomada_com_coluna_float64_so_com_nan_segue(tmp_path):
 def test_coluna_de_campo_com_valor_em_uma_linha_levanta():
     df = pd.DataFrame({"texto": ["a", "b"], "categoria": [None, "rótulo humano"]})
     _recusa(df, r"As colunas \['categoria'\] já existem")
+
+
+def _saida_com_linha_pendente(categoria):
+    """Saída retomada à mão: a primeira linha processada e a segunda sem status."""
+    return pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "categoria": categoria,
+            "nota": [1, None],
+            "_dataframeit_status": ["processed", None],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("resume", "reprocess_columns"),
+    [(True, None), (True, ["nota"]), (False, None), (False, ["nota"])],
+)
+def test_retomada_manual_com_valor_em_linha_sem_status_levanta(resume, reprocess_columns):
+    _recusa(
+        _saida_com_linha_pendente(["llm-a", "rótulo humano"]),
+        r"As colunas \['categoria'\] já existem no DataFrame com o nome de campos do modelo, "
+        r"e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que a execução "
+        r"ainda não processou\. Renomeie ou remova essas colunas, ou passe "
+        r"reprocess_columns=\[.*'categoria'.*\] para sobrescrevê-las de propósito\. Com "
+        r"reprocess_columns, a execução refaz essas colunas também nas linhas já "
+        r"processadas\.$",
+        resume=resume,
+        reprocess_columns=reprocess_columns,
+    )
+
+
+def test_retomada_manual_com_valor_so_na_linha_processada_segue():
+    resultado, llm = _rodar(
+        _saida_com_linha_pendente(["llm-a", None]),
+        questions=ModeloCategoria,
+        llm=_responde(categoria=lambda t: f"llm-{t}", nota=2),
+        resume=True,
+    )
+
+    assert llm.call_count == 1
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
+
+
+class ModeloComExcluido(BaseModel):
+    categoria: str
+    anotacao: str = Field(default="", exclude=True)
+
+
+@pytest.mark.parametrize("resume", [True, False])
+@pytest.mark.parametrize("com_status", [False, True])
+def test_coluna_de_campo_com_exclude_nao_conta_na_checagem(com_status, resume):
+    # A execução não grava o campo com exclude=True, e o valor da entrada fica.
+    entrada = pd.DataFrame({"texto": ["a"], "anotacao": ["nota humana"]})
+    if com_status:
+        entrada["_dataframeit_status"] = [None]
+
+    resultado, llm = _rodar(
+        entrada, questions=ModeloComExcluido, llm=_responde(categoria="llm"), resume=resume
+    )
+
+    assert llm.call_count == 1
+    assert resultado["categoria"].tolist() == ["llm"]
+    assert resultado["anotacao"].tolist() == ["nota humana"]
+
+
+def test_busca_por_campo_nao_grava_o_campo_com_exclude():
+    def call_agent(text, model, prompt, config, save_trace=None):
+        return {"data": {campo: f"llm-{campo}" for campo in model.model_fields}, "usage": {}}
+
+    entrada = pd.DataFrame({"texto": ["a"], "anotacao": ["nota humana"]})
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=call_agent) as llm,
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        resultado = dataframeit(
+            entrada,
+            questions=ModeloComExcluido,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+        )
+
+    assert llm.call_count == 2
+    assert resultado["categoria"].tolist() == ["llm-categoria"]
+    assert resultado["anotacao"].tolist() == ["nota humana"]
+
+
+def test_retomada_do_checkpoint_com_coluna_de_campo_com_exclude_segue(tmp_path):
+    checkpoint = tmp_path / "c.csv"
+    _rodar_sem_avisos(
+        pd.DataFrame({"texto": ["a", "b"]}),
+        ModeloComExcluido,
+        _responde_em_sequencia({"categoria": "llm-a"}, ProviderAbortError("limite")),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    resultado, llm = _rodar(
+        pd.DataFrame({"texto": ["a", "b"], "anotacao": ["humana a", "humana b"]}),
+        questions=ModeloComExcluido,
+        llm=_responde(categoria="llm-b"),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    assert llm.call_count == 1
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
+    assert resultado["anotacao"].tolist() == ["humana a", "humana b"]
 
 
 def test_coluna_de_campo_sem_valor_nenhum_recebe_a_resposta():
