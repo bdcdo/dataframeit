@@ -2382,7 +2382,8 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     """
     models = [questions]
     for model in models:  # a lista cresce com os modelos aninhados achados
-        model.model_rebuild(raise_errors=False)
+        # O Pydantic só testa a verdade de `raise_errors`; None daria o mesmo.
+        model.model_rebuild(raise_errors=False)  # pragma: no mutate
         for field_info in model.model_fields.values():
             for nested in get_nested_pydantic_models(field_info.annotation):
                 if nested not in models:
@@ -2414,7 +2415,8 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
     if isinstance(value, collections.abc.Mapping):
         items: Iterable[object] = value.values()
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
-        items = cast("Sequence[object]", value)
+        # O cast não age em tempo de execução, e o teste de mutação troca o tipo à toa.
+        items = cast("Sequence[object]", value)  # pragma: no mutate
     inner = path | {id(value)}
     return any(_outside_json(item, inner) for item in items)
 
@@ -2587,7 +2589,9 @@ def _instance_state(value: object, descent: _Descent) -> object:
         return descent.forms[key][1]
     depth = len(descent.depth)
     descent.depth[key] = depth
-    descent.lowest.append(depth + 1)
+    # O valor inicial só é comparado com profundidades, pelo `min` e pelo
+    # `lowest > depth`, e qualquer valor acima de `depth` dá o mesmo resultado.
+    descent.lowest.append(depth + 1)  # pragma: no mutate
     # O estado do objeto abre um trecho novo de contêineres (ver `_stable`).
     outer, descent.containers = descent.containers, set()
     # No objeto só com `__slots__`, o nome `__dict__` cai no `__getattr__` da
@@ -2642,8 +2646,8 @@ def _held_value(value: object, descent: _Descent) -> object:
     """
     if isinstance(value, (pd.DataFrame, pd.Series, np.ndarray)):
         return _data_form(value, descent)
-    builtin = _builtin_value(value)
-    return None if builtin is None else _stable(builtin, descent)
+    # O `_stable` devolve o None como veio.
+    return _stable(_builtin_value(value), descent)
 
 
 def _builtin_value(value: object) -> object:
@@ -2676,7 +2680,7 @@ def _attribute_or_none(value: object, name: str) -> object:
     primeira linha, e a exceção dela derrubaria a execução inteira.
     """
     try:
-        return getattr(value, name, None)
+        return getattr(value, name)
     except Exception:  # noqa: BLE001 (ver a docstring)
         return None
 
@@ -2766,7 +2770,8 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     mais fundo, e por isso não decide se a forma desse objeto é reaproveitada.
     """
     if descent is None:
-        descent = _Descent(leaves=False)
+        # `leaves` só é lido como condição, e o None no lugar do False daria o mesmo.
+        descent = _Descent(leaves=False)  # pragma: no mutate
     # O chamável vem antes do contêiner: o NamedTuple com `__call__` entraria
     # pela lista dos valores, sem o código, e a subclasse de dict, só pelos itens.
     # `_callable_leaf` o lê pelo `__call__` e pelo valor embutido ao lado do estado.
@@ -2786,7 +2791,9 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     elif isinstance(value, collections.abc.Set):
         form = sorted((_stable(item, descent) for item in value), key=_stable_repr)
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
-        form = [_stable(item, descent) for item in cast("Sequence[object]", value)]
+        # O cast não age em tempo de execução, e o teste de mutação troca o tipo à toa.
+        items = cast("Sequence[object]", value)  # pragma: no mutate
+        form = [_stable(item, descent) for item in items]
     descent.containers.remove(key)
     return form
 
