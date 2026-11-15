@@ -83,7 +83,7 @@ print(result)
 | 0004567-89.2024.8.26.0053 | José Lima asks... | State of São Paulo | public | partially granted |
 | 0007890-12.2024.8.26.0114 | Ana Costa seeks... | Municipality of Campinas | public | denied |
 
-Without `text_column`, dataframeit looks for a column named `texto`, `text`, `decisao`, `content` or `content_text`, and a single-column DataFrame uses that column; with several columns and none of these names, it raises `ValueError`. With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out of the table above.
+Without `text_column`, dataframeit looks for the text column among a few common names and raises `ValueError` when a DataFrame with several columns has none of them ([FAQ](https://brunodcdo.com.br/dataframeit/en/guides/faq/#valueerror-about-the-text-column)). With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out of the table above.
 
 Field and class names are arbitrary; the examples in the [`example/`](https://github.com/bdcdo/dataframeit/tree/main/example) notebooks use Portuguese ones.
 
