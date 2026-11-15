@@ -1861,8 +1861,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
-    # Com resume=False também: a linha 'processed' não vai ao modelo, e o campo
-    # obrigatório que ela não tem sairia vazio sem aviso.
+    # Com resume True ou False, a linha 'processed' não vai ao modelo; o campo
+    # obrigatório que ela não tem é acusado aqui, em vez de sair vazio.
     incompatible_columns, processed_values = _validate_processed_rows(
         df_pandas,
         status_col,
