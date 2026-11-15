@@ -132,6 +132,7 @@ DataFrame e Series do pandas ou do Polars, lista e dicionário. A saída é um D
 pip install dataframeit[openai]     # OpenAI (provider padrão)
 pip install dataframeit[google]     # Google Gemini
 pip install dataframeit[anthropic]  # Anthropic
+pip install dataframeit[groq]       # Groq
 pip install dataframeit[all]        # providers com extra, menos o Codex, mais busca web, Polars e Excel
 ```
 

@@ -29,11 +29,11 @@ uv run --extra dev coverage report  # exige 100%
 
 ### Pre-commit
 
-Os hooks do [pre-commit](https://pre-commit.com/), definidos em `.pre-commit-config.yaml`, rodam a cada commit que toca `src/`, `tests/` ou `example/`. Eles fazem as conferências do job `quality` do CI, menos o `zizmor`. O `ruff format` reformata os arquivos e interrompe o commit; basta adicionar os arquivos reformatados e repetir. O hook `pytest-rapido` roda a suíte sem os testes lentos, listados no `.pre-commit-config.yaml`; a suíte completa fica com o CI e com os comandos `pytest` acima. A instalação é uma vez por clone:
+Os hooks do [pre-commit](https://pre-commit.com/), definidos em `.pre-commit-config.yaml`, rodam a cada commit que toca `src/`, `tests/` ou `example/`. Eles fazem as conferências do job `quality` do CI, menos o `zizmor`. O `ruff format` reformata os arquivos e interrompe o commit; basta adicionar os arquivos reformatados e repetir. O hook `pytest-rapido` roda a suíte sem os testes lentos, listados no `.pre-commit-config.yaml`, e dispara também com `docs/` e os READMEs, cujos exemplos os testes rodam; a suíte completa fica com o CI e com os comandos `pytest` acima. A instalação é uma vez por clone:
 
 ```bash
 uv run --extra dev pre-commit install
-uv run --extra dev pre-commit run --all-files  # todos os hooks em src/, tests/ e example/
+uv run --extra dev pre-commit run --all-files  # todos os hooks nos arquivos que os disparam
 ```
 
 ## Fluxo

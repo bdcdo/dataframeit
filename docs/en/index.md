@@ -132,6 +132,7 @@ pandas or Polars DataFrame and Series, list and dictionary. The output is a Data
 pip install dataframeit[openai]     # OpenAI (default provider)
 pip install dataframeit[google]     # Google Gemini
 pip install dataframeit[anthropic]  # Anthropic
+pip install dataframeit[groq]       # Groq
 pip install dataframeit[all]        # providers with an extra except Codex, plus web search, Polars and Excel
 ```
 
