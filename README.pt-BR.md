@@ -38,39 +38,52 @@ O provider experimental `codex` é opcional, não faz parte do extra `all`, usa 
 ## Exemplo Rápido
 
 ```python
-from pydantic import BaseModel
 from typing import Literal
+
 import pandas as pd
+from pydantic import BaseModel, Field
+
 from dataframeit import dataframeit
 
-# 1. Defina o que extrair
-class Sentimento(BaseModel):
-    sentimento: Literal['positivo', 'negativo', 'neutro']
-    confianca: Literal['alta', 'media', 'baixa']
+# 1. Defina o que extrair de cada decisão
+class Decisao(BaseModel):
+    reu: str = Field(description="Nome do réu")
+    tipo_reu: Literal['público', 'privado'] = Field(description="Se o réu é ente público ou pessoa privada")
+    resultado: Literal['procedente', 'parcialmente procedente', 'improcedente']
 
-# 2. Seus dados
+# 2. Seus dados: uma decisão por linha
 df = pd.DataFrame({
-    'texto': [
-        'Produto excelente! Superou expectativas.',
-        'Péssimo atendimento, nunca mais compro.',
-        'Entrega ok, produto mediano.'
-    ]
+    'processo': ['0001234-56.2024.8.26.0100', '0004567-89.2024.8.26.0053', '0007890-12.2024.8.26.0114'],
+    'sentenca': [
+        'Maria Souza move ação contra o Banco Alfa S.A. por cobrança indevida. '
+        'Julgo PROCEDENTE o pedido e condeno o réu a pagar R$ 5.000,00 por danos morais.',
+        'José Lima pede que o Estado de São Paulo forneça o medicamento prescrito. '
+        'Julgo PARCIALMENTE PROCEDENTE o pedido, só para o fornecimento do genérico.',
+        'Ana Costa pede indenização ao Município de Campinas por queda em buraco na via. '
+        'Não há prova do dano. Julgo IMPROCEDENTE o pedido.',
+    ],
 })
 
 # 3. Processe!
-resultado = dataframeit(df, Sentimento, "Analise o sentimento do texto.")
+resultado = dataframeit(
+    df,
+    Decisao,
+    "Extraia as informações da sentença.",
+    provider='openai',       # o padrão; ou 'google_genai', 'anthropic', 'groq'
+    text_column='sentenca',  # a coluna com o texto a analisar
+)
 print(resultado)
 ```
 
 **Saída:**
 
-| texto | sentimento | confianca |
-|-------|------------|-----------|
-| Produto excelente! ... | positivo | alta |
-| Péssimo atendimento... | negativo | alta |
-| Entrega ok... | neutro | media |
+| processo | sentenca | reu | tipo_reu | resultado |
+|----------|----------|-----|----------|-----------|
+| 0001234-56.2024.8.26.0100 | Maria Souza move ação... | Banco Alfa S.A. | privado | procedente |
+| 0004567-89.2024.8.26.0053 | José Lima pede que... | Estado de São Paulo | público | parcialmente procedente |
+| 0007890-12.2024.8.26.0114 | Ana Costa pede... | Município de Campinas | público | improcedente |
 
-Com `track_tokens=True`, o padrão, a saída traz também as colunas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` e `_reasoning_tokens`, omitidas da tabela acima.
+Sem `text_column`, o dataframeit procura uma coluna chamada `texto`, `text`, `decisao`, `content` ou `content_text`, e um DataFrame de uma coluna só usa essa coluna. Com `track_tokens=True`, o padrão, a saída traz também as colunas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` e `_reasoning_tokens`, omitidas da tabela acima.
 
 Os nomes de classes e campos são arbitrários: os notebooks de [`example/`](example/) usam nomes em português.
 

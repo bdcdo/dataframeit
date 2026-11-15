@@ -38,39 +38,52 @@ El proveedor experimental `codex` es opcional, no forma parte del extra `all`, u
 ## Ejemplo rápido
 
 ```python
-from pydantic import BaseModel
 from typing import Literal
+
 import pandas as pd
+from pydantic import BaseModel, Field
+
 from dataframeit import dataframeit
 
-# 1. Define qué extraer
-class Sentimiento(BaseModel):
-    sentimiento: Literal['positivo', 'negativo', 'neutro']
-    confianza: Literal['alta', 'media', 'baja']
+# 1. Define qué extraer de cada decisión
+class Decision(BaseModel):
+    demandado: str = Field(description="Nombre del demandado")
+    tipo_demandado: Literal['público', 'privado'] = Field(description="Si el demandado es un ente público o una persona privada")
+    resultado: Literal['estimada', 'parcialmente estimada', 'desestimada']
 
-# 2. Tus datos
+# 2. Tus datos: una decisión por fila
 df = pd.DataFrame({
-    'texto': [
-        '¡Producto excelente! Superó mis expectativas.',
-        'Pésima atención, nunca más compro aquí.',
-        'La entrega bien, el producto mediocre.'
-    ]
+    'proceso': ['0001234-56.2024.8.26.0100', '0004567-89.2024.8.26.0053', '0007890-12.2024.8.26.0114'],
+    'sentencia': [
+        'Maria Souza demanda al Banco Alfa S.A. por un cobro indebido. '
+        'Se ESTIMA la demanda y se condena al demandado a pagar R$ 5.000,00 por daños morales.',
+        'José Lima pide que el Estado de São Paulo le suministre el medicamento recetado. '
+        'Se ESTIMA PARCIALMENTE la demanda, solo para el suministro del genérico.',
+        'Ana Costa pide una indemnización al Municipio de Campinas por caer en un bache. '
+        'No hay prueba del daño. Se DESESTIMA la demanda.',
+    ],
 })
 
 # 3. ¡Procesa!
-resultado = dataframeit(df, Sentimiento, "Analiza el sentimiento del texto.")
+resultado = dataframeit(
+    df,
+    Decision,
+    "Extrae la información de la sentencia.",
+    provider='openai',        # el valor por defecto; o 'google_genai', 'anthropic', 'groq'
+    text_column='sentencia',  # la columna con el texto a analizar
+)
 print(resultado)
 ```
 
 **Salida:**
 
-| texto | sentimiento | confianza |
-|-------|-------------|-----------|
-| ¡Producto excelente! ... | positivo | alta |
-| Pésima atención... | negativo | alta |
-| La entrega bien... | neutro | media |
+| proceso | sentencia | demandado | tipo_demandado | resultado |
+|---------|-----------|-----------|----------------|-----------|
+| 0001234-56.2024.8.26.0100 | Maria Souza demanda... | Banco Alfa S.A. | privado | estimada |
+| 0004567-89.2024.8.26.0053 | José Lima pide que... | Estado de São Paulo | público | parcialmente estimada |
+| 0007890-12.2024.8.26.0114 | Ana Costa pide... | Municipio de Campinas | público | desestimada |
 
-Con `track_tokens=True`, el valor por defecto, la salida también trae las columnas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` y `_reasoning_tokens`, omitidas en la tabla de arriba.
+Sin `text_column`, dataframeit busca una columna llamada `texto`, `text`, `decisao`, `content` o `content_text`, y un DataFrame de una sola columna usa esa columna. Con `track_tokens=True`, el valor por defecto, la salida también trae las columnas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` y `_reasoning_tokens`, omitidas en la tabla de arriba.
 
 Los nombres de clases y campos son arbitrarios: los notebooks de [`example/`](example/) usan nombres en portugués.
 
