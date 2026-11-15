@@ -77,3 +77,39 @@ def test_no_warnings():
         dataframeit(df_slice, ModeloTeste, PROMPT, max_retries=1)
 
     assert not [aviso for aviso in avisos if "SettingWithCopyWarning" in str(aviso.category)]
+
+
+class ModeloComLista(BaseModel):
+    itens: list[str]
+
+
+@pytest.mark.parametrize("pendente", [True, False], ids=["com_pendente", "concluido"])
+def test_retomada_de_fatia_nao_avisa_escrita_em_fatia(pendente):
+    """Retomar uma fatia de outro DataFrame não emite o aviso de escrita em fatia do pandas 2.
+
+    O checkpoint vem de convert_dtypes, com o status ausente como pd.NA e a lista
+    gravada como texto JSON: a retomada converte as colunas para object, regrava
+    o status, completa os valores processados e normaliza a coluna da lista.
+    """
+    base = pd.DataFrame(
+        {
+            "texto": ["fora", "a", "b"],
+            "itens": [None, '["x"]', '["y"]'],
+            "_dataframeit_status": [None, "processed", "processed"],
+        }
+    )
+    if pendente:
+        base.loc[2, ["itens", "_dataframeit_status"]] = None
+    base = base.convert_dtypes()
+    fatia = base[base["texto"] != "fora"]
+
+    with (
+        patch(
+            "dataframeit.core.call_langchain",
+            return_value={"data": {"itens": ["z"]}, "usage": None},
+        ),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        resultado = dataframeit(fatia, ModeloComLista, PROMPT, resume=True, max_retries=1)
+
+    assert resultado["itens"].tolist() == [["x"], ["z"] if pendente else ["y"]]

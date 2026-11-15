@@ -356,7 +356,8 @@ def _as_object_columns(
             values = df[col].astype(object)
             if col in nan_columns:
                 values = values.where(df[col].notna(), None)
-            df[col] = values
+            with _silent_slice_write():
+                df[col] = values
 
 
 def _is_missing_text(value: object) -> bool:
@@ -908,7 +909,8 @@ def _apply_processed_values(
         column = df[field_name].to_numpy(dtype=object, copy=True)
         for position, value in cells.items():
             column[position] = value
-        df[field_name] = pd.Series(column, index=df.index, dtype=object)
+        with _silent_slice_write():
+            df[field_name] = pd.Series(column, index=df.index, dtype=object)
 
 
 @contextmanager
@@ -1972,12 +1974,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         # coluna `string` de convert_dtypes, vira None: a marca das linhas não
         # alcançadas compara o status e o detalhe com texto, e a comparação com
         # o pd.NA não é booleana.
-        # Só reatribui a coluna que precisa: num slice, a reatribuição avisa
-        # SettingWithCopyWarning no pandas antigo.
         for col in control_columns:
             column = df_pandas[col]
             if any(value is not None for value in column[column.isna()]):
-                df_pandas[col] = column.where(column.notna(), None)
+                with _silent_slice_write():
+                    df_pandas[col] = column.where(column.notna(), None)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido

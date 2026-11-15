@@ -1019,7 +1019,7 @@ def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qua
 
 
 def _silent_slice_write() -> AbstractContextManager[None]:
-    """Contexto em que escrever coluna num DataFrame que é fatia de outro não avisa.
+    """Contexto em que gravar coluna num DataFrame que é fatia de outro não avisa.
 
     O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
     escrita substitui esse aviso e a opção que o controla não se aplica.
@@ -1038,9 +1038,9 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
         df: DataFrame a normalizar.
         complex_fields: Set com nomes das colunas a normalizar.
     """
-    for col in complex_fields:
-        if col in df.columns:
-            with _silent_slice_write():
+    with _silent_slice_write():
+        for col in complex_fields:
+            if col in df.columns:
                 df[col] = df[col].apply(normalize_value)
 
 
