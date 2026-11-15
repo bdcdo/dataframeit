@@ -6,13 +6,19 @@ argumento mudaria o resultado.
 """
 
 import sys
-from typing import Union
+from typing import Literal, Optional, Union
 
 import pytest
 from pydantic import BaseModel, create_model
 from typing_extensions import TypeAliasType, TypeVar
 
-from dataframeit.utils import _lookup_forward_ref, _resolved, list_layers, parse_json
+from dataframeit.utils import (
+    _admits_int,
+    _lookup_forward_ref,
+    _resolved,
+    list_layers,
+    parse_json,
+)
 
 # =============================================================================
 # parse_json
@@ -65,6 +71,22 @@ def test_erro_de_json_corta_a_resposta_em_200_caracteres():
 
 class _Folha(BaseModel):
     x: int
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "admite"),
+    [
+        (int, True),
+        (Literal[1, "a"], True),
+        (Optional[Literal[2]], True),
+        (Literal["a"], False),
+        (Literal[True, False], False),
+        (Optional[Literal[1.5]], False),
+        (str, False),
+    ],
+)
+def test_so_o_int_e_o_literal_com_algum_int_admitem_int(anotacao, admite):
+    assert _admits_int(anotacao) is admite
 
 
 def test_camadas_de_lista_contam_o_ramo_mais_fundo_da_uniao():

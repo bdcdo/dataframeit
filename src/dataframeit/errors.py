@@ -251,6 +251,9 @@ def _infer_provider_info(provider: str | None) -> dict[str, Any]:
     }
 
 
+# O importlib.metadata normaliza o nome, e por isso a troca de caixa que o teste
+# de mutação faria no literal dentro da função não mudaria o resultado.
+_DISTRIBUTION_NAME = "dataframeit"
 _EXTRA_ALL_MARKER = re.compile(r"""extra\s*==\s*["']all["']""")
 _REQUIREMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -270,19 +273,15 @@ def _all_extra_packages() -> frozenset[str]:
     pacote, devolve vazio: não há como saber o que o extra traz, e sugeri-lo
     poderia mandar instalar algo que não resolve.
     """
-    # O nome passa pela normalização do importlib.metadata, e o requisito tem um
-    # ";" só, o do marcador: as trocas de caixa e de partition por rpartition que
-    # o teste de mutação faz nas duas linhas marcadas não mudam o resultado.
     try:
-        requirements = importlib.metadata.requires("dataframeit") or []  # pragma: no mutate
+        requirements = importlib.metadata.requires(_DISTRIBUTION_NAME) or []
     except importlib.metadata.PackageNotFoundError:
         return frozenset()
     packages = set()
     for requirement in requirements:
-        # O marcador de ambiente vem depois do ";", e é nele que o extra aparece.
-        name_part, _, marker = requirement.partition(";")  # pragma: no mutate
-        match = _REQUIREMENT_NAME.match(name_part.strip())
-        if match and _EXTRA_ALL_MARKER.search(marker):
+        # O nome abre o requisito, e o extra só aparece no marcador de ambiente.
+        match = _REQUIREMENT_NAME.match(requirement.strip())
+        if match and _EXTRA_ALL_MARKER.search(requirement):
             packages.add(_normalize_distribution_name(match.group()))
     return frozenset(packages)
 

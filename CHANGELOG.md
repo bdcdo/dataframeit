@@ -15,7 +15,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
-- O aviso de coluna Object da saída polars aponta a chamada de `dataframeit()` por `_user_stacklevel()`, como os demais avisos, e não por um `stacklevel` fixo. O `_retry_info` de `retry_with_backoff` guarda só `retries`, o único campo que o `core` lê, e a caixa de autenticação por credenciais de SDK lê a dica do provider sem texto padrão, que nenhum provider usava. Sai de `errors.py` a constante `RECOVERABLE_ERRORS`: o erro sem padrão de `NON_RECOVERABLE_ERRORS` já era tratado como recuperável, e os padrões dela não mudavam a classificação (#212).
+- O aviso de coluna Object da saída polars aponta a chamada de `dataframeit()` por `_user_stacklevel()`, como os demais avisos, e não por um `stacklevel` fixo. O `_retry_info` de `retry_with_backoff` guarda só `retries`, o único campo que o `core` lê, e a caixa de autenticação por credenciais de SDK lê a dica do provider sem texto padrão, que nenhum provider usava. (#212).
 
 - A seleção das linhas que a execução processa (todas com `reprocess_columns`, só as pendentes sem ele) é calculada uma vez, e o laço sequencial, o paralelo e a marca das linhas não alcançadas por uma interrupção usam a mesma; `_record_error` e os registros de reserva não devolvem mais a mensagem de erro, que ninguém lia. Sem mudança de comportamento (#358).
 - As marcas das linhas não alcançadas por uma interrupção, no abort e no Ctrl-C, são gravadas por coluna, e não célula a célula: em 100 mil linhas, levam de centésimos de segundo, com uma coluna do modelo, a menos de um segundo, com 30, em vez de 2 a 34 segundos, e um segundo Ctrl-C tem menos tempo para cortá-las (#281, #358).
@@ -97,6 +97,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Removido
 
+- A constante `RECOVERABLE_ERRORS` de `errors.py`, que não estava no `__all__` nem na documentação: o erro sem padrão de `NON_RECOVERABLE_ERRORS` já era tratado como recuperável, e os padrões dela não mudavam a classificação (#212).
 - As caixas "LIMITE DE USO TAVILY EXCEDIDO" e "LIMITE DE USO EXA EXCEDIDO" de `get_friendly_error_message`. Elas só respondiam a erro sem status cujo texto citava o serviço; a cota esgotada da busca vira `ProviderUsageLimitError` pelo status e tem a caixa "COTA DE USO ESGOTADA".
 
 ## [0.11.1] - 2026-10-29

@@ -120,13 +120,10 @@ def parse_json(resposta: str) -> dict[str, Any]:
     if match:
         json_string = match.group(1).strip()
     else:
-        # Tentar extrair entre chaves
+        # Tentar extrair entre chaves, procurando a que fecha depois da que abre
         start = content.find("{")
-        end = content.rfind("}")
-        # As duas posições só coincidem quando nenhuma chave aparece, e com
-        # `start` encontrado a troca de `>` por `>=` não muda o resultado.
-        closes_after = end > start  # pragma: no mutate
-        json_string = content[start : end + 1] if start != -1 and closes_after else content.strip()
+        end = content.rfind("}", start + 1)
+        json_string = content[start : end + 1] if start != -1 and end != -1 else content.strip()
 
     try:
         return json.loads(json_string)
@@ -267,9 +264,7 @@ def _admits_int(annotation: object) -> bool:
     return any(
         member is int
         or (
-            # Fora do Literal, nenhuma anotação de campo tem int entre os
-            # argumentos, e trocar o `and` por `or` não muda o resultado.
-            get_origin(member) is typing.Literal  # pragma: no mutate
+            get_origin(member) is typing.Literal
             and any(type(arg) is int for arg in get_args(member))
         )
         for member in _members(annotation)

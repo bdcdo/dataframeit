@@ -26,6 +26,7 @@ from dataframeit.errors import (
     is_recoverable_error,
     retry_with_backoff,
     validate_provider_dependencies,
+    validate_search_dependencies,
 )
 from dataframeit.search import SearchToolError
 
@@ -611,19 +612,6 @@ def _sem_o_pacote(monkeypatch, pacote):
 
 
 @pytest.mark.parametrize(
-    ("ausente", "pacote_na_mensagem"),
-    [("langchain", "langchain"), ("langchain_core", "langchain-core")],
-)
-def test_langchain_ausente_pede_a_instalacao(monkeypatch, ausente, pacote_na_mensagem):
-    _sem_o_pacote(monkeypatch, ausente)
-
-    with pytest.raises(ImportError, match=f"pip install {pacote_na_mensagem} ") as exc_info:
-        validate_provider_dependencies("openai")
-
-    assert "dataframeit[all]" in str(exc_info.value)
-
-
-@pytest.mark.parametrize(
     ("provider", "pacote", "instalar", "sugere_all"),
     [
         ("openai", "langchain_openai", "langchain-openai", True),
@@ -657,6 +645,59 @@ def test_sem_metadados_do_pacote_a_dica_do_extra_all_some(monkeypatch):
         validate_provider_dependencies("openai")
 
     assert "dataframeit[all]" not in str(exc_info.value)
+
+
+def _linha_do_pip(instalar):
+    return f"║      pip install {instalar:<62} ║"
+
+
+@pytest.mark.parametrize(
+    ("provider", "ausente", "instalar", "nome", "alternativa"),
+    [
+        ("claude_code", "claude_agent_sdk", "dataframeit[claude-code]", "Claude Code", None),
+        ("openai", "langchain", "langchain", "LangChain", "dataframeit[all]"),
+        ("openai", "langchain_core", "langchain-core", "LangChain Core", "dataframeit[all]"),
+        ("openai", "langchain_openai", "langchain-openai", "OpenAI", "dataframeit[all]"),
+        ("mistralai", "langchain_mistralai", "langchain-mistralai", "Mistral AI", None),
+    ],
+)
+def test_pacote_ausente_nomeia_o_pacote_o_provider_e_o_comando(
+    provider, ausente, instalar, nome, alternativa
+):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _sem_o_pacote(monkeypatch, ausente)
+        with pytest.raises(ImportError) as exc_info:
+            validate_provider_dependencies(provider)
+
+    linhas = str(exc_info.value).splitlines()
+    assert f"║  A biblioteca '{ausente}' é necessária para usar {nome}.            ║" in linhas
+    pip = linhas.index(_linha_do_pip(instalar))
+    if alternativa is None:
+        # Sem alternativa, a linha em branco depois do comando leva direto ao fim.
+        assert linhas[pip + 2].startswith("║  Após instalar, execute seu código novamente.")
+        assert not any("Ou, para instalar" in linha for linha in linhas)
+    else:
+        assert _linha_do_pip(alternativa) in linhas
+
+
+@pytest.mark.parametrize(
+    ("search_provider", "pacote", "instalar", "nome"),
+    [
+        ("tavily", "langchain_tavily", "langchain-tavily", "Tavily Search"),
+        ("exa", "langchain_exa", "langchain-exa", "Exa Search"),
+    ],
+)
+def test_pacote_de_busca_ausente_nomeia_o_pacote_e_o_servico(
+    monkeypatch, search_provider, pacote, instalar, nome
+):
+    _sem_o_pacote(monkeypatch, pacote)
+
+    with pytest.raises(ImportError) as exc_info:
+        validate_search_dependencies(search_provider)
+
+    linhas = str(exc_info.value).splitlines()
+    assert f"║  A biblioteca '{pacote}' é necessária para usar {nome}.            ║" in linhas
+    assert _linha_do_pip(instalar) in linhas
 
 
 def test_pacotes_do_extra_all_lidos_dos_metadados_batem_com_o_pyproject():
