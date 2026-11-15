@@ -1430,8 +1430,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             e não há checkpoint a reler, com True ou False, toda linha conta como
             nova, e uma coluna com algum valor e com o nome de um campo do modelo
             levanta ValueError antes de qualquer chamada, a menos que esteja em
-            reprocess_columns; na retomada de um checkpoint_path, o mesmo vale
-            para o valor nas linhas que o checkpoint deixou pendentes.
+            reprocess_columns; o mesmo vale para o valor nas linhas sem status,
+            com a coluna de status na entrada, e nas que o checkpoint deixou
+            pendentes, na retomada de um checkpoint_path. A coluna de um campo
+            com exclude=True, que a execução não grava, não conta.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM. Se None, usa o default do provider em
@@ -1734,6 +1736,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     signature = None
     empty_text_fields: frozenset[str] = frozenset()
     reprocessed_columns = frozenset(reprocess_columns or [])
+    input_has_status = status_col in df_pandas.columns
     if checkpoint is not None:
         signature = _run_signature(
             questions,
@@ -1780,7 +1783,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # sobrescrever.
     if status_col not in df_pandas.columns:
         _raise_if_overwritten(
-            df_pandas, expected_columns, reprocessed_columns, nan_columns, status_col=status_col
+            df_pandas, questions, reprocessed_columns, nan_columns, status_col=status_col
         )
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
@@ -1789,6 +1792,18 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             stacklevel=1,
         )
         return from_pandas(df_pandas, conversion_info, status_col)
+    # Com a coluna de status na entrada, a linha sem status recebe a resposta
+    # em todos os campos. A do checkpoint retomado já foi checada antes de a
+    # entrada recebê-lo.
+    if input_has_status:
+        _raise_if_overwritten(
+            df_pandas,
+            questions,
+            reprocessed_columns,
+            nan_columns,
+            status_col=status_col,
+            pending=df_pandas[status_col].isna().to_numpy(),
+        )
 
     incompatible_columns = []
     processed_values = {}
@@ -2926,7 +2941,7 @@ def _checkpoint_mismatch(
 
 def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução que a checagem lê)
     df: pd.DataFrame,
-    expected_columns: list[str],
+    questions: type[BaseModel],
     reprocessed_columns: frozenset[str],
     nan_columns: frozenset[str],
     *,
@@ -2935,17 +2950,21 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
 ) -> None:
     """Recusa a entrada cujo valor num campo do modelo a resposta sobrescreveria.
 
-    A linha nova, que é toda linha da entrada sem coluna de status ou, na
-    retomada do checkpoint, a que ele deixou `pending`, recebe a resposta em
-    todos os campos, e a coluna de entrada com o nome de um deles perderia o
-    valor que tem nela; só a de reprocess_columns foi pedida, e a coluna sem
-    valor nas linhas novas não tem o que perder.
+    A linha nova, que é toda linha da entrada sem coluna de status ou a linha
+    `pending`, sem status na entrada ou deixada pelo checkpoint retomado,
+    recebe a resposta em todos os campos, e a coluna de entrada com o nome de
+    um deles perderia o valor que tem nela; só a de reprocess_columns foi
+    pedida, a coluna sem valor nas linhas novas não tem o que perder, e a do
+    campo com exclude=True a execução não grava.
     """
+    expected_columns = list(questions.model_fields)
+    excluded_fields = _excluded_fields(questions)
     overwritten = [
         col
         for col in expected_columns
         if col in df.columns
         and col not in reprocessed_columns
+        and col not in excluded_fields
         and any(
             not _is_absent(value, nan_is_value=col in nan_columns and df[col].dtype == object)
             for value in (df[col] if pending is None else df[col][pending])
@@ -2967,12 +2986,12 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
         )
     else:
         reason = (
-            "e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que o "
-            "checkpoint ainda não processou"
+            "e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que a "
+            "execução ainda não processou"
         )
         resume_hint = (
-            " Com reprocess_columns, a execução refaz essas colunas também nas linhas que o "
-            "checkpoint concluiu."
+            " Com reprocess_columns, a execução refaz essas colunas também nas linhas já "
+            "processadas."
         )
     msg = (
         f"As colunas {overwritten} já existem no DataFrame com o nome de campos do "
@@ -3061,7 +3080,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
     concluded = saved[status_col].notna().to_numpy()
     _raise_if_overwritten(
         df,
-        list(questions.model_fields),
+        questions,
         reprocessed_columns,
         nan_columns,
         status_col=status_col,
