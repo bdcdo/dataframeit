@@ -160,6 +160,29 @@ def test_erro_da_linha_leva_o_uso_das_chamadas_ja_feitas(falha):
     assert erro.value.row_usage["input_tokens"] == 2 * (len(agente.chamadas) - 1)  # ty: ignore[unresolved-attribute]
 
 
+def _tem_preco(dados):
+    return any((item or {}).get("preco") for item in dados.get("itens") or [])
+
+
+class ComResumoDosPrecos(BaseModel):
+    itens: list[Item] = []
+    resumo: Optional[str] = Field(
+        None, json_schema_extra=field_condition(_tem_preco, depends_on="itens")
+    )
+
+
+@pytest.mark.parametrize("grupos", [None, {"g": SearchGroupConfig(fields=["itens", "resumo"])}])
+def test_condicao_le_a_lista_ja_enriquecida_tambem_no_mesmo_grupo(grupos):
+    agente = _Agente({"itens": [{"nome": "x"}], "preco": "R$ 10", "resumo": "tem preço"})
+
+    resultado = _rodar(agente, ComResumoDosPrecos, _config(grupos))
+
+    assert resultado["data"] == {
+        "itens": [{"nome": "x", "preco": "R$ 10"}],
+        "resumo": "tem preço",
+    }
+
+
 # =============================================================================
 # prompts
 # =============================================================================

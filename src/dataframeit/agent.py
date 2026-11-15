@@ -816,14 +816,23 @@ class _FieldExtractor:
             if name not in result["data"]:
                 row.dropped.add(name)
         self._update_view(row, active)
-        # Em ordem de dependência, para que um campo anulado aqui também anule
-        # quem depende dele na mesma chamada.
-        for name in post_call:
-            if should_skip_field(name, self.field_configs[name], row.view):
+        self._settle_answers(row, active, post_call)
+
+    def _settle_answers(self, row: _Row, active: list[str], post_call: list[str]) -> None:
+        """Avalia as condições de `post_call` e enriquece as listas da resposta.
+
+        Em ordem de dependência, para que a condição avaliada depois da
+        resposta leia a lista já enriquecida e o campo anulado aqui, como a
+        linha completa; o campo anulado não é enriquecido.
+        """
+        for name in self.execution_order:
+            if name not in active:
+                continue
+            if name in post_call and should_skip_field(name, self.field_configs[name], row.view):
                 row.data[name] = row.view[name] = None
                 row.skipped.add(name)
-        enriched = [name for name in active if self._enrich_items(row, name)]
-        self._update_view(row, enriched)
+            elif self._enrich_items(row, name):
+                self._update_view(row, [name])
 
     def _update_view(self, row: _Row, names: list[str]) -> None:
         """Atualiza o que as condições leem, depois que os campos `names` entraram em row.data.
