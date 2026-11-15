@@ -179,9 +179,9 @@ def test_disabled_features_exist_in_bundled_runtime(tmp_path):
     """
     states = _feature_states(tmp_path)
     disabled = [
-        config_override.removeprefix("features.").removesuffix("=false")
-        for config_override in _CODEX_CONFIG_OVERRIDES
-        if config_override.startswith("features.")
+        override.removeprefix("features.").removesuffix("=false")
+        for override in _CODEX_CONFIG_OVERRIDES
+        if override.startswith("features.")
     ]
 
     assert disabled
