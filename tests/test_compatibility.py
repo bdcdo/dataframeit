@@ -17,7 +17,7 @@ from dataframeit.utils import (
 )
 
 
-class TestModel(BaseModel):
+class ModeloDeTeste(BaseModel):
     campo1: str = Field(..., description="Primeiro campo")
     campo2: Literal["A", "B"] = Field(..., description="Segundo campo")
 
@@ -38,7 +38,7 @@ def test_api_compatibility():
 
     # Verificar que ValueError é lançado sem prompt
     with pytest.raises(ValueError, match=r"(?i)prompt"):
-        dataframeit_new(df, questions=TestModel)
+        dataframeit_new(df, questions=ModeloDeTeste)
 
 
 def test_column_management():

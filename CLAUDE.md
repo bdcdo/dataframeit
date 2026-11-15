@@ -122,5 +122,6 @@ uv run --extra dev pre-commit run --all-files
 - Comentários, docstrings, mensagens de erro e aviso, nomes de teste, títulos de PR e commits em português; os identificadores de `src/` ficam em inglês. O título do PR diz o comportamento novo numa frase afirmativa ("Retomada do CSV e do XLSX não cai com default_factory que levanta"), e o PR entra por squash com o número no fim (`(#292)`).
 - Os commits do Dependabot seguem o padrão `chore(deps): ...`.
 - Cobertura de ramos de `src/dataframeit` em 100%, somada entre os jobs do CI. Código novo vem com teste que cobre cada ramo.
+- Aviso que escapa de um teste o reprova (`filterwarnings = ["error"]`): o aviso esperado fica num `pytest.warns` com `match`, e o build da documentação é estrito (`strict: true` no `mkdocs.yml`).
 - A suíte precisa passar duas vezes no mesmo processo (`pytest --count=2 --repeat-scope=session`, job `repeat`): teste não deixa estado global para trás.
 - Actions dos workflows fixadas pelo SHA do commit, com a versão em comentário, e `persist-credentials: false` no `actions/checkout`; detalhes em `CONTRIBUTING.md`.

@@ -9,6 +9,7 @@ import json
 import re
 import types
 import typing
+from contextlib import nullcontext
 from typing import Any, Literal, Optional, Union
 from unittest.mock import patch
 
@@ -448,7 +449,18 @@ def test_reprocess_columns_por_campo_chama_so_os_campos_pedidos(parallel_request
         return {"data": dict.fromkeys(model.model_fields, "novo"), "usage": {}}
 
     provider, busca = _patches_de_execucao()
-    with provider, busca, patch("dataframeit.agent.call_agent", side_effect=call_agent):
+    # Dois workers sem rate_limit_delay passam do limite de requisições do Tavily.
+    aviso_de_taxa = (
+        pytest.warns(UserWarning, match="pode exceder rate limits de busca")
+        if parallel_requests > 1
+        else nullcontext()
+    )
+    with (
+        provider,
+        busca,
+        patch("dataframeit.agent.call_agent", side_effect=call_agent),
+        aviso_de_taxa,
+    ):
         resultado = dataframeit(
             df,
             questions=Modelo,

@@ -516,6 +516,7 @@ def test_falha_fora_do_tratamento_da_linha_marca_a_linha_no_paralelo():
         ),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core._record_missing_text", side_effect=gravacao_que_falha),
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
         pytest.warns(UserWarning, match="Falha ao processar linha 1"),
     ):
         resultado = dataframeit(

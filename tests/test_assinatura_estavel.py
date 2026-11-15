@@ -1685,6 +1685,13 @@ def matriz_do_numpy(valor):
         return np.matrix([[1, valor]])
 
 
+def datetime64_sem_unidade(tamanho):
+    # O numpy 2.5 depreca a unidade genérica, que o array ainda aceita.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "The 'generic' unit", DeprecationWarning)
+        return np.array(["NaT"] * tamanho, dtype="datetime64")
+
+
 def categorias(ordem=("vip", "ouro"), ordenada=True):
     return pd.Categorical(["vip", "ouro"], categories=list(ordem), ordered=ordenada)
 
@@ -1778,8 +1785,8 @@ PARES = {
     ),
     "matriz-do-numpy": (lambda: Regra(matriz_do_numpy(2)), lambda: Regra(matriz_do_numpy(3))),
     "datetime64-sem-unidade": (
-        lambda: Regra(np.array(["NaT"], dtype="datetime64")),
-        lambda: Regra(np.array(["NaT", "NaT"], dtype="datetime64")),
+        lambda: Regra(datetime64_sem_unidade(1)),
+        lambda: Regra(datetime64_sem_unidade(2)),
     ),
     "datetime-fold": (
         lambda: Momento(2021, 10, 31, 1, 30),

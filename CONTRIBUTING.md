@@ -40,7 +40,7 @@ uv run --extra dev pre-commit run --all-files  # todos os hooks nos arquivos que
 
 1. Abra uma issue antes de uma mudança grande, para combinar o desenho.
 2. Crie uma branch a partir da `main` com o prefixo do tipo de mudança: `feature/`, `fix/`, `docs/` ou `refactor/`.
-3. Escreva o teste junto com a mudança. Uma correção de bug vem com o teste que falhava antes dela.
+3. Escreva o teste junto com a mudança. Uma correção de bug vem com o teste que falhava antes dela. Um aviso que escapa do teste o reprova: o aviso esperado fica num `pytest.warns` com `match`.
 4. Abra o PR contra a `main`. O CI roda lint, a auditoria dos workflows pelo `zizmor`, testes em Python 3.11, 3.13 e 3.14, a suíte duas vezes no mesmo processo, que reprova o teste que só passa na primeira execução, os testes com as versões mínimas das dependências e o build da documentação.
 
 ## Convenções

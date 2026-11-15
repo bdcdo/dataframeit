@@ -186,6 +186,7 @@ def test_aviso_do_retry_aponta_a_chamada_do_usuario(erro, aviso):
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.build_structured_llm", return_value=modelo),
+        pytest.warns(UserWarning, match="Falha ao processar linha 0"),
         pytest.warns(UserWarning, match=aviso) as avisos,
     ):
         dataframeit(["a"], _Modelo, "{texto}", max_retries=2, base_delay=0, max_delay=0)

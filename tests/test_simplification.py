@@ -10,7 +10,7 @@ from dataframeit.llm import LLMConfig, build_prompt
 from dataframeit.utils import ORIGINAL_TYPE_PANDAS_DF, from_pandas, parse_json, to_pandas
 
 
-class TestModel(BaseModel):
+class ModeloDeTeste(BaseModel):
     campo1: str = Field(..., description="Primeiro campo")
     campo2: Literal["A", "B"] = Field(..., description="Segundo campo")
 
@@ -24,7 +24,7 @@ def test_basic_functionality():
     # Verificar que as colunas são configuradas corretamente
 
     df_test = df.copy()
-    expected_cols = list(TestModel.model_fields.keys())
+    expected_cols = list(ModeloDeTeste.model_fields.keys())
     _setup_columns(df_test, expected_cols, None, track_tokens=False)
 
     assert "campo1" in df_test.columns

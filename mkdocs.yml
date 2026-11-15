@@ -3,6 +3,9 @@ site_description: Enriqueça DataFrames com LLMs de forma simples e estruturada
 site_url: https://brunodcdo.com.br/dataframeit
 repo_url: https://github.com/bdcdo/dataframeit
 repo_name: bdcdo/dataframeit
+# Aviso no build é erro: link quebrado, página fora do nav e aviso de plugin
+# param o mkdocs build do CI e da publicação.
+strict: true
 
 theme:
   name: material

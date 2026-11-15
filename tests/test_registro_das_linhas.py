@@ -4,7 +4,7 @@ import logging
 import re
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -400,6 +400,7 @@ def test_paralelo_pede_so_os_campos_reprocessados_e_grava_o_trace_por_campo():
         patch("dataframeit.agent.field_extractor", side_effect=fabrica),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
+        pytest.warns(UserWarning, match="pode exceder rate limits de busca"),
     ):
         saida = dataframeit(
             df,
@@ -421,7 +422,11 @@ def test_paralelo_pede_so_os_campos_reprocessados_e_grava_o_trace_por_campo():
 def test_linha_ja_registrada_nao_e_regravada_quando_o_snapshot_falha(monkeypatch, tmp_path):
     _gravacoes(monkeypatch, falhar=True)
 
-    with pytest.warns(UserWarning, match="Erro inesperado no executor"):
+    with (
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
+        pytest.warns(UserWarning, match="Falha ao processar linha 1"),
+        pytest.warns(UserWarning, match="Erro inesperado no executor"),
+    ):
         saida = _roda(
             [None, "erro", "ok"],
             _llm({"erro": ValueError("falhou")}),
@@ -446,7 +451,13 @@ def test_cada_linha_conta_uma_vez_para_o_checkpoint(monkeypatch, tmp_path, camin
     else:
         textos = ["a", "erro", "c"]
 
-    with pytest.warns(UserWarning, match="Falha ao processar linha 1"):
+    # A linha sem texto da reserva avisa antes de cair na falha da gravação.
+    aviso_sem_texto = (
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM")
+        if caminho == "reserva"
+        else nullcontext()
+    )
+    with aviso_sem_texto, pytest.warns(UserWarning, match="Falha ao processar linha 1"):
         _roda(
             textos,
             _llm({"erro": ValueError("falhou")}),
@@ -466,7 +477,11 @@ def _levanta(*args, **kwargs):
 def test_linha_marcada_pela_coleta_mantem_o_erro_depois_da_interrupcao(monkeypatch):
     monkeypatch.setattr(core, "_record_missing_text", _levanta)
 
-    with pytest.warns(UserWarning, match="interrompida"):
+    with (
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
+        pytest.warns(UserWarning, match="Falha ao processar linha 1"),
+        pytest.warns(UserWarning, match="interrompida"),
+    ):
         saida = _roda(
             ["a", None, "c"],
             _llm({"c": ProviderAbortError("app-server encerrou")}),
@@ -491,7 +506,11 @@ def test_rate_limit_reduz_os_workers_pela_metade(monkeypatch, capsys):
     monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
     textos = [f"t{i}" for i in range(8)]
 
-    with pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2") as avisos:
+    with (
+        pytest.warns(UserWarning, match="Falha ao processar linha 0"),
+        pytest.warns(UserWarning, match="reduzidos por rate limit"),
+        pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2") as avisos,
+    ):
         saida = _roda(textos, _llm({"t0": ProviderOverloadedError("429")}), parallel_requests=4)
 
     final = [a for a in avisos if "reduzidos por rate limit" in str(a.message)]

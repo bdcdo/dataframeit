@@ -655,11 +655,12 @@ def test_retomada_do_checkpoint_com_coluna_de_campo_com_exclude_segue(tmp_path):
 
 def test_valor_em_linha_sem_texto_nao_conta_na_checagem_da_entrada_sem_status():
     # A linha sem texto não vai ao LLM, e o valor dela fica.
-    resultado, llm = _rodar(
-        pd.DataFrame({"texto": ["a", None], "categoria": [None, "humano"]}),
-        questions=ModeloCategoria,
-        llm=_responde(categoria="llm", nota=1),
-    )
+    with pytest.warns(UserWarning, match="sem texto não vão ao LLM"):
+        resultado, llm = _rodar(
+            pd.DataFrame({"texto": ["a", None], "categoria": [None, "humano"]}),
+            questions=ModeloCategoria,
+            llm=_responde(categoria="llm", nota=1),
+        )
 
     assert llm.call_count == 1
     assert resultado["categoria"].tolist() == ["llm", "humano"]
@@ -670,7 +671,8 @@ def test_valor_em_linha_sem_texto_nao_conta_na_checagem_da_retomada_manual():
     entrada = _saida_com_linha_pendente(["llm-a", "humano"])
     entrada["texto"] = ["a", ""]
 
-    resultado, llm = _rodar(entrada, questions=ModeloCategoria, resume=True)
+    with pytest.warns(UserWarning, match="sem texto não vão ao LLM"):
+        resultado, llm = _rodar(entrada, questions=ModeloCategoria, resume=True)
 
     llm.assert_not_called()
     assert resultado["categoria"].tolist() == ["llm-a", "humano"]
@@ -687,13 +689,14 @@ def test_valor_em_linha_sem_texto_nao_conta_na_checagem_da_retomada_do_checkpoin
         checkpoint_path=checkpoint,
     )
 
-    resultado, llm = _rodar(
-        pd.DataFrame({"texto": ["a", "b", None], "categoria": [None, None, "humano"]}),
-        questions=ModeloCategoria,
-        llm=_responde(categoria="llm-b", nota=2),
-        batch_size=1,
-        checkpoint_path=checkpoint,
-    )
+    with pytest.warns(UserWarning, match="sem texto não vão ao LLM"):
+        resultado, llm = _rodar(
+            pd.DataFrame({"texto": ["a", "b", None], "categoria": [None, None, "humano"]}),
+            questions=ModeloCategoria,
+            llm=_responde(categoria="llm-b", nota=2),
+            batch_size=1,
+            checkpoint_path=checkpoint,
+        )
 
     assert llm.call_count == 1
     assert resultado["categoria"].tolist() == ["llm-a", "llm-b", "humano"]

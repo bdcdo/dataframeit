@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 from dataframeit.agent import _extract_trace
-from dataframeit.core import dataframeit
+from dataframeit.core import _set_field_traces, dataframeit
 
 
 class SimpleModel(BaseModel):
@@ -464,6 +464,16 @@ def test_trace_por_campo_inclui_buscas_aninhadas_e_por_item(monkeypatch):
         ["ItemSearch_0_registro"],
         ["ItemSearch_1_registro"],
     ]
+
+
+def test_trace_aninhado_ganha_coluna_numa_fatia_de_outro_dataframe():
+    """A coluna do trace aninhado nasce na fatia sem o aviso de escrita em fatia do pandas 2."""
+    base = pd.DataFrame({"texto": ["outra", "ficha da Ana"]})
+    fatia = base[base["texto"] != "outra"]
+
+    _set_field_traces(fatia, 1, {"endereco.cep": {"search_queries": ["cep"]}})
+
+    assert json.loads(fatia.loc[1, "_trace_endereco.cep"]) == {"search_queries": ["cep"]}
 
 
 def test_busca_por_item_grava_o_valor_em_cada_item_e_soma_o_uso(monkeypatch):

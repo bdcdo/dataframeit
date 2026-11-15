@@ -18,7 +18,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -2148,14 +2148,7 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    # O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
-    # escrita substitui esse aviso e a opção que o controla não se aplica.
-    context = (
-        pd.option_context("mode.chained_assignment", None)
-        if hasattr(pd.errors, "SettingWithCopyWarning")
-        else nullcontext()
-    )
-    with context:
+    with _silent_slice_write():
         for col in new_cols:
             df[col] = None
         if needs_status:
@@ -2169,6 +2162,17 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
             df[col] = None
         for col in needs_trace:
             df[col] = None
+
+
+def _silent_slice_write() -> AbstractContextManager[None]:
+    """Contexto em que criar coluna num DataFrame que é fatia de outro não avisa.
+
+    O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
+    escrita substitui esse aviso e a opção que o controla não se aplica.
+    """
+    if hasattr(pd.errors, "SettingWithCopyWarning"):
+        return pd.option_context("mode.chained_assignment", None)
+    return nullcontext()
 
 
 def _get_processing_indices(
@@ -3531,6 +3535,21 @@ def _record_missing_text(
     )
 
 
+def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]) -> None:
+    """Grava o trace de cada campo ou grupo na coluna `_trace_{chave}`.
+
+    O trace de campo aninhado e o de item de lista não têm coluna criada de
+    antemão: a coluna nasce na primeira linha que o traz, porque o .at avisa
+    ao criar coluna.
+    """
+    for key, trace in traces.items():
+        column = f"_trace_{key}"
+        if column not in df.columns:
+            with _silent_slice_write():
+                df[column] = None
+        _set_cell(df, idx, column, json.dumps(trace, ensure_ascii=False))
+
+
 def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     df: pd.DataFrame,
     idx: Hashable,
@@ -3580,8 +3599,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     # Armazenar traces: um por campo ou grupo nos modos por campo, ou um só
     if trace_mode:
         if search_config and search_config.per_field:
-            for field_name, trace in result.get("traces", {}).items():
-                _set_cell(df, idx, f"_trace_{field_name}", json.dumps(trace, ensure_ascii=False))
+            _set_field_traces(df, idx, result.get("traces", {}))
         else:
             # Com trace_mode, a linha passou por call_agent, que sempre devolve o trace.
             _set_cell(df, idx, "_trace", json.dumps(result["trace"], ensure_ascii=False))

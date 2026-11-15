@@ -1148,6 +1148,8 @@ class TestBackendLifecycle:
         with (
             patch.object(codex_module, "_open_client", return_value=client),
             patch("dataframeit.core.validate_provider_dependencies"),
+            pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
+            pytest.warns(UserWarning, match="Anotações sem efeito"),
             pytest.warns(UserWarning, match="sem model") as registro,
         ):
             dataframeit([""], ComExemplo, "{texto}", provider="codex")
@@ -1970,7 +1972,12 @@ class TestClassificacaoDoTurnoQueFalhou:
         )
         entrada = pd.DataFrame({"texto": ["a", "b", "c", "d"]})
 
-        with pytest.warns(UserWarning, match="Reduzindo workers de 4 para 2") as avisos:
+        with (
+            pytest.warns(UserWarning, match="Workers reduzidos por rate limit"),
+            pytest.warns(UserWarning, match="Falha ao processar linha"),
+            pytest.warns(UserWarning, match="Tentativa 1/2 falhou"),
+            pytest.warns(UserWarning, match="Rate limit detectado") as avisos,
+        ):
             saida = dataframeit(
                 entrada, SampleModel, "Analise: {texto}", provider="codex", parallel_requests=4
             )
@@ -2085,7 +2092,10 @@ class TestClassificacaoDoTurnoQueFalhou:
             as_stream(make_result(codex_sdk)),
         ]
 
-        with pytest.warns(UserWarning, match="Tentativa 2/3"):
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/3"),
+            pytest.warns(UserWarning, match="Tentativa 2/3"),
+        ):
             result = backend.invoke("texto")
 
         assert result["usage"] == {
@@ -2803,6 +2813,7 @@ class TestMensagensEAtrasos:
 
         with (
             patch("dataframeit.errors.time.sleep") as sleep,
+            pytest.warns(UserWarning, match="Tentativa 1/3"),
             pytest.warns(UserWarning, match="Tentativa 2/3"),
         ):
             backend.invoke("texto")
