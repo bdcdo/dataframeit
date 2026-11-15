@@ -873,7 +873,6 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(
 
     try:
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.warns(UserWarning, match="Execução interrompida.*app-server do Codex encerrou"),
         ):
             resultado = dataframeit(

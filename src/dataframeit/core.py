@@ -49,6 +49,7 @@ from .conditional import (
 )
 from .errors import (
     ProviderAbortError,
+    ProviderUsageLimitError,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -3513,6 +3514,18 @@ def _error_text(error: BaseException) -> str:
     return f"{name}: {text}"
 
 
+def _abort_reason(error: ProviderAbortError) -> str:
+    """Motivo da interrupção para o aviso; na cota esgotada, com o que a resolve."""
+    reason = _error_text(error)
+    if isinstance(error, ProviderUsageLimitError):
+        reason += (
+            ". Repetir a linha não traz crédito: adicione crédito ou mude de plano na "
+            "conta do serviço antes de retomar; se a cota é da busca web, use_search=False "
+            "ou outro search_provider também evitam a parada"
+        )
+    return reason
+
+
 def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_error)
     df: pd.DataFrame,
     idx: Hashable,
@@ -3678,7 +3691,7 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
                 )
                 success = True
             except ProviderAbortError as e:
-                token_stats["abort"] = _error_text(e)
+                token_stats["abort"] = _abort_reason(e)
                 _mark_unreached(
                     df,
                     [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]],
@@ -3998,7 +4011,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
 
         except ProviderAbortError as e:
             with lock:
-                token_stats.setdefault("abort", _error_text(e))
+                token_stats.setdefault("abort", _abort_reason(e))
             abort_event.set()
             return {"success": False, "idx": idx, "error": None}
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')

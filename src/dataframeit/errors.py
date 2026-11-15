@@ -474,7 +474,7 @@ _INVALID_KEY_MARKERS = (
 )
 
 
-def get_friendly_error_message(  # noqa: C901, PLR0911, PLR0912 (uma saída por categoria de erro)
+def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria de erro)
     error: Exception, provider: str | None = None
 ) -> str:
     """Converte erro técnico em mensagem amigável para usuários iniciantes.
@@ -640,23 +640,6 @@ def get_friendly_error_message(  # noqa: C901, PLR0911, PLR0912 (uma saída por 
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    if "usagelimitexceeded" in error_str or (is_tavily and is_search_category(["limit"])):
-        return """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Você atingiu o limite de buscas do seu plano Tavily.                        ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Aguarde até o próximo mês (plano gratuito renova mensalmente)            ║
-║  2. Ou faça upgrade do plano em https://tavily.com/pricing                   ║
-║  3. Ou continue sem busca web (use_search=False)                             ║
-║  4. Ou mude para outro provedor (search_provider="exa")                      ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
     # === ERROS EXA ===
     if is_exa and is_search_category(
         ["apikey", "api_key", "missing", "invalid", "unauthorized"], (401,)
@@ -673,23 +656,6 @@ def get_friendly_error_message(  # noqa: C901, PLR0911, PLR0912 (uma saída por 
 ║  2. Configure a variável de ambiente:                                        ║
 ║                                                                              ║
 ║     export EXA_API_KEY="sua-chave-aqui"                                      ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-""".strip()
-
-    if is_exa and is_search_category(["limit", "quota", "exceeded"]):
-        return """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  LIMITE DE USO EXA EXCEDIDO                                                  ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  Você atingiu o limite de buscas do seu plano Exa.                           ║
-║                                                                              ║
-║  COMO RESOLVER:                                                              ║
-║  1. Verifique seu saldo em https://exa.ai                                    ║
-║  2. Adicione créditos à sua conta                                            ║
-║  3. Ou continue sem busca web (use_search=False)                             ║
-║  4. Ou mude para outro provedor (search_provider="tavily")                   ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
@@ -1085,7 +1051,8 @@ def retry_with_backoff(
         O dicionário devolvido por func, com as tentativas em '_retry_info'.
 
     Raises:
-        ProviderUsageLimitError: Na cota de uso esgotada, sem nova tentativa.
+        ProviderAbortError: Repassado sem nova tentativa e sem aviso; a cota de
+            uso esgotada chega como ProviderUsageLimitError.
         Exception: Última exceção após esgotar tentativas ou erro não-recuperável.
     """
     retry_info = {
@@ -1102,6 +1069,9 @@ def retry_with_backoff(
             # Dentro do try: uma falha ao anotar o resultado também ganha nova tentativa.
             result["_retry_info"] = retry_info
             return result  # noqa: TRY300 (o else mudaria quais falhas são re-tentadas)
+        except ProviderAbortError:
+            # Parada deliberada: o aviso "Execução interrompida" a explica.
+            raise
         except Exception as e:
             usage_limit = _usage_limit_error(e)
             if usage_limit is not None:

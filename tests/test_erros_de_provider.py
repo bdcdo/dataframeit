@@ -16,6 +16,7 @@ from packaging.utils import canonicalize_name
 from dataframeit import errors
 from dataframeit.claude_code import _raise_for_result_error
 from dataframeit.errors import (
+    ProviderAbortError,
     ProviderError,
     ProviderTransientError,
     ProviderUsageLimitError,
@@ -95,21 +96,25 @@ def test_mensagem_real_do_exa_escolhe_a_caixa_do_exa():
     assert "AUTENTICAÇÃO EXA" in mensagem
 
 
-def test_limite_do_exa_escolhe_a_caixa_de_limite():
-    mensagem = get_friendly_error_message(Exception("exa: monthly quota exceeded"), "openai")
-    assert "LIMITE DE USO EXA" in mensagem
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "exa: monthly quota exceeded",
+        "UsageLimitExceededError: plan usage exceeded for tavily",
+        "Usage limit exceeded for Tavily",
+    ],
+)
+def test_limite_de_uso_citado_so_no_texto_nao_escolhe_a_caixa_de_cota(texto):
+    # A cota da busca vira ProviderUsageLimitError na ferramenta, pelo status; o
+    # erro que só a cita no texto não interrompeu a execução.
+    mensagem = get_friendly_error_message(Exception(texto), "openai")
+    assert "ERRO NO PROCESSAMENTO" in mensagem
+    assert "COTA DE USO" not in mensagem
 
 
 def test_exa_dentro_de_palavra_nao_escolhe_a_caixa_do_exa():
     mensagem = get_friendly_error_message(Exception("hexagonal api_key rotation"), "openai")
     assert "EXA" not in mensagem
-
-
-def test_limite_do_tavily_escolhe_a_caixa_de_limite():
-    mensagem = get_friendly_error_message(
-        Exception("UsageLimitExceededError: plan usage exceeded"), "openai"
-    )
-    assert "LIMITE DE USO TAVILY" in mensagem
 
 
 def _erro_do_tavily(status, texto):
@@ -158,7 +163,7 @@ def test_chave_invalida_real_do_exa_escolhe_a_caixa_do_exa():
 def test_status_da_busca_decide_a_caixa_e_nao_o_texto(erro):
     mensagem = get_friendly_error_message(erro, "openai")
     assert "AUTENTICAÇÃO" not in mensagem
-    assert "LIMITE DE USO" not in mensagem
+    assert "COTA DE USO" not in mensagem
 
 
 def test_rate_limit_da_busca_nomeia_o_servico_da_busca():
@@ -191,6 +196,19 @@ def _falha_sempre(erro):
         raise erro
 
     return chamadas, func
+
+
+@pytest.mark.parametrize("classe", [ProviderAbortError, ProviderUsageLimitError])
+def test_parada_deliberada_sobe_sem_nova_tentativa_e_sem_aviso(classe, recwarn):
+    erro = classe("app-server encerrado")
+    chamadas, func = _falha_sempre(erro)
+
+    with pytest.raises(classe) as levantado:
+        retry_with_backoff(func, max_retries=3, base_delay=0.0)
+
+    assert levantado.value is erro
+    assert len(chamadas) == 1
+    assert len(recwarn) == 0
 
 
 def _cota_esgotada_da_openai():

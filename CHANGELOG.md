@@ -19,6 +19,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- O retry repassa o `ProviderAbortError`, inclusive a cota esgotada e o runtime do `codex` encerrado, sem o aviso "Erro não-recuperável detectado": a parada é deliberada, e o aviso "Execução interrompida" a explica. Na cota esgotada, esse aviso diz o que resolve: adicionar crédito ou mudar de plano, ou, se a cota é da busca web, `use_search=False` ou outro `search_provider`.
 - O crédito ou o orçamento da chave esgotado no Exa (status 402) vira `ProviderUsageLimitError`, como o 432 e o 433 do Tavily: a execução para e deixa as linhas restantes para a retomada, em vez de marcar cada linha com erro. `get_friendly_error_message` com o `insufficient_quota` da OpenAI ou com um `ProviderUsageLimitError` devolve a caixa de cota de uso esgotada, e não a de rate limit. Sai de `RECOVERABLE_ERRORS` o `UsageLimitExceededError` do `tavily-python`, que o `langchain-tavily` não levanta; a classificação não muda, porque o erro sem padrão conhecido já é recuperável.
 - A falha da ferramenta de busca chega à classificação como `SearchToolError` (em `dataframeit.search`), que leva o provedor de busca e o status HTTP que o cliente pôs no texto: a chave inválida do Tavily ou do Exa dá o aviso com a chave do provedor de busca, e não a do provider de LLM, como `OPENAI_API_KEY`. O `insufficient_quota` da OpenAI e o limite do plano ou do pay-as-you-go do Tavily (status 432 ou 433) viram `ProviderUsageLimitError`, sem nova tentativa: a execução para e deixa as linhas restantes para a retomada, em vez de repeti-las e reduzir os workers como rate limit. O status 529 (sobrecarga da Anthropic) reduz os workers, como o 429 (#194).
 - Os imports de `datetime` usam o alias `dt`, exigido pelo Ruff 0.17, para manter a verificação de lint aprovada (#319).
@@ -48,6 +49,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - A tabela de configurações recomendadas da busca web, em `docs/guides/web-search.md` e na versão em inglês, recomenda faixas que o aviso de rate limit não acusa; antes, as 12 pontas das faixas disparavam o aviso. Um teste roda as pontas das duas tabelas contra o aviso (#273).
 - A assinatura do checkpoint lê pelo conteúdo inteiro a subclasse chamável de `ndarray`, `DataFrame` ou `Series` usada como condição ou no estado de uma, sem os atributos que o pandas guarda na instância, como caches e o arranjo dos blocos, e o conjunto dentro de chave tupla, como `(frozenset({"a", "b"}), 1)`, entra pela lista ordenada: mudar os dados muda a assinatura, e a chave deixa de dar assinatura diferente a cada processo (#336).
 - A mensagem de pacote ausente de um provider do LangChain só sugere `pip install dataframeit[all]` quando o pacote do provider está no extra `all`, lido dos metadados do pacote instalado. Para Mistral, Cohere, Bedrock, Vertex AI e outros providers sem extra próprio, ela sugere só o `langchain-<provider>`, porque o `all` não os instala (#279).
+
+### Removido
+
+- As caixas "LIMITE DE USO TAVILY EXCEDIDO" e "LIMITE DE USO EXA EXCEDIDO" de `get_friendly_error_message`. Elas só respondiam a erro sem status cujo texto citava o serviço; a cota esgotada da busca vira `ProviderUsageLimitError` pelo status e tem a caixa "COTA DE USO ESGOTADA".
 
 ## [0.11.1] - 2026-10-29
 

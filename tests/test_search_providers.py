@@ -448,18 +448,6 @@ def test_exa_authentication_error_message():
     assert "ERRO DE AUTENTICAÇÃO EXA" in msg
 
 
-def test_exa_limit_error_message():
-    """Verifica mensagem amigável para erro de limite Exa."""
-
-    class ExaLimitError(Exception):
-        pass
-
-    error = ExaLimitError("Exa quota exceeded")
-    msg = get_friendly_error_message(error)
-
-    assert "LIMITE DE USO EXA EXCEDIDO" in msg
-
-
 # =============================================================================
 # Testes de integração com call_agent
 # =============================================================================

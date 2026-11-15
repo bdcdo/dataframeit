@@ -373,14 +373,6 @@ def test_tavily_friendly_error_messages():
     msg = get_friendly_error_message(error)
     assert "ERRO DE AUTENTICAÇÃO TAVILY" in msg
 
-    # Erro de limite de uso
-    class UsageLimitExceededError(Exception):
-        pass
-
-    error = UsageLimitExceededError("Usage limit exceeded for Tavily")
-    msg = get_friendly_error_message(error)
-    assert "LIMITE DE USO TAVILY EXCEDIDO" in msg
-
 
 # =============================================================================
 # Testes de integração (com mocks)

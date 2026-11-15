@@ -1844,7 +1844,6 @@ class TestClassificacaoDoTurnoQueFalhou:
         )
 
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderUsageLimitError, match="usage limit reached"),
         ):
             backend.invoke("texto")
@@ -1873,7 +1872,6 @@ class TestClassificacaoDoTurnoQueFalhou:
             turn.stream.side_effect = erro
 
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"),
         ):
             backend.invoke("texto")
@@ -2265,7 +2263,6 @@ class TestPrazoDoTurno:
         turn.stream.side_effect = morre_no_meio
 
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"),
         ):
             backend.invoke("texto")
@@ -2319,7 +2316,6 @@ class TestPrazoDosPedidos:
 
         inicio = time.monotonic()
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(
                 ProviderAbortError,
                 match=r"não respondeu a thread/start no prazo de 0\.05 s e foi encerrado",
@@ -2336,7 +2332,6 @@ class TestPrazoDosPedidos:
         thread.turn.side_effect = unanswered_request(client)
 
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
         ):
             backend.invoke("texto")
@@ -2363,7 +2358,6 @@ class TestPrazoDosPedidos:
         thread.turn.side_effect = responde_tarde
 
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
         ):
             backend.invoke("texto")
@@ -2449,7 +2443,6 @@ class TestPrazoDosPedidos:
         client.thread_start.side_effect = espera
 
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderAbortError, match="thread/start"),
         ):
             backend.invoke("texto")
@@ -2599,10 +2592,9 @@ class TestPrazoDosPedidos:
 
         client.thread_start.side_effect = abre_thread
 
-        with pytest.warns(UserWarning, match="não-recuperável"), pytest.raises(ProviderAbortError):
+        with pytest.raises(ProviderAbortError):
             backend.invoke("primeira")
         with (
-            pytest.warns(UserWarning, match="não-recuperável"),
             pytest.raises(ProviderAbortError, match="não respondeu a thread/start") as excinfo,
         ):
             backend.invoke("segunda")
