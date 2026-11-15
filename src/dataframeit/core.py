@@ -91,6 +91,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Collection, Generator, Hashable, Iterable, Sequence
 
     from polars import DataFrame as PolarsDataFrame
@@ -1336,7 +1337,7 @@ def dataframeit(
     search_groups: dict[str, dict] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
-    checkpoint_path: str | Path | None = None,
+    checkpoint_path: str | os.PathLike[str] | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
 ) -> pd.DataFrame: ...
 
@@ -1371,7 +1372,7 @@ def dataframeit(
     search_groups: dict[str, dict] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
-    checkpoint_path: str | Path | None = None,
+    checkpoint_path: str | os.PathLike[str] | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
 ) -> PolarsDataFrame: ...
 
@@ -1405,7 +1406,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     search_groups: dict[str, dict] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
-    checkpoint_path: str | Path | None = None,
+    checkpoint_path: str | os.PathLike[str] | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
 ) -> pd.DataFrame | PolarsDataFrame:
     """Processa textos usando LLMs para extrair informações estruturadas.
@@ -1513,7 +1514,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             N linhas processadas nesta execução. Combinado com `resume=True`, permite
             retomar execuções longas após kill/crash sem perder progresso.
             Requer `checkpoint_path`.
-        checkpoint_path: Caminho do arquivo de checkpoint. Formato inferido pela extensão
+        checkpoint_path: Caminho do arquivo de checkpoint, em texto ou `os.PathLike`. Formato inferido pela extensão
             (.csv, .xlsx, .parquet). Escrita atômica via .tmp + rename. Requer `batch_size`.
             Ao lado dele, `<checkpoint>.dataframeit.json` guarda a assinatura da
             execução; com `resume=True`, a mesma chamada retoma do checkpoint
@@ -1587,7 +1588,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             msg = f"batch_size deve ser int >= 1; recebido {batch_size!r}"
             raise ValueError(msg)
         _validate_checkpoint_extension(checkpoint_path)
-        checkpoint = _Checkpoint(checkpoint_path, batch_size)
+        checkpoint = _Checkpoint(Path(checkpoint_path), batch_size)
 
     # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
     if use_search and provider in {"claude_code", "codex"}:
@@ -1756,7 +1757,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
             structures=frozenset(complex_fields),
         )
-        if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
+        if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
             empty_text_fields = _resume_from_checkpoint(
                 df_pandas,
                 checkpoint,
@@ -2232,7 +2233,7 @@ _CHECKPOINT_EXT_REQUIRES = {
 }
 
 
-def _signature_path(path: str | Path) -> Path:
+def _signature_path(path: Path) -> Path:
     return Path(f"{path}.dataframeit.json")
 
 
@@ -2878,11 +2879,11 @@ def _text_hashes(texts: pd.Series) -> list[str | None]:
     ]
 
 
-def _file_hash(path: str | Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def _file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_checkpoint_signature(path: str | Path, meta: dict) -> None:
+def _write_checkpoint_signature(path: Path, meta: dict) -> None:
     """Grava, ao lado do checkpoint, a assinatura, o hash dos textos e o do arquivo."""
     target = _signature_path(path)
     tmp = target.with_name(target.name + ".tmp")
@@ -2901,7 +2902,7 @@ def _write_checkpoint_signature(path: str | Path, meta: dict) -> None:
         )
 
 
-def _read_checkpoint_signature(path: str | Path) -> dict | None:
+def _read_checkpoint_signature(path: Path) -> dict | None:
     try:
         meta = json.loads(_signature_path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -3133,7 +3134,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         df[column if target is None else target] = pd.Series(
             values, index=df.index, dtype=object, copy=False
         )
-    if Path(checkpoint.path).suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
+    if checkpoint.path.suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
         return frozenset()
     omittable_fields = _omittable_fields(
         questions, excluded_fields, _dropped_by_model_serializer(questions, excluded_fields)
@@ -3194,7 +3195,7 @@ def _default_may_be_none(field: FieldInfo) -> bool:
         return False
 
 
-def _validate_checkpoint_extension(path: str | Path) -> None:
+def _validate_checkpoint_extension(path: str | os.PathLike[str]) -> None:
     """Valida extensão suportada e dependência opcional necessária."""
     ext = Path(path).suffix.lower()
     if ext not in _SUPPORTED_CHECKPOINT_EXTS:
@@ -3355,7 +3356,7 @@ class _Checkpoint:
     opcional deixa o par inteiro presente ou ausente.
     """
 
-    path: str | Path
+    path: Path
     batch_size: int
     # Assinatura da execução e hash dos textos, gravados ao lado do checkpoint
     # a cada gravação (ver _write_checkpoint_signature).

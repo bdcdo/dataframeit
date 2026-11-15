@@ -2422,3 +2422,29 @@ def test_linha_pendente_com_erro_volta_none_na_retomada(tmp_path, formato, na_en
 
     assert list(retomada["_dataframeit_status"]) == ["processed", "processed", "error"]
     assert list(retomada["obs"]) == list(direta["obs"]) == ["ra", "rb", None]
+
+
+class _CaminhoProprio:
+    """`os.PathLike` que não é `pathlib.Path`."""
+
+    def __init__(self, caminho):
+        self.caminho = str(caminho)
+
+    def __fspath__(self):
+        return self.caminho
+
+
+@pytest.mark.parametrize("como", [str, Path, _CaminhoProprio])
+def test_checkpoint_path_aceita_caminho_como_path(tmp_path, como):
+    """A assinatura fica ao lado do checkpoint, e a retomada a encontra."""
+    ckpt = tmp_path / "ckpt.csv"
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    with pytest.raises(SystemExit):
+        _roda(df, _llm(1, SystemExit())[1], batch_size=1, checkpoint_path=como(ckpt))
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ckpt.csv", "ckpt.csv.dataframeit.json"]
+    chamadas, llm = _llm(100, SystemExit(), prefixo="novo")
+    saida = _roda(df, llm, batch_size=1, checkpoint_path=como(ckpt))
+
+    assert len(chamadas) == 2
+    assert saida["campo1"].tolist() == ["v1", "novo1", "novo2"]

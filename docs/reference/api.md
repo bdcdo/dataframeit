@@ -85,7 +85,7 @@ def dataframeit(
 | `parallel_requests` | int | `1` | Workers paralelos (1 = sequencial) |
 | `track_tokens` | bool | `True` | Rastreia uso de tokens |
 | `batch_size` | int | `None` | Salva checkpoint a cada N linhas processadas (requer `checkpoint_path`) |
-| `checkpoint_path` | str \| Path | `None` | Destino do checkpoint; extensão define formato (`.csv`, `.xlsx`, `.parquet`) |
+| `checkpoint_path` | str \| os.PathLike[str] | `None` | Destino do checkpoint; extensão define formato (`.csv`, `.xlsx`, `.parquet`) |
 | `on_row_done` | Callable | `None` | Chamada uma vez por linha processada, inclusive em erro, com um [`RowResult`](#rowresult); na thread do worker quando `parallel_requests` > 1 |
 
 #### Busca Web
