@@ -788,6 +788,110 @@ def test_condicao_le_o_valor_que_o_validador_do_modelo_da_com_os_outros_campos(m
     assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
 
 
+def _modelo_normalizado_por_campo_extraido_depois(depends_on):
+    """`normaliza` vem depois de `valor` na ordem de execução: os dois dependem de `uf`."""
+
+    class ModeloComNormalizacaoPorCampoPosterior(BaseModel):
+        uf: str
+        valor: str = Field(
+            json_schema_extra={
+                "condition": {"field": "uf", "equals": "SP"},
+                "depends_on": depends_on,
+            }
+        )
+        normaliza: bool = Field(json_schema_extra={"condition": {"field": "uf", "exists": True}})
+
+        @model_validator(mode="after")
+        def _normaliza(self):
+            if self.normaliza:
+                self.uf = self.uf.upper()
+            return self
+
+    return ModeloComNormalizacaoPorCampoPosterior
+
+
+def test_campo_pulado_por_condicao_verdadeira_na_linha_completa_recusa_a_linha():
+    respostas = {"uf": "sp", "valor": "x", "normaliza": True}
+    modelo = _modelo_normalizado_por_campo_extraido_depois([])
+
+    with pytest.warns(UserWarning, match="Linha recusada pelo modelo"):
+        resultado = _rodar_com_dump(
+            pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True
+        )
+
+    detalhe = resultado["_error_details"].iloc[0]
+    assert "o campo 'valor' foi pulado pela condição" in detalhe
+    assert "depends_on de 'valor'" in detalhe
+    assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": None, "valor": None}]
+
+
+def test_depends_on_do_campo_lido_pelo_validador_alinha_condicao_e_retomada():
+    respostas = {"uf": "sp", "valor": "x", "normaliza": True}
+    modelo = _modelo_normalizado_por_campo_extraido_depois(["normaliza"])
+
+    resultado = _rodar_com_dump(pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True)
+    assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+    resultado["_dataframeit_status"] = "processed"
+    retomada = _rodar_com_dump(resultado, modelo, respostas, por_campo=True)
+    assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+
+_USO_POR_CHAMADA = {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15,
+    "search_count": 1,
+    "search_credits": 2,
+}
+
+
+def _responde_com_uso(respostas):
+    """Responde cada campo com `_USO_POR_CHAMADA`; a resposta que é exceção é levantada."""
+
+    def responde(text, model, *args, **kwargs):
+        valores = {campo: respostas[campo] for campo in model.model_fields}
+        for valor in valores.values():
+            if isinstance(valor, Exception):
+                raise valor
+        return {"data": valores, "usage": dict(_USO_POR_CHAMADA)}
+
+    return responde
+
+
+@pytest.mark.parametrize(
+    ("respostas", "erro"),
+    [
+        ({"inicio": 2031, "fim": 2030}, "Linha recusada pelo modelo"),
+        ({"inicio": 2031, "fim": RuntimeError("busca caiu")}, "busca caiu"),
+    ],
+    ids=["recusada-pelo-modelo", "chamada-posterior-falha"],
+)
+def test_uso_das_chamadas_feitas_entra_no_resumo_com_a_linha_em_erro(respostas, erro, caplog):
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=_responde_com_uso(respostas)),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        caplog.at_level(logging.INFO, logger="dataframeit.stats"),
+        pytest.warns(UserWarning, match=erro),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a"]}),
+            questions=ModeloComPeriodo,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+            max_retries=1,
+        )
+
+    assert resultado["_dataframeit_status"].tolist() == ["error"]
+    chamadas = 2 if "recusada" in erro else 1
+    saida = caplog.text
+    assert f"Total de tokens: {15 * chamadas}\n" in saida
+    assert f"Total de buscas: {chamadas}\n" in saida
+    assert f"Creditos usados: {2 * chamadas}\n" in saida
+
+
 class ModeloQueValidaODefault(BaseModel):
     model_config = ConfigDict(validate_default=True)
 

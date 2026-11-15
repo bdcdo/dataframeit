@@ -109,7 +109,7 @@ resultado = dataframeit(
 )
 ```
 
-Cada agente valida a resposta só pela anotação do campo dele. A linha montada passa depois pelo modelo inteiro, com os `field_validator` e os `model_validator`, e sai com os mesmos valores do modo de um agente só. Ficam fora dessa validação os campos sem resposta na linha: o pulado por `condition`, o que o `model_dump` deixa de fora e o não pedido em `reprocess_columns` que está vazio. O `model_validator` os vê como `None`. A `condition` lê o valor que o campo terá na saída: a linha montada até ali passa pelo modelo, com os campos ainda sem resposta como `None`, e o validador que falha sem eles deixa a condição ler a resposta do agente. O validador do tipo do campo, como o de um `Annotated` ou o de um modelo aninhado, roda na chamada do agente e de novo na linha; o que não devolve o mesmo valor na segunda passada dá um valor diferente do modo de um agente só. A linha que o modelo recusa fica com status `error`, sem nova tentativa, e o detalhe leva o caminho e a regra de cada erro, ou a exceção que o validador levantou.
+Cada agente valida a resposta só pela anotação do campo dele. A linha montada passa depois pelo modelo inteiro, com os `field_validator` e os `model_validator`, e sai com os mesmos valores do modo de um agente só. Ficam fora dessa validação os campos sem resposta na linha: o pulado por `condition`, o que o `model_dump` deixa de fora e o não pedido em `reprocess_columns` que está vazio. O `model_validator` os vê como `None`. A `condition` lê o valor que o campo terá na saída: a linha montada até ali passa pelo modelo, com os campos ainda sem resposta como `None`, e o validador que falha sem eles deixa a condição ler a resposta do agente. Se, com a linha completa, a condição de um campo pulado fica verdadeira, porque um `model_validator` muda o campo que ela lê conforme outro extraído depois dela, a linha fica com status `error`; declare em `depends_on` do campo condicionado os campos que o validador lê, para que sejam extraídos antes. O validador do tipo do campo, como o de um `Annotated` ou o de um modelo aninhado, roda na chamada do agente e de novo na linha; o que não devolve o mesmo valor na segunda passada dá um valor diferente do modo de um agente só. A linha que o modelo recusa fica com status `error`, sem nova tentativa, e o detalhe leva o caminho e a regra de cada erro, ou a exceção que o validador levantou.
 
 ### Busca Profunda
 
@@ -446,7 +446,7 @@ resultado = dataframeit(
 ## Custos e Limites
 
 !!! warning "Atenção aos custos"
-    Cada agente pode fazer até `max_search_calls` buscas (padrão 10), e há um agente por linha, ou um por campo e por linha com `search_per_field=True`. Para datasets grandes, isso pode gerar custos significativos. Os créditos gastos ficam em `_search_credits` e no resumo ao fim da execução.
+    Cada agente pode fazer até `max_search_calls` buscas (padrão 10), e há um agente por linha, ou um por campo e por linha com `search_per_field=True`. Para datasets grandes, isso pode gerar custos significativos. Os créditos gastos ficam em `_search_credits` e no resumo ao fim da execução; no modo por campo, o resumo soma também o uso das chamadas já feitas numa linha que acaba com erro.
 
 Os preços mudam; consulte a página de cada provedor ([Tavily](https://tavily.com/pricing), [Exa](https://exa.ai/pricing)). O Tavily tem plano gratuito de 1000 buscas por mês.
 

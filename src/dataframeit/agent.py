@@ -22,6 +22,7 @@ from .conditional import (
     _collect_configured_fields,
     _get_field_config,
     _model_field_configs,
+    evaluate_condition,
     get_field_execution_order,
     get_group_execution_units,
     should_skip_field,
@@ -678,11 +679,19 @@ class _FieldExtractor:
         self, text: str, only_fields: set[str] | None = None, known: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         row = _Row(text, only_fields, known or {}, traces={} if self.save_trace else None)
-        self._search_nested_fields(row)
-        for unit in self.units:
-            self._run_unit(row, unit)
+        try:
+            self._search_nested_fields(row)
+            for unit in self.units:
+                self._run_unit(row, unit)
+            data = self._validated_data(row)
+            self._check_skipped(row, data)
+        except Exception as error:
+            # A linha falhou, mas as chamadas já feitas foram cobradas; o core
+            # soma esse uso ao resumo. Atributo dinâmico, lido com getattr.
+            error.row_usage = row.usage  # ty: ignore[unresolved-attribute]
+            raise
         response = {
-            "data": self._validated_data(row),
+            "data": data,
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
         if self.save_trace:
@@ -749,6 +758,26 @@ class _FieldExtractor:
             and name not in self.omitted_fields
             and name not in row.dropped
         }
+
+    def _check_skipped(self, row: _Row, data: dict[str, Any]) -> None:
+        """Recusa a linha em que a condição de um campo pulado é verdadeira com a linha completa.
+
+        A condição avaliada durante a extração lê a linha montada até ali, e um
+        model_validator que muda o campo lido conforme outro, extraído depois,
+        dá a ela outro valor; a retomada, que relê a linha gravada, acusaria o
+        campo pulado como ausente. Levanta ProviderOutputError.
+        """
+        for name in self.execution_order:
+            if name in row.skipped and evaluate_condition(
+                self.field_configs[name].get("condition"), data, name
+            ):
+                msg = (
+                    f"Linha recusada pelo modelo: o campo '{name}' foi pulado pela condição, "
+                    "que é verdadeira com a linha completa: um validador do modelo mudou o "
+                    "campo que ela lê com um campo extraído depois dela. Declare em "
+                    f"depends_on de '{name}' os campos que o validador lê."
+                )
+                raise ProviderOutputError(msg)
 
     def _search_nested_fields(self, row: _Row) -> None:
         """Busca os campos aninhados com configuração própria antes das unidades.

@@ -3613,10 +3613,14 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
 ) -> None:
     """Grava a falha da linha e avisa com a mensagem amigável.
 
-    O custo informado pelo provider entra no resumo mesmo com a linha falhando.
+    O custo informado pelo provider e o uso das chamadas que a linha já fez
+    (`row_usage`, do modo por campo) entram no resumo mesmo com a linha falhando.
     """
     error_msg = f"{type(error).__name__}: {error}"
-    token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
+    usage = getattr(error, "row_usage", None) or {}
+    for key in (*_TOKEN_KEYS, "search_credits", "search_count"):
+        token_stats[key] += usage.get(key, 0)
+    token_stats["cost_usd"] += (usage.get("cost_usd") or 0) + (getattr(error, "cost_usd", 0) or 0)
 
     # Erro recuperável chegou aqui depois de esgotar as tentativas; o não
     # recuperável, sem retry.
