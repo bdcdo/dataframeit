@@ -303,7 +303,13 @@ def call_langchain(
 
         return {"data": parsed.model_dump(by_alias=False), "usage": dict(usage_total) or None}
 
-    return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
+    try:
+        return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
+    except Exception as error:
+        # A linha falhou, mas as tentativas cuja resposta chegou foram cobradas;
+        # o core soma esse uso ao resumo. Atributo dinâmico, lido com getattr.
+        error.row_usage = usage_total  # ty: ignore[unresolved-attribute]
+        raise
 
 
 def _model_title(pydantic_model: type[BaseModel]) -> str:
