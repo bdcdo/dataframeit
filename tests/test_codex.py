@@ -1843,9 +1843,7 @@ class TestClassificacaoDoTurnoQueFalhou:
             make_result(codex_sdk, error_info=limite, message="usage limit reached"),
         )
 
-        with (
-            pytest.raises(ProviderUsageLimitError, match="usage limit reached"),
-        ):
+        with pytest.raises(ProviderUsageLimitError, match="usage limit reached"):
             backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
@@ -1871,9 +1869,7 @@ class TestClassificacaoDoTurnoQueFalhou:
         else:
             turn.stream.side_effect = erro
 
-        with (
-            pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"),
-        ):
+        with pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"):
             backend.invoke("texto")
 
         assert client.thread_start.call_count == 1
@@ -2262,9 +2258,7 @@ class TestPrazoDoTurno:
         backend, _, _, turn = initialized_backend(tmp_path, codex_sdk, turn_timeout=60)
         turn.stream.side_effect = morre_no_meio
 
-        with (
-            pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"),
-        ):
+        with pytest.raises(ProviderAbortError, match="app-server do Codex encerrou"):
             backend.invoke("texto")
 
 
@@ -2331,9 +2325,7 @@ class TestPrazoDosPedidos:
         backend, client, thread, turn = initialized_backend(tmp_path, codex_sdk, turn_timeout=0.05)
         thread.turn.side_effect = unanswered_request(client)
 
-        with (
-            pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
-        ):
+        with pytest.raises(ProviderAbortError, match="não respondeu a turn/start"):
             backend.invoke("texto")
 
         client.close.assert_called_once_with()
@@ -2357,9 +2349,7 @@ class TestPrazoDosPedidos:
 
         thread.turn.side_effect = responde_tarde
 
-        with (
-            pytest.raises(ProviderAbortError, match="não respondeu a turn/start"),
-        ):
+        with pytest.raises(ProviderAbortError, match="não respondeu a turn/start"):
             backend.invoke("texto")
 
         turn.stream.assert_not_called()
@@ -2442,9 +2432,7 @@ class TestPrazoDosPedidos:
         client.close.side_effect = lambda: ordem.append("close") or fecha()
         client.thread_start.side_effect = espera
 
-        with (
-            pytest.raises(ProviderAbortError, match="thread/start"),
-        ):
+        with pytest.raises(ProviderAbortError, match="thread/start"):
             backend.invoke("texto")
 
         assert ordem == ["kill", "close"]
@@ -2594,9 +2582,7 @@ class TestPrazoDosPedidos:
 
         with pytest.raises(ProviderAbortError):
             backend.invoke("primeira")
-        with (
-            pytest.raises(ProviderAbortError, match="não respondeu a thread/start") as excinfo,
-        ):
+        with pytest.raises(ProviderAbortError, match="não respondeu a thread/start") as excinfo:
             backend.invoke("segunda")
 
         assert excinfo.value.__cause__ is erro

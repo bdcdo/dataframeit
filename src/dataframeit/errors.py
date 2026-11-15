@@ -578,10 +578,10 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ║                                                                              ║
 {_generic_box_details(str(usage_limit))}
 ║                                                                              ║
-║  Repetir a linha não traz crédito, e a execução para.                        ║
+║  Repetir a linha não resolve, e a execução para.                             ║
 ║                                                                              ║
 ║  COMO RESOLVER:                                                              ║
-║  1. Adicione crédito ou mude de plano na conta do serviço                    ║
+║  1. Adicione crédito, mude de plano ou espere a renovação do período         ║
 ║  2. Rode de novo com resume=True para processar as linhas pendentes          ║
 ║  3. Se a cota é da busca web, use_search=False ou outro search_provider      ║
 ║                                                                              ║
