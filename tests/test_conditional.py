@@ -189,9 +189,34 @@ class TestEvaluateCondition:
         condition = {"field": "nome"}
         assert evaluate_condition(condition, data, "x") is False
 
+    def test_submodelo_compara_cada_valor_do_dict(self):
+        """O submodelo chega como dict, e o valor diferente torna a condição falsa."""
+        data = {"endereco": {"uf": "SP", "situacao": _Situacao.ATIVA}}
+        igual = {"field": "endereco", "equals": {"uf": "SP", "situacao": "ativa"}}
+        diferente = {"field": "endereco", "equals": {"uf": "RJ", "situacao": "ativa"}}
+        assert evaluate_condition(igual, data, "x") is True
+        assert evaluate_condition(diferente, data, "x") is False
+
+
+# O dono é declarado antes do submodelo, e o Pydantic só resolve a referência
+# na primeira validação. Até lá, a anotação guarda um typing.ForwardRef.
+class _DonoDeEnderecoPosterior(BaseModel):
+    endereco: Optional["_EnderecoPosterior"] = None
+
+
+class _EnderecoPosterior(BaseModel):
+    cidade: str
+
 
 class TestDependencies:
     """Testes para funções de dependências."""
+
+    def test_caminho_por_referencia_adiantada_confere_o_submodelo(self):
+        """O segmento seguinte é conferido no modelo a que a referência leva."""
+        missing = check_dependencies_exist(
+            ["endereco.cidade", "endereco.cidadee"], _DonoDeEnderecoPosterior
+        )
+        assert missing == ["endereco.cidadee"]
 
     def test_check_dependencies_exist_all_valid(self):
         """Testa verificação de dependências válidas."""
@@ -557,6 +582,13 @@ class TestShouldSkipField:
 
         field_data = {"status": "inativo"}
         assert should_skip_field("campo", field_config, field_data) is True
+
+    def test_falha_da_condicao_callable_registra_o_campo(self, caplog):
+        """A condição que levanta pula o campo, e o log diz qual."""
+        field_config: FieldConfig = {"condition": lambda _dados: 1 / 0}
+        with caplog.at_level(logging.WARNING, logger="dataframeit.conditional"):
+            assert should_skip_field("desconto", field_config, {}) is True
+        assert "'desconto'" in caplog.text
 
 
 class TestIntegrationScenarios:
