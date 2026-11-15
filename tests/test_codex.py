@@ -128,7 +128,7 @@ class ModelWithListAny(BaseModel):
 
 
 class ModelWithCallable(BaseModel):
-    callback: Callable
+    callback: Callable  # ty: ignore[missing-type-argument]
 
 
 class ListRootModel(RootModel[list[str]]):

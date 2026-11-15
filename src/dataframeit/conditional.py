@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
     from .llm import SearchGroupConfig
 
+    # (caminho, nome do campo, FieldInfo, modelo dono, tem configuração)
+    ConfiguredField = tuple[str, str, FieldInfo, type[BaseModel], bool]
+
 logger = logging.getLogger(__name__)
 
 # Chaves de configuração per-field reconhecidas em json_schema_extra
@@ -115,8 +118,8 @@ def field_condition(
 
 
 def _collect_configured_fields(
-    pydantic_model: type[BaseModel], prefix: str = "", _visited: set | None = None
-) -> list:
+    pydantic_model: type[BaseModel], prefix: str = "", _visited: set[int] | None = None
+) -> list[ConfiguredField]:
     """Coleta todos os campos com json_schema_extra de busca, incluindo aninhados.
 
     Args:
@@ -159,7 +162,7 @@ def _walk_fields(
     pydantic_model: type[BaseModel],
     prefix: str = "",
     list_depth: int = 0,
-    _visited: set | None = None,
+    _visited: set[int] | None = None,
 ) -> Iterator[tuple[str, FieldInfo, int]]:
     """Percorre todos os campos, inclusive aninhados, com a profundidade de lista.
 
@@ -243,7 +246,7 @@ def _by_value(value: object) -> object:
     value = _json_default(value)
     if isinstance(value, dict):
         return {key: _by_value(item) for key, item in value.items()}
-    return [_by_value(item) for item in cast("list", value)]
+    return [_by_value(item) for item in cast("list[Any]", value)]
 
 
 def evaluate_condition(  # noqa: PLR0911 (uma saída por forma de condição)
@@ -544,7 +547,7 @@ def _check_condition(field_name: str, condition: object) -> None:
     raise ValueError(msg)
 
 
-def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
+def _resolve_depends_on(field_name: str, config: dict[str, Any]) -> list[str]:
     """Resolve as dependências de um campo a partir de sua configuração.
 
     Regras:
@@ -588,7 +591,7 @@ def _resolve_depends_on(field_name: str, config: dict) -> list[str]:
 
 
 def get_field_execution_order(
-    pydantic_model: type[BaseModel], field_configs: dict[str, dict]
+    pydantic_model: type[BaseModel], field_configs: dict[str, dict[str, Any]]
 ) -> tuple[list[str], dict[str, list[str]]]:
     """Determina ordem de execução dos campos baseado em dependências.
 
@@ -693,7 +696,9 @@ def get_group_execution_units(
     return units, unit_of_field, unit_dependencies
 
 
-def should_skip_field(field_name: str, field_config: dict, field_data: dict[str, Any]) -> bool:
+def should_skip_field(
+    field_name: str, field_config: dict[str, Any], field_data: dict[str, Any]
+) -> bool:
     """Verifica se um campo deve ser pulado baseado em suas condições.
 
     Args:

@@ -116,7 +116,9 @@ class LLMConfig:
     # Modelo LangChain da execução, preenchido por _provider_backend. As cópias
     # com overrides de busca por campo ou grupo herdam o mesmo objeto, então
     # todas as linhas e threads reusam um único cliente.
-    shared_chat_model: _BuildOnce | None = field(default=None, repr=False, compare=False)
+    shared_chat_model: _BuildOnce[BaseChatModel] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def build_prompt(user_prompt: str, text: str) -> str:
@@ -189,7 +191,7 @@ def chat_model(config: LLMConfig) -> BaseChatModel:
     return _create_langchain_llm(config.model, config.provider, config.api_key, config.model_kwargs)
 
 
-def build_structured_llm(pydantic_model: type[BaseModel], config: LLMConfig) -> Runnable:
+def build_structured_llm(pydantic_model: type[BaseModel], config: LLMConfig) -> Runnable[Any, Any]:
     """Modelo com structured output para ``pydantic_model``.
 
     O método (json_schema, tool calling) é o padrão de cada integração
@@ -204,8 +206,8 @@ def call_langchain(
     pydantic_model: type[BaseModel],
     user_prompt: str,
     config: LLMConfig,
-    structured_llm: _BuildOnce | None = None,
-) -> dict:
+    structured_llm: _BuildOnce[Runnable[Any, Any]] | None = None,
+) -> dict[str, Any]:
     """Processa texto usando LangChain com structured output.
 
     Args:
@@ -232,7 +234,7 @@ def call_langchain(
     correction: dict[str, str | None] = {"ai": None, "human": None}
     usage_total: dict[str, int] = {}
 
-    def _call() -> dict:
+    def _call() -> dict[str, Any]:
         try:
             result = model.invoke(_messages(prompt, correction))
         except ValidationError as error:
@@ -279,12 +281,12 @@ def _model_title(pydantic_model: type[BaseModel]) -> str:
     return pydantic_model.model_config.get("title") or pydantic_model.__name__
 
 
-def _add_usage(total: dict, usage: dict | None) -> None:
+def _add_usage(total: dict[str, int], usage: dict[str, Any] | None) -> None:
     for key, value in (usage or {}).items():
         total[key] = total.get(key, 0) + (value or 0)
 
 
-def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict | None]:
+def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict[str, Any] | None]:
     """Texto e uso da resposta que o SDK da OpenAI recusou, lidos da resposta HTTP.
 
     O langchain-openai anexa a resposta HTTP à exceção (`error.response`). Sem
@@ -297,7 +299,7 @@ def _sdk_rejected_response(error: ValidationError) -> tuple[str, dict | None]:
         return "", None
 
 
-def _read_sdk_body(body: dict) -> tuple[str, dict | None]:
+def _read_sdk_body(body: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
     """Chat Completions ou Responses API; falha de formato levanta, e quem chama ignora."""
     usage = body.get("usage") or {}
     if "choices" in body:
@@ -328,7 +330,7 @@ def _read_sdk_body(body: dict) -> tuple[str, dict | None]:
     }
 
 
-def _messages(prompt: str, correction: dict) -> str | list[tuple[str, str]]:
+def _messages(prompt: str, correction: dict[str, Any]) -> str | list[tuple[str, str]]:
     """O prompt sozinho, ou a conversa com a resposta recusada e o pedido de correção.
 
     Sem a resposta bruta, o pedido vai na mesma mensagem do prompt: duas
@@ -341,7 +343,7 @@ def _messages(prompt: str, correction: dict) -> str | list[tuple[str, str]]:
     return [("human", f"{prompt}\n\n{correction['human']}")]
 
 
-def _raw_payload(raw_message: object) -> tuple[dict | None, str]:
+def _raw_payload(raw_message: object) -> tuple[dict[str, Any] | None, str]:
     """Resposta bruta do modelo como dict, quando dá, e como texto.
 
     O structured output chega por tool call (function calling) ou no conteúdo
@@ -380,7 +382,7 @@ _MAX_ERROR_TEXT = 2000
 
 
 def _validation_error_of(
-    error: Exception | None, pydantic_model: type[BaseModel], payload: dict | None
+    error: Exception | None, pydantic_model: type[BaseModel], payload: dict[str, Any] | None
 ) -> ValidationError | None:
     """O ValidationError por campo, direto, embrulhado pelo parser ou revalidando."""
     if isinstance(error, ValidationError):
@@ -412,7 +414,7 @@ def _request_correction(
     pydantic_model: type[BaseModel],
     raw_message: object,
     error: Exception | None,
-    correction: dict,
+    correction: dict[str, Any],
     raw_text: str = "",
 ) -> NoReturn:
     """Prepara o pedido de correção da tentativa seguinte e levanta ProviderRejectedOutputError.

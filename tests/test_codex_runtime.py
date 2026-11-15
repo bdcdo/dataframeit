@@ -681,7 +681,7 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
     `kill`.
     """
 
-    processos: list[subprocess.Popen]
+    processos: list[subprocess.Popen[bytes]]
     pedidos: list[int]
     threads_derrubadas: list[str | None]
     liberado: threading.Event

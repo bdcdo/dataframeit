@@ -296,7 +296,7 @@ class TestBuildItemContext:
 
         class M(BaseModel):
             simples: str
-            complexo: list
+            complexo: list  # ty: ignore[missing-type-argument]
 
         ctx = _build_item_context(
             {"simples": "ok", "complexo": [1, 2]},

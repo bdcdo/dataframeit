@@ -805,7 +805,7 @@ class CodexBackend:
     _turn_timeout: float | None
     _stop: _AppServerStop = field(default_factory=_AppServerStop)
 
-    def invoke(self, text: str) -> dict:
+    def invoke(self, text: str) -> dict[str, Any]:
         """Processa uma linha com structured output nativo do Codex."""
         prompt = build_prompt(self._user_prompt, text)
         # O uso soma todas as tentativas, inclusive as que falharam, estouraram
@@ -818,7 +818,7 @@ class CodexBackend:
             self.config.max_delay,
         )
 
-    def _invoke_once(self, prompt: str, usage_total: dict[str, int]) -> dict:
+    def _invoke_once(self, prompt: str, usage_total: dict[str, int]) -> dict[str, Any]:
         from openai_codex import ApprovalMode, Sandbox  # noqa: PLC0415 (extra codex opcional)
 
         # Função privada do SDK, fixado em versão exata no extra `codex`: é a

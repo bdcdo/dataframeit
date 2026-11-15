@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import warnings
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from decimal import Decimal
@@ -98,6 +98,9 @@ if TYPE_CHECKING:
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
     from pydantic.fields import FieldInfo
+
+    # (posição na fila, índice da linha, linha) que o modo paralelo processa
+    _RowData = tuple[int, Hashable, pd.Series]
 
 
 class _FallbackHandler(logging.Handler):
@@ -201,7 +204,7 @@ _TOKEN_STAT_KEYS = (
 )
 
 
-def _empty_token_stats() -> dict:
+def _empty_token_stats() -> dict[str, Any]:
     """Contadores zerados de tokens, busca e custo de uma execução."""
     return {
         **dict.fromkeys(_TOKEN_STAT_KEYS, 0),
@@ -220,8 +223,8 @@ class ProviderBackend:
     """
 
     label: str
-    invoke: Callable[[str], dict]
-    invoke_partial: Callable[[str, set, dict], dict] | None = None
+    invoke: Callable[[str], dict[str, Any]]
+    invoke_partial: Callable[[str, set[str], dict[str, Any]], dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -274,7 +277,7 @@ _INTERRUPTED_REPROCESS_DETAIL = "Reprocessamento interrompido; a linha mantém o
 _KEPT_VALUES_NOTE = " (reprocess_columns falhou; a linha mantém os valores anteriores)"
 
 
-def _success_details(retry_info: dict) -> str | None:
+def _success_details(retry_info: dict[str, Any]) -> str | None:
     """Detalhe gravado numa linha bem-sucedida: os retries, se houve."""
     retries = retry_info.get("retries", 0)
     return f"Sucesso após {retries} retry(s)" if retries > 0 else None
@@ -289,7 +292,9 @@ def _missing_text_detail(
     return _MISSING_TEXT_DETAIL
 
 
-def _as_object_columns(df: pd.DataFrame, columns: list, nan_columns: Collection[str] = ()) -> None:
+def _as_object_columns(
+    df: pd.DataFrame, columns: list[str], nan_columns: Collection[str] = ()
+) -> None:
     """Converte para object as colunas que vão receber texto, lista ou None.
 
     Uma coluna lida de CSV ou XLSX toda vazia volta como float, e gravar texto
@@ -319,7 +324,7 @@ def _is_missing_text(value: object) -> bool:
     return is_scalar(value) and bool(pd.isna(value))
 
 
-def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list) -> None:
+def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list[Hashable]) -> None:
     """Avisa uma vez quantas linhas a processar não têm texto."""
     missing = sum(1 for idx in rows if _is_missing_text(_get_cell(df, idx, text_column)))
     if missing:
@@ -336,10 +341,10 @@ def _invoke_row(  # noqa: PLR0913 (a linha e o que a validação da retomada sab
     text: str,
     row: pd.Series,
     reprocess_on_row: Sequence[str] | None,
-    expected_columns: list,
+    expected_columns: list[str],
     *,
     nan_columns: Collection[str] = (),
-) -> dict:
+) -> dict[str, Any]:
     """Chama o backend para uma linha, pedindo só as colunas a reprocessar quando dá.
 
     `reprocess_on_row` é reprocess_columns numa linha já processada, e None
@@ -408,7 +413,7 @@ def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], o
     return convert
 
 
-def _condition_holds(condition: object, row_values: dict, field_name: str) -> bool:
+def _condition_holds(condition: object, row_values: dict[str, Any], field_name: str) -> bool:
     """Avalia a condição com os valores da linha; erro conta como verdadeira.
 
     Verdadeira é o lado conservador: o campo ausente continua acusado, e a
@@ -490,7 +495,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 if field_name in conditions
             }
     as_executed = _executed_form(pydantic_model)
-    skipping_models: dict[tuple[frozenset, frozenset], Any] = {}
+    skipping_models: dict[tuple[frozenset[str], frozenset[str]], Any] = {}
     # O campo com exclude=True não sai no model_dump, e a execução não grava a
     # coluna dele: a célula guarda o None com que a coluna foi criada ou o que a
     # entrada trazia. Não há resposta paga a conferir, e a célula fica fora da
@@ -527,7 +532,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         and (field.default_factory is not None or field.default is not None)
     )
 
-    def model_skipping(skipped: frozenset, hidden: frozenset) -> type[BaseModel]:
+    def model_skipping(skipped: frozenset[str], hidden: frozenset[str]) -> type[BaseModel]:
         """O modelo de validação com os campos pulados e os obrigatórios fora do dump trocados."""
         if not skipped and not hidden:
             return pydantic_model
@@ -1144,7 +1149,7 @@ def _validate_field_configs(
 
 
 def _validate_search_groups(  # noqa: C901 (uma checagem por regra de search_groups)
-    search_groups: dict[str, dict],
+    search_groups: dict[str, dict[str, Any]],
     pydantic_model: type[BaseModel],
     *,
     use_search: bool,
@@ -1310,7 +1315,7 @@ def _validate_status_column(
 # entrada se fosse o primeiro.
 @overload
 def dataframeit(
-    data: pd.DataFrame | pd.Series | list | dict,
+    data: pd.DataFrame | pd.Series | list[Any] | dict[Any, Any],
     questions: type[BaseModel] | None = None,
     prompt: str | None = None,
     perguntas: type[BaseModel] | None = None,  # Deprecated: use 'questions'
@@ -1335,7 +1340,7 @@ def dataframeit(
     max_results: int = 5,
     search_depth: str = "basic",
     max_search_calls: int = 10,
-    search_groups: dict[str, dict] | None = None,
+    search_groups: dict[str, dict[str, Any]] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | os.PathLike[str] | None = None,
@@ -1370,7 +1375,7 @@ def dataframeit(
     max_results: int = 5,
     search_depth: str = "basic",
     max_search_calls: int = 10,
-    search_groups: dict[str, dict] | None = None,
+    search_groups: dict[str, dict[str, Any]] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | os.PathLike[str] | None = None,
@@ -1379,7 +1384,7 @@ def dataframeit(
 
 
 def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)
-    data: pd.DataFrame | pd.Series | PolarsDataFrame | PolarsSeries | list | dict,
+    data: pd.DataFrame | pd.Series | PolarsDataFrame | PolarsSeries | list[Any] | dict[Any, Any],
     questions: type[BaseModel] | None = None,
     prompt: str | None = None,
     perguntas: type[BaseModel] | None = None,  # Deprecated: use 'questions'
@@ -1404,7 +1409,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     max_results: int = 5,
     search_depth: str = "basic",
     max_search_calls: int = 10,
-    search_groups: dict[str, dict] | None = None,
+    search_groups: dict[str, dict[str, Any]] | None = None,
     save_trace: bool | Literal["full", "minimal"] | None = None,  # noqa: FBT001 (posicional na API pública)
     batch_size: int | None = None,
     checkpoint_path: str | os.PathLike[str] | None = None,
@@ -2046,7 +2051,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
 
 def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)
     df: pd.DataFrame,
-    expected_columns: list,
+    expected_columns: list[str],
     status_column: str | None,
     *,
     track_tokens: bool,
@@ -2152,7 +2157,7 @@ def _get_processing_indices(
 
 
 def _format_token_stats(
-    token_stats: dict,
+    token_stats: dict[str, Any],
     model: str | None,
     parallel_requests: int = 1,
     search_provider: str | None = None,
@@ -2252,7 +2257,7 @@ def _run_signature(  # noqa: PLR0913 (cada parâmetro muda o que a execução re
     *,
     provider: str,
     model: str | None,
-    model_kwargs: dict | None,
+    model_kwargs: dict[str, Any] | None,
     search_config: SearchConfig | None,
     text_column: str,
     status_col: str,
@@ -2886,7 +2891,7 @@ def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_checkpoint_signature(path: Path, meta: dict) -> None:
+def _write_checkpoint_signature(path: Path, meta: dict[str, Any]) -> None:
     """Grava, ao lado do checkpoint, a assinatura, o hash dos textos e o do arquivo."""
     target = _signature_path(path)
     tmp = target.with_name(target.name + ".tmp")
@@ -2902,7 +2907,7 @@ def _write_checkpoint_signature(path: Path, meta: dict) -> None:
         )
 
 
-def _read_checkpoint_signature(path: Path) -> dict | None:
+def _read_checkpoint_signature(path: Path) -> dict[str, Any] | None:
     try:
         meta = json.loads(_signature_path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -3275,7 +3280,7 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 def _save_checkpoint(
     df: pd.DataFrame,
     path: Path,
-    meta: dict | None = None,
+    meta: dict[str, Any] | None = None,
     structures: Collection[str] | None = None,
 ) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão.
@@ -3357,7 +3362,7 @@ class _Checkpoint:
     batch_size: int
     # Assinatura da execução e hash dos textos, gravados ao lado do checkpoint
     # a cada gravação (ver _write_checkpoint_signature).
-    meta: dict | None = dataclasses.field(default=None, compare=False)
+    meta: dict[str, Any] | None = dataclasses.field(default=None, compare=False)
     # Campos de estrutura do modelo, que o parquet grava como JSON
     # (ver _save_checkpoint); sem eles, toda coluna de objeto.
     structures: frozenset[str] | None = dataclasses.field(default=None, compare=False)
@@ -3389,7 +3394,7 @@ class _SnapshotWriter:
 
 def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das colunas delas)
     df: pd.DataFrame,
-    indices: list,
+    indices: list[Hashable],
     *,
     status_col: str,
     reprocess_columns: Sequence[str] | None,
@@ -3460,16 +3465,16 @@ def _record_missing_text(
 def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     df: pd.DataFrame,
     idx: Hashable,
-    result: dict,
+    result: dict[str, Any],
     *,
     status_col: str,
-    expected_columns: list,
+    expected_columns: list[str],
     config: LLMConfig,
     track_tokens: bool,
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
     trace_mode: str | None,
-    token_stats: dict,
+    token_stats: dict[str, Any],
 ) -> dict[str, Any]:
     """Grava na linha o resultado de uma chamada bem-sucedida e soma o uso.
 
@@ -3527,7 +3532,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     config: LLMConfig,
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
-    token_stats: dict,
+    token_stats: dict[str, Any],
 ) -> str:
     """Grava a falha da linha, avisa com a mensagem amigável e devolve o erro em texto.
 
@@ -3593,7 +3598,7 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
     config: LLMConfig,
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
-    token_stats: dict,
+    token_stats: dict[str, Any],
 ) -> str:
     """Grava a falha da linha por _record_error e, se o registro falhar, pelo mínimo.
 
@@ -3661,7 +3666,7 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
     *,
     text_column: str,
     status_col: str,
-    expected_columns: list,
+    expected_columns: list[str],
     nan_columns: Collection[str] = (),
     value_columns: Collection[str] = (),
     config: LLMConfig,
@@ -3674,7 +3679,7 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
     trace_mode: str | None = None,
     checkpoint: _Checkpoint | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Processa cada linha do DataFrame, em sequência.
 
     Args:
@@ -3886,7 +3891,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     *,
     text_column: str,
     status_col: str,
-    expected_columns: list,
+    expected_columns: list[str],
     nan_columns: Collection[str] = (),
     value_columns: Collection[str] = (),
     config: LLMConfig,
@@ -3900,7 +3905,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     trace_mode: str | None = None,
     checkpoint: _Checkpoint | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Processa linhas do DataFrame em paralelo, com fila contínua e auto-redução.
 
     Até `parallel_requests` linhas ficam em voo ao mesmo tempo, e uma linha
@@ -3940,10 +3945,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     workers_reduced = False
     rate_limit_event = threading.Event()
     abort_event = threading.Event()
-    recorded: set = set()
+    recorded: set[Hashable] = set()
     # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
     # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
-    counted: set = set()
+    counted: set[Hashable] = set()
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -3984,13 +3989,13 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
         return token_stats
 
     def _finish(  # noqa: PLR0913 (o que a linha gravou, repassado ao RowResult)
-        row_data: tuple,
+        row_data: _RowData,
         started: float,
         snapshot: Callable[[], None] | None,
         *,
         success: bool,
         error: str | None,
-        values: dict,
+        values: dict[str, Any],
     ) -> None:
         """Entrega a linha gravada ao callback e grava o snapshot, fora de `lock`.
 
@@ -4012,7 +4017,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
         if snapshot is not None:
             snapshot()
 
-    def process_single_row(row_data: tuple) -> dict:
+    def process_single_row(row_data: _RowData) -> dict[str, Any]:
         """Processa uma única linha (executada em thread separada)."""
         nonlocal current_workers, workers_reduced
 
@@ -4138,7 +4143,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     # saída por Ctrl-C, o executor fecha e espera as threads antes de
     # save_registered_rows gravar: os `with` saem na ordem inversa.
     pending_rows = iter(rows_to_process)
-    in_flight: dict = {}
+    in_flight: dict[Future[dict[str, Any]], tuple[_RowData, float]] = {}
     with (
         _on_ctrl_c(save_registered_rows),
         tqdm(total=len(rows_to_process), desc=desc) as pbar,

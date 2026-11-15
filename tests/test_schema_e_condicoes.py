@@ -9,7 +9,7 @@ import json
 import re
 import types
 import typing
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 from unittest.mock import patch
 
 import pandas as pd
@@ -67,7 +67,7 @@ def _call_agent_que_gera_schema(valores, schemas, prompts=None):
     return call_agent
 
 
-def _chaves_da_biblioteca_no_schema(schema) -> set:
+def _chaves_da_biblioteca_no_schema(schema) -> set[str]:
     texto = json.dumps(schema)
     return {chave for chave in _CHAVES_DA_BIBLIOTECA if f'"{chave}"' in texto}
 
@@ -517,7 +517,7 @@ def test_campo_isolado_no_modo_por_grupo_com_condition_callable():
     assert all(not _chaves_da_biblioteca_no_schema(s) for s in schemas)
 
 
-def _propriedades_do_campo(schema) -> dict:
+def _propriedades_do_campo(schema) -> dict[str, Any]:
     """Propriedades de primeiro nível do schema, sem o $defs dos aninhados."""
     return dict(schema.get("properties", {}).items())
 

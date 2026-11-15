@@ -472,7 +472,7 @@ def test_snapshot_atrasado_nao_sobrescreve_o_mais_novo(tmp_path):
     assert escritor.last_saved == 2
 
 
-def _crash_depois_de(n: int, total_calls: list):
+def _crash_depois_de(n: int, total_calls: list[int]):
     def mock_llm(*args, **kwargs):
         total_calls[0] += 1
         if total_calls[0] > n:

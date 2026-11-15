@@ -93,13 +93,13 @@ class ConversionInfo:
     """Informações sobre a conversão de dados para pandas DataFrame."""
 
     original_type: str
-    original_index: pd.Index | list | None = None  # Índice/chaves originais para reconversão
+    original_index: pd.Index | list[Any] | None = None  # Índice/chaves originais para reconversão
     series_name: Hashable | None = None  # Nome original da Series (se aplicável)
     # DataFrame polars de entrada, de onde a saída tira as colunas que a execução não escreve
     polars_frame: PolarsDataFrame | None = None
 
 
-def parse_json(resposta: str) -> dict:
+def parse_json(resposta: str) -> dict[str, Any]:
     """Extrai e faz parse de JSON da resposta de um LLM.
 
     Args:
@@ -249,7 +249,7 @@ def _python_values(data: PolarsDataFrame, model_columns: Mapping[str, object]) -
     return df
 
 
-def _members(annotation: object) -> list:
+def _members(annotation: object) -> list[object]:
     """Os membros da união, ou a própria anotação, cada um por `_without_optional`."""
     annotation = _without_optional(annotation)
     if get_origin(annotation) in (typing.Union, types.UnionType):
@@ -517,7 +517,7 @@ def _typevar_validated_as(typevar: typing.TypeVar) -> object:
     return typing.Any
 
 
-def _alias_applied(alias: object, args: tuple) -> object:
+def _alias_applied(alias: object, args: tuple[Any, ...]) -> object:
     """O `__value__` do apelido genérico com cada parâmetro trocado pelo argumento.
 
     Cada parâmetro de `__type_params__` vale o argumento na mesma posição. A
@@ -616,7 +616,7 @@ _TEMPORAL_KINDS = (*_TEMPORAL, _AWARE_DATETIME)
 _SEQUENCES = (list, tuple)
 
 
-def _group_kinds(group: list, classes: set) -> set | None:
+def _group_kinds(group: list[Any], classes: set[type]) -> set[type | str] | None:
     """As classes de `_KINDS` do grupo, ou None se algum valor nenhum tipo do polars guarda.
 
     A classe do valor vale pela primeira de `_KINDS` de que é subclasse, e o
@@ -675,7 +675,7 @@ def _arrow_alters(values: pd.Series) -> bool:
     """
     if values.dtype != object:
         return False
-    pending: list[tuple[tuple, list]] = [((), values.tolist())]
+    pending: list[tuple[tuple[Any, ...], list[Any]]] = [((), values.tolist())]
     while pending:
         path, group = pending.pop()
         classes = set(map(type, group))
@@ -690,7 +690,7 @@ def _arrow_alters(values: pd.Series) -> bool:
             dicts = [value for value in group if isinstance(value, dict)]
             if len({frozenset(value) for value in dicts}) > 1:
                 return True
-            by_key: dict[object, list] = {}
+            by_key: dict[object, list[Any]] = {}
             for value in dicts:
                 for key, item in value.items():
                     by_key.setdefault(key, []).append(item)
@@ -701,7 +701,7 @@ def _arrow_alters(values: pd.Series) -> bool:
     return False
 
 
-def _mixes_converted_kinds(kinds: set) -> bool:
+def _mixes_converted_kinds(kinds: set[type | str]) -> bool:
     """Se as classes de um grupo de `_arrow_alters` seriam convertidas umas nas outras."""
     temporal = kinds.intersection(_TEMPORAL_KINDS)
     return (
@@ -897,7 +897,7 @@ def is_complex_type(field_type: object) -> bool:
     )
 
 
-def get_complex_fields(pydantic_model: type[BaseModel]) -> set:
+def get_complex_fields(pydantic_model: type[BaseModel]) -> set[str]:
     """Retorna os nomes dos campos que são estruturas (ver `is_complex_type`).
 
     Args:
@@ -953,7 +953,7 @@ def _admits_none(field_type: object) -> bool:
     return False
 
 
-def get_text_fields(pydantic_model: type[BaseModel]) -> set:
+def get_text_fields(pydantic_model: type[BaseModel]) -> set[str]:
     """Nomes dos campos que só aceitam texto."""
     return {
         field_name
@@ -1017,7 +1017,7 @@ def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qua
     return value
 
 
-def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None:
+def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> None:
     """Normaliza colunas complexas no DataFrame, convertendo strings JSON.
 
     Modifica o DataFrame in-place.
@@ -1126,7 +1126,7 @@ def read_df(
 
 
 def _reread_text_columns(
-    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict
+    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
 ) -> None:
     """Relê como texto cru os campos de texto do modelo, in-place.
 
@@ -1183,7 +1183,7 @@ def _int_or_read(text: str, read: object) -> object:
 
 
 def _reread_int_columns(
-    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict
+    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
 ) -> None:
     """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
 
@@ -1265,7 +1265,7 @@ def _unwrapped(annotation: object) -> object:
     return annotation
 
 
-def _value_types(annotation: object) -> list:
+def _value_types(annotation: object) -> list[Any]:
     """Os tipos que o valor pode ter: cada membro da união, menos o None, sem `Annotated`.
 
     A união dentro de outra, como `Optional[Annotated[A | B, ...]]`, é aberta
@@ -1282,7 +1282,7 @@ def _value_types(annotation: object) -> list:
     return [annotation]
 
 
-def _item_types(value_type: object) -> list:
+def _item_types(value_type: object) -> list[Any]:
     """Os tipos que o item pode ter quando `value_type` é `list[X]`; vazio para outro tipo.
 
     É a decisão única de camada de lista: `is_list_of_pydantic_model`, que a
@@ -1297,7 +1297,7 @@ def _is_pydantic_model(annotation: object) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, BaseModel)
 
 
-def is_list_of_pydantic_model(field_type: object) -> tuple:
+def is_list_of_pydantic_model(field_type: object) -> tuple[bool, type[BaseModel] | None]:
     """Verifica se o valor do campo é uma lista de modelo Pydantic.
 
     O Optional, a união e o `Annotated` não contam, em volta da lista e em
@@ -1493,7 +1493,7 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
     return annotation.copy_with(resolved)
 
 
-def get_nested_pydantic_models(field_type: object) -> list:
+def get_nested_pydantic_models(field_type: object) -> list[type[BaseModel]]:
     """Extrai todos os modelos Pydantic de uma anotação de tipo.
 
     Trata List[Model], Optional[List[Model]], Union[Model, None], etc.

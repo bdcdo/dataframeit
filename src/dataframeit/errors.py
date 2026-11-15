@@ -17,7 +17,7 @@ import re
 import textwrap
 import time
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .search import SearchToolError, get_provider
 from .utils import _user_stacklevel
@@ -229,13 +229,13 @@ _PROVIDER_OVERRIDES = {
 }
 
 
-def _search_provider_info(search_provider: str) -> dict:
+def _search_provider_info(search_provider: str) -> dict[str, Any]:
     """Nome e variável da chave do provedor de busca, no formato de _infer_provider_info."""
     provider = get_provider(search_provider)
     return {"name": provider.friendly_name, "env_var": provider.env_var}
 
 
-def _infer_provider_info(provider: str | None) -> dict:
+def _infer_provider_info(provider: str | None) -> dict[str, Any]:
     """Infere informações do provider dinamicamente.
 
     Args:
@@ -1035,11 +1035,11 @@ _MAX_BACKOFF_EXPONENT = 1023
 
 
 def retry_with_backoff(
-    func: Callable[[], dict],
+    func: Callable[[], dict[str, Any]],
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
-) -> dict:
+) -> dict[str, Any]:
     """Executa função com retry e backoff exponencial.
 
     Args:

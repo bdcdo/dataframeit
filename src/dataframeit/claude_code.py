@@ -37,7 +37,7 @@ T = TypeVar("T")
 # Status da API que indicam sobrecarga (429 Too Many Requests, 529 Overloaded).
 
 
-def _build_json_system_prompt(json_schema: dict) -> str:
+def _build_json_system_prompt(json_schema: dict[str, Any]) -> str:
     """Gera system prompt com instruções para output JSON estruturado.
 
     Args:
@@ -190,7 +190,9 @@ def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _usage_from_sdk(usage: dict | None, cost_usd: float | None = None) -> dict | None:
+def _usage_from_sdk(
+    usage: dict[str, Any] | None, cost_usd: float | None = None
+) -> dict[str, Any] | None:
     """Converte ``ResultMessage.usage`` para o formato de tokens do core.
 
     O SDK repassa o usage da API da Anthropic, em que ``input_tokens`` exclui
@@ -223,7 +225,7 @@ def _usage_from_sdk(usage: dict | None, cost_usd: float | None = None) -> dict |
 
 def call_claude_code(
     text: str, pydantic_model: type[BaseModel], user_prompt: str, config: LLMConfig
-) -> dict:
+) -> dict[str, Any]:
     """Processa texto usando Claude Code SDK com structured output via JSON schema.
 
     Args:
@@ -278,7 +280,7 @@ def call_claude_code(
     # estourou o orçamento também foi cobrada.
     spent = 0.0
 
-    def _call() -> dict:
+    def _call() -> dict[str, Any]:
         nonlocal spent
         response_text, result = _run_coroutine(_async_query(prompt, options))
         spent += getattr(result, "total_cost_usd", None) or 0

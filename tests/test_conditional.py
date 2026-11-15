@@ -430,7 +430,7 @@ class TestGetFieldExecutionOrder:
         """Testa que campo aninhado em condition ('endereco.cidade') resolve para raiz ('endereco')."""
 
         class M(BaseModel):
-            endereco: dict
+            endereco: dict  # ty: ignore[missing-type-argument]
             taxa: float = Field(
                 json_schema_extra={"condition": {"field": "endereco.cidade", "equals": "SP"}}
             )

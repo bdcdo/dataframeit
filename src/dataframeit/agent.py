@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import Runnable
     from pydantic.fields import FieldInfo
 
+    from .conditional import ConfiguredField
     from .search import SearchProvider
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ _USAGE_COUNTERS = (
 )
 
 
-def _empty_usage(**metadata: object) -> dict:
+def _empty_usage(**metadata: object) -> dict[str, Any]:
     return {**dict.fromkeys(_USAGE_COUNTERS, 0), **metadata}
 
 
@@ -80,7 +81,7 @@ def _search_config(config: LLMConfig) -> SearchConfig:
     return cast("SearchConfig", config.search_config)
 
 
-def _query_model(name: str, fields: dict[str, tuple]) -> type[BaseModel]:
+def _query_model(name: str, fields: dict[str, tuple[Any, FieldInfo]]) -> type[BaseModel]:
     """Modelo Pydantic montado na hora com os campos pedidos numa chamada."""
     # Os campos chegam por **kwargs, e o ty não casa esse dict com as
     # sobrecargas de create_model.
@@ -128,7 +129,7 @@ def _llm_field(field_info: FieldInfo) -> FieldInfo:
     return cleaned
 
 
-def _llm_field_spec(field_info: FieldInfo, owner: type[BaseModel]) -> tuple:
+def _llm_field_spec(field_info: FieldInfo, owner: type[BaseModel]) -> tuple[Any, FieldInfo]:
     """Par (anotação, FieldInfo) para create_model de um campo do modelo `owner`.
 
     A anotação vai com as referências adiantadas resolvidas: fora do modelo
@@ -137,7 +138,7 @@ def _llm_field_spec(field_info: FieldInfo, owner: type[BaseModel]) -> tuple:
     return resolve_forward_refs(field_info.annotation, owner), _llm_field(field_info)
 
 
-def _get_field_config(extra: dict) -> dict:
+def _get_field_config(extra: dict[str, Any]) -> dict[str, Any]:
     """Extrai configurações relevantes do json_schema_extra.
 
     Args:
@@ -169,7 +170,7 @@ def _with_text_placeholder(prompt: str) -> str:
 
 
 def _build_field_prompt(
-    user_prompt: str, field_name: str, field_description: str | None, field_config: dict
+    user_prompt: str, field_name: str, field_description: str | None, field_config: dict[str, Any]
 ) -> str:
     """Constrói o prompt para um campo específico.
 
@@ -237,7 +238,7 @@ def _with_search_overrides(
     return new_config
 
 
-def _with_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
+def _with_field_overrides(config: LLMConfig, field_config: dict[str, Any]) -> LLMConfig:
     """Aplica os overrides de busca de um campo, lidos de _get_field_config."""
     return _with_search_overrides(
         config,
@@ -247,14 +248,16 @@ def _with_field_overrides(config: LLMConfig, field_config: dict) -> LLMConfig:
     )
 
 
-def _get_list_fields_with_nested_search(pydantic_model: type[BaseModel]) -> dict:
+def _get_list_fields_with_nested_search(
+    pydantic_model: type[BaseModel],
+) -> dict[str, dict[str, Any]]:
     """Identifica campos List[Model] que têm configuração de busca em modelos internos.
 
     Args:
         pydantic_model: Modelo Pydantic a analisar.
 
     Returns:
-        Dicionário: {field_name: {'inner_model': Model, 'search_fields': [(relative_path, field_name, field_info)]}}
+        Dicionário: {field_name: {'inner_model': Model, 'search_fields': [ConfiguredField]}}
     """
     list_fields_with_search = {}
 
@@ -277,19 +280,19 @@ def _get_list_fields_with_nested_search(pydantic_model: type[BaseModel]) -> dict
 
 
 def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e por campo)
-    list_items: list,
+    list_items: list[Any],
     inner_model: type[BaseModel],
-    search_fields: list,
+    search_fields: list[ConfiguredField],
     text: str,
     config: LLMConfig,
     save_trace: str | None = None,
-) -> tuple:
+) -> tuple[list[Any], dict[str, Any], list[Any] | None]:
     """Enriquece cada item de uma lista com buscas específicas.
 
     Args:
         list_items: Lista de dicionários (items extraídos pelo LLM).
         inner_model: Modelo Pydantic do item interno.
-        search_fields: Lista de tuplas (path, field_name, field_info, parent_model, has_config).
+        search_fields: Lista de ConfiguredField.
         text: Texto original sendo processado.
         config: Configuração do LLM.
         save_trace: Modo de trace.
@@ -362,7 +365,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
     return enriched_items, total_usage, traces
 
 
-def _build_item_context(item_dict: dict, inner_model: type[BaseModel]) -> str:
+def _build_item_context(item_dict: dict[str, Any], inner_model: type[BaseModel]) -> str:
     """Constrói uma string de contexto para um item de lista.
 
     Usa os primeiros campos não-nulos do item para criar contexto.
@@ -380,7 +383,7 @@ def _build_item_context(item_dict: dict, inner_model: type[BaseModel]) -> str:
     return ", ".join(context_parts) if context_parts else "item"
 
 
-def _set_nested_value(obj: dict, path: str, value: object) -> None:
+def _set_nested_value(obj: dict[str, Any], path: str, value: object) -> None:
     """Define um valor em um caminho aninhado de um dicionário.
 
     Args:
@@ -415,7 +418,7 @@ def _recursion_limit(max_search_calls: int) -> int:
 class SearchAgent:
     """Agente de busca montado para um modelo Pydantic e uma SearchConfig."""
 
-    agent: Runnable
+    agent: Runnable[Any, Any]
     provider: SearchProvider
     tool_name: str
 
@@ -466,8 +469,8 @@ def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, 
     user_prompt: str,
     config: LLMConfig,
     save_trace: str | None = None,
-    search_agent: _BuildOnce | None = None,
-) -> dict:
+    search_agent: _BuildOnce[SearchAgent] | None = None,
+) -> dict[str, Any]:
     """Processa texto usando agente LangChain com busca web.
 
     Args:
@@ -491,7 +494,7 @@ def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, 
         built = build_search_agent(pydantic_model, config)
     agent, provider, tool_name = built.agent, built.provider, built.tool_name
 
-    def _call() -> dict:
+    def _call() -> dict[str, Any]:
         prompt = build_prompt(user_prompt, text)
 
         # Medir tempo de execução
@@ -531,13 +534,16 @@ def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, 
 
 
 def _run_nested_searches(
-    text: str, nested_fields: list, config: LLMConfig, save_trace: str | None = None
-) -> tuple:
+    text: str,
+    nested_fields: list[ConfiguredField],
+    config: LLMConfig,
+    save_trace: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     """Executa buscas para campos configurados em modelos aninhados.
 
     Args:
         text: Texto a ser processado.
-        nested_fields: Lista de tuplas (path, field_name, field_info, parent_model, has_config).
+        nested_fields: Lista de ConfiguredField.
         config: Configuração do LLM.
         save_trace: Modo de trace.
 
@@ -606,19 +612,19 @@ class _Row:
     """O que a extração de uma linha acumula entre as chamadas ao agente."""
 
     text: str
-    only_fields: set | None
-    known: dict
-    traces: dict | None
-    data: dict = field(default_factory=dict)
-    usage: dict = field(default_factory=_empty_usage)
-    nested_context: dict = field(default_factory=dict)
+    only_fields: set[str] | None
+    known: dict[str, Any]
+    traces: dict[str, Any] | None
+    data: dict[str, Any] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=_empty_usage)
+    nested_context: dict[str, Any] = field(default_factory=dict)
     # Os campos que o model_dump do modelo da chamada tirou da resposta.
-    dropped: set = field(default_factory=set)
+    dropped: set[str] = field(default_factory=set)
 
     def wants(self, field_name: str) -> bool:
         return self.only_fields is None or field_name in self.only_fields
 
-    def add_usage(self, usage: dict) -> None:
+    def add_usage(self, usage: dict[str, Any]) -> None:
         for key in _USAGE_COUNTERS:
             self.usage[key] += usage.get(key, 0)
 
@@ -628,12 +634,12 @@ class _Row:
         if self.traces is not None and trace:
             self.traces[key] = trace
 
-    def add_result(self, result: dict, key: str) -> None:
+    def add_result(self, result: dict[str, Any], key: str) -> None:
         self.add_usage(result.get("usage") or {})
         self.add_trace(key, result.get("trace"))
 
 
-def _nested_context_note(nested_context: dict, field_names: list[str]) -> str:
+def _nested_context_note(nested_context: dict[str, Any], field_names: list[str]) -> str:
     """Resultado das buscas aninhadas dos campos pedidos, para o fim do prompt."""
     lines = [
         f"- {path}: {value}"
@@ -658,17 +664,17 @@ class _FieldExtractor:
     user_prompt: str
     config: LLMConfig
     save_trace: str | None
-    field_configs: dict[str, dict]
+    field_configs: dict[str, dict[str, Any]]
     execution_order: list[str]
     dependencies: dict[str, list[str]]
     units: tuple[_Unit, ...]
-    list_fields: dict
-    nested_fields: tuple
+    list_fields: dict[str, dict[str, Any]]
+    nested_fields: tuple[ConfiguredField, ...]
     omitted_fields: frozenset[str]
 
     def __call__(
-        self, text: str, only_fields: set | None = None, known: dict | None = None
-    ) -> dict:
+        self, text: str, only_fields: set[str] | None = None, known: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         row = _Row(text, only_fields, known or {}, traces={} if self.save_trace else None)
         self._search_nested_fields(row)
         for unit in self.units:
@@ -885,7 +891,7 @@ def field_extractor(
 _TOOL_LIMIT_MESSAGE_PREFIX = "Tool call limit exceeded"
 
 
-def _blocked_tool_call_ids(messages: list) -> set:
+def _blocked_tool_call_ids(messages: list[Any]) -> set[str]:
     """Ids das chamadas de ferramenta que o teto de buscas bloqueou."""
     return {
         msg.tool_call_id
@@ -897,7 +903,7 @@ def _blocked_tool_call_ids(messages: list) -> set:
 
 
 def _extract_usage(  # noqa: C901 (o diagnóstico em DEBUG descreve cada mensagem)
-    agent_result: dict,
+    agent_result: dict[str, Any],
     provider: SearchProvider,
     search_config: SearchConfig,
     search_tool_name: str,
@@ -988,13 +994,13 @@ def _extract_usage(  # noqa: C901 (o diagnóstico em DEBUG descreve cada mensage
 
 
 def _extract_trace(  # noqa: PLR0913, PLR0917 (os dados do trace vêm de fontes distintas)
-    agent_result: dict,
+    agent_result: dict[str, Any],
     model: str | None,
     duration: float,
     mode: str,
     provider: SearchProvider | None = None,
     search_tool_name: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Extrai trace do resultado do agente LangChain.
 
     Args:
