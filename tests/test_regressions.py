@@ -68,13 +68,13 @@ def test_silent_slice_write_desliga_a_fatia_so_durante_o_contexto(monkeypatch, l
     else:
         monkeypatch.delattr(pd.errors, "SettingWithCopyWarning", raising=False)
     df = pd.DataFrame({"texto": ["a"]})
-    object.__setattr__(df, "_is_copy", "original")
+    df._is_copy = "original"
 
     dentro = []
 
     def escrita_que_falha():
         with _silent_slice_write(df):
-            dentro.append(df.__dict__["_is_copy"])
+            dentro.append(df._is_copy)
             msg = "escrita"
             raise RuntimeError(msg)
 
@@ -83,4 +83,4 @@ def test_silent_slice_write_desliga_a_fatia_so_durante_o_contexto(monkeypatch, l
 
     assert dentro == [None if legacy_warning else "original"]
 
-    assert df.__dict__["_is_copy"] == "original"
+    assert df._is_copy == "original"

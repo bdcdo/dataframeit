@@ -7,7 +7,6 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 import importlib.util
 import json
 import tempfile
-import threading
 import types
 from collections import ChainMap, Counter, OrderedDict, UserDict, UserString, defaultdict, deque
 from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet, Sequence
@@ -377,46 +376,24 @@ def test_normalize_complex_columns_numa_fatia_de_outro_dataframe():
     not hasattr(pd.errors, "SettingWithCopyWarning"),
     reason="a opção mode.chained_assignment só tem efeito no pandas 2",
 )
-def test_normalize_complex_columns_em_threads_nao_desliga_o_aviso_do_processo(monkeypatch):
-    """Duas threads normalizando fatias ao mesmo tempo não deixam o aviso do pandas 2 desligado.
-
-    A ordem forçada intercala as duas: a thread A começa, a B começa, a A
-    termina e a B termina por último, ainda sem avisar na escrita.
-    """
+def test_normalize_complex_columns_nao_troca_a_opcao_global_do_aviso(monkeypatch):
+    """A escrita na fatia não troca `mode.chained_assignment`, que vale para todas as threads."""
     original = utils_module.normalize_value
-    a_comecou, b_comecou, a_terminou = threading.Event(), threading.Event(), threading.Event()
+    durante = []
 
-    def normaliza_em_ordem(value):
-        if value == '["a"]':
-            a_comecou.set()
-            assert b_comecou.wait(5)
-        else:
-            assert a_comecou.wait(5)
-            b_comecou.set()
-            assert a_terminou.wait(5)
+    def normaliza_e_le_a_opcao(value):
+        durante.append(pd.get_option("mode.chained_assignment"))
         return original(value)
 
-    monkeypatch.setattr(utils_module, "normalize_value", normaliza_em_ordem)
+    monkeypatch.setattr(utils_module, "normalize_value", normaliza_e_le_a_opcao)
     base = pd.DataFrame({"itens": ['["a"]', '["b"]'], "id": [1, 2]})
-    fatias = [base[base["id"] == 1], base[base["id"] == 2]]
+    fatia = base[base["id"] > 1]
 
-    def normaliza_a():
-        normalize_complex_columns(fatias[0], {"itens"})
-        a_terminou.set()
-
-    threads = [
-        threading.Thread(target=normaliza_a),
-        threading.Thread(target=normalize_complex_columns, args=(fatias[1], {"itens"})),
-    ]
     with pd.option_context("mode.chained_assignment", "warn"):
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        depois = pd.get_option("mode.chained_assignment")
+        normalize_complex_columns(fatia, {"itens"})
 
-    assert depois == "warn"
-    assert [fatia["itens"].iloc[0] for fatia in fatias] == [["a"], ["b"]]
+    assert durante == ["warn"]
+    assert fatia.loc[1, "itens"] == ["b"]
 
 
 @pytest.mark.skipif(
