@@ -90,7 +90,7 @@ Na OpenAI, o SDK valida a resposta dentro da chamada e levanta o erro antes de d
 
 ### Cota esgotada (interrompe a execução)
 
-O `insufficient_quota` da OpenAI, que chega como HTTP 429, o limite do plano ou do pay-as-you-go do Tavily (status 432 ou 433) e o crédito ou o orçamento esgotado do Exa (status 402) só se resolvem com crédito na conta. Eles viram `ProviderUsageLimitError`, sem nova tentativa: a execução para e deixa as linhas restantes sem status, para a retomada. O aviso de execução interrompida diz o que resolve: adicionar crédito ou mudar de plano na conta do serviço antes de retomar, ou, quando a cota é da busca web, rodar com `use_search=False` ou outro `search_provider`. Ver [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
+O `insufficient_quota` da OpenAI, que chega como HTTP 429, o limite do plano ou do pay-as-you-go do Tavily (status 432 ou 433) e o crédito ou o orçamento esgotado do Exa (status 402) só se resolvem com crédito na conta. Eles viram `ProviderUsageLimitError`, sem nova tentativa: a execução para e deixa as linhas restantes sem status, para a retomada. O aviso de execução interrompida manda retomar quando a cota voltar, com crédito, mudança de plano ou renovação do período na conta do serviço; na cota da busca web, sugere também `use_search=False` ou outro `search_provider`. Ver [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
 
 ### Erros da busca web
 

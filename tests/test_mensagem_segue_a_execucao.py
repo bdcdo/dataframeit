@@ -599,18 +599,21 @@ def test_caixa_de_timeout_so_para_o_erro_repetido(fabrica, timeout, monkeypatch)
 
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
+@pytest.mark.parametrize("motivo", ["motivo da parada", "motivo da parada."])
 @pytest.mark.parametrize(
     ("classe", "orienta"),
     [(ProviderUsageLimitError, True), (ProviderAbortError, False)],
     ids=["cota-esgotada", "outra-parada"],
 )
 def test_aviso_de_interrupcao_orienta_a_cota_esgotada(
-    classe, orienta, parallel_requests, monkeypatch
+    classe, orienta, motivo, parallel_requests, monkeypatch
 ):
-    execucao = _executar(lambda: classe("motivo da parada"), monkeypatch, parallel_requests)
+    execucao = _executar(lambda: classe(motivo), monkeypatch, parallel_requests)
 
     _conferir_coerencia(execucao, aborta=True)
     aviso = next(aviso for aviso in execucao.avisos if aviso.startswith(INTERRUPCAO))
     assert "motivo da parada" in aviso
-    assert ("adicione crédito ou mude de plano" in aviso) is orienta
-    assert ("use_search=False" in aviso) is orienta
+    assert ("renovação do período" in aviso) is orienta
+    assert ".." not in aviso
+    # A dica da busca web vem só na mensagem da cota da busca.
+    assert "use_search" not in aviso

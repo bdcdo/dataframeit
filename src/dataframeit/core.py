@@ -2018,7 +2018,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 "checkpoint_path permite retomar"
             )
         warnings.warn(
-            f"Execução interrompida: {token_stats['abort']}. {summary}. Para retomar, {how}.",
+            f"Execução interrompida: {token_stats['abort'].rstrip('.')}. {summary}. "
+            f"Para retomar, {how}.",
             UserWarning,
             stacklevel=2,
         )
@@ -3515,13 +3516,16 @@ def _error_text(error: BaseException) -> str:
 
 
 def _abort_reason(error: ProviderAbortError) -> str:
-    """Motivo da interrupção para o aviso; na cota esgotada, com o que a resolve."""
+    """Motivo da interrupção para o aviso; na cota esgotada, com o que a resolve.
+
+    O que vale só para uma origem da cota, como a dica da busca web, vem na
+    mensagem do próprio erro.
+    """
     reason = _error_text(error)
     if isinstance(error, ProviderUsageLimitError):
-        reason += (
-            ". Repetir a linha não traz crédito: adicione crédito ou mude de plano na "
-            "conta do serviço antes de retomar; se a cota é da busca web, use_search=False "
-            "ou outro search_provider também evitam a parada"
+        reason = (
+            f"{reason.rstrip('.')}. Repetir a linha não resolve: retome quando a cota "
+            "voltar, com crédito, mudança de plano ou renovação do período na conta do serviço"
         )
     return reason
 
