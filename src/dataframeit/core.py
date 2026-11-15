@@ -106,7 +106,15 @@ from .utils import (
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Callable, Collection, Generator, Hashable, Iterable, Sequence
+    from collections.abc import (
+        Callable,
+        Collection,
+        Container,
+        Generator,
+        Hashable,
+        Iterable,
+        Sequence,
+    )
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -3427,33 +3435,50 @@ class _SnapshotWriter:
 
 def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das colunas delas)
     df: pd.DataFrame,
-    indices: list[Hashable],
+    registered: Container[Hashable],
     *,
+    is_pending: Sequence[bool],
     status_col: str,
     reprocess_columns: Sequence[str] | None,
     value_columns: Collection[str],
     nan_columns: Collection[str],
-) -> None:
-    """Marca as linhas que uma interrupção impediu de processar.
+) -> bool:
+    """Marca as linhas que uma interrupção impediu de processar e diz se alguma mudou.
+
+    A linha não alcançada é a que a execução ia processar, toda linha com
+    reprocess_columns e a pendente sem ele, e que ela não registrou
+    (`registered`). O abort e o Ctrl-C, no sequencial e no paralelo, marcam por
+    esta mesma definição.
 
     A linha já processada que ia ser reprocessada guarda os valores anteriores,
-    e o detalhe registra que eles não foram atualizados. A linha 'error' com
-    valor numa das `value_columns`, como a que guarda os valores de um
-    reprocessamento que falhou, fica como estava: sem status, a retomada
-    seguinte recusaria esses valores (`_raise_if_overwritten`). As demais
-    ficam sem status, inclusive a que tinha 'error' e ia ser refeita, para que
-    a retomada as encontre.
+    e o detalhe registra que eles não foram atualizados. Sem reprocess_columns,
+    a linha 'processed' só pode ter sido gravada por esta execução, como a que
+    o Ctrl-C alcança antes de ela entrar em `registered`, e fica como está. A
+    linha 'error' com valor numa das `value_columns`, como a que guarda os
+    valores de um reprocessamento que falhou, fica como estava: sem status, a
+    retomada seguinte recusaria esses valores (`_raise_if_overwritten`). As
+    demais ficam sem status, inclusive a que tinha 'error' e ia ser refeita,
+    para que a retomada as encontre.
     """
-    for idx in indices:
-        status = _get_cell(df, idx, status_col)
-        if reprocess_columns and status == "processed":
-            _set_cell(df, idx, "_error_details", _INTERRUPTED_REPROCESS_DETAIL)
-        elif status != "error" or not any(
-            _holds_value(df, column, [_get_cell(df, idx, column)], nan_columns)
-            for column in value_columns
-        ):
-            _set_cell(df, idx, status_col, None)
-            _set_cell(df, idx, "_error_details", None)
+    unreached = np.fromiter((idx not in registered for idx in df.index), bool, len(df))
+    if not reprocess_columns:
+        unreached &= np.asarray(is_pending, dtype=bool)
+    status = df[status_col].to_numpy(dtype=object)
+    details = df["_error_details"].to_numpy(dtype=object)
+    processed = unreached & (status == "processed")
+    flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL) & bool(reprocess_columns)
+    clear = unreached & ~processed & ~(pd.isna(status) & pd.isna(details))
+    errors = np.flatnonzero(clear & (status == "error"))
+    for column in value_columns:
+        cells = df[column].to_numpy(dtype=object)[errors]
+        clear[errors] &= np.fromiter(
+            (not _holds_value(df, column, [cell], nan_columns) for cell in cells), bool, len(cells)
+        )
+    if flag.any():
+        df.loc[flag, "_error_details"] = _INTERRUPTED_REPROCESS_DETAIL
+    if clear.any():
+        df.loc[clear, [status_col, "_error_details"]] = None
+    return bool(flag.any() or clear.any())
 
 
 def _get_cell(df: pd.DataFrame, idx: Hashable, column: str) -> object:
@@ -3748,18 +3773,21 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     token_stats = _empty_token_stats()
     rows_processed_this_run = 0
     rows_saved = 0
-    # Posição da primeira linha ainda não registrada, de onde o Ctrl-C marca.
-    unreached_from = 0
+    # Linhas registradas nesta execução; o abort e o Ctrl-C marcam as demais.
+    registered: set[Hashable] = set()
+    # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
+    marked = False
     mark_unreached = partial(
         _mark_unreached,
         df,
+        is_pending=is_pending,
         status_col=status_col,
         reprocess_columns=reprocess_columns,
         value_columns=value_columns,
         nan_columns=nan_columns,
     )
 
-    def process_row(i: int, idx: Hashable, row: pd.Series) -> tuple[bool, dict[str, Any]]:
+    def process_row(idx: Hashable, row: pd.Series) -> tuple[bool, dict[str, Any]]:
         """Registra o desfecho da linha e devolve se a chamada deu certo e os campos gravados."""
         # Verificar se linha já foi processada
         row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
@@ -3800,9 +3828,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                 success = True
             except ProviderAbortError as e:
                 token_stats["abort"] = _abort_reason(e)
-                mark_unreached(
-                    [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]]
-                )
+                mark_unreached(registered)
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
                 _record_error_safely(
                     df,
@@ -3817,36 +3843,35 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
         return success, values
 
     def mark_unreached_on_ctrl_c() -> None:
-        """Com reprocess_columns, marca a linha cuja chamada o Ctrl-C cortou e as seguintes."""
-        if reprocess_columns:
-            mark_unreached(list(df.index[unreached_from:]))
+        """Marca a linha cuja chamada o Ctrl-C cortou e as seguintes."""
+        nonlocal marked
+        # Um segundo Ctrl-C que corte as marcas ainda grava as que entraram.
+        marked = True
+        marked = mark_unreached(registered)
 
     def save_on_ctrl_c() -> None:
         """Grava as linhas registradas e as marcas do Ctrl-C que a última gravação não levou."""
         if checkpoint and (
-            rows_processed_this_run > rows_saved
-            or token_stats.get("abort")
-            or (reprocess_columns and unreached_from < len(df))
+            rows_processed_this_run > rows_saved or token_stats.get("abort") or marked
         ):
             _try_save_checkpoint(df, checkpoint)
 
     # Ctrl-C: grava as linhas registradas desde a última gravação, que a
     # retomada pagaria de novo, e relança a interrupção. A linha cuja chamada
-    # foi cortada não chegou a ser registrada e fica pendente; com
-    # reprocess_columns, ela e as seguintes são marcadas como na interrupção por
-    # ProviderAbortError, e as marcas também vão ao arquivo. O Ctrl-C que corta
-    # a gravação final a refaz. A falha de gravação vira aviso em
-    # _try_save_checkpoint e não troca a interrupção.
+    # foi cortada não chegou a ser registrada; ela e as seguintes são marcadas
+    # como na interrupção por ProviderAbortError, e as marcas também vão ao
+    # arquivo. O Ctrl-C que corta a gravação final a refaz. A falha de gravação
+    # vira aviso em _try_save_checkpoint e não troca a interrupção.
     with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
         for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
             # Com reprocess_columns, todas as linhas são processadas.
             if not reprocess_columns and not is_pending[i]:
                 continue
             started = time.monotonic()
-            success, values = process_row(i, idx, row)
-            unreached_from = i + 1
+            success, values = process_row(idx, row)
             if "abort" in token_stats:
                 break
+            registered.add(idx)
 
             # A linha conta antes do callback: um Ctrl-C dentro dele chega com a
             # linha já gravada no DataFrame, e a gravação do Ctrl-C a leva.
@@ -3945,7 +3970,7 @@ def _closing_in_slices(max_workers: int) -> Generator[ThreadPoolExecutor, None, 
             alive[0].join(_WAIT_SLICE_SECONDS)
 
 
-def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado compartilhado entre threads)
+def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhado entre threads)
     df: pd.DataFrame,
     *,
     text_column: str,
@@ -4004,10 +4029,12 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     workers_reduced = False
     rate_limit_event = threading.Event()
     abort_event = threading.Event()
-    recorded: set[Hashable] = set()
     # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
     # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
+    # O abort e o Ctrl-C marcam as demais.
     counted: set[Hashable] = set()
+    # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
+    marked = False
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -4017,6 +4044,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     mark_unreached = partial(
         _mark_unreached,
         df,
+        is_pending=is_pending,
         status_col=status_col,
         reprocess_columns=reprocess_columns,
         value_columns=value_columns,
@@ -4191,16 +4219,18 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
         return {"success": True, "idx": idx}
 
     def mark_uncounted_rows() -> None:
-        """Com reprocess_columns, marca no Ctrl-C as linhas que nenhuma thread registrou.
+        """Marca no Ctrl-C as linhas que nenhuma thread registrou.
 
-        Como na interrupção por ProviderAbortError, a linha já processada
-        mantém os valores anteriores, com a marca em `_error_details`. A linha
-        que uma thread deixada por um segundo Ctrl-C registrar depois troca a
-        marca pelo valor novo.
+        Como na interrupção por ProviderAbortError, a linha já processada que
+        ia ser reprocessada mantém os valores anteriores, com a marca em
+        `_error_details`. A linha que uma thread deixada por um segundo Ctrl-C
+        registrar depois troca a marca pelo valor novo.
         """
-        if reprocess_columns:
-            with lock:
-                mark_unreached([idx for _, idx, _ in rows_to_process if idx not in counted])
+        nonlocal marked
+        with lock:
+            # Um segundo Ctrl-C que corte as marcas ainda grava as que entraram.
+            marked = True
+            marked = mark_unreached(counted)
 
     def save_registered_rows() -> None:
         """Grava o checkpoint no Ctrl-C.
@@ -4210,14 +4240,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
         rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
         demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
         não regrava o arquivo sem linha contada desde o último snapshot gravado,
-        salvo quando mark_uncounted_rows marcou linhas, o que não conta linha.
+        salvo quando mark_uncounted_rows mudou linhas, o que não conta linha.
         """
         if writer:
             with lock:
                 frame, label = df.copy(), checkpoint_counter
-                marked = bool(reprocess_columns) and any(
-                    idx not in counted for _, idx, _ in rows_to_process
-                )
             writer.save(frame, label, force=marked)
 
     # Um executor para a execução inteira. O teto de linhas em voo é
@@ -4267,7 +4294,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
             for future in done:
                 row, started = in_flight.pop(future)
                 try:
-                    outcome = future.result()
+                    future.result()
                 except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
                     # Escapou do tratamento da própria linha; sem isto ela
                     # ficaria sem status e sumiria da saída.
@@ -4284,23 +4311,19 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
                             error = _recorded_error(df, idx)
                             snapshot = _count_row(idx)
                         _finish(row, started, snapshot, success=False, error=error, values={})
-                    recorded.add(idx)
-                else:
-                    if outcome["success"] or outcome["error"] is not None:
-                        recorded.add(outcome["idx"])
                 pbar.update(1)
 
     # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
     # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
     # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
-    # ao arquivo, como no modo sequencial. Com reprocess_columns, o Ctrl-C que
-    # corta as marcas as completa antes de gravar.
+    # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
+    # completa antes de gravar.
     with _on_ctrl_c(
         mark_uncounted_rows,
         partial(_try_save_checkpoint, df, writer.checkpoint) if writer else (lambda: None),
     ):
         if abort_event.is_set():
-            mark_unreached([idx for _, idx, _ in rows_to_process if idx not in recorded])
+            mark_unreached(counted)
 
         # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
         # fora e as marcas de uma interrupção, que não contam como linha processada.
