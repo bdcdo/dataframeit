@@ -14,8 +14,8 @@ import importlib.metadata
 import os
 import random
 import re
-import textwrap
 import time
+import unicodedata
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -803,7 +803,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ║  ERRO NO PROCESSAMENTO                                                       ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
-║  Tipo: {error_name:<69} ║
+║  Tipo: {_pad_display(error_name, 69)} ║
 ║                                                                              ║
 {_generic_box_details(str(error))}
 ║                                                                              ║
@@ -829,22 +829,109 @@ def _generic_box_details(message: str) -> str:
 
     Numa linha só, o prefixo que o provider põe na mensagem ocuparia a largura
     inteira: o do claude_code, com subtipo e status, passa de 65 caracteres, e a
-    caixa não mostraria nada do texto que o SDK devolveu. O textwrap troca quebra
-    de linha e tabulação por espaço, que desalinhariam a moldura, quebra palavra
-    maior que a largura e marca com reticências a mensagem cortada no teto.
+    caixa não mostraria nada do texto que o SDK devolveu. A quebra, o corte da
+    palavra maior que a linha e o preenchimento até a borda medem a largura
+    exibida no terminal, e não o número de caracteres, para que emoji, CJK e
+    marca combinante não desalinhem a moldura; a mensagem cortada no teto
+    termina em reticências.
     """
-    lines = textwrap.wrap(
-        message,
-        width=_GENERIC_BOX_DETAIL_WIDTH,
-        max_lines=_GENERIC_BOX_DETAIL_MAX_LINES,
-        placeholder=" ...",
+    lines = _wrap_display(
+        _box_text(message), _GENERIC_BOX_DETAIL_WIDTH, _GENERIC_BOX_DETAIL_MAX_LINES
     ) or [""]
     indent = " " * len(_GENERIC_BOX_DETAIL_LABEL)
     labels = [_GENERIC_BOX_DETAIL_LABEL] + [indent] * (len(lines) - 1)
     return "\n".join(
-        f"║  {label}{line:<{_GENERIC_BOX_DETAIL_WIDTH}} ║"
+        f"║  {label}{_pad_display(line, _GENERIC_BOX_DETAIL_WIDTH)} ║"
         for label, line in zip(labels, lines, strict=True)
     )
+
+
+# Sequência de escape do terminal (ECMA-48): CSI (cor ANSI, como '\x1b[31m'),
+# OSC (título, hiperlink) terminada em BEL ou ST, e as demais, de bytes
+# intermediários e um byte final (como '\x1b(B' e '\x1b7'). O OSC sem
+# terminador perde só o '\x1b]', e não o resto da mensagem.
+_TERMINAL_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])"
+)
+
+
+def _box_text(text: str) -> str:
+    """Texto para a moldura: em NFC, sem escape do terminal e sem caractere de controle.
+
+    O espaço Unicode, que inclui os separadores de linha que o splitlines parte
+    (U+2028, U+2029, U+0085), fica, e o split de _wrap_display o troca pelo
+    espaço entre as palavras; os demais caracteres de controle e de formatação,
+    que o terminal não mostra ou mostra com largura imprevisível, saem, como o
+    surrogate solto, que o print não codifica em UTF-8.
+    """
+    text = _TERMINAL_ESCAPE.sub("", unicodedata.normalize("NFC", text))
+    return "".join(
+        char
+        for char in text
+        if char.isspace() or unicodedata.category(char) not in {"Cc", "Cf", "Cs"}
+    )
+
+
+def _char_width(char: str) -> int:
+    """Colunas que o caractere ocupa no terminal: largo e cheio 2, combinante 0."""
+    if unicodedata.category(char) in {"Mn", "Me"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
+def _display_width(text: str) -> int:
+    return sum(map(_char_width, text))
+
+
+def _pad_display(text: str, width: int) -> str:
+    """Completa o texto com espaços até ``width`` colunas exibidas."""
+    return text + " " * (width - _display_width(text))
+
+
+def _cut_display(text: str, width: int) -> str:
+    """Maior prefixo do texto que cabe em ``width`` colunas."""
+    used = 0
+    for index, char in enumerate(text):
+        used += _char_width(char)
+        if used > width:
+            return text[:index]
+    return text
+
+
+def _wrap_display(text: str, width: int, max_lines: int) -> list[str]:
+    """Quebra o texto em linhas de até ``width`` colunas, com reticências no corte.
+
+    Como o textwrap, junta as palavras por um espaço e corta a palavra maior que
+    a linha, mas mede a largura exibida. Passando de ``max_lines``, a última
+    linha perde palavras até caber ' ...'. A quebra para quando passa do teto,
+    e cada medida percorre no máximo uma linha, para que a mensagem enorme, ou
+    com um token de centenas de milhares de caracteres, não trave a caixa.
+    """
+    placeholder = " ..."
+    lines: list[str] = []
+    line = ""
+    for word in text.split():
+        if len(lines) > max_lines:
+            break
+        candidate = f"{line} {word}" if line else word
+        if _cut_display(candidate, width) == candidate:
+            line = candidate
+            continue
+        if line:
+            lines.append(line)
+        line = word
+        while (head := _cut_display(line, width)) != line and len(lines) <= max_lines:
+            lines.append(head)
+            line = line[len(head) :]
+    if line:
+        lines.append(line)
+    if len(lines) <= max_lines:
+        return lines
+    last = lines[max_lines - 1]
+    room = width - len(placeholder)
+    while " " in last and _display_width(last) > room:
+        last = last.rsplit(" ", 1)[0]
+    return [*lines[: max_lines - 1], _cut_display(last, room) + placeholder]
 
 
 # Status HTTP 4xx que indicam falha transitória; os demais 4xx são definitivos.
