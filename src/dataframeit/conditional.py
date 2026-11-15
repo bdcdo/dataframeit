@@ -49,9 +49,10 @@ _CONDITIONAL_KEYS = ("condition", "depends_on")
 class FieldConfig(TypedDict, total=False):
     """Configuração de um campo lida do json_schema_extra (agent._get_field_config).
 
-    `prompt` traz o `prompt` ou o `prompt_replace` do campo. `condition` e
-    `depends_on` chegam como o usuário os escreveu, e a forma é conferida por
-    _check_condition e _declared_depends_on.
+    `prompt` traz o `prompt` ou o `prompt_replace` do campo. Os valores chegam
+    como o usuário os escreveu, e os tipos declarados são os esperados: a forma
+    de `condition` e `depends_on` é conferida por _check_condition e
+    _declared_depends_on.
     """
 
     prompt: str | None

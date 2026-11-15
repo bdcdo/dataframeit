@@ -152,7 +152,7 @@ class Usage(TypedDict, total=False):
     cost_usd: float
 
 
-# Contadores de tokens, os que toda chamada ao LLM informa.
+# Contadores de tokens, os que toda chamada ao LLM informa e o resumo soma.
 _TOKEN_KEYS = (
     "input_tokens",
     "cached_input_tokens",

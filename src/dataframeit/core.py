@@ -67,6 +67,7 @@ from .errors import (
     validate_search_dependencies,
 )
 from .llm import (
+    _TOKEN_KEYS,
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
@@ -203,15 +204,6 @@ _executor_ids = itertools.count()
 # configuração: supõe uma busca por execução do agente. Um agente que faz mais
 # buscas, até max_search_calls, pode passar do limite sem aviso.
 _MIN_SEARCH_RUN_SECONDS = 1.0
-
-# Contadores de uso somados de cada linha para o resumo.
-_TOKEN_STAT_KEYS = (
-    "input_tokens",
-    "cached_input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "reasoning_tokens",
-)
 
 
 class TokenStats(TypedDict):
@@ -3539,7 +3531,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     if track_tokens and usage:
         for column in TOKEN_COLUMNS:
             _set_cell(df, idx, column, usage.get(column.removeprefix("_"), 0))
-        for key in _TOKEN_STAT_KEYS:
+        for key in _TOKEN_KEYS:
             token_stats[key] += usage.get(key, 0)
         token_stats["cost_usd"] += usage.get("cost_usd") or 0
 

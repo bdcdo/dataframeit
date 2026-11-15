@@ -34,7 +34,7 @@ from .errors import (
     retry_with_backoff,
     validation_error_summary,
 )
-from .llm import LLMConfig, build_prompt
+from .llm import LLMConfig, Usage, build_prompt
 from .utils import _user_stacklevel
 
 if TYPE_CHECKING:
@@ -44,8 +44,6 @@ if TYPE_CHECKING:
     from openai_codex.client import CodexClient
     from openai_codex.generated.v2_all import ThreadItem, Turn, TurnError
     from openai_codex.types import ReasoningEffort, ThreadTokenUsage
-
-    from .llm import Usage
 
 # Status HTTP de credencial recusada e de rate limit.
 _HTTP_UNAUTHORIZED = 401

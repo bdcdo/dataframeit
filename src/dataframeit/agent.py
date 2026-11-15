@@ -27,6 +27,7 @@ from .conditional import (
 )
 from .errors import retry_with_backoff
 from .llm import (
+    _TOKEN_KEYS,
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
@@ -53,15 +54,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_USAGE_COUNTERS = (
-    "input_tokens",
-    "cached_input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "reasoning_tokens",
-    "search_credits",
-    "search_count",
-)
+_USAGE_COUNTERS = (*_TOKEN_KEYS, "search_credits", "search_count")
 
 
 def _empty_usage() -> Usage:
