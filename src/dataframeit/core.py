@@ -1971,8 +1971,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         # coluna `string` de convert_dtypes, vira None: a marca das linhas não
         # alcançadas compara o status e o detalhe com texto, e a comparação com
         # o pd.NA não é booleana.
+        # Só reatribui a coluna que precisa: num slice, a reatribuição avisa
+        # SettingWithCopyWarning no pandas antigo.
         for col in control_columns:
-            df_pandas[col] = df_pandas[col].where(df_pandas[col].notna(), None)
+            column = df_pandas[col]
+            if any(value is not None for value in column[column.isna()]):
+                df_pandas[col] = column.where(column.notna(), None)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
