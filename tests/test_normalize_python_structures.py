@@ -567,6 +567,28 @@ def test_read_df_sem_modelo_normaliza_coluna_json_depois_de_coluna_numerica(tmp_
     assert list(df["itens"]) == [["a"], ["b"]]
 
 
+@pytest.mark.parametrize("modelo", [None, ModelWithList, SimpleModel])
+def test_read_df_aceita_caminho_como_path(tmp_path, modelo):
+    """O caminho em `Path`, com sufixo maiúsculo, lê como o mesmo caminho em texto.
+
+    O ModelWithList passa pela releitura do campo int e o SimpleModel, também
+    pela do campo de texto.
+    """
+    caminho = tmp_path / "dados.CSV"
+    pd.DataFrame(
+        {
+            "itens": ['["a"]', '["b"]'],
+            "quantidade": [1, 2],
+            "nome": ["2023", "N/A"],
+            "idade": [3, 4],
+        }
+    ).to_csv(caminho, index=False)
+
+    df = read_df(caminho, modelo)
+
+    pd.testing.assert_frame_equal(df, read_df(str(caminho), modelo))
+
+
 def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():
     """Só texto é testado como JSON: o número na amostra não tem `strip`."""
     sem_json = pd.DataFrame({"misto": pd.Series([1, "x"], dtype=object)})

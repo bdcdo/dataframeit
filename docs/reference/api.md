@@ -203,14 +203,14 @@ resultado = dataframeit(
 Lê arquivos em diversos formatos para DataFrame e devolve listas, dicts e modelos aninhados gravados como JSON (ou como repr Python) às estruturas originais. É a forma de recarregar um checkpoint ou uma saída salva para retomar com `resume=True`.
 
 ```python
-def read_df(path: str, model=None, normalize: bool = True, **kwargs) -> pd.DataFrame
+def read_df(path: str | os.PathLike, model=None, normalize: bool = True, **kwargs) -> pd.DataFrame
 ```
 
 ### Parâmetros
 
 | Parâmetro | Tipo | Descrição |
 |-----------|------|-----------|
-| `path` | str | Caminho do arquivo |
+| `path` | str \| os.PathLike | Caminho do arquivo |
 | `model` | type[BaseModel] | Modelo Pydantic. Com ele, só os campos de estrutura são normalizados, e em `.csv`, `.xlsx` e `.xls` os campos de texto são lidos como texto cru: `"2023"` não vira número e `"N/A"` não vira ausência. Qualquer argumento de leitura extra, dos `**kwargs`, desliga essa leitura, e o texto fica como o pandas o devolve. |
 | `normalize` | bool | Se `False`, não converte nenhuma coluna |
 | `**kwargs` | | Argumentos passados para pandas. Com o que faz o leitor devolver outra coisa que um DataFrame, como `chunksize`, `iterator` ou `sheet_name=None` ou lista, a função devolve o objeto do pandas, como `TextFileReader`, `JsonReader`, dict de abas ou a `Series` de `typ="series"`, sem normalizar nem reler nenhuma coluna, mesmo com `model` e `normalize=True` |

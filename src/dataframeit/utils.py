@@ -32,6 +32,7 @@ from pandas.api.types import is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Collection, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
@@ -1030,7 +1031,7 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set) -> None:
 
 
 def read_df(
-    path: str,
+    path: str | os.PathLike[str],
     model: type[BaseModel] | None = None,
     normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
     **kwargs: Any,
@@ -1042,7 +1043,8 @@ def read_df(
     JSON de volta para listas, dicionários e outras estruturas Python.
 
     Args:
-        path: Caminho do arquivo (suporta .xlsx, .xls, .csv, .parquet, .json).
+        path: Caminho do arquivo, em texto ou `os.PathLike` (suporta .xlsx,
+              .xls, .csv, .parquet, .json).
         model: Modelo Pydantic opcional. Se fornecido, apenas as colunas que
                correspondem a campos complexos do modelo serão normalizadas.
                Com ele e sem kwargs, os campos de texto do .csv, do .xlsx e
@@ -1088,7 +1090,7 @@ def read_df(
         raise FileNotFoundError(msg)
 
     # Detectar formato pelo sufixo
-    ext = Path(path.lower()).suffix
+    ext = Path(path).suffix.lower()
 
     reader = _READERS.get(ext)
     if reader is None:
@@ -1122,7 +1124,11 @@ def read_df(
 
 
 def _reread_text_columns(
-    df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
+    df: pd.DataFrame,
+    path: str | os.PathLike[str],
+    ext: str,
+    model: type[BaseModel],
+    kwargs: dict,
 ) -> None:
     """Relê como texto cru os campos de texto do modelo, in-place.
 
@@ -1179,7 +1185,11 @@ def _int_or_read(text: str, read: object) -> object:
 
 
 def _reread_int_columns(
-    df: pd.DataFrame, path: str, ext: str, model: type[BaseModel], kwargs: dict
+    df: pd.DataFrame,
+    path: str | os.PathLike[str],
+    ext: str,
+    model: type[BaseModel],
+    kwargs: dict,
 ) -> None:
     """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
 
