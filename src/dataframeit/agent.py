@@ -22,6 +22,7 @@ from .conditional import (
     _collect_configured_fields,
     _get_field_config,
     _model_field_configs,
+    evaluate_condition,
     get_field_execution_order,
     get_group_execution_units,
     should_skip_field,
@@ -29,7 +30,7 @@ from .conditional import (
 )
 from .errors import ProviderOutputError, retry_with_backoff, validation_error_summary
 from .llm import (
-    _TOKEN_KEYS,
+    _USAGE_COUNTERS,
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
@@ -57,8 +58,6 @@ if TYPE_CHECKING:
     from .search import SearchProvider
 
 logger = logging.getLogger(__name__)
-
-_USAGE_COUNTERS = (*_TOKEN_KEYS, "search_credits", "search_count")
 
 
 def _empty_usage() -> Usage:
@@ -285,8 +284,9 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
     search_fields: list[ConfiguredField],
     text: str,
     config: LLMConfig,
+    usage: Usage,
     save_trace: str | None = None,
-) -> tuple[list[Any], Usage, list[Any] | None]:
+) -> tuple[list[Any], list[Any] | None]:
     """Enriquece cada item de uma lista com buscas específicas.
 
     Args:
@@ -295,13 +295,13 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
         search_fields: Lista de ConfiguredField.
         text: Texto original sendo processado.
         config: Configuração do LLM.
+        usage: Uso da linha, em que cada chamada soma o seu assim que volta.
         save_trace: Modo de trace.
 
     Returns:
-        Tupla (enriched_items, usage, traces).
+        Tupla (enriched_items, traces).
     """
     enriched_items = []
-    total_usage = _empty_usage()
     traces = [] if save_trace else None
 
     for item_idx, item in enumerate(list_items or []):
@@ -349,7 +349,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
             search_result = result["data"].get(field_name)
             _set_nested_value(item_dict, path, search_result)
 
-            _add_usage(total_usage, result.get("usage") or {})
+            _add_usage(usage, result.get("usage") or {})
 
             # Coletar trace
             if item_traces is not None and result.get("trace"):
@@ -360,7 +360,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
         if traces is not None and item_traces:
             traces.append(item_traces)
 
-    return enriched_items, total_usage, traces
+    return enriched_items, traces
 
 
 def _build_item_context(item_dict: dict[str, Any], inner_model: type[BaseModel]) -> str:
@@ -535,22 +535,23 @@ def _run_nested_searches(
     text: str,
     nested_fields: list[ConfiguredField],
     config: LLMConfig,
+    usage: Usage,
     save_trace: str | None = None,
-) -> tuple[dict[str, Any], Usage, dict[str, Any] | None]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Executa buscas para campos configurados em modelos aninhados.
 
     Args:
         text: Texto a ser processado.
         nested_fields: Lista de ConfiguredField.
         config: Configuração do LLM.
+        usage: Uso da linha, em que cada chamada soma o seu assim que volta.
         save_trace: Modo de trace.
 
     Returns:
-        Tupla (search_context: dict, usage: dict, traces: dict).
+        Tupla (search_context: dict, traces: dict).
         search_context mapeia path -> resultado da busca.
     """
     search_context = {}
-    total_usage = _empty_usage()
     traces = {} if save_trace else None
 
     for path, field_name, field_info, parent_model, _ in nested_fields:
@@ -581,13 +582,13 @@ def _run_nested_searches(
         # Armazenar contexto de busca
         search_context[path] = result["data"].get(field_name)
 
-        _add_usage(total_usage, result.get("usage") or {})
+        _add_usage(usage, result.get("usage") or {})
 
         # Coletar trace
         if traces is not None and result.get("trace"):
             traces[path] = result["trace"]
 
-    return search_context, total_usage, traces
+    return search_context, traces
 
 
 @dataclass(frozen=True)
@@ -624,9 +625,6 @@ class _Row:
     def wants(self, field_name: str) -> bool:
         return self.only_fields is None or field_name in self.only_fields
 
-    def add_usage(self, usage: Usage) -> None:
-        _add_usage(self.usage, usage)
-
     def add_trace(self, key: str, trace: object) -> None:
         # traces é None quando save_trace está desligado, e aí nenhuma
         # chamada devolve trace.
@@ -634,7 +632,7 @@ class _Row:
             self.traces[key] = trace
 
     def add_result(self, result: dict[str, Any], key: str) -> None:
-        self.add_usage(result.get("usage") or {})
+        _add_usage(self.usage, result.get("usage") or {})
         self.add_trace(key, result.get("trace"))
 
 
@@ -678,11 +676,19 @@ class _FieldExtractor:
         self, text: str, only_fields: set[str] | None = None, known: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         row = _Row(text, only_fields, known or {}, traces={} if self.save_trace else None)
-        self._search_nested_fields(row)
-        for unit in self.units:
-            self._run_unit(row, unit)
+        try:
+            self._search_nested_fields(row)
+            for unit in self.units:
+                self._run_unit(row, unit)
+            data = self._validated_data(row)
+            self._check_skipped(row, data)
+        except Exception as error:
+            # A linha falhou, mas as chamadas já feitas foram cobradas; o core
+            # soma esse uso ao resumo. Atributo dinâmico, lido com getattr.
+            error.row_usage = row.usage  # ty: ignore[unresolved-attribute]
+            raise
         response = {
-            "data": self._validated_data(row),
+            "data": data,
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
         if self.save_trace:
@@ -750,6 +756,27 @@ class _FieldExtractor:
             and name not in row.dropped
         }
 
+    def _check_skipped(self, row: _Row, data: dict[str, Any]) -> None:
+        """Recusa a linha em que a condição de um campo pulado é verdadeira com a linha completa.
+
+        A condição avaliada durante a extração lê a linha montada até ali. A
+        que depende de um campo extraído depois dela, direto (a callable sem
+        depends_on) ou por um model_validator que muda o campo lido conforme
+        ele, pode pular o campo que a linha completa pede, e a retomada, que
+        relê a linha gravada, discordaria da execução. Levanta ProviderOutputError.
+        """
+        for name in self.execution_order:
+            if name in row.skipped and evaluate_condition(
+                self.field_configs[name].get("condition"), data, name
+            ):
+                msg = (
+                    f"Linha recusada pelo modelo: o campo '{name}' foi pulado pela condição, "
+                    "que é verdadeira com a linha completa: ela leu a linha antes da "
+                    "extração de um campo de que depende, por ela ou por um model_validator. "
+                    f"Declare esse campo em depends_on de '{name}'."
+                )
+                raise ProviderOutputError(msg)
+
     def _search_nested_fields(self, row: _Row) -> None:
         """Busca os campos aninhados com configuração própria antes das unidades.
 
@@ -759,11 +786,10 @@ class _FieldExtractor:
         nested_fields = [path for path in self.nested_fields if row.wants(path[0].split(".")[0])]
         if not nested_fields:
             return
-        context, usage, traces = _run_nested_searches(
-            row.text, nested_fields, self.config, self.save_trace
+        context, traces = _run_nested_searches(
+            row.text, nested_fields, self.config, row.usage, self.save_trace
         )
         row.nested_context = context
-        row.add_usage(usage)
         for path, trace in (traces or {}).items():
             row.add_trace(path, trace)
 
@@ -784,20 +810,29 @@ class _FieldExtractor:
         prompt += _nested_context_note(row.nested_context, active)
 
         result = call_agent(row.text, model, prompt, config, self.save_trace)
+        row.add_result(result, unit.key)
         for name in active:
             row.data[name] = result["data"].get(name)
             if name not in result["data"]:
                 row.dropped.add(name)
         self._update_view(row, active)
-        # Em ordem de dependência, para que um campo anulado aqui também anule
-        # quem depende dele na mesma chamada.
-        for name in post_call:
-            if should_skip_field(name, self.field_configs[name], row.view):
+        self._settle_answers(row, active, post_call)
+
+    def _settle_answers(self, row: _Row, active: list[str], post_call: list[str]) -> None:
+        """Avalia as condições de `post_call` e enriquece as listas da resposta.
+
+        Em ordem de dependência, para que a condição avaliada depois da
+        resposta leia a lista já enriquecida e o campo anulado aqui, como a
+        linha completa; o campo anulado não é enriquecido.
+        """
+        for name in self.execution_order:
+            if name not in active:
+                continue
+            if name in post_call and should_skip_field(name, self.field_configs[name], row.view):
                 row.data[name] = row.view[name] = None
                 row.skipped.add(name)
-        enriched = [name for name in active if self._enrich_items(row, name)]
-        self._update_view(row, enriched)
-        row.add_result(result, unit.key)
+            elif self._enrich_items(row, name):
+                self._update_view(row, [name])
 
     def _update_view(self, row: _Row, names: list[str]) -> None:
         """Atualiza o que as condições leem, depois que os campos `names` entraram em row.data.
@@ -886,16 +921,16 @@ class _FieldExtractor:
         items = row.data[field_name]
         if spec is None or not isinstance(items, list) or not items:
             return False
-        enriched, usage, traces = _enrich_list_items_with_search(
+        enriched, traces = _enrich_list_items_with_search(
             items,
             spec["inner_model"],
             spec["search_fields"],
             row.text,
             self.config,
+            row.usage,
             self.save_trace,
         )
         row.data[field_name] = enriched
-        row.add_usage(usage)
         row.add_trace(f"{field_name}_items", traces)
         return True
 

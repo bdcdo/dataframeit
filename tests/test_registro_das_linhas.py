@@ -104,6 +104,43 @@ def test_custo_do_erro_entra_no_resumo_so_quando_informado(custo, esperado):
     assert estatisticas["cost_usd"] == esperado
 
 
+def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo():
+    erro = _ErroComCusto("falhou")
+    erro.cost_usd = 0.25
+    erro.row_usage = {  # ty: ignore[unresolved-attribute]
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "search_credits": 2,
+        "search_count": 1,
+        "cost_usd": 0.5,
+    }
+    estatisticas = core._empty_token_stats()
+    df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
+
+    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
+        core._record_error(
+            df,
+            0,
+            erro,
+            status_col="s",
+            config=_config(),
+            row_already_processed=False,
+            reprocess_columns=None,
+            token_stats=estatisticas,
+        )
+
+    assert estatisticas == {
+        **core._empty_token_stats(),
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "search_credits": 2,
+        "search_count": 1,
+        "cost_usd": 0.75,
+    }
+
+
 @pytest.mark.parametrize("registro", ["normal", "reserva"])
 @pytest.mark.parametrize(
     ("ja_processada", "reprocessar"), [(True, None), (False, ["campo1"]), (False, None)]

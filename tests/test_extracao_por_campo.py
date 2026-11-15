@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, Field, create_model
+from typing_extensions import override
 
 from dataframeit import field_condition
 from dataframeit.agent import field_extractor
@@ -126,6 +127,60 @@ def test_usage_soma_contador_ausente_como_zero_no_modo_por_grupo():
 
     assert resultado["usage"]["input_tokens"] == 4
     assert resultado["usage"]["output_tokens"] == 0
+
+
+class _AgenteQueFalha(_Agente):
+    """Levanta `erro` na chamada ao modelo `falha`, depois de registrá-la."""
+
+    def __init__(self, falha, erro):
+        super().__init__(RESPOSTAS, usage={"input_tokens": 2})
+        self.falha = falha
+        self.erro = erro
+
+    @override
+    def __call__(self, text, model, prompt, config, save_trace=None):
+        resultado = super().__call__(text, model, prompt, config, save_trace)
+        if model.__name__ == self.falha:
+            raise self.erro
+        return resultado
+
+
+@pytest.mark.parametrize(
+    "falha",
+    ["NestedSearch_interno_outro", "Completo_interno", "ItemSearch_0_preco"],
+)
+def test_erro_da_linha_leva_o_uso_das_chamadas_ja_feitas(falha):
+    agente = _AgenteQueFalha(falha, RuntimeError("caiu"))
+
+    with pytest.raises(RuntimeError, match="caiu") as erro:
+        _rodar(agente, Completo, _config())
+
+    assert agente.nomes[-1] == falha
+    # Todas as chamadas antes da que falhou, inclusive a do campo da lista enriquecida.
+    assert erro.value.row_usage["input_tokens"] == 2 * (len(agente.chamadas) - 1)  # ty: ignore[unresolved-attribute]
+
+
+def _tem_preco(dados):
+    return any((item or {}).get("preco") for item in dados.get("itens") or [])
+
+
+class ComResumoDosPrecos(BaseModel):
+    itens: list[Item] = []
+    resumo: Optional[str] = Field(
+        None, json_schema_extra=field_condition(_tem_preco, depends_on="itens")
+    )
+
+
+@pytest.mark.parametrize("grupos", [None, {"g": SearchGroupConfig(fields=["itens", "resumo"])}])
+def test_condicao_le_a_lista_ja_enriquecida_tambem_no_mesmo_grupo(grupos):
+    agente = _Agente({"itens": [{"nome": "x"}], "preco": "R$ 10", "resumo": "tem preço"})
+
+    resultado = _rodar(agente, ComResumoDosPrecos, _config(grupos))
+
+    assert resultado["data"] == {
+        "itens": [{"nome": "x", "preco": "R$ 10"}],
+        "resumo": "tem preço",
+    }
 
 
 # =============================================================================

@@ -69,7 +69,7 @@ from .errors import (
     validate_search_dependencies,
 )
 from .llm import (
-    _TOKEN_KEYS,
+    _USAGE_COUNTERS,
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
@@ -121,6 +121,8 @@ if TYPE_CHECKING:
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
     from pydantic.fields import FieldInfo
+
+    from .llm import Usage
 
     # (posição na fila, índice da linha, linha) que o modo paralelo processa
     _RowData = tuple[int, Hashable, pd.Series]
@@ -3575,16 +3577,12 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     if track_tokens and usage:
         for column in TOKEN_COLUMNS:
             _set_cell(df, idx, column, usage.get(column.removeprefix("_"), 0))
-        for key in _TOKEN_KEYS:
-            token_stats[key] += usage.get(key, 0)
-        token_stats["cost_usd"] += usage.get("cost_usd") or 0
 
     # Armazenar métricas de busca (search_count mantido só para o resumo)
     search_config = config.search_config
     if search_config and search_config.enabled and usage:
         _set_cell(df, idx, "_search_credits", usage.get("search_credits", 0))
-        token_stats["search_credits"] += usage.get("search_credits", 0)
-        token_stats["search_count"] += usage.get("search_count", 0)
+    _add_usage_stats(token_stats, usage or {})
 
     # Armazenar traces: um por campo ou grupo nos modos por campo, ou um só
     if trace_mode:
@@ -3600,6 +3598,23 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     return written
 
 
+def _add_usage_stats(token_stats: TokenStats, usage: Usage) -> None:
+    """Soma ao resumo da execução o uso de uma linha."""
+    for key in _USAGE_COUNTERS:
+        token_stats[key] += usage.get(key, 0)
+    token_stats["cost_usd"] += usage.get("cost_usd") or 0
+
+
+def _add_failed_usage(token_stats: TokenStats, error: BaseException) -> None:
+    """Soma ao resumo o que a linha que falhou já gastou.
+
+    O custo vem em `cost_usd` (claude_code), e o uso das chamadas já feitas,
+    em `row_usage` (modo por campo), atributos que o backend põe na exceção.
+    """
+    _add_usage_stats(token_stats, getattr(error, "row_usage", None) or {})
+    token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
+
+
 def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução inteira)
     df: pd.DataFrame,
     idx: Hashable,
@@ -3613,10 +3628,11 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
 ) -> None:
     """Grava a falha da linha e avisa com a mensagem amigável.
 
-    O custo informado pelo provider entra no resumo mesmo com a linha falhando.
+    O custo informado pelo provider e o uso das chamadas que a linha já fez
+    (`row_usage`, do modo por campo) entram no resumo mesmo com a linha falhando.
     """
     error_msg = f"{type(error).__name__}: {error}"
-    token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
+    _add_failed_usage(token_stats, error)
 
     # Erro recuperável chegou aqui depois de esgotar as tentativas; o não
     # recuperável, sem retry.
@@ -3844,6 +3860,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                 success = True
             except ProviderAbortError as e:
                 token_stats["abort"] = _abort_reason(e)
+                _add_failed_usage(token_stats, e)
                 mark_unreached(registered)
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
                 _record_error_safely(
@@ -4185,6 +4202,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         except ProviderAbortError as e:
             with lock:
                 token_stats.setdefault("abort", _abort_reason(e))
+                _add_failed_usage(token_stats, e)
             abort_event.set()
             return
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
