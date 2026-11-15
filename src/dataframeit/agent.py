@@ -671,8 +671,9 @@ class _FieldExtractor:
     nested_fields: tuple[ConfiguredField, ...]
     excluded_fields: frozenset[str]
     omitted_fields: frozenset[str]
-    # Sem condição, ninguém lê row.view, e os validadores não rodam por campo.
-    has_conditions: bool
+    # Os campos que alguma condição lê, os únicos que passam pelos validadores
+    # um a um (_condition_value).
+    condition_inputs: frozenset[str]
 
     def __call__(
         self, text: str, only_fields: set[str] | None = None, known: dict[str, Any] | None = None
@@ -681,20 +682,8 @@ class _FieldExtractor:
         self._search_nested_fields(row)
         for unit in self.units:
             self._run_unit(row, unit)
-        data = self._validated_data(row)
-
-        # Como o model_dump dos outros modos, a resposta deixa de fora o campo
-        # que o dump tira, e a execução não o grava. O dump do modelo de cada
-        # chamada, que copia o exclude e o exclude_if do campo, tira o campo
-        # respondido (row.dropped); omitted_fields traz o que o
-        # @model_serializer tira e o campo com exclude=True, também quando ele
-        # não foi à chamada, como o de `known` ou o pulado pela condição.
         response = {
-            "data": {
-                name: value
-                for name, value in data.items()
-                if name not in self.omitted_fields and name not in row.dropped
-            },
+            "data": self._validated_data(row),
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
         if self.save_trace:
@@ -702,7 +691,7 @@ class _FieldExtractor:
         return response
 
     def _validated_data(self, row: _Row) -> dict[str, Any]:
-        """Os valores da linha montada, validada pelo modelo do usuário, na ordem do modelo.
+        """A resposta da linha montada, validada pelo modelo do usuário, na ordem do modelo.
 
         Cada chamada valida a resposta só pelo campo, e os validadores do
         modelo (`field_validator`, `model_validator`) rodam aqui, sobre a linha
@@ -738,10 +727,18 @@ class _FieldExtractor:
         except Exception as error:
             msg = f"Linha recusada pelo modelo: {type(error).__name__}: {error}"
             raise ProviderOutputError(msg) from error
+        # Como o model_dump dos outros modos, a resposta deixa de fora o campo
+        # que o dump tira, e a execução não o grava. O dump do modelo de cada
+        # chamada, que copia o exclude e o exclude_if do campo, tira o campo
+        # respondido (row.dropped); omitted_fields traz o que o
+        # @model_serializer tira e o campo com exclude=True, também quando ele
+        # não foi à chamada, como o de `known` ou o pulado pela condição.
         return {
             name: dumped[name] if name in values else row.data.get(name)
             for name in self.pydantic_model.model_fields
-            if name not in values or name in dumped
+            if (name not in values or name in dumped)
+            and name not in self.omitted_fields
+            and name not in row.dropped
         }
 
     def _condition_value(self, field_name: str, value: object) -> object:
@@ -815,8 +812,10 @@ class _FieldExtractor:
         for name in names:
             if name in row.dropped:
                 row.view[name] = None
-            elif self.has_conditions:
+            elif name in self.condition_inputs:
                 row.view[name] = self._condition_value(name, row.data[name])
+            else:
+                row.view[name] = row.data[name]
 
     def _active_fields(self, row: _Row, requested: list[str]) -> tuple[list[str], list[str]]:
         """Campos pedidos ao agente e, entre eles, os de condição avaliada depois da resposta.
@@ -959,8 +958,8 @@ def field_extractor(
         excluded_fields=excluded_fields,
         omitted_fields=excluded_fields
         | _dropped_by_model_serializer(pydantic_model, excluded_fields),
-        has_conditions=any(
-            field_config.get("condition") is not None for field_config in field_configs.values()
+        condition_inputs=frozenset(
+            path.split(".")[0] for paths in dependencies.values() for path in paths
         ),
     )
 

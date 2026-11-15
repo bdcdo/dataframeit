@@ -425,10 +425,11 @@ def _is_absent(value: object, *, nan_is_value: bool) -> bool:
 def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], object]:
     """Converte o valor relido de um campo à forma em que a execução o passa às condições.
 
-    A execução passa às condições o model_dump da resposta validada pelo
-    modelo do campo, e o checkpoint grava a data, o Decimal e a chave de dict
-    como texto. Validado de novo sem strict, como em `_validate_row`, o valor
-    volta ao tipo do campo, e só substitui o relido onde diz o mesmo
+    A execução passa às condições o model_dump do valor com os validadores do
+    modelo, que é o que ela grava, e o checkpoint grava a data, o Decimal e a
+    chave de dict como texto. Validado de novo sem strict pelo modelo do
+    campo, sem os validadores, que já rodaram, o valor volta ao tipo do campo,
+    e só substitui o relido onde diz o mesmo
     (`_validated_where_same`): o item que um validador muda a cada passada
     fica como foi relido. O campo com exclude=True, que o dump deixa de fora,
     a execução viu como None.
