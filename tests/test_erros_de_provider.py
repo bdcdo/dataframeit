@@ -6,6 +6,7 @@ import importlib.metadata
 import importlib.util
 import pickle
 import tomllib
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -453,14 +454,55 @@ def test_caixa_generica_sem_corte_nao_poe_reticencias(texto, linhas):
         "x" * 300,
         " ".join(["palavra"] * 100),
         "Claude Code SDK retornou erro (error_during_execution, status None): " + "y" * 200,
+        "falhou 🔥 " * 30,
+        "接続がタイムアウトしました。" * 15,
+        "火" * 300,
+        unicodedata.normalize("NFD", "ação não concluída, tente outra vez " * 6),
+        "x\u0301y\u0302 sem forma composta " * 8,
+        "\x1b[31merro vermelho\x1b[0m " * 12,
+        "linha um\u2028linha dois\x85linha três\u2029fim",
+        "zero\u200blargura\u200dcom\x07controle",
     ],
-    ids=["vazia", "curta", "quebra-de-linha", "palavra-longa", "longa", "prefixo-do-claude-code"],
+    ids=[
+        "vazia",
+        "curta",
+        "quebra-de-linha",
+        "palavra-longa",
+        "longa",
+        "prefixo-do-claude-code",
+        "emoji",
+        "cjk",
+        "palavra-longa-cjk",
+        "acento-decomposto",
+        "combinante-sem-forma-composta",
+        "ansi",
+        "separadores-unicode",
+        "largura-zero-e-controle",
+    ],
 )
 def test_caixa_generica_mantem_a_moldura_alinhada(texto):
     linhas = _caixa_generica(texto).splitlines()
 
-    assert {len(linha) for linha in linhas} == {len(linhas[0])}
+    assert {_largura_exibida(linha) for linha in linhas} == {80}
     assert all(linha.startswith(("║", "╔", "╠", "╚")) for linha in linhas)
+
+
+def _largura_exibida(texto):
+    """Colunas que o texto ocupa no terminal: largo e cheio contam 2, marca combinante 0."""
+    return sum(
+        0
+        if unicodedata.combining(char) or unicodedata.category(char) in {"Mn", "Me", "Cf", "Cc"}
+        else 2
+        if unicodedata.east_asian_width(char) in {"W", "F"}
+        else 1
+        for char in texto
+    )
+
+
+def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc():
+    texto = unicodedata.normalize("NFD", "ação") + " \x1b[31m接続\x1b[0m\u2028🔥"
+
+    assert _detalhes(_caixa_generica(texto)) == ["ação 接続 🔥"]
 
 
 # =============================================================================

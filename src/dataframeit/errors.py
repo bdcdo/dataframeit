@@ -14,8 +14,8 @@ import importlib.metadata
 import os
 import random
 import re
-import textwrap
 import time
+import unicodedata
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -829,22 +829,99 @@ def _generic_box_details(message: str) -> str:
 
     Numa linha só, o prefixo que o provider põe na mensagem ocuparia a largura
     inteira: o do claude_code, com subtipo e status, passa de 65 caracteres, e a
-    caixa não mostraria nada do texto que o SDK devolveu. O textwrap troca quebra
-    de linha e tabulação por espaço, que desalinhariam a moldura, quebra palavra
-    maior que a largura e marca com reticências a mensagem cortada no teto.
+    caixa não mostraria nada do texto que o SDK devolveu. A quebra, o corte da
+    palavra maior que a linha e o preenchimento até a borda medem a largura
+    exibida no terminal, e não o número de caracteres, para que emoji, CJK e
+    marca combinante não desalinhem a moldura; a mensagem cortada no teto
+    termina em reticências.
     """
-    lines = textwrap.wrap(
-        message,
-        width=_GENERIC_BOX_DETAIL_WIDTH,
-        max_lines=_GENERIC_BOX_DETAIL_MAX_LINES,
-        placeholder=" ...",
+    lines = _wrap_display(
+        _box_text(message), _GENERIC_BOX_DETAIL_WIDTH, _GENERIC_BOX_DETAIL_MAX_LINES
     ) or [""]
     indent = " " * len(_GENERIC_BOX_DETAIL_LABEL)
     labels = [_GENERIC_BOX_DETAIL_LABEL] + [indent] * (len(lines) - 1)
     return "\n".join(
-        f"║  {label}{line:<{_GENERIC_BOX_DETAIL_WIDTH}} ║"
+        f"║  {label}{line}{' ' * (_GENERIC_BOX_DETAIL_WIDTH - _display_width(line))} ║"
         for label, line in zip(labels, lines, strict=True)
     )
+
+
+# Sequência de escape do terminal: CSI (cor ANSI, como '\x1b[31m'), OSC (título,
+# hiperlink), terminada em BEL ou ST, e as de dois caracteres.
+_TERMINAL_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])"
+)
+
+
+def _box_text(text: str) -> str:
+    """Texto para a moldura: em NFC, sem escape do terminal e sem caractere de controle.
+
+    O espaço Unicode, que inclui os separadores de linha que o splitlines parte
+    (U+2028, U+2029, U+0085), vira espaço; os demais caracteres de controle e
+    de formatação, que o terminal não mostra ou mostra com largura imprevisível,
+    saem.
+    """
+    text = _TERMINAL_ESCAPE.sub("", unicodedata.normalize("NFC", text))
+    return "".join(
+        " " if char.isspace() else char
+        for char in text
+        if char.isspace() or unicodedata.category(char) not in {"Cc", "Cf"}
+    )
+
+
+def _char_width(char: str) -> int:
+    """Colunas que o caractere ocupa no terminal: largo e cheio 2, combinante 0."""
+    if unicodedata.category(char) in {"Mn", "Me"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
+def _display_width(text: str) -> int:
+    return sum(map(_char_width, text))
+
+
+def _cut_display(text: str, width: int) -> str:
+    """Maior prefixo do texto que cabe em ``width`` colunas."""
+    used = 0
+    for index, char in enumerate(text):
+        used += _char_width(char)
+        if used > width:
+            return text[:index]
+    return text
+
+
+def _wrap_display(text: str, width: int, max_lines: int) -> list[str]:
+    """Quebra o texto em linhas de até ``width`` colunas, com reticências no corte.
+
+    Como o textwrap, junta as palavras por um espaço e corta a palavra maior que
+    a linha, mas mede a largura exibida. Passando de ``max_lines``, a última
+    linha perde palavras até caber ' ...'.
+    """
+    placeholder = " ..."
+    lines: list[str] = []
+    line = ""
+    for word in text.split():
+        candidate = f"{line} {word}" if line else word
+        if _display_width(candidate) <= width:
+            line = candidate
+            continue
+        if line:
+            lines.append(line)
+        rest = word
+        while _display_width(rest) > width:
+            head = _cut_display(rest, width)
+            lines.append(head)
+            rest = rest[len(head) :]
+        line = rest
+    if line:
+        lines.append(line)
+    if len(lines) <= max_lines:
+        return lines
+    last = lines[max_lines - 1]
+    room = width - len(placeholder)
+    while " " in last and _display_width(last) > room:
+        last = last.rsplit(" ", 1)[0]
+    return [*lines[: max_lines - 1], _cut_display(last, room) + placeholder]
 
 
 # Status HTTP 4xx que indicam falha transitória; os demais 4xx são definitivos.
