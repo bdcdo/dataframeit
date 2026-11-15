@@ -1592,7 +1592,7 @@ def test_modo_por_campo_prompt_da_lista_sem_contexto_aninhado():
 
         fields = list(model.model_fields.keys())
         return {
-            "data": {f: f"valor_busca_{f}" for f in fields},
+            "data": {f: [] if f == "pedidos" else f"valor_busca_{f}" for f in fields},
             "usage": {
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -1634,7 +1634,7 @@ def test_modo_por_campo_sums_nested_usage():
 
         fields = list(model.model_fields.keys())
         return {
-            "data": {f: f"valor_{f}" for f in fields},
+            "data": {f: [{"quantidade": 1}] if f == "pedidos" else f"valor_{f}" for f in fields},
             "usage": {
                 "input_tokens": 100,
                 "output_tokens": 50,

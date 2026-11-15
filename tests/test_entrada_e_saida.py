@@ -15,7 +15,16 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, Strict, create_model, model_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    Strict,
+    create_model,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic_core import core_schema
 from typing_extensions import TypeAliasType
 
@@ -628,6 +637,126 @@ def test_campo_que_o_exclude_if_tira_mantem_o_valor_no_reprocessamento(por_campo
 
     assert resultado["categoria"].tolist() == ["nova"]
     assert resultado["anotacao"].tolist() == ["anterior"]
+
+
+class ModeloComValidadores(BaseModel):
+    uf: str
+    obs: str | None = None
+    resumo: str | None = None
+
+    @field_validator("uf")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+    @field_validator("obs")
+    @classmethod
+    def _na_vira_none(cls, valor):
+        return None if valor == "N/A" else valor
+
+    @model_validator(mode="after")
+    def _resume(self):
+        self.resumo = f"{self.uf}: {self.obs}"
+        return self
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+def test_validadores_do_modelo_rodam_na_linha_montada_campo_a_campo(por_campo):
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloComValidadores,
+        {"uf": "sp", "obs": "N/A", "resumo": "do agente"},
+        por_campo=por_campo,
+    )
+
+    assert resultado[["uf", "obs", "resumo"]].to_dict("records") == [
+        {"uf": "SP", "obs": None, "resumo": "SP: None"}
+    ]
+
+
+class ModeloComPeriodo(BaseModel):
+    inicio: int
+    fim: int
+
+    @model_validator(mode="after")
+    def _ordem(self):
+        if self.inicio > self.fim:
+            msg = "inicio depois do fim"
+            raise ValueError(msg)
+        return self
+
+
+def test_linha_que_o_modelo_recusa_campo_a_campo_fica_com_erro_sem_o_valor():
+    with pytest.warns(UserWarning, match="Linha recusada pelo modelo") as avisos:
+        resultado = _rodar_com_dump(
+            pd.DataFrame({"texto": ["a"]}),
+            ModeloComPeriodo,
+            {"inicio": 2031, "fim": 2030},
+            por_campo=True,
+        )
+
+    detalhe = resultado["_error_details"].iloc[0]
+    assert "Linha recusada pelo modelo: 1 erro(s): (resposta inteira): Value error" in detalhe
+    assert "inicio depois do fim" in detalhe
+    assert "2031" not in detalhe
+    assert "2031" not in str(avisos[0].message)
+    assert resultado["inicio"].tolist() == [None]
+
+
+class ModeloComCondicaoEValidador(BaseModel):
+    tem_valor: bool
+    valor: str = Field(json_schema_extra={"condition": {"field": "tem_valor", "equals": True}})
+
+    @field_validator("valor")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+
+def test_campo_obrigatorio_pulado_pela_condicao_fica_fora_da_validacao():
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a", "b"]}),
+        ModeloComCondicaoEValidador,
+        {"tem_valor": False, "valor": "x"},
+        por_campo=True,
+    )
+
+    assert "_error_details" not in resultado.columns
+    assert resultado["tem_valor"].tolist() == [False, False]
+    assert resultado["valor"].tolist() == [None, None]
+
+
+class ModeloComExcludeIfDoValidado(BaseModel):
+    categoria: str
+    obs: str | None = Field(None, exclude_if=lambda valor: valor is None)
+
+    @field_validator("obs")
+    @classmethod
+    def _na_vira_none(cls, valor):
+        return None if valor == "N/A" else valor
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+def test_campo_que_o_exclude_if_tira_depois_do_validador_nao_e_gravado(por_campo):
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "categoria": ["velha"],
+            "obs": ["anterior"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado = _rodar_com_dump(
+        entrada,
+        ModeloComExcludeIfDoValidado,
+        {"categoria": "nova", "obs": "N/A"},
+        por_campo=por_campo,
+        reprocess_columns=["categoria", "obs"],
+    )
+
+    assert resultado["categoria"].tolist() == ["nova"]
+    assert resultado["obs"].tolist() == ["anterior"]
 
 
 def test_retomada_do_checkpoint_com_coluna_de_campo_com_exclude_segue(tmp_path):
