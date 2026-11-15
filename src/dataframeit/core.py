@@ -1855,8 +1855,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     excluded_fields = _excluded_fields(questions)
     value_columns = [col for col in expected_columns if col not in excluded_fields]
     existing_cols = [col for col in value_columns if col in df_pandas.columns]
-    # Sem a coluna de status, toda linha é nova, e a coluna sem valor, a única
-    # que passa por _raise_if_overwritten, não tem resultado a proteger.
+    # Sem a coluna de status, toda linha é nova, como com resume=True, e o
+    # valor que a execução sobrescreveria já foi recusado em _raise_if_overwritten.
     if existing_cols and not resume and not reprocess_columns and input_has_status:
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
@@ -1878,9 +1878,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     has_processed_rows = (
         status_col in df_pandas.columns and df_pandas[status_col].eq("processed").any()
     )
-    new_columns = [
-        col for col in value_columns if col not in df_pandas.columns and has_processed_rows
-    ]
+    new_columns = (
+        [col for col in value_columns if col not in df_pandas.columns] if has_processed_rows else []
+    )
     suggested_columns = list(
         dict.fromkeys([*(reprocess_columns or []), *incompatible_columns, *new_columns])
     )
