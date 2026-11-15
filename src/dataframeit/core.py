@@ -163,7 +163,7 @@ class _FallbackHandler(logging.Handler):
 # pulado de conditional.py. O handler de reserva mantém o resumo visível sem
 # configuração, e o nível WARNING nesse logger o silencia.
 def _is_fallback(handler: logging.Handler) -> bool:
-    return getattr(handler, "is_dataframeit_fallback", False)
+    return hasattr(handler, "is_dataframeit_fallback")
 
 
 def _install_fallback_handler(logger: logging.Logger) -> None:
@@ -307,7 +307,10 @@ def _notify_row_done(on_row_done: Callable[[RowResult], None] | None, result: Ro
     try:
         on_row_done(result)
     except Exception as e:  # noqa: BLE001 (o callback é do usuário; a falha dele não para a execução)
-        warnings.warn(f"on_row_done falhou na linha {result.index}: {_error_text(e)}", stacklevel=1)
+        msg = f"on_row_done falhou na linha {result.index}: {_error_text(e)}"
+        # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
+        # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
+        warnings.warn(msg, stacklevel=1)  # pragma: no mutate
 
 
 # Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
@@ -377,7 +380,6 @@ def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list[Hashable]
         warnings.warn(
             f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
             f"('{_MISSING_TEXT_DETAIL}').",
-            UserWarning,
             stacklevel=_user_stacklevel(),
         )
 
@@ -2264,7 +2266,7 @@ def _format_token_stats(
     if token_stats["search_count"] > 0:
         lines += [
             "-" * 60,
-            f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})",
+            f"METRICAS DE BUSCA ({search_provider.upper() if search_provider else 'TAVILY'})",
             "-" * 60,
             f"Total de buscas: {token_stats['search_count']}",
             f"Creditos usados: {token_stats['search_credits']}",
@@ -3654,7 +3656,7 @@ def _add_failed_usage(token_stats: TokenStats, error: BaseException) -> None:
     backend põe na exceção.
     """
     _add_usage_stats(token_stats, getattr(error, "row_usage", None) or {})
-    token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
+    token_stats["cost_usd"] += getattr(error, "cost_usd", None) or 0
 
 
 def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução inteira)
@@ -3689,7 +3691,10 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
         error_details += _KEPT_VALUES_NOTE
 
     friendly_msg = get_friendly_error_message(error, config.provider)
-    warnings.warn(f"Falha ao processar linha {idx}.\n{friendly_msg}", stacklevel=1)
+    msg = f"Falha ao processar linha {idx}.\n{friendly_msg}"
+    # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
+    # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
+    warnings.warn(msg, stacklevel=1)  # pragma: no mutate
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
 
@@ -3765,7 +3770,9 @@ def _record_unrecorded_error(
 ) -> None:
     """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
     error_msg = _error_text(error)
-    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
+    # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
+    # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
+    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)  # pragma: no mutate
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
 
