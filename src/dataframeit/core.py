@@ -378,7 +378,7 @@ def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list[Hashable]
             f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
             f"('{_MISSING_TEXT_DETAIL}').",
             UserWarning,
-            stacklevel=3,
+            stacklevel=_user_stacklevel(),
         )
 
 
@@ -1037,7 +1037,7 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
         + "."
     )
 
-    warnings.warn(msg, UserWarning, stacklevel=3)
+    warnings.warn(msg, UserWarning, stacklevel=_user_stacklevel())
 
 
 def _validate_search_overrides(
@@ -1397,6 +1397,9 @@ def dataframeit(
 ) -> PolarsDataFrame: ...
 
 
+# Fora do teste de mutação: o mutmut renomearia a função e a chamaria por um
+# trampolim, e _user_stacklevel, que aponta os avisos para quem chamou
+# `dataframeit`, não acharia o quadro dela.
 def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)
     data: pd.DataFrame | pd.Series | PolarsDataFrame | PolarsSeries | list[Any] | dict[Any, Any],
     questions: type[BaseModel] | None = None,
@@ -1428,7 +1431,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     batch_size: int | None = None,
     checkpoint_path: str | os.PathLike[str] | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
-) -> pd.DataFrame | PolarsDataFrame:
+) -> pd.DataFrame | PolarsDataFrame:  # pragma: no mutate block
     """Processa textos usando LLMs para extrair informações estruturadas.
 
     Suporta múltiplos tipos de entrada:
@@ -1572,7 +1575,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         warnings.warn(
             "O parâmetro 'perguntas' está depreciado; use 'questions'.",
             DeprecationWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
         questions = perguntas
     elif questions is None:
@@ -1686,7 +1689,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                         f"Múltiplas colunas candidatas encontradas: {matches}. "
                         f"Usando '{text_column}'. Passe text_column= para suprimir este aviso.",
                         UserWarning,
-                        stacklevel=2,
+                        stacklevel=_user_stacklevel(),
                     )
             elif len(df_pandas.columns) == 1:
                 text_column = df_pandas.columns[0]
@@ -1871,7 +1874,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             "execução não as preenche nelas: ficam com o padrão de cada campo, ou None. "
             f"Para preenchê-las, passe reprocess_columns={suggested_columns!r}.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
@@ -2066,7 +2069,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             f"Execução interrompida: {token_stats['abort'].rstrip('.')}. {summary}. "
             f"Para retomar, {how}.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
 
     if track_tokens and any(token_stats.values()):
@@ -2086,7 +2089,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             f"{token_stats['final_workers']}. Considere usar "
             f"parallel_requests={token_stats['final_workers']} para evitar rate limits.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
@@ -3132,7 +3135,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
             "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
             "passe-o como entrada.",
             UserWarning,
-            stacklevel=3,
+            stacklevel=_user_stacklevel(),
         )
         return frozenset()
 
@@ -4224,7 +4227,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         workers_reduced = True
                         warnings.warn(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            stacklevel=2,
+                            stacklevel=_user_stacklevel(),
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo

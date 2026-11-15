@@ -17,7 +17,7 @@ permissions:
 jobs:
   mutmut:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
       EXTRAS: --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex
     steps:

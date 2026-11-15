@@ -303,13 +303,18 @@ fail_under = 100
 show_missing = true
 skip_covered = true
 
-# Teste de mutação, rodado pelo workflow mutation.yml. Os módulos entram um a um
-# em only_mutate: o mutmut envolve cada função mutada num trampolim, e os
-# `stacklevel` fixos de core.py apontariam o aviso para o trampolim. Os testes
-# leem os exemplos, a documentação, os READMEs e os workflows, que vão junto
-# para a cópia em mutants/.
+# Teste de mutação, rodado pelo workflow mutation.yml. O mutmut envolve cada
+# função mutada num trampolim, por isso os avisos dos módulos mutados usam
+# _user_stacklevel() no lugar de um `stacklevel` fixo. Os testes leem os
+# exemplos, a documentação, os READMEs e os workflows, que vão junto para a
+# cópia em mutants/.
 [tool.mutmut]
 source_paths = ["src/dataframeit"]
-only_mutate = ["src/dataframeit/errors.py", "src/dataframeit/utils.py"]
+only_mutate = [
+    "src/dataframeit/conditional.py",
+    "src/dataframeit/core.py",
+    "src/dataframeit/errors.py",
+    "src/dataframeit/utils.py",
+]
 process_isolation = "forkserver"
 also_copy = ["example/", "docs/", "README.md", "README.pt-BR.md", "README.es.md", ".github/"]

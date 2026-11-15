@@ -35,15 +35,16 @@ def _assinatura(modelo):
     )
 
 
-def _roda_python(codigo, *argumentos, semente, cwd=None):
+def _roda_python(codigo, *argumentos, semente):
     """Roda `codigo` num interpretador novo, com a semente de hash dada.
 
-    A falha traz o fim do stderr, para que a exceção do processo filho apareça.
+    O filho herda a pasta de trabalho do teste, onde o mutmut acha a própria
+    configuração quando roda a suíte. A falha traz o fim do stderr, para que a
+    exceção do processo filho apareça.
     """
     saida = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
         [sys.executable, "-c", codigo, *argumentos],
         env={**os.environ, "PYTHONHASHSEED": semente},
-        cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
@@ -241,8 +242,9 @@ _EXECUCAO = _MODELOS + textwrap.dedent(
 
 def test_execucao_interrompida_retoma_em_outro_processo_sem_refazer_linhas(tmp_path):
     """A cota acaba depois de 3 linhas; o outro processo, com outra semente, faz só a 4ª."""
-    primeira = _roda_python(_EXECUCAO, "ckpt.csv", "3", semente="1", cwd=tmp_path)
-    segunda = _roda_python(_EXECUCAO, "ckpt.csv", "100", semente="3", cwd=tmp_path)
+    checkpoint = str(tmp_path / "ckpt.csv")
+    primeira = _roda_python(_EXECUCAO, checkpoint, "3", semente="1")
+    segunda = _roda_python(_EXECUCAO, checkpoint, "100", semente="3")
 
     assert primeira["chamadas"] == ["a", "b", "c", "d"]
     assert any("interrompida" in aviso for aviso in primeira["avisos"])
