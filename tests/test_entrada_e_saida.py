@@ -523,19 +523,44 @@ class ModeloComExcluido(BaseModel):
     anotacao: str = Field(default="", exclude=True)
 
 
+@pytest.mark.parametrize("resume", [True, False])
 @pytest.mark.parametrize("com_status", [False, True])
-def test_coluna_de_campo_com_exclude_nao_conta_na_checagem(com_status):
+def test_coluna_de_campo_com_exclude_nao_conta_na_checagem(com_status, resume):
     # A execução não grava o campo com exclude=True, e o valor da entrada fica.
     entrada = pd.DataFrame({"texto": ["a"], "anotacao": ["nota humana"]})
     if com_status:
         entrada["_dataframeit_status"] = [None]
 
     resultado, llm = _rodar(
-        entrada, questions=ModeloComExcluido, llm=_responde(categoria="llm"), resume=True
+        entrada, questions=ModeloComExcluido, llm=_responde(categoria="llm"), resume=resume
     )
 
     assert llm.call_count == 1
     assert resultado["categoria"].tolist() == ["llm"]
+    assert resultado["anotacao"].tolist() == ["nota humana"]
+
+
+def test_busca_por_campo_nao_grava_o_campo_com_exclude():
+    def call_agent(text, model, prompt, config, save_trace=None):
+        return {"data": {campo: f"llm-{campo}" for campo in model.model_fields}, "usage": {}}
+
+    entrada = pd.DataFrame({"texto": ["a"], "anotacao": ["nota humana"]})
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=call_agent) as llm,
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        resultado = dataframeit(
+            entrada,
+            questions=ModeloComExcluido,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+        )
+
+    assert llm.call_count == 2
+    assert resultado["categoria"].tolist() == ["llm-categoria"]
     assert resultado["anotacao"].tolist() == ["nota humana"]
 
 

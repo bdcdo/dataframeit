@@ -666,8 +666,14 @@ class _FieldExtractor:
         for unit in self.units:
             self._run_unit(row, unit)
 
+        # Como o model_dump dos outros modos, a resposta deixa de fora o campo
+        # com exclude=True, que a execução não grava.
         response = {
-            "data": {name: row.data.get(name) for name in self.pydantic_model.model_fields},
+            "data": {
+                name: row.data.get(name)
+                for name, field in self.pydantic_model.model_fields.items()
+                if not field.exclude
+            },
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
         if self.save_trace:

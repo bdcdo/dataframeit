@@ -1785,7 +1785,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         _raise_if_overwritten(
             df_pandas, questions, reprocessed_columns, nan_columns, status_col=status_col
         )
-    existing_cols = [col for col in expected_columns if col in df_pandas.columns]
+    # A coluna do campo com exclude=True, que a execução não grava, não conta.
+    excluded_fields = _excluded_fields(questions)
+    existing_cols = [
+        col for col in expected_columns if col in df_pandas.columns and col not in excluded_fields
+    ]
     if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
