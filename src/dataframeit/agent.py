@@ -35,7 +35,12 @@ from .llm import (
     chat_model,
 )
 from .search import get_provider
-from .utils import _excluded_fields, is_list_of_pydantic_model, resolve_forward_refs
+from .utils import (
+    _dropped_by_model_serializer,
+    _excluded_fields,
+    is_list_of_pydantic_model,
+    resolve_forward_refs,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import Runnable
@@ -607,6 +612,8 @@ class _Row:
     data: dict = field(default_factory=dict)
     usage: dict = field(default_factory=_empty_usage)
     nested_context: dict = field(default_factory=dict)
+    # Os campos que o model_dump do modelo da chamada tirou da resposta.
+    dropped: set = field(default_factory=set)
 
     def wants(self, field_name: str) -> bool:
         return self.only_fields is None or field_name in self.only_fields
@@ -657,6 +664,7 @@ class _FieldExtractor:
     units: tuple[_Unit, ...]
     list_fields: dict
     nested_fields: tuple
+    omitted_fields: frozenset[str]
 
     def __call__(
         self, text: str, only_fields: set | None = None, known: dict | None = None
@@ -667,13 +675,16 @@ class _FieldExtractor:
             self._run_unit(row, unit)
 
         # Como o model_dump dos outros modos, a resposta deixa de fora o campo
-        # com exclude=True, que a execução não grava.
-        excluded = _excluded_fields(self.pydantic_model)
+        # que o dump tira, e a execução não o grava. O dump do modelo de cada
+        # chamada, que copia o exclude e o exclude_if do campo, tira o campo
+        # respondido (row.dropped); omitted_fields traz o que o
+        # @model_serializer tira e o campo com exclude=True, também quando ele
+        # não foi à chamada, como o de `known` ou o pulado pela condição.
         response = {
             "data": {
                 name: row.data.get(name)
                 for name in self.pydantic_model.model_fields
-                if name not in excluded
+                if name not in self.omitted_fields and name not in row.dropped
             },
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
@@ -717,6 +728,8 @@ class _FieldExtractor:
         result = call_agent(row.text, model, prompt, config, self.save_trace)
         for name in active:
             row.data[name] = result["data"].get(name)
+            if name not in result["data"]:
+                row.dropped.add(name)
         # Em ordem de dependência, para que um campo anulado aqui também anule
         # quem depende dele na mesma chamada.
         for name in post_call:
@@ -817,9 +830,11 @@ def field_extractor(
     A extração devolvida recebe `(text, only_fields=None, known=None)`.
     `only_fields` são os campos de primeiro nível a extrair (reprocess_columns);
     os demais voltam com o valor de `known`, que também alimenta as condições.
-    Ela devolve 'data' (todos os campos, na ordem do modelo), 'usage' (soma
-    das chamadas, com 'search_provider') e, com save_trace, 'traces', um por
-    grupo, campo, caminho aninhado e lista enriquecida ('{campo}_items').
+    Ela devolve 'data' (os campos que o model_dump do modelo traz, na ordem
+    do modelo), 'usage' (soma das chamadas, com 'search_provider') e, com
+    save_trace, 'traces', um por grupo, campo, caminho aninhado e lista
+    enriquecida ('{campo}_items'). O campo que o @model_serializer tira só
+    com alguns valores vem como os outros.
 
     Raises:
         ValueError: Se há dependências inválidas ou circulares, inclusive entre
@@ -842,6 +857,7 @@ def field_extractor(
         ordered_units.append(_Unit(key=name, fields=fields, group=group))
 
     list_fields = _get_list_fields_with_nested_search(pydantic_model)
+    excluded_fields = _excluded_fields(pydantic_model)
     nested_fields = tuple(
         configured
         for configured in _collect_configured_fields(pydantic_model)
@@ -859,6 +875,8 @@ def field_extractor(
         units=tuple(ordered_units),
         list_fields=list_fields,
         nested_fields=nested_fields,
+        omitted_fields=excluded_fields
+        | _dropped_by_model_serializer(pydantic_model, excluded_fields),
     )
 
 
