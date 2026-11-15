@@ -63,8 +63,11 @@ def test_xlsx_grava_toda_celula_como_texto_valido_do_excel(tmp_path: Path) -> No
 
     _save_checkpoint(_frame(), path)
 
-    sheet = openpyxl.load_workbook(path).active
-    assert [[cell.data_type for cell in row] for row in sheet.iter_rows()] == [["s", "s"]] * 3
+    # Pelo arquivo aberto aqui: o openpyxl antigo não fecha o que ele mesmo abre.
+    with path.open("rb") as arquivo:
+        sheet = openpyxl.load_workbook(arquivo).active
+        tipos = [[cell.data_type for cell in row] for row in sheet.iter_rows()]
+    assert tipos == [["s", "s"]] * 3
 
 
 def test_xlsx_usa_o_openpyxl_mesmo_com_outro_escritor_padrao_no_pandas(tmp_path: Path) -> None:
