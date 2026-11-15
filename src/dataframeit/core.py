@@ -3341,7 +3341,12 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     def to_json(value: object) -> object:
         value = _array_as_list(value)
         if _is_structure_class(type(value)):
-            return json.dumps(value, ensure_ascii=False, default=_json_default)
+            # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
+            return json.dumps(
+                value,
+                ensure_ascii=False,  # pragma: no mutate
+                default=_json_default,
+            )
         return enum_as_value(value)
 
     out = df.copy()
@@ -3384,7 +3389,11 @@ def _save_checkpoint(
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
     if ext == ".csv":
-        _structures_as_json(df).to_csv(tmp, index=False)
+        # O to_csv trata None como False em index, e o teste de mutação faz a troca à toa.
+        _structures_as_json(df).to_csv(
+            tmp,
+            index=False,  # pragma: no mutate
+        )
     elif ext == ".xlsx":
         _to_excel_as_text(_structures_as_json(df), tmp)
     elif ext == ".parquet":
@@ -3410,7 +3419,11 @@ def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
     porque a marca é do openpyxl, que o checkpoint .xlsx já exige.
     """
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        # O to_excel trata None como False em index, e o teste de mutação faz a troca à toa.
+        df.to_excel(
+            writer,
+            index=False,  # pragma: no mutate
+        )
         for row in next(iter(writer.sheets.values())).iter_rows():
             for cell in row:
                 if cell.data_type == "f":
@@ -3584,9 +3597,16 @@ def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]
     for key, trace in traces.items():
         column = f"_trace_{key}"
         if column not in df.columns:
-            with _silent_slice_write(df):
+            # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+            # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+            with _silent_slice_write(df):  # pragma: no mutate
                 df[column] = None
-        _set_cell(df, idx, column, json.dumps(trace, ensure_ascii=False))
+        # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
+        value = json.dumps(
+            trace,
+            ensure_ascii=False,  # pragma: no mutate
+        )
+        _set_cell(df, idx, column, value)
 
 
 def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
