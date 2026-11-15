@@ -361,6 +361,16 @@ def test_normalize_complex_columns_dict():
     assert df["dados"].iloc[1] == {"outro": 123}
 
 
+def test_normalize_complex_columns_numa_fatia_de_outro_dataframe():
+    """A coluna da fatia é normalizada sem o aviso de escrita em fatia do pandas 2."""
+    base = pd.DataFrame({"itens": ['["a"]', '["b", "c"]'], "id": [1, 2]})
+    fatia = base[base["id"] > 1]
+
+    normalize_complex_columns(fatia, {"itens"})
+
+    assert fatia.loc[1, "itens"] == ["b", "c"]
+
+
 def test_normalize_complex_columns_nonexistent():
     """Testa que colunas inexistentes são ignoradas."""
     df = pd.DataFrame({"a": [1, 2, 3]})
