@@ -3609,7 +3609,8 @@ def _add_failed_usage(token_stats: TokenStats, error: BaseException) -> None:
     """Soma ao resumo o que a linha que falhou já gastou.
 
     O custo vem em `cost_usd` (claude_code), e o uso das chamadas já feitas,
-    em `row_usage` (modo por campo), atributos que o backend põe na exceção.
+    em `row_usage` (LangChain sem busca e modo por campo), atributos que o
+    backend põe na exceção.
     """
     _add_usage_stats(token_stats, getattr(error, "row_usage", None) or {})
     token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
@@ -3629,10 +3630,13 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     """Grava a falha da linha e avisa com a mensagem amigável.
 
     O custo informado pelo provider e o uso das chamadas que a linha já fez
-    (`row_usage`, do modo por campo) entram no resumo mesmo com a linha falhando.
+    (`row_usage`, do LangChain sem busca e do modo por campo) entram no resumo
+    mesmo com a linha falhando.
     """
-    error_msg = f"{type(error).__name__}: {error}"
+    # Antes da mensagem: se o texto da exceção levantar, o registro de reserva
+    # assume a linha, e o uso já está no resumo.
     _add_failed_usage(token_stats, error)
+    error_msg = f"{type(error).__name__}: {error}"
 
     # Erro recuperável chegou aqui depois de esgotar as tentativas; o não
     # recuperável, sem retry.

@@ -1,15 +1,19 @@
 """Resposta recusada pela validação: a tentativa seguinte leva a resposta e o erro ao modelo."""
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError, model_validator
 
+from dataframeit import dataframeit
 from dataframeit.errors import (
+    ProviderAbortError,
     ProviderRejectedOutputError,
     get_friendly_error_message,
     is_rate_limit_error,
@@ -85,12 +89,18 @@ def _sucesso(modelo=None, tokens=(20, 7)):
     }
 
 
-def _chamar(respostas, max_retries=3):
+def _llm_falso(respostas):
+    """O patch do LLM cujo structured output devolve `respostas`, e esse structured output."""
     structured = MagicMock()
     structured.invoke.side_effect = respostas
     base = MagicMock()
     base.with_structured_output.return_value = structured
-    with patch("dataframeit.llm._create_langchain_llm", return_value=base):
+    return patch("dataframeit.llm._create_langchain_llm", return_value=base), structured
+
+
+def _chamar(respostas, max_retries=3):
+    llm, structured = _llm_falso(respostas)
+    with llm:
         resultado = call_langchain("TEXTO", ComEvidencia, "Leia: {texto}", _config(max_retries))
     return resultado, structured
 
@@ -499,3 +509,59 @@ class TestDiagnostico:
         with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([_falha("{x", erro="e" * 5000), _sucesso()])
         assert len(_chamada(structured, 1)[2][1]) < 2300
+
+
+class TestUsoDaLinhaQueFalha:
+    """As tentativas recusadas são cobradas: o uso delas vai na exceção e entra no resumo."""
+
+    def test_excecao_leva_o_uso_das_tentativas_recusadas(self):
+        with (
+            pytest.warns(UserWarning, match="Tentativa"),
+            pytest.raises(ProviderRejectedOutputError) as erro,
+        ):
+            _chamar(
+                [_falha(INVALIDO, tokens=(10, 5)), _falha(INVALIDO, tokens=(11, 6))],
+                max_retries=2,
+            )
+        assert erro.value.row_usage == {  # ty: ignore[unresolved-attribute]
+            "input_tokens": 21,
+            "cached_input_tokens": 0,
+            "output_tokens": 11,
+            "total_tokens": 32,
+            "reasoning_tokens": 0,
+        }
+
+    @pytest.mark.parametrize("paralelo", [1, 2])
+    @pytest.mark.parametrize(
+        ("fim", "aviso", "status", "tokens"),
+        [
+            (_falha(INVALIDO), "Falha ao processar linha", "error", 30),
+            (ProviderAbortError("limite"), "interrompida", None, 15),
+        ],
+        ids=["recusada", "abort"],
+    )
+    def test_uso_entra_no_resumo_com_a_linha_que_falha(  # noqa: PLR0913, PLR0917 (parametrização)
+        self, fim, aviso, status, tokens, paralelo, caplog
+    ):
+        llm, _ = _llm_falso([_falha(INVALIDO), fim])
+        with (
+            llm,
+            patch("dataframeit.core.validate_provider_dependencies"),
+            caplog.at_level(logging.INFO, logger="dataframeit.stats"),
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.warns(UserWarning, match=aviso),
+        ):
+            resultado = dataframeit(
+                pd.DataFrame({"texto": ["a"]}),
+                questions=ComEvidencia,
+                prompt="Leia: {texto}",
+                provider="google_genai",
+                model="m",
+                max_retries=2,
+                base_delay=0.0,
+                max_delay=0.0,
+                parallel_requests=paralelo,
+            )
+
+        assert resultado["_dataframeit_status"].tolist() == [status]
+        assert f"Total de tokens: {tokens}\n" in caplog.text
