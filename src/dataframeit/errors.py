@@ -366,7 +366,8 @@ def validate_provider_dependencies(provider: str | None) -> None:
             ) from err
         return
 
-    # Validar LangChain base
+    # Validar LangChain base. O langchain e o langchain-core são dependências
+    # obrigatórias, e por isso o extra all também os instala.
     try:
         importlib.import_module("langchain")
     except ImportError as err:

@@ -335,26 +335,6 @@ def test_codex_repete_os_mesmos_status_que_o_langchain(status):
 # =============================================================================
 
 
-@pytest.mark.parametrize(
-    ("ausente", "pacote_na_mensagem"),
-    [("langchain", "langchain"), ("langchain_core", "langchain-core")],
-)
-def test_langchain_ausente_pede_a_instalacao(monkeypatch, ausente, pacote_na_mensagem):
-    import_module = importlib.import_module
-
-    def importar(nome):
-        if nome == ausente:
-            raise ImportError(nome)
-        return import_module(nome)
-
-    monkeypatch.setattr(importlib, "import_module", importar)
-
-    with pytest.raises(ImportError, match=f"pip install {pacote_na_mensagem} ") as exc_info:
-        validate_provider_dependencies("openai")
-
-    assert "dataframeit[all]" in str(exc_info.value)
-
-
 def _sem_o_pacote(monkeypatch, pacote):
     import_module = importlib.import_module
 
@@ -364,6 +344,19 @@ def _sem_o_pacote(monkeypatch, pacote):
         return import_module(nome)
 
     monkeypatch.setattr(importlib, "import_module", importar)
+
+
+@pytest.mark.parametrize(
+    ("ausente", "pacote_na_mensagem"),
+    [("langchain", "langchain"), ("langchain_core", "langchain-core")],
+)
+def test_langchain_ausente_pede_a_instalacao(monkeypatch, ausente, pacote_na_mensagem):
+    _sem_o_pacote(monkeypatch, ausente)
+
+    with pytest.raises(ImportError, match=f"pip install {pacote_na_mensagem} ") as exc_info:
+        validate_provider_dependencies("openai")
+
+    assert "dataframeit[all]" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ A configuração é validada antes da primeira chamada ao modelo. Um problema aq
 
 | Exceção | Quando ocorre |
 |---------|---------------|
-| `ImportError` | Falta o pacote do provider ou do provedor de busca. A mensagem diz qual instalar: nos providers do LangChain, o pacote do provider (ex.: `pip install langchain-anthropic`) ou o extra `all`; no `claude_code` e no `codex`, o extra do provider; na busca web, o pacote do provedor (ex.: `pip install langchain-tavily`) |
+| `ImportError` | Falta o pacote do provider ou do provedor de busca. A mensagem diz qual instalar: nos providers do LangChain, o pacote do provider (ex.: `pip install langchain-anthropic`) e, quando o pacote está no extra `all`, também o `all`; no `claude_code` e no `codex`, o extra do provider; na busca web, o pacote do provedor (ex.: `pip install langchain-tavily`) |
 | `ValueError` | Parâmetro inválido: `questions` ou `prompt` ausentes, `max_retries < 1`, `batch_size` sem `checkpoint_path`, `search_groups` sem `search_per_field=True`, chave de API de busca ausente, linhas já processadas incompatíveis com o modelo atual |
 | `ProviderConfigurationError` | Configuração incompatível com o contrato do provider, como um `model_kwargs` que o `codex` não aceita ou um schema Pydantic que ele não consegue representar. É subclasse de `ValueError` |
 
