@@ -18,7 +18,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -93,6 +93,7 @@ from .utils import (
     _is_structure_class,
     _json_default,
     _keeps_nan,
+    _silent_slice_write,
     _user_stacklevel,
     accepts_only_text,
     from_pandas,
@@ -2171,17 +2172,6 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
             df[col] = None
         for col in needs_trace:
             df[col] = None
-
-
-def _silent_slice_write() -> AbstractContextManager[None]:
-    """Contexto em que criar coluna num DataFrame que é fatia de outro não avisa.
-
-    O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
-    escrita substitui esse aviso e a opção que o controla não se aplica.
-    """
-    if hasattr(pd.errors, "SettingWithCopyWarning"):
-        return pd.option_context("mode.chained_assignment", None)
-    return nullcontext()
 
 
 def _get_processing_indices(

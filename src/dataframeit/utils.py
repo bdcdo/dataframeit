@@ -22,6 +22,7 @@ import sys
 import types
 import typing
 import warnings
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -1017,6 +1018,17 @@ def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qua
     return value
 
 
+def _silent_slice_write() -> AbstractContextManager[None]:
+    """Contexto em que escrever coluna num DataFrame que é fatia de outro não avisa.
+
+    O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
+    escrita substitui esse aviso e a opção que o controla não se aplica.
+    """
+    if hasattr(pd.errors, "SettingWithCopyWarning"):
+        return pd.option_context("mode.chained_assignment", None)
+    return nullcontext()
+
+
 def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> None:
     """Normaliza colunas complexas no DataFrame, convertendo strings JSON.
 
@@ -1028,7 +1040,8 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
     """
     for col in complex_fields:
         if col in df.columns:
-            df[col] = df[col].apply(normalize_value)
+            with _silent_slice_write():
+                df[col] = df[col].apply(normalize_value)
 
 
 def read_df(
