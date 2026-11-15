@@ -103,6 +103,31 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch, erro_do_cliente, status):
     assert str(erro.value) == f"{type(erro_do_cliente).__name__}: {erro_do_cliente}"
 
 
+@pytest.mark.parametrize(
+    "tag", ["NO_MORE_CREDITS", "API_KEY_BUDGET_EXCEEDED", "TEAM_BUDGET_EXCEEDED"]
+)
+def test_exa_com_credito_esgotado_levanta_provider_usage_limit_error(monkeypatch, tag):
+    pytest.importorskip("langchain_exa")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
+
+    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
+    # Corpo da resposta 402 como a documentação do Exa o descreve (requestId, error, tag).
+    erro_do_cliente = ValueError(
+        f'Request failed with status code 402: {{"requestId":"r","error":"x","tag":"{tag}"}}'
+    )
+
+    def falha(self, query, **kwargs):
+        raise erro_do_cliente
+
+    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
+
+    ferramenta = get_provider("exa").create_tool(max_results=3)
+    with pytest.raises(ProviderUsageLimitError, match="crédito do Exa esgotado") as erro:
+        ferramenta.invoke({"query": "x"})
+    assert erro.value.__cause__ is erro_do_cliente
+    assert tag in str(erro.value)
+
+
 # =============================================================================
 # Tavily
 # =============================================================================
@@ -602,6 +627,50 @@ def test_limite_do_plano_do_tavily_interrompe_a_execucao(tavily_disponivel, monk
 
     # Sem nova tentativa da linha, e sem despachar as seguintes: no paralelo,
     # só as que já estavam em voo.
+    assert len(chamadas) <= paralelo
+    status = resultado["_dataframeit_status"]
+    assert "error" not in status.tolist()
+    assert status.isna().all()
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_credito_esgotado_do_exa_interrompe_a_execucao(monkeypatch, paralelo):
+    pytest.importorskip("langchain_exa")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
+
+    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
+    chamadas = []
+
+    def falha(self, query, **kwargs):
+        chamadas.append(1)
+        msg = 'Request failed with status code 402: {"error":"x","tag":"NO_MORE_CREDITS"}'
+        raise ValueError(msg)
+
+    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
+    monkeypatch.setattr(
+        "dataframeit.llm._create_langchain_llm",
+        lambda *a, **k: ModeloQueSempreBusca(messages=_sempre_busca("exa_search_results_json")),
+    )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        pytest.warns(UserWarning, match=r"interrompida.*crédito do Exa esgotado"),
+    ):
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=Resposta,
+            prompt="{texto}",
+            provider="openai",
+            use_search=True,
+            search_provider="exa",
+            max_retries=3,
+            base_delay=0.0,
+            max_delay=0.0,
+            track_tokens=False,
+            rate_limit_delay=1.0,
+            parallel_requests=paralelo,
+        )
+
     assert len(chamadas) <= paralelo
     status = resultado["_dataframeit_status"]
     assert "error" not in status.tolist()

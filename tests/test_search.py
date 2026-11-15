@@ -41,7 +41,6 @@ from dataframeit.core import (
 )
 from dataframeit.errors import (
     NON_RECOVERABLE_ERRORS,
-    RECOVERABLE_ERRORS,
     get_friendly_error_message,
     validate_search_dependencies,
 )
@@ -361,9 +360,6 @@ def test_tavily_errors_classified_correctly():
     assert "MissingAPIKeyError" in NON_RECOVERABLE_ERRORS
     assert "InvalidAPIKeyError" in NON_RECOVERABLE_ERRORS
     assert "BadRequestError" in NON_RECOVERABLE_ERRORS
-
-    # Erros recuperáveis do Tavily
-    assert "UsageLimitExceededError" in RECOVERABLE_ERRORS
 
 
 def test_tavily_friendly_error_messages():

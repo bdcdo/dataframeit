@@ -22,6 +22,8 @@ from .base import SearchProvider, SearchToolError, register_provider
 _MAX_RESULTS_FAIXA_BASICA = 25
 # O cliente exa_py só põe o status no texto: "Request failed with status code 401: ...".
 _STATUS_NO_TEXTO = re.compile(r"^Request failed with status code (\d{3})")
+# Crédito da conta ou orçamento da chave ou do time esgotado: só a conta resolve.
+_CREDITO_ESGOTADO = 402
 
 
 @register_provider
@@ -85,7 +87,8 @@ class ExaProvider(SearchProvider):
         # construtor sem usá-los: são argumentos do _run, que o modelo escolhe,
         # e o _run devolve repr(e) em vez de levantar. A ferramenta abaixo usa
         # só o cliente autenticado, fixa os dois limites e deixa o erro subir
-        # até o retry, como SearchToolError.
+        # até o retry, como SearchToolError, ou como ProviderUsageLimitError no
+        # crédito esgotado.
         exa = ExaSearchResults()
 
         def exa_search(query: str) -> str:
@@ -97,10 +100,15 @@ class ExaProvider(SearchProvider):
                     text={"max_characters": 1000},
                 )
             except Exception as erro:
-                status = _STATUS_NO_TEXTO.match(str(erro))
-                raise SearchToolError(
-                    provider="exa", error=erro, status_code=int(status.group(1)) if status else None
-                ) from erro
+                encontrado = _STATUS_NO_TEXTO.match(str(erro))
+                status = int(encontrado.group(1)) if encontrado else None
+                if status == _CREDITO_ESGOTADO:
+                    # Import local: errors importa search no topo do módulo.
+                    from dataframeit.errors import ProviderUsageLimitError  # noqa: PLC0415
+
+                    msg = f"crédito do Exa esgotado ({type(erro).__name__}: {erro})"
+                    raise ProviderUsageLimitError(msg) from erro
+                raise SearchToolError(provider="exa", error=erro, status_code=status) from erro
             return str(resultados)
 
         return StructuredTool.from_function(

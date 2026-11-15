@@ -143,8 +143,6 @@ RECOVERABLE_ERRORS = (
     "ConnectionError",
     "ConnectionReset",
     "SSLError",
-    # Tavily - rate limit/quota
-    "UsageLimitExceededError",
 )
 
 # Erros não-recuperáveis (não adianta tentar novamente)
@@ -476,7 +474,7 @@ _INVALID_KEY_MARKERS = (
 )
 
 
-def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria de erro)
+def get_friendly_error_message(  # noqa: C901, PLR0911, PLR0912 (uma saída por categoria de erro)
     error: Exception, provider: str | None = None
 ) -> str:
     """Converte erro técnico em mensagem amigável para usuários iniciantes.
@@ -565,6 +563,29 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
         if search_name:
             return is_category(patterns, codes)
         return any(pattern in error_str for pattern in patterns)
+
+    # === COTA DE USO ESGOTADA ===
+    # Vem antes do rate limit: o insufficient_quota da OpenAI chega como 429, mas
+    # retry_with_backoff o converte em ProviderUsageLimitError, que interrompe a
+    # execução sem reduzir os workers. A caixa mostra a mensagem da conversão,
+    # que nomeia o serviço sem cota.
+    usage_limit = error if isinstance(error, ProviderUsageLimitError) else _usage_limit_error(error)
+    if usage_limit is not None:
+        return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  COTA DE USO ESGOTADA                                                        ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+{_generic_box_details(str(usage_limit))}
+║                                                                              ║
+║  Repetir a linha não traz crédito, e a execução para.                        ║
+║                                                                              ║
+║  COMO RESOLVER:                                                              ║
+║  1. Adicione crédito ou mude de plano na conta do serviço                    ║
+║  2. Rode de novo com resume=True para processar as linhas pendentes          ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+""".strip()
 
     # === ERROS DE RATE LIMIT ===
     # A caixa sai quando, e só quando, a execução reduz os workers: a decisão é a
@@ -1026,8 +1047,8 @@ def _usage_limit_error(error: Exception) -> ProviderUsageLimitError | None:
     O `insufficient_quota` da OpenAI chega como 429: repetir a linha não traz
     crédito, e reduzir os workers não ajuda. O código é lido do atributo `code`
     que o SDK preenche com o corpo da resposta, na exceção ou numa causa
-    explícita. O limite do plano do Tavily é convertido na própria ferramenta
-    de busca, onde o status é lido.
+    explícita. O limite do plano do Tavily e o crédito esgotado do Exa são
+    convertidos na própria ferramenta de busca, onde o status é lido.
     """
     if any(
         getattr(current, "code", None) == "insufficient_quota"
