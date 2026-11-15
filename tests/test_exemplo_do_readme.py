@@ -27,7 +27,7 @@ def _secao(nome):
     texto = (RAIZ / nome).read_text(encoding="utf-8")
     inicio = texto.index(SECOES[nome] + "\n")
     fim = texto.find("\n## ", inicio + 1)
-    return texto[inicio:fim]
+    return texto[inicio : fim if fim != -1 else None]
 
 
 def _codigo(secao):
@@ -44,7 +44,16 @@ def _tabela(secao):
     return cabecalho, [dict(zip(cabecalho, linha, strict=True)) for linha in corpo]
 
 
+def _confere(valor, celula):
+    """A célula terminada em '...' é o começo do valor; as outras são o valor inteiro."""
+    if celula.endswith("..."):
+        assert str(valor).startswith(celula.removesuffix("...").rstrip())
+    else:
+        assert str(valor) == celula
+
+
 def _argumentos_da_chamada(codigo):
+    """Nomes dos argumentos nomeados da única chamada a dataframeit() do exemplo."""
     chamadas = [
         no
         for no in ast.walk(ast.parse(codigo))
@@ -57,15 +66,27 @@ def _argumentos_da_chamada(codigo):
 
 
 def _executa(codigo, linhas_da_tabela):
-    """Roda o exemplo com o LLM simulado e devolve (saída, configs enviadas ao LLM)."""
-    respostas = iter(linhas_da_tabela)
-    configs = []
+    """Roda o exemplo com o LLM simulado e devolve a saída de dataframeit().
+
+    O LLM simulado responde com a linha da tabela cujos campos de texto livre
+    aparecem no texto que ele recebe, como o nome do réu na sentença. Se
+    `text_column` apontar para outra coluna, nenhuma linha bate e a execução
+    falha.
+    """
     saidas = []
 
-    def _resposta(texto, modelo, prompt, config, *args, **kwargs):
-        configs.append(config)
-        linha = next(respostas)
-        dados = modelo.model_validate({campo: linha[campo] for campo in modelo.model_fields})
+    def _resposta(texto, modelo, *args, **kwargs):
+        campos_livres = [
+            campo for campo, info in modelo.model_fields.items() if info.annotation is str
+        ]
+        assert campos_livres
+        linhas = [
+            linha
+            for linha in linhas_da_tabela
+            if all(linha[campo] in texto for campo in campos_livres)
+        ]
+        assert len(linhas) == 1, texto
+        dados = modelo.model_validate({campo: linhas[0][campo] for campo in modelo.model_fields})
         return {"data": dados.model_dump(), "usage": None}
 
     funcao_original = pacote.dataframeit
@@ -78,11 +99,10 @@ def _executa(codigo, linhas_da_tabela):
         patch("dataframeit.core.call_langchain", side_effect=_resposta),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch.object(pacote, "dataframeit", _registra_saida),
-        patch("builtins.print"),
     ):
-        exec(compile(codigo, "<readme>", "exec"), {})  # noqa: S102 (código do próprio README)
+        exec(compile(codigo, "<readme>", "exec"), {"print": lambda *_: None})  # noqa: S102 (código do próprio README)
     assert len(saidas) == 1
-    return saidas[0], configs
+    return saidas[0]
 
 
 @pytest.mark.parametrize("nome", sorted(SECOES))
@@ -95,13 +115,12 @@ def test_exemplo_rapido_devolve_a_tabela_do_readme(nome):
     secao = _secao(nome)
     cabecalho, linhas = _tabela(secao)
 
-    saida, configs = _executa(_codigo(secao), linhas)
+    saida = _executa(_codigo(secao), linhas)
 
     tokens = [coluna for coluna in saida.columns if coluna.endswith("_tokens")]
     assert tokens
     assert all(f"`{coluna}`" in secao for coluna in tokens)
     assert list(saida.columns) == cabecalho + tokens
-    assert {config.provider for config in configs} == {"openai"}
     for (_, registro), linha in zip(saida.iterrows(), linhas, strict=True):
         for coluna, celula in linha.items():
-            assert str(registro[coluna]).startswith(celula.removesuffix("...").rstrip())
+            _confere(registro[coluna], celula)

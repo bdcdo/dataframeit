@@ -83,7 +83,7 @@ print(resultado)
 | 0004567-89.2024.8.26.0053 | José Lima pide que... | Estado de São Paulo | público | parcialmente estimada |
 | 0007890-12.2024.8.26.0114 | Ana Costa pide... | Municipio de Campinas | público | desestimada |
 
-Sin `text_column`, dataframeit busca una columna llamada `texto`, `text`, `decisao`, `content` o `content_text`, y un DataFrame de una sola columna usa esa columna. Con `track_tokens=True`, el valor por defecto, la salida también trae las columnas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` y `_reasoning_tokens`, omitidas en la tabla de arriba.
+Sin `text_column`, dataframeit busca una columna llamada `texto`, `text`, `decisao`, `content` o `content_text`, y un DataFrame de una sola columna usa esa columna; con varias columnas y ninguna con esos nombres, lanza `ValueError`. Con `track_tokens=True`, el valor por defecto, la salida también trae las columnas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` y `_reasoning_tokens`, omitidas en la tabla de arriba.
 
 Los nombres de clases y campos son arbitrarios: los notebooks de [`example/`](example/) usan nombres en portugués.
 
