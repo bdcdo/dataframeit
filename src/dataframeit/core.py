@@ -7,6 +7,7 @@ import dataclasses
 import datetime as dt
 import hashlib
 import importlib.util
+import inspect
 import itertools
 import json
 import logging
@@ -2897,10 +2898,7 @@ def _write_checkpoint_signature(path: Path, meta: dict) -> None:
             f"Falha ao gravar a assinatura do checkpoint em {target}: {error}. "
             "O checkpoint é gravado, mas não será retomado automaticamente.",
             UserWarning,
-            # usuário -> dataframeit -> _process_rows -> _try_save_checkpoint ->
-            # _save_checkpoint -> aqui; no modo paralelo, só a gravação final
-            # sai da thread do usuário, e as demais saem das do executor.
-            stacklevel=6,
+            stacklevel=_user_stacklevel(),
         )
 
 
@@ -3327,6 +3325,21 @@ def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
                     cell.data_type = "s"
 
 
+def _user_stacklevel() -> int:
+    """Devolve o stacklevel que leva o aviso à linha que chamou `dataframeit`.
+
+    Vale para o `warnings.warn` da função que chama esta, qualquer que seja o
+    caminho até ela, inclusive pelo `contextlib` de _on_ctrl_c. Na thread do
+    executor não há essa chamada na pilha, e o aviso aponta a própria função.
+    """
+    frame, level = inspect.currentframe(), 0
+    while frame is not None:
+        if frame.f_code is dataframeit.__code__:
+            return level + 1
+        frame, level = frame.f_back, level + 1
+    return 1
+
+
 def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
     """Grava o checkpoint e devolve se deu certo; falha vira aviso.
 
@@ -3341,9 +3354,7 @@ def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
         warnings.warn(
             f"Falha ao gravar o checkpoint em {checkpoint.path}: {type(error).__name__}: {error}. "
             "O processamento continua, e a próxima gravação tenta de novo.",
-            # usuário -> dataframeit -> _process_rows -> aqui; no modo paralelo
-            # o aviso sai de uma thread do executor e não tem quadro do usuário.
-            stacklevel=4,
+            stacklevel=_user_stacklevel(),
         )
         return False
     return True
@@ -3777,9 +3788,6 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
                 )
         return success, values
 
-    # Processar cada linha. A gravação do checkpoint fica neste laço, e não em
-    # process_row, para que o aviso de falha aponte a chamada do usuário (ver o
-    # stacklevel de _try_save_checkpoint).
     try:
         for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
             # Com reprocess_columns, todas as linhas são processadas.

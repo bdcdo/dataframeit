@@ -1,10 +1,12 @@
 """Falha que impede as linhas seguintes interrompe a execução sem gastá-las."""
 
+import linecache
 import re
 import signal
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -42,6 +44,13 @@ def _roda(df, llm, **kwargs):
         patch("dataframeit.core.validate_provider_dependencies"),
     ):
         return dataframeit(df, questions=Modelo, prompt="{texto}", **kwargs)
+
+
+def _aponta_a_chamada_do_usuario(avisos: list[warnings.WarningMessage], mensagem: str) -> None:
+    """O único aviso com `mensagem` aponta a linha de `_roda` que chama dataframeit."""
+    (aviso,) = [a for a in avisos if mensagem in str(a.message)]
+    assert aviso.filename == __file__
+    assert "return dataframeit(df" in linecache.getline(aviso.filename, aviso.lineno)
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
@@ -461,7 +470,9 @@ def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path,
 
     with (
         patch("dataframeit.core._save_checkpoint", side_effect=OSError("disco cheio")) as grava,
-        pytest.warns(UserWarning, match="Falha ao gravar o checkpoint.*OSError: disco cheio"),
+        pytest.warns(
+            UserWarning, match="Falha ao gravar o checkpoint.*OSError: disco cheio"
+        ) as avisos,
         pytest.raises(KeyboardInterrupt),
     ):
         _roda(
@@ -473,6 +484,7 @@ def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path,
         )
 
     assert grava.call_count == 1
+    _aponta_a_chamada_do_usuario(avisos.list, "Falha ao gravar o checkpoint")
 
 
 @requer_pthread_kill
@@ -525,6 +537,88 @@ def test_ctrl_c_na_gravacao_final_refaz_a_gravacao_e_a_retomada_nao_paga_a_cauda
 
     assert retomada == []
     assert list(saida["campo1"]) == [f"r-{texto}" for texto in textos]
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+@pytest.mark.parametrize("falha_na_assinatura", [False, True])
+def test_ctrl_c_na_gravacao_final_e_falha_ao_regravar_avisam_na_chamada_do_usuario(
+    tmp_path, paralelo, falha_na_assinatura
+):
+    """7 linhas e batch_size=5: o Ctrl-C chega na gravação final, e a regravação falha.
+
+    A falha é do arquivo do checkpoint ou da assinatura gravada ao lado dele. O
+    Ctrl-C sai do hash da assinatura, depois de o arquivo ser gravado. Os duplos
+    levantam antes de o aviso ser emitido, e nenhum deles fica na pilha dele.
+    """
+    aviso_esperado = (
+        "Falha ao gravar a assinatura do checkpoint"
+        if falha_na_assinatura
+        else "Falha ao gravar o checkpoint"
+    )
+    grava, hash_do_arquivo = core._save_checkpoint, core._file_hash
+    falha = OSError("disco cheio")
+    hashes: list[None] = []
+
+    def hash_interrompe_ou_falha(*args, **kwargs):
+        hashes.append(None)
+        if len(hashes) == 2:
+            _ctrl_c()
+        if len(hashes) == 3:
+            raise falha
+        return hash_do_arquivo(*args, **kwargs)
+
+    def grava_ou_falha(df, *args, **kwargs):
+        if len(hashes) == 2:
+            raise falha
+        return grava(df, *args, **kwargs)
+
+    _, llm = _llm_com_ctrl_c()
+    with (
+        patch.object(core, "_file_hash", hash_interrompe_ou_falha),
+        nullcontext()
+        if falha_na_assinatura
+        else patch.object(core, "_save_checkpoint", grava_ou_falha),
+        pytest.warns(UserWarning, match=f"{aviso_esperado}.*disco cheio") as avisos,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": [f"t{i}" for i in range(1, 8)]}),
+            llm,
+            parallel_requests=paralelo,
+            batch_size=5,
+            checkpoint_path=tmp_path / "ckpt.csv",
+        )
+
+    assert len(hashes) == (3 if falha_na_assinatura else 2)
+    _aponta_a_chamada_do_usuario(avisos.list, aviso_esperado)
+
+
+def test_falha_ao_gravar_na_thread_do_executor_avisa_de_dentro_do_dataframeit(tmp_path):
+    """Sem a chamada do usuário na pilha da thread, o aviso aponta o dataframeit.
+
+    As gravações a cada batch_size saem das threads do executor, e a final, que
+    tenta de novo, sai da thread do usuário.
+    """
+    _, llm = _llm_que_esgota(100, ProviderAbortError("nunca"))
+    with (
+        patch("dataframeit.core._save_checkpoint", side_effect=OSError("disco cheio")),
+        pytest.warns(UserWarning, match="Falha ao gravar o checkpoint") as avisos,
+    ):
+        _roda(
+            pd.DataFrame({"texto": [f"t{i}" for i in range(6)]}),
+            llm,
+            parallel_requests=3,
+            batch_size=2,
+            checkpoint_path=tmp_path / "ckpt.csv",
+        )
+
+    *nas_threads, final = [
+        a.filename for a in avisos if "Falha ao gravar o checkpoint" in str(a.message)
+    ]
+    assert nas_threads
+    assert set(nas_threads) == {core.__file__}
+    assert final == __file__
 
 
 @requer_pthread_kill

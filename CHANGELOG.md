@@ -23,6 +23,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Corrigido
 
 - O seletor de idioma do site leva à mesma página no outro idioma também depois de navegar entre páginas: o site deixa a navegação instantânea do Material (`navigation.instant` e `navigation.instant.prefetch`), com a qual o seletor mantinha o link da primeira página aberta, e o `mkdocs build --strict` volta a passar sem o aviso do `mkdocs-static-i18n` sobre essa incompatibilidade (#351).
+- No modo paralelo, os avisos de falha ao gravar o checkpoint e a assinatura dele na gravação feita no Ctrl-C, inclusive a que refaz a gravação final interrompida, apontam a chamada de `dataframeit` do usuário; antes, apontavam um quadro interno do `dataframeit` ou do `contextlib` (#280).
 - Um Ctrl-C durante a gravação final do checkpoint, a que leva a cauda menor que `batch_size` depois do laço, refaz a gravação antes de relançar a interrupção, no modo sequencial e no paralelo, e no paralelo o Ctrl-C enquanto uma interrupção marca as linhas restantes também grava a cauda; antes, o arquivo ficava na última gravação de `batch_size`, e a retomada pagava a cauda de novo (#280).
 - `read_df` aceita o caminho como `os.PathLike`, como `pathlib.Path`, além de texto, com e sem modelo; antes, o `Path` levantava `AttributeError` (#314).
 - A retomada pelo `checkpoint_path` dado como `os.PathLike` que não é `pathlib.Path` encontra a assinatura gravada ao lado do checkpoint; antes, procurava-a pelo repr do objeto, avisava que faltava e recomeçava do zero (#347).
