@@ -19,7 +19,7 @@ import time
 import warnings
 from typing import TYPE_CHECKING
 
-from .search import get_provider
+from .search import SearchToolError, get_provider
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -228,6 +228,12 @@ _PROVIDER_OVERRIDES = {
         ),
     },
 }
+
+
+def _search_provider_info(search_provider: str) -> dict:
+    """Nome e variável da chave do provedor de busca, no formato de _infer_provider_info."""
+    provider = get_provider(search_provider)
+    return {"name": provider.friendly_name, "env_var": provider.env_var}
 
 
 def _infer_provider_info(provider: str | None) -> dict:
@@ -501,8 +507,13 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
             "não é tentada de novo."
         )
 
-    # Obter informações do provider dinamicamente
-    provider_data = _infer_provider_info(provider)
+    # Obter informações do provider dinamicamente. A falha da ferramenta de busca
+    # é do provedor de busca, e não do provider de LLM recebido: as caixas
+    # apontam o nome e a chave dele.
+    search_name = error.provider if isinstance(error, SearchToolError) else None
+    provider_data = (
+        _search_provider_info(search_name) if search_name else _infer_provider_info(provider)
+    )
     provider_name = provider_data["name"]
     env_var = provider_data["env_var"]
 
@@ -522,9 +533,13 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     )
     error_name = type(error).__name__
     status = _http_error_status(error)
-    # 'exa' como palavra, contando '_' como separador: casa 'EXA_API_KEY' e
-    # 'exa-py', mas não 'hexagonal'.
-    is_exa = re.search(r"(?<![a-z0-9])exa(?![a-z0-9])", error_str) is not None
+    # O erro da ferramenta de busca diz o serviço pela classe, e os demais, pelo
+    # nome no texto: 'exa' como palavra, contando '_' como separador, casa
+    # 'EXA_API_KEY' e 'exa-py', mas não 'hexagonal'.
+    is_tavily = search_name == "tavily" or (not search_name and "tavily" in error_str)
+    is_exa = search_name == "exa" or (
+        not search_name and re.search(r"(?<![a-z0-9])exa(?![a-z0-9])", error_str) is not None
+    )
 
     def is_category(patterns: Iterable[str], codes: Iterable[int] = ()) -> bool:
         """Com status HTTP estruturado, só ele decide; sem, valem os padrões."""
@@ -542,12 +557,12 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # ProviderError, is_rate_limit_error decide pela classe, e um '429' no texto,
     # que pode ser do modelo, não muda a caixa.
     if is_rate_limit_error(error):
-        # O 429 do Tavily e do Exa chega como erro da ferramenta de busca, com o
-        # serviço só no texto, e a caixa nomeia o serviço que recusou. As caixas
+        # O 429 do Tavily e do Exa chega como erro da ferramenta de busca, e a
+        # caixa nomeia o serviço que recusou. As caixas
         # de limite de uso, mais abaixo, ficam para a cota do plano, que não é
         # rate limit nem reduz os workers. O ProviderError vem do provider de
         # LLM, e o texto vazio dele mantém o nome do provider.
-        service = "Tavily" if "tavily" in error_str else "Exa" if is_exa else provider_name
+        service = "Tavily" if is_tavily else "Exa" if is_exa else provider_name
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE REQUISIÇÕES ATINGIDO                                              ║
@@ -569,9 +584,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 """.strip()
 
     # === ERROS TAVILY ===
-    if "tavily" in error_str and any(
-        p in error_str for p in ["apikey", "api_key", "missing", "invalid"]
-    ):
+    if is_tavily and any(p in error_str for p in ["apikey", "api_key", "missing", "invalid"]):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  ERRO DE AUTENTICAÇÃO TAVILY                                                 ║
@@ -588,7 +601,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    if "usagelimitexceeded" in error_str or ("tavily" in error_str and "limit" in error_str):
+    if "usagelimitexceeded" in error_str or (is_tavily and "limit" in error_str):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
@@ -834,6 +847,9 @@ _HTTP_ERROR_MIN = 400
 _HTTP_SERVER_ERROR_MIN = 500
 _HTTP_ERROR_MAX = 599
 _HTTP_TOO_MANY_REQUESTS = 429
+# Sobrecarga da Anthropic. O langchain-core a classifica como ModelAPIError, e
+# não como ModelRateLimitError, mas aliviar a carga ajuda como no 429.
+_HTTP_OVERLOADED = 529
 
 
 def _is_recoverable_http_status(status: int) -> bool:
@@ -961,18 +977,40 @@ def is_rate_limit_error(error: Exception) -> bool:
     # workers.
     if isinstance(error, (ProviderError, ProviderOutputError)):
         return False
-    if _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError):
+    status = _http_error_status(error)
+    if status == _HTTP_OVERLOADED or (
+        _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError)
+    ):
         return True
     if _ModelError is not None and isinstance(error, _ModelError):
         return False
 
-    status = _http_error_status(error)
     if status is not None:
         return status == _HTTP_TOO_MANY_REQUESTS
 
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ("ratelimit", "resourceexhausted", "toomanyrequests", "429")
     return any(_matches_error_pattern(pattern, error_str) for pattern in rate_limit_patterns)
+
+
+def _usage_limit_error(error: Exception) -> ProviderUsageLimitError | None:
+    """Cota de uso esgotada, que só se resolve na conta e interrompe a execução.
+
+    O `insufficient_quota` da OpenAI chega como 429, e o limite do plano do
+    Tavily, como status 432: repetir a linha não traz crédito, e reduzir os
+    workers não ajuda. O código da OpenAI é lido do atributo `code` que o SDK
+    preenche com o corpo da resposta; o status do Tavily, do texto do erro da
+    ferramenta de busca, único lugar em que o cliente dele o põe.
+    """
+    if isinstance(error, SearchToolError):
+        if error.provider == "tavily" and "Error 432:" in str(error):
+            return ProviderUsageLimitError(f"limite de uso do plano do Tavily esgotado ({error})")
+        return None
+    if getattr(error, "code", None) == "insufficient_quota":
+        return ProviderUsageLimitError(
+            f"cota da conta no provider de LLM esgotada; adicione crédito ({error})"
+        )
+    return None
 
 
 # Maior expoente do backoff. Com base_delay float, base_delay * 2**1024
@@ -999,6 +1037,7 @@ def retry_with_backoff(
         O dicionário devolvido por func, com as tentativas em '_retry_info'.
 
     Raises:
+        ProviderUsageLimitError: Na cota de uso esgotada, sem nova tentativa.
         Exception: Última exceção após esgotar tentativas ou erro não-recuperável.
     """
     retry_info = {
@@ -1016,6 +1055,9 @@ def retry_with_backoff(
             result["_retry_info"] = retry_info
             return result  # noqa: TRY300 (o else mudaria quais falhas são re-tentadas)
         except Exception as e:
+            usage_limit = _usage_limit_error(e)
+            if usage_limit is not None:
+                raise usage_limit from e
             error_name = type(e).__name__
             error_msg = str(e)
             retry_info["errors"].append(f"{error_name}: {error_msg[:100]}")

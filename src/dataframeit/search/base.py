@@ -9,6 +9,21 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
 
+class SearchToolError(RuntimeError):
+    """Falha do provedor de busca ao executar a ferramenta, e não do provider de LLM.
+
+    A mensagem dos clientes do Tavily e do Exa não nomeia o serviço ("Error 401:
+    ..."), e por isso a classe leva o nome do provedor que falhou: é por ele que
+    a mensagem amigável aponta a chave e o plano da busca. O erro original fica
+    em `__cause__`, e o tipo dele abre a mensagem.
+    """
+
+    def __init__(self, provider: str, error: Exception) -> None:
+        """Guarda o nome do provedor de busca ('tavily', 'exa') e o texto do erro."""
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.provider = provider
+
+
 class SearchProvider(ABC):
     """Interface abstrata para provedores de busca web.
 

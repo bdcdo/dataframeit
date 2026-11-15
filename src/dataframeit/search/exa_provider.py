@@ -15,7 +15,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 
-from .base import SearchProvider, register_provider
+from .base import SearchProvider, SearchToolError, register_provider
 
 # Até este número de resultados, a Exa cobra a faixa de preço mais baixa.
 _MAX_RESULTS_FAIXA_BASICA = 25
@@ -82,18 +82,20 @@ class ExaProvider(SearchProvider):
         # construtor sem usá-los: são argumentos do _run, que o modelo escolhe,
         # e o _run devolve repr(e) em vez de levantar. A ferramenta abaixo usa
         # só o cliente autenticado, fixa os dois limites e deixa o erro subir
-        # até o retry.
+        # até o retry, como SearchToolError.
         exa = ExaSearchResults()
 
         def exa_search(query: str) -> str:
             """Busca na web e devolve título, URL e trecho de cada resultado."""
-            return str(
-                exa.client.search_and_contents(
+            try:
+                resultados = exa.client.search_and_contents(
                     query,
                     num_results=max_results,
                     text={"max_characters": 1000},
                 )
-            )
+            except Exception as erro:
+                raise SearchToolError(provider="exa", error=erro) from erro
+            return str(resultados)
 
         return StructuredTool.from_function(
             func=exa_search,

@@ -17,7 +17,7 @@ from typing import Any, Literal, TypeVar
 
 from langchain_core.tools import BaseTool, ToolException
 
-from .base import SearchProvider, register_provider
+from .base import SearchProvider, SearchToolError, register_provider
 
 T = TypeVar("T")
 
@@ -38,7 +38,7 @@ def _levantar_erro(resultado: T) -> T:
         "can only be set during instantiation" in str(erro)
     ):
         raise ToolException(str(erro)) from erro
-    raise erro
+    raise SearchToolError(provider="tavily", error=erro) from erro
 
 
 @register_provider
@@ -119,10 +119,11 @@ class TavilyProvider(SearchProvider):
 
             O _run original devolve {"error": e} para qualquer falha, e o agente
             segue sem evidência, com a linha marcada como processada. Erro de
-            conta, quota, rede ou servidor sobe ao retry da biblioteca. Erro
-            causado pelos argumentos que o modelo escolheu (400, 422 ou
-            parâmetro proibido na chamada) vira ToolException, como "sem
-            resultados", e volta ao modelo para ele tentar outra consulta.
+            conta, quota, rede ou servidor sobe ao retry da biblioteca, como
+            SearchToolError. Erro causado pelos argumentos que o modelo
+            escolheu (400, 422 ou parâmetro proibido na chamada) vira
+            ToolException, como "sem resultados", e volta ao modelo para ele
+            tentar outra consulta.
             """
 
             def _run(self, *args: Any, **kwargs: Any) -> dict[str, Any]:

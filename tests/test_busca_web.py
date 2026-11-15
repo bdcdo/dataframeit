@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dataframeit import dataframeit
 from dataframeit.agent import _blocked_tool_call_ids, _extract_trace, _recursion_limit, call_agent
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
-from dataframeit.search import get_provider
+from dataframeit.search import SearchToolError, get_provider
 
 
 class Resposta(BaseModel):
@@ -88,8 +88,10 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch):
     monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
-    with pytest.raises(RuntimeError, match="401"):
+    with pytest.raises(SearchToolError, match="RuntimeError: 401") as erro:
         ferramenta.invoke({"query": "x"})
+    assert erro.value.provider == "exa"
+    assert isinstance(erro.value.__cause__, RuntimeError)
 
 
 # =============================================================================
@@ -125,8 +127,10 @@ def test_tavily_levanta_o_erro_do_provider(tavily_disponivel, monkeypatch, mensa
     monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
 
     ferramenta = get_provider("tavily").create_tool(max_results=3)
-    with pytest.raises(ValueError, match=mensagem[:9]):
+    with pytest.raises(SearchToolError, match=f"ValueError: {mensagem[:9]}") as erro:
         ferramenta.invoke({"query": "x"})
+    assert erro.value.provider == "tavily"
+    assert isinstance(erro.value.__cause__, ValueError)
 
 
 @pytest.mark.parametrize(
@@ -155,7 +159,7 @@ def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
     monkeypatch.setattr(tavily_disponivel, "raw_results_async", falha)
 
     ferramenta = get_provider("tavily").create_tool(max_results=3)
-    with pytest.raises(ValueError, match="Error 432"):
+    with pytest.raises(SearchToolError, match="Error 432"):
         asyncio.run(ferramenta.ainvoke({"query": "x"}))
 
 
@@ -488,3 +492,91 @@ def test_agente_sem_resposta_estruturada_vira_erro_da_linha(monkeypatch):
 
     assert resultado["_dataframeit_status"].tolist() == ["error"]
     assert "Agente não retornou resposta estruturada" in resultado["_error_details"].iloc[0]
+
+
+# =============================================================================
+# Falha da busca dentro do agente
+# =============================================================================
+
+
+def _rodar_agente_real_com_tavily(tavily_disponivel, monkeypatch, mensagem, **kwargs):
+    """Agente do LangChain de verdade, com a ferramenta do Tavily cujo cliente falha.
+
+    Devolve a saída e a lista com uma entrada por chamada ao cliente do Tavily.
+    """
+    chamadas = []
+
+    class ModeloQueBusca(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    def mensagens():
+        for i in itertools.count():
+            yield AIMessage(
+                content="",
+                tool_calls=[{"name": "tavily_search", "args": {"query": "x"}, "id": f"c{i}"}],
+            )
+
+    def falha(self, **kwargs):
+        chamadas.append(1)
+        raise ValueError(mensagem)
+
+    monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
+    monkeypatch.setattr(
+        "dataframeit.llm._create_langchain_llm",
+        lambda *a, **k: ModeloQueBusca(messages=mensagens()),
+    )
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        saida = dataframeit(
+            pd.DataFrame({"texto": ["a", "b", "c"]}),
+            questions=Resposta,
+            prompt="{texto}",
+            provider="openai",
+            use_search=True,
+            max_retries=3,
+            base_delay=0.0,
+            max_delay=0.0,
+            track_tokens=False,
+            rate_limit_delay=1.0,
+            **kwargs,
+        )
+    return saida, chamadas
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_chave_invalida_do_tavily_aponta_a_chave_do_tavily(
+    tavily_disponivel, monkeypatch, recwarn, paralelo
+):
+    resultado, _ = _rodar_agente_real_com_tavily(
+        tavily_disponivel,
+        monkeypatch,
+        "Error 401: Unauthorized: missing or invalid API key.",
+        parallel_requests=paralelo,
+    )
+
+    assert resultado["_dataframeit_status"].tolist() == ["error"] * 3
+    falhas = [str(w.message) for w in recwarn if "Falha ao processar linha" in str(w.message)]
+    assert len(falhas) == 3
+    assert all("TAVILY_API_KEY" in falha for falha in falhas)
+    assert not any("OPENAI_API_KEY" in falha for falha in falhas)
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_limite_do_plano_do_tavily_interrompe_a_execucao(tavily_disponivel, monkeypatch, paralelo):
+    with pytest.warns(UserWarning, match=r"interrompida.*limite de uso do plano do Tavily"):
+        resultado, chamadas = _rodar_agente_real_com_tavily(
+            tavily_disponivel,
+            monkeypatch,
+            "Error 432: This request exceeds your plan's set usage limit.",
+            parallel_requests=paralelo,
+        )
+
+    # Sem nova tentativa da linha, e sem despachar as seguintes: no paralelo,
+    # só as que já estavam em voo.
+    assert len(chamadas) <= paralelo
+    status = resultado["_dataframeit_status"]
+    assert "error" not in status.tolist()
+    assert status.isna().all()
