@@ -227,10 +227,9 @@ class TestNovaTentativaComErro:
             itens: list[int]
 
         bruto = json.dumps({"itens": ["x" * 400] * 30})
-        try:
+        with pytest.raises(ValidationError) as erro:
             Muitos.model_validate_json(bruto)
-        except ValidationError as erro:
-            falha = {"parsed": None, "raw": _raw(bruto), "parsing_error": erro}
+        falha = {"parsed": None, "raw": _raw(bruto), "parsing_error": erro.value}
         structured = MagicMock()
         structured.invoke.side_effect = [
             falha,
@@ -410,18 +409,16 @@ class TestCapturaNoInvoke:
         class ImageConfig(BaseModel):
             aspect_ratio: str
 
-        try:
+        with pytest.raises(ValidationError) as erro:
             ImageConfig.model_validate({"aspect_ratio": 16})
-        except ValidationError as erro:
-            de_configuracao = erro
+        de_configuracao = erro.value
         with pytest.warns(UserWarning, match="Tentativa"), pytest.raises(ValidationError):
             _, _structured = self._chamar_levantando([de_configuracao] * 3)
 
     def test_recusa_do_sdk_sem_resposta_anexada_vai_junto_do_prompt(self):
-        try:
+        with pytest.raises(ValidationError) as erro:
             ComEvidencia.model_validate_json(INVALIDO)
-        except ValidationError as erro:
-            do_sdk = erro
+        do_sdk = erro.value
         with pytest.warns(UserWarning, match="Tentativa"):
             resultado, structured = _chamar([do_sdk, _sucesso()])
         segunda = _chamada(structured, 1)
@@ -441,10 +438,9 @@ class TestCapturaNoInvoke:
         assert "sem tool call" in segunda[2][1]
 
     def test_recusa_sem_bruto_nao_herda_a_resposta_anterior(self):
-        try:
+        with pytest.raises(ValidationError) as erro:
             ComEvidencia.model_validate_json(INVALIDO)
-        except ValidationError as erro:
-            do_sdk = erro
+        do_sdk = erro.value
         with pytest.warns(UserWarning, match="Tentativa"):
             _, structured = _chamar([_falha(INVALIDO), do_sdk, _sucesso()])
         assert len(_chamada(structured, 2)) == 1

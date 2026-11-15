@@ -236,6 +236,9 @@ missing-type-argument = "error"
 # Método que sobrescreve outro sem `@override`: a classe base que renomeia ou
 # remove o método deixa a sobrescrita órfã sem que o ty perceba.
 missing-override-decorator = "error"
+# Nome usado depois de um bloco que pode não tê-lo definido (`try`/`except`,
+# `with` que suprime exceção): o NameError só apareceria no caminho raro.
+possibly-unresolved-reference = "error"
 
 [tool.vulture]
 paths = ["src"]
