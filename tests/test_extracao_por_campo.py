@@ -472,3 +472,87 @@ def test_lista_de_mais_de_um_modelo_busca_os_campos_de_cada_modelo(anotacao):
     }
     assert agente.nomes == ["NestedSearch_obras_isbn", "NestedSearch_obras_diretor", "Obras_obras"]
     assert resultado["data"]["obras"] == [{"titulo": "Dom Casmurro"}, {"nome": "Central do Brasil"}]
+
+
+@pytest.mark.parametrize(
+    "resposta",
+    [[{"titulo": "Dom Casmurro"}], {"nome": "Central do Brasil"}],
+    ids=["lista", "modelo"],
+)
+def test_lista_ou_modelo_busca_os_campos_de_cada_modelo(resposta):
+    """Com o modelo também fora da lista, a busca é a da linha, como a do item de mais de um modelo.
+
+    O valor que o agente devolve fica como veio, seja a lista de livros, seja o
+    filme, e o diretor do filme é buscado.
+    """
+    modelo = create_model("Obras", obras=(Optional[list[_Livro] | _Filme], None))
+    agente = _Agente({"obras": resposta, "isbn": "978", "diretor": "Walter Salles"})
+
+    resultado = _rodar(agente, modelo, _config())
+
+    assert agente.nomes == ["NestedSearch_obras_isbn", "NestedSearch_obras_diretor", "Obras_obras"]
+    assert resultado["data"]["obras"] == resposta
+
+
+class _Erro(BaseModel):
+    motivo: str
+
+
+@pytest.mark.parametrize(
+    ("resposta", "nomes", "esperado"),
+    [
+        (
+            [{"nome": "A"}],
+            ["Pedido_itens", "ItemSearch_0_preco"],
+            [{"nome": "A", "preco": "R$ 1"}],
+        ),
+        ({"motivo": "ilegível"}, ["Pedido_itens"], {"motivo": "ilegível"}),
+    ],
+    ids=["lista", "modelo"],
+)
+def test_lista_ou_modelo_sem_campo_de_busca_mantem_a_busca_por_item(resposta, nomes, esperado):
+    """O modelo de fora da lista sem campo de busca não tira a busca item a item da lista."""
+    modelo = create_model("Pedido", itens=(Optional[list[Item] | _Erro], None))
+    agente = _Agente({"itens": resposta, "preco": "R$ 1"})
+
+    resultado = _rodar(agente, modelo, _config())
+
+    assert agente.nomes == nomes
+    assert resultado["data"]["itens"] == esperado
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [list[Item] | tuple[Item, ...], list[Item] | dict[str, Item]],
+    ids=["tupla", "dict"],
+)
+def test_lista_ou_colecao_do_mesmo_modelo_busca_uma_vez_para_a_linha(anotacao):
+    """O item que pode vir fora da lista também é buscado, uma vez para a linha."""
+    modelo = create_model("Pedido", itens=(anotacao, None))
+    agente = _Agente({"itens": [{"nome": "A"}], "preco": "R$ 1"})
+
+    _rodar(agente, modelo, _config())
+
+    assert agente.nomes == ["NestedSearch_itens_preco", "Pedido_itens"]
+
+
+def test_item_none_da_lista_fica_sem_busca():
+    """O item None de list[Item | None] não tem campo onde gravar a busca; o outro tem."""
+    modelo = create_model("Pedido", itens=(list[Item | None], None))
+    agente = _Agente({"itens": [None, {"nome": "B"}], "preco": "R$ 1"})
+
+    resultado = _rodar(agente, modelo, _config())
+
+    assert agente.nomes == ["Pedido_itens", "ItemSearch_1_preco"]
+    assert resultado["data"]["itens"] == [None, {"nome": "B", "preco": "R$ 1"}]
+
+
+def test_lista_de_modelo_ou_texto_guarda_o_texto_sem_buscar_item():
+    """O texto devolvido no lugar da lista não é percorrido como se fossem itens."""
+    modelo = create_model("Pedido", itens=(Optional[list[Item] | str], None))
+    agente = _Agente({"itens": "nenhum", "preco": "R$ 1"})
+
+    resultado = _rodar(agente, modelo, _config())
+
+    assert agente.nomes == ["Pedido_itens"]
+    assert resultado["data"]["itens"] == "nenhum"

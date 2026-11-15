@@ -44,6 +44,7 @@ from .utils import (
     _dropped_by_model_serializer,
     _excluded_fields,
     is_list_of_pydantic_model,
+    models_outside_lists,
     resolve_forward_refs,
 )
 
@@ -256,15 +257,19 @@ def _get_list_fields_with_nested_search(
     list_fields_with_search: dict[str, _ListSearch] = {}
 
     for field_name, field_info in pydantic_model.model_fields.items():
-        is_list, inner_model = is_list_of_pydantic_model(
-            resolve_forward_refs(field_info.annotation, pydantic_model)
-        )
+        annotation = resolve_forward_refs(field_info.annotation, pydantic_model)
+        is_list, inner_model = is_list_of_pydantic_model(annotation)
 
         if is_list and inner_model:
             # Coletar campos de busca dentro do modelo interno
             inner_search_fields = _collect_configured_fields(inner_model)
 
-            if inner_search_fields:
+            # O valor que pode ser modelo com campo de busca fora da lista, como
+            # o B de `list[A] | B`, não tem item onde gravar essa busca: os campos
+            # de busca do campo seguem a busca aninhada da linha.
+            if inner_search_fields and not any(
+                map(_collect_configured_fields, models_outside_lists(annotation))
+            ):
                 list_fields_with_search[field_name] = {
                     "inner_model": inner_model,
                     "search_fields": inner_search_fields,
@@ -300,7 +305,8 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
 
     for item_idx, item in enumerate(list_items or []):
         # A resposta do agente passa por model_dump, e cada item de List[Model]
-        # chega como dicionário. Outro valor não tem campos onde gravar a busca.
+        # chega como dicionário. Outro valor, como o None de list[Item | None],
+        # não tem campos onde gravar a busca.
         if not isinstance(item, dict):
             enriched_items.append(item)
             continue
@@ -782,10 +788,14 @@ class _FieldExtractor:
         return model, prompt, config
 
     def _enrich_items(self, row: _Row, field_name: str) -> None:
-        """Busca, item a item, os campos configurados de um List[Model] já extraído."""
+        """Busca, item a item, os campos configurados de um List[Model] já extraído.
+
+        O valor que não é lista, como o texto de `Union[list[Item], str]`, não
+        tem item onde gravar a busca e fica como o agente o devolveu.
+        """
         spec = self.list_fields.get(field_name)
         items = row.data[field_name]
-        if spec is None or not items:
+        if spec is None or not isinstance(items, list) or not items:
             return
         enriched, usage, traces = _enrich_list_items_with_search(
             items,
