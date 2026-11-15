@@ -1139,9 +1139,10 @@ def test_resume_false_nao_refaz_linha_ja_processada(parallel_requests):
 
     df = pd.DataFrame({"texto": ["a", "b"], "_dataframeit_status": ["processed", "processed"]})
 
-    resultado, call_langchain = _rodar(
-        df, questions=ComPadrao, resume=False, parallel_requests=parallel_requests
-    )
+    with pytest.warns(UserWarning, match=r"não têm as colunas \['x'\]"):
+        resultado, call_langchain = _rodar(
+            df, questions=ComPadrao, resume=False, parallel_requests=parallel_requests
+        )
 
     call_langchain.assert_not_called()
     assert resultado["x"].tolist() == ["padrão", "padrão"]
@@ -1156,6 +1157,137 @@ def test_resume_false_com_campo_novo_obrigatorio_nas_linhas_processadas_levanta_
         _rodar(df, resume=False)
 
     assert "x" not in df.columns
+
+
+class ModeloCategoriaOpcional(BaseModel):
+    categoria: Optional[str] = None
+
+
+class ModeloNotaComExtra(BaseModel):
+    nota: int
+    extra: Optional[str] = None
+
+
+class ModeloCategoriaComExtra(BaseModel):
+    categoria: str
+    extra: Optional[str] = None
+
+
+def _ja_processado_com_nota():
+    df = pd.DataFrame({"texto": ["a", "b"]})
+    _rodar(df, questions=ModeloNotaInteira, llm=_responde(nota=1))
+    return df
+
+
+@pytest.mark.parametrize("resume", [True, False])
+def test_modelo_so_com_campo_opcional_novo_avisa_nas_linhas_processadas(resume):
+    """O campo sem coluna nas linhas 'processed' fica None, e a execução diz isso."""
+    df = _ja_processado_com_nota()
+
+    with pytest.warns(
+        UserWarning,
+        match=r"não têm as colunas \['categoria'\].*reprocess_columns=\['categoria'\]",
+    ):
+        resultado, call_langchain = _rodar(df, questions=ModeloCategoriaOpcional, resume=resume)
+
+    call_langchain.assert_not_called()
+    assert resultado["categoria"].tolist() == [None, None]
+
+
+def test_campo_opcional_acrescido_ao_modelo_avisa_nas_linhas_processadas():
+    df = _ja_processado_com_nota()
+
+    with pytest.warns(UserWarning, match=r"não têm as colunas \['extra'\]"):
+        resultado, call_langchain = _rodar(df, questions=ModeloNotaComExtra)
+
+    call_langchain.assert_not_called()
+    assert resultado["nota"].tolist() == [1, 1]
+    assert resultado["extra"].tolist() == [None, None]
+
+
+def test_campo_opcional_com_coluna_nas_linhas_processadas_nao_avisa():
+    """Com a coluna presente, o None é a resposta gravada, e não um campo nunca perguntado."""
+    df = pd.DataFrame({"texto": ["a"], "categoria": [None], "_dataframeit_status": ["processed"]})
+
+    resultado, call_langchain = _rodar(df, questions=ModeloCategoriaOpcional)
+
+    call_langchain.assert_not_called()
+    assert resultado["categoria"].tolist() == [None]
+
+
+def test_erro_de_campo_incompativel_sugere_tambem_o_campo_opcional_novo():
+    df = _ja_processado_com_nota()
+
+    with pytest.raises(
+        ValueError,
+        match=r"campos incompatíveis \['categoria'\]\. "
+        r"Inclua-os em reprocess_columns=\['categoria', 'extra'\]\.",
+    ):
+        _rodar(df, questions=ModeloCategoriaComExtra)
+
+
+def test_erro_de_campo_incompativel_mantem_na_sugestao_o_reprocess_columns_passado():
+    df = _ja_processado_com_nota()
+
+    with pytest.raises(
+        ValueError,
+        match=r"campos incompatíveis \['categoria'\]\. "
+        r"Inclua-os em reprocess_columns=\['extra', 'categoria'\]\.",
+    ):
+        _rodar(df, questions=ModeloCategoriaComExtra, reprocess_columns=["extra"])
+
+
+def test_seguir_a_sugestao_do_erro_preenche_todos_os_campos_novos():
+    df = _ja_processado_com_nota()
+
+    resultado, call_langchain = _rodar(
+        df,
+        questions=ModeloCategoriaComExtra,
+        llm=_responde(categoria="c", extra="e"),
+        reprocess_columns=["categoria", "extra"],
+    )
+
+    assert call_langchain.call_count == 2
+    assert resultado["categoria"].tolist() == ["c", "c"]
+    assert resultado["extra"].tolist() == ["e", "e"]
+
+
+def test_reprocess_columns_sem_o_campo_opcional_novo_avisa_que_ele_fica_vazio():
+    df = _ja_processado_com_nota()
+
+    with pytest.warns(
+        UserWarning,
+        match=r"não têm as colunas \['extra'\].*reprocess_columns=\['categoria', 'extra'\]",
+    ):
+        resultado, _ = _rodar(
+            df,
+            questions=ModeloCategoriaComExtra,
+            llm=_responde(categoria="c", extra="e"),
+            reprocess_columns=["categoria"],
+        )
+
+    assert resultado["categoria"].tolist() == ["c", "c"]
+    assert resultado["extra"].tolist() == [None, None]
+
+
+def test_resume_false_sem_coluna_de_status_processa_a_coluna_vazia_do_modelo():
+    """Sem a coluna de status, toda linha é nova, como com resume=True."""
+    df = pd.DataFrame({"texto": ["a", "b"], "x": [None, None]})
+
+    resultado, call_langchain = _rodar(df, resume=False)
+
+    assert call_langchain.call_count == 2
+    assert resultado["x"].tolist() == ["x-a", "x-b"]
+
+
+def test_resume_false_com_coluna_de_status_e_colunas_do_modelo_avisa_e_devolve():
+    df = pd.DataFrame({"texto": ["a"], "x": [None], "_dataframeit_status": ["error"]})
+
+    with pytest.warns(UserWarning, match=r"Colunas \['x'\] já existem"):
+        resultado, call_langchain = _rodar(df, resume=False)
+
+    call_langchain.assert_not_called()
+    assert resultado["_dataframeit_status"].tolist() == ["error"]
 
 
 # =============================================================================

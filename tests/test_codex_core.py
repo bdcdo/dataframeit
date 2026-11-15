@@ -287,15 +287,16 @@ def test_completed_checkpoint_fills_absent_model_default_without_provider(monkey
         }
     )
 
-    result = core.dataframeit(
-        data,
-        questions=DefaultExpandedResultModel,
-        prompt="{texto}",
-        provider="codex",
-        model="gpt-6-luna",
-        resume=True,
-        track_tokens=False,
-    )
+    with pytest.warns(UserWarning, match=r"não têm as colunas \['new_value'\]"):
+        result = core.dataframeit(
+            data,
+            questions=DefaultExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-6-luna",
+            resume=True,
+            track_tokens=False,
+        )
 
     dependencies.assert_not_called()
     backend_factory.assert_not_called()
@@ -316,15 +317,16 @@ def test_completed_checkpoint_fills_default_factory_using_validated_data(monkeyp
         }
     )
 
-    result = core.dataframeit(
-        data,
-        questions=DerivedDefaultExpandedResultModel,
-        prompt="{texto}",
-        provider="codex",
-        model="gpt-6-luna",
-        resume=True,
-        track_tokens=False,
-    )
+    with pytest.warns(UserWarning, match=r"não têm as colunas \['new_value'\]"):
+        result = core.dataframeit(
+            data,
+            questions=DerivedDefaultExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-6-luna",
+            resume=True,
+            track_tokens=False,
+        )
 
     dependencies.assert_not_called()
     backend_factory.assert_not_called()
@@ -376,15 +378,16 @@ def test_completed_checkpoint_fills_defaults_by_position_with_duplicate_index(mo
         index=[0, 0],
     )
 
-    result = core.dataframeit(
-        data,
-        questions=DerivedDefaultExpandedResultModel,
-        prompt="{texto}",
-        provider="codex",
-        model="gpt-6-luna",
-        resume=True,
-        track_tokens=False,
-    )
+    with pytest.warns(UserWarning, match=r"não têm as colunas \['new_value'\]"):
+        result = core.dataframeit(
+            data,
+            questions=DerivedDefaultExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-6-luna",
+            resume=True,
+            track_tokens=False,
+        )
 
     dependencies.assert_not_called()
     backend_factory.assert_not_called()
@@ -551,16 +554,17 @@ def test_reprocessing_null_field_also_fills_absent_default(monkeypatch):
         }
     )
 
-    result = core.dataframeit(
-        data,
-        questions=RequiredAndDefaultExpandedResultModel,
-        prompt="{texto}",
-        provider="codex",
-        model="gpt-6-luna",
-        resume=True,
-        reprocess_columns=["new_value"],
-        track_tokens=False,
-    )
+    with pytest.warns(UserWarning, match=r"não têm as colunas \['default_value'\]"):
+        result = core.dataframeit(
+            data,
+            questions=RequiredAndDefaultExpandedResultModel,
+            prompt="{texto}",
+            provider="codex",
+            model="gpt-6-luna",
+            resume=True,
+            reprocess_columns=["new_value"],
+            track_tokens=False,
+        )
 
     assert result["value"].tolist() == [["previous"]]
     assert result["new_value"].tolist() == ["new:ready"]
