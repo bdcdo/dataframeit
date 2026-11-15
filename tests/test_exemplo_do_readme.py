@@ -25,25 +25,11 @@ SECOES = {
     "docs/index.md": "## O que é?",
     "docs/en/index.md": "## What is it?",
 }
-# Títulos do quickstart: os passos em ordem (o último traz a tabela de saída) e
-# a seção do exemplo completo.
+# Título do exemplo completo de cada quickstart; as seções antes dele são os
+# passos, e o último passo traz a tabela de saída.
 QUICKSTARTS = {
-    "docs/getting-started/quickstart.md": (
-        [
-            "## Passo 1: Defina seu Modelo Pydantic",
-            "## Passo 2: Prepare seus Dados",
-            "## Passo 3: Processe!",
-        ],
-        "## Exemplo Completo",
-    ),
-    "docs/en/getting-started/quickstart.md": (
-        [
-            "## Step 1: Define your Pydantic Model",
-            "## Step 2: Prepare your Data",
-            "## Step 3: Process!",
-        ],
-        "## Complete Example",
-    ),
+    "docs/getting-started/quickstart.md": "## Exemplo Completo",
+    "docs/en/getting-started/quickstart.md": "## Complete Example",
 }
 
 
@@ -51,6 +37,13 @@ def _secao(nome, titulo):
     texto = (RAIZ / nome).read_text(encoding="utf-8")
     inicio = texto.index(titulo + "\n")
     return texto[inicio : texto.index("\n## ", inicio + 1)]
+
+
+def _passos(nome):
+    """Seções do quickstart entre o primeiro título `##` e o exemplo completo."""
+    texto = (RAIZ / nome).read_text(encoding="utf-8")
+    inicio = texto.index("\n## ") + 1
+    return texto[inicio : texto.index(QUICKSTARTS[nome] + "\n")].split("\n## ")
 
 
 def _blocos(secao):
@@ -140,27 +133,27 @@ def test_exemplo_rapido_imprime_a_tabela_da_pagina(nome):
 @pytest.mark.parametrize("nome", sorted(QUICKSTARTS))
 def test_passos_do_quickstart_imprimem_a_tabela_do_passo_3(nome):
     """Os blocos dos passos, rodados em sequência (no passo 2, a aba DataFrame)."""
-    passos, _ = QUICKSTARTS[nome]
-    codigo = "\n".join(_codigo(_secao(nome, titulo)) for titulo in passos)
-    _confere(codigo, _secao(nome, passos[-1]))
+    passos = _passos(nome)
+    _confere("\n".join(_codigo(passo) for passo in passos), passos[-1])
+
+
+def _variavel(codigo):
+    """O valor da última variável que o bloco define (antes dela, só imports)."""
+    escopo = {}
+    exec(codigo, escopo)  # noqa: S102 (código da própria documentação)
+    return list(escopo.values())[-1]
 
 
 @pytest.mark.parametrize("nome", sorted(QUICKSTARTS))
 def test_abas_lista_e_dicionario_do_quickstart_tem_os_textos_do_dataframe(nome):
-    aba_df, aba_lista, aba_dict = _blocos(_secao(nome, QUICKSTARTS[nome][0][1]))
-    escopos = [{}, {}, {}]
-    for codigo, escopo in zip([aba_df, aba_lista, aba_dict], escopos, strict=True):
-        exec(codigo, escopo)  # noqa: S102 (código da própria documentação)
-    df = escopos[0]["df"]
-    lista, dicionario = (
-        escopo["texts" if "texts" in escopo else "textos"] for escopo in escopos[1:]
-    )
+    df, lista, dicionario = map(_variavel, _blocos(_passos(nome)[1]))
+    colunas = [df[coluna].tolist() for coluna in df.columns]
 
-    assert lista == df.iloc[:, 1].tolist()
-    assert dicionario == dict(zip(df.iloc[:, 0], df.iloc[:, 1], strict=True))
+    assert lista in colunas
+    assert list(dicionario) in colunas
+    assert list(dicionario.values()) == lista
 
 
 @pytest.mark.parametrize("nome", sorted(QUICKSTARTS))
 def test_exemplo_completo_do_quickstart_salva_a_tabela_do_passo_3(nome):
-    passos, completo = QUICKSTARTS[nome]
-    _confere(_codigo(_secao(nome, completo)), _secao(nome, passos[-1]))
+    _confere(_codigo(_secao(nome, QUICKSTARTS[nome])), _passos(nome)[-1])
