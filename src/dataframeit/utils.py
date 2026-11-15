@@ -16,7 +16,6 @@ import datetime as dt
 import json
 import math
 import numbers
-import os  # noqa: TC003 (get_type_hints resolve a anotação de read_df)
 import re
 import sys
 import types
@@ -33,6 +32,7 @@ from pandas.api.types import is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Collection, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
