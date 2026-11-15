@@ -504,7 +504,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         """Campos acusados pelo erro; o erro do modelo inteiro acusa todos."""
         rejected = set()
         for detail in error.errors():
-            location = detail.get("loc", ())
+            location = detail["loc"]
             # A linha se valida pelo nome (_validate_row), que o erro traz.
             if location and location[0] in pydantic_model.model_fields:
                 rejected.add(str(location[0]))
@@ -606,10 +606,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 row_values[field_name] = value
 
         empty_cells = {
-            field_name
-            for field_name in empty_text_fields
-            if row_values[field_name] is None
-            and (field_name not in df.columns or pd.isna(row[field_name]))
+            field_name for field_name in empty_text_fields if row_values[field_name] is None
         }
         skipped_fields = set()
         if any(row_values[field_name] is None for field_name in conditions):
@@ -628,14 +625,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         skipped = frozenset(skipped_fields)
 
         projected = {}
-        missing_values = set()
+        # Na ordem do modelo, que é a do preenchimento dos defaults.
+        missing_values = []
         restored = set()
         omitted_required = set()
         for field_name, field in pydantic_model.model_fields.items():
             if field_name in excluded_fields:
                 continue
             value = row_values[field_name]
-            if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
+            if value is None:
                 if field_name in omittable_fields and field_name in df.columns:
                     if field.is_required():
                         omitted_required.add(field_name)
@@ -649,7 +647,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     values_to_fill[(position, field_name)] = ""
                     restored.add(field_name)
                     continue
-                missing_values.add(field_name)
+                missing_values.append(field_name)
                 if field_name in skipped or not (
                     field.is_required() or field_name in written_none_fields
                 ):
@@ -686,7 +684,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             field_name for field_name in restored if validated_data[field_name] != ""
         )
 
-        for field_name in missing_values & validated_data.keys():
+        for field_name in validated_data.keys() & missing_values:
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
         # O arquivo não guarda o tipo de todo valor (ver _validate_row). O
@@ -843,23 +841,21 @@ def _validated_where_same(
     if same(validated, value):
         return validated
     if isinstance(validated, dict) and isinstance(value, dict) and len(validated) == len(value):
-        if not all(
-            _same_json({key: None}, {read_key: None})
-            for key, read_key in zip(validated, value, strict=True)
-        ):
+        if not _same_json(dict.fromkeys(validated), dict.fromkeys(value)):
             return value
-        return {
-            key: _validated_where_same(item, read, _same_json)
-            for (key, item), read in zip(validated.items(), value.values(), strict=True)
-        }
+        # Os dois dicts têm o mesmo tamanho, e o strict do zip nunca levanta; o
+        # teste de mutação o troca por None ou pelo default, que dão o mesmo.
+        pairs = zip(validated.items(), value.values(), strict=True)  # pragma: no mutate
+        return {key: _validated_where_same(item, read, _same_json) for (key, item), read in pairs}
     if (
         isinstance(validated, (list, tuple))
         and isinstance(value, (list, tuple))
         and len(validated) == len(value)
     ):
+        # As duas sequências têm o mesmo tamanho; ver o zip do dict acima.
         items = [
             _validated_where_same(item, read, _same_json)
-            for item, read in zip(validated, value, strict=True)
+            for item, read in zip(validated, value, strict=True)  # pragma: no mutate
         ]
         return tuple(items) if isinstance(validated, tuple) else items
     return value
