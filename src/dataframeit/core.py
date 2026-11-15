@@ -609,8 +609,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         and df[field_name].dtype == object
         and _keeps_nan(field.annotation)
     }
+    # O status ausente pode ser o pd.NA da coluna `string` de convert_dtypes.
     processed_positions = [
-        position for position, status in enumerate(df[status_col]) if status == "processed"
+        position
+        for position, status in enumerate(df[status_col])
+        if pd.notna(status) and status == "processed"
     ]
     for position in processed_positions:
         row = df.iloc[position]
@@ -1855,13 +1858,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
-    # O status ausente que chega como pd.NA, como o da coluna `string` de
-    # convert_dtypes, vira None: a comparação do pd.NA com o texto do status não
-    # é booleana, e a validação da retomada e a marca da interrupção a usam.
-    if status_col in df_pandas.columns:
-        status = df_pandas[status_col]
-        df_pandas[status_col] = status.astype(object).where(status.notna(), None)
-
     incompatible_columns = []
     processed_values = {}
     if resume or reprocess_columns:
@@ -1975,6 +1971,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         control_columns = [status_col, "_error_details"]
         _as_object_columns(df_pandas, expected_columns + control_columns, nan_columns)
+        # O status ausente que chega como pd.NA, como o da coluna `string` de
+        # convert_dtypes, vira None: a marca das linhas não alcançadas compara o
+        # status com o texto, e a comparação com o pd.NA não é booleana.
+        df_pandas[status_col] = df_pandas[status_col].where(df_pandas[status_col].notna(), None)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -1988,14 +1988,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         _as_object_columns(df_pandas, expected_columns)
 
         is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume=resume)
+        # Com reprocess_columns, toda linha é processada; sem ele, a pendente.
+        to_process = [bool(reprocess_columns) or pending for pending in is_pending]
         _warn_missing_texts(
             df_pandas,
             text_column,
-            [
-                idx
-                for idx, pending in zip(df_pandas.index, is_pending, strict=True)
-                if pending or reprocess_columns
-            ],
+            [idx for idx, chosen in zip(df_pandas.index, to_process, strict=True) if chosen],
         )
 
         if parallel_requests > 1:
@@ -2008,7 +2006,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 value_columns=value_columns,
                 config=config,
                 backend=backend,
-                is_pending=is_pending,
+                to_process=to_process,
                 processed_count=processed_count,
                 conversion_info=conversion_info,
                 track_tokens=track_tokens,
@@ -2028,7 +2026,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 value_columns=value_columns,
                 config=config,
                 backend=backend,
-                is_pending=is_pending,
+                to_process=to_process,
                 processed_count=processed_count,
                 conversion_info=conversion_info,
                 track_tokens=track_tokens,
@@ -2196,8 +2194,8 @@ def _get_processing_indices(
     Com resume=True, só a linha sem status fica pendente: linhas 'processed' e
     'error' são preservadas, e o usuário limpa o status de um erro para reprocessá-lo.
     Com resume=False, fica pendente toda linha que não esteja 'processed'.
-    Quando reprocess_columns está definido, _process_rows e _process_rows_parallel
-    ignoram a seleção e percorrem todas as linhas.
+    Quando reprocess_columns está definido, a execução ignora a seleção e
+    processa todas as linhas.
     """
     status = df[status_col]
     if not resume:
@@ -3455,7 +3453,7 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
     df: pd.DataFrame,
     registered: Container[Hashable],
     *,
-    is_pending: Sequence[bool],
+    to_process: Sequence[bool],
     status_col: str,
     reprocess_columns: Sequence[str] | None,
     value_columns: Collection[str],
@@ -3463,9 +3461,8 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
 ) -> bool:
     """Marca as linhas que uma interrupção impediu de processar e diz se alguma mudou.
 
-    A linha não alcançada é a que a execução ia processar, toda linha com
-    reprocess_columns e a pendente sem ele, e que ela não registrou
-    (`registered`). O abort e o Ctrl-C, no sequencial e no paralelo, marcam por
+    A linha não alcançada é a que a execução ia processar (`to_process`) e
+    não registrou (`registered`). O abort e o Ctrl-C, no sequencial e no paralelo, marcam por
     esta mesma definição.
 
     A linha já processada que ia ser reprocessada guarda os valores anteriores,
@@ -3479,8 +3476,7 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
     para que a retomada as encontre.
     """
     unreached = np.fromiter((idx not in registered for idx in df.index), bool, len(df))
-    if not reprocess_columns:
-        unreached &= np.asarray(is_pending, dtype=bool)
+    unreached &= np.asarray(to_process, dtype=bool)
     status = df[status_col].to_numpy(dtype=object)
     details = df["_error_details"].to_numpy(dtype=object)
     processed = unreached & (status == "processed")
@@ -3765,7 +3761,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     value_columns: Collection[str] = (),
     config: LLMConfig,
     backend: ProviderBackend,
-    is_pending: list[bool],
+    to_process: list[bool],
     processed_count: int,
     conversion_info: ConversionInfo,
     track_tokens: bool,
@@ -3785,12 +3781,11 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
         value_columns: Campos que a execução grava, sem os de exclude=True.
         config: Configuração do LLM.
         backend: Implementação do provider vinculada à execução.
-        is_pending: Por posição, se a linha está pendente.
+        to_process: Por posição, se a execução processa a linha.
         processed_count: Linhas com status antes desta execução.
         conversion_info: Metadados da conversão da entrada, usados no rótulo.
         track_tokens: Se True, grava tokens por linha e soma o uso.
-        reprocess_columns: Lista de colunas para forçar reprocessamento.
-            Se especificado, não pula linhas já processadas.
+        reprocess_columns: Colunas a reprocessar nas linhas já processadas.
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
         checkpoint: Arquivo do checkpoint e intervalo de gravação, ou None.
         on_row_done: Chamado com o RowResult de cada linha depois de gravá-la.
@@ -3816,7 +3811,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     mark_unreached = partial(
         _mark_unreached,
         df,
-        is_pending=is_pending,
+        to_process=to_process,
         status_col=status_col,
         reprocess_columns=reprocess_columns,
         value_columns=value_columns,
@@ -3900,8 +3895,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
     with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
         for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-            # Com reprocess_columns, todas as linhas são processadas.
-            if not reprocess_columns and not is_pending[i]:
+            if not to_process[i]:
                 continue
             started = time.monotonic()
             success, values = process_row(idx, row)
@@ -4016,7 +4010,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     value_columns: Collection[str] = (),
     config: LLMConfig,
     backend: ProviderBackend,
-    is_pending: list[bool],
+    to_process: list[bool],
     processed_count: int,
     conversion_info: ConversionInfo,
     track_tokens: bool,
@@ -4040,12 +4034,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         value_columns: Campos que a execução grava, sem os de exclude=True.
         config: Configuração do LLM.
         backend: Implementação do provider vinculada à execução.
-        is_pending: Por posição, se a linha está pendente.
+        to_process: Por posição, se a execução processa a linha.
         processed_count: Linhas com status antes desta execução.
         conversion_info: Metadados da conversão da entrada, usados no rótulo.
         track_tokens: Se True, grava tokens por linha e soma o uso.
-        reprocess_columns: Lista de colunas para forçar reprocessamento.
-            Se especificado, não pula linhas já processadas.
+        reprocess_columns: Colunas a reprocessar nas linhas já processadas.
         parallel_requests: Teto inicial de linhas em voo, que também dimensiona
             o executor. Reduzido pela metade a cada erro de rate limit (429).
         trace_mode: Modo de trace ("full", "minimal") ou None para desabilitar.
@@ -4080,7 +4073,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     mark_unreached = partial(
         _mark_unreached,
         df,
-        is_pending=is_pending,
+        to_process=to_process,
         status_col=status_col,
         reprocess_columns=reprocess_columns,
         value_columns=value_columns,
@@ -4110,9 +4103,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     rows_to_process = [
         (position, idx, row)
         for position, (idx, row) in enumerate(
-            (idx, row)
-            for i, (idx, row) in enumerate(df.iterrows())
-            if reprocess_columns or is_pending[i]
+            (idx, row) for i, (idx, row) in enumerate(df.iterrows()) if to_process[i]
         )
     ]
 

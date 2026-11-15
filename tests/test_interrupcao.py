@@ -1352,7 +1352,7 @@ def test_marcas_da_interrupcao_sem_reprocessamento_poupam_a_linha_gravada_pela_e
         core._mark_unreached,
         df,
         set(),
-        is_pending=[True] * 4,
+        to_process=[True] * 4,
         status_col="_dataframeit_status",
         reprocess_columns=None,
         value_columns=["campo1"],
