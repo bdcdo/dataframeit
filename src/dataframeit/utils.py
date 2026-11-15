@@ -1363,6 +1363,21 @@ def is_list_of_pydantic_model(field_type: object) -> tuple[bool, type[BaseModel]
     return (False, None)
 
 
+def models_outside_lists(annotation: object) -> list[type[BaseModel]]:
+    """Os modelos que o valor pode trazer fora de uma lista de que eles são o item.
+
+    Em `list[A] | B` é `[B]`, e em `list[A] | tuple[A, ...]`, `[A]`, o da tupla;
+    em `Optional[list[A]]` é a lista vazia. O valor que traz um desses modelos
+    não tem item de lista onde gravar a busca do campo dele.
+    """
+    return [
+        model
+        for value_type in _value_types(annotation)
+        if not _item_types(value_type)
+        for model in get_nested_pydantic_models(value_type)
+    ]
+
+
 def list_layers(annotation: object, target: type) -> int | None:
     """Quantas listas envolvem `target` na anotação: list[list[X]] dá 2.
 
@@ -1521,7 +1536,8 @@ def get_nested_pydantic_models(field_type: object) -> list[type[BaseModel]]:
 
     Trata List[Model], Optional[List[Model]], Union[Model, None], etc.
     Usado para detectar campos de busca em modelos aninhados. Cada nível passa
-    por `_value_types`, e os metadados de `Annotated` ficam de fora.
+    por `_value_types`, e os metadados de `Annotated` ficam de fora. O modelo
+    que aparece mais de uma vez, como em `list[A] | tuple[A, ...]`, vem uma vez.
 
     Args:
         field_type: Anotação de tipo a analisar.
@@ -1546,7 +1562,7 @@ def get_nested_pydantic_models(field_type: object) -> list[type[BaseModel]]:
         else:
             for arg in get_args(value_type):
                 models.extend(get_nested_pydantic_models(arg))
-    return models
+    return list(dict.fromkeys(models))
 
 
 def _user_stacklevel() -> int:
