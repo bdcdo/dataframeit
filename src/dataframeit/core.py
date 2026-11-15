@@ -3814,25 +3814,26 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
 
             if success and config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
+
+        # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+        # fora e as marcas de uma interrupção, que não contam como linha processada.
+        if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
+            _try_save_checkpoint(df, checkpoint)
     except KeyboardInterrupt:
         # Ctrl-C: grava as linhas registradas desde a última gravação, que a
         # retomada pagaria de novo, e relança a interrupção. A linha cuja chamada
-        # foi cortada não chegou a ser registrada e fica pendente. A falha de
-        # gravação vira aviso em _try_save_checkpoint e não troca a interrupção.
-        if checkpoint and rows_processed_this_run > rows_saved:
+        # foi cortada não chegou a ser registrada e fica pendente. O Ctrl-C que
+        # corta a gravação final a refaz. A falha de gravação vira aviso em
+        # _try_save_checkpoint e não troca a interrupção.
+        if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
             _try_save_checkpoint(df, checkpoint)
         raise
-
-    # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
-    # fora e as marcas de uma interrupção, que não contam como linha processada.
-    if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
-        _try_save_checkpoint(df, checkpoint)
 
     return token_stats
 
 
 @contextmanager
-def _on_ctrl_c(callback: Callable[[], None]) -> Generator[None, None, None]:
+def _on_ctrl_c(callback: Callable[[], object]) -> Generator[None, None, None]:
     """Chama `callback` quando um KeyboardInterrupt atravessa o bloco, e o relança."""
     try:
         yield
@@ -4208,20 +4209,27 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
                         recorded.add(outcome["idx"])
                 pbar.update(1)
 
-    if abort_event.is_set():
-        _mark_unreached(
-            df,
-            [idx for _, idx, _ in rows_to_process if idx not in recorded],
-            status_col=status_col,
-            reprocess_columns=reprocess_columns,
-            value_columns=value_columns,
-            nan_columns=nan_columns,
-        )
+    # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
+    # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
+    # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
+    # ao arquivo, como no modo sequencial.
+    with (
+        _on_ctrl_c(lambda: _try_save_checkpoint(df, writer.checkpoint)) if writer else nullcontext()
+    ):
+        if abort_event.is_set():
+            _mark_unreached(
+                df,
+                [idx for _, idx, _ in rows_to_process if idx not in recorded],
+                status_col=status_col,
+                reprocess_columns=reprocess_columns,
+                value_columns=value_columns,
+                nan_columns=nan_columns,
+            )
 
-    # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
-    # fora e as marcas de uma interrupção, que não contam como linha processada.
-    if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
-        _try_save_checkpoint(df, writer.checkpoint)
+        # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+        # fora e as marcas de uma interrupção, que não contam como linha processada.
+        if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
+            _try_save_checkpoint(df, writer.checkpoint)
 
     elapsed = time.time() - start_time
     token_stats["elapsed_seconds"] = elapsed

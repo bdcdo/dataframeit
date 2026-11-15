@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit import ProviderAbortError, ProviderUsageLimitError, dataframeit
+from dataframeit import ProviderAbortError, ProviderUsageLimitError, core, dataframeit
 
 
 class Modelo(BaseModel):
@@ -473,6 +473,90 @@ def test_falha_ao_gravar_no_ctrl_c_avisa_e_mantem_o_keyboard_interrupt(tmp_path,
         )
 
     assert grava.call_count == 1
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_na_gravacao_final_refaz_a_gravacao_e_a_retomada_nao_paga_a_cauda(
+    tmp_path, paralelo
+):
+    """7 linhas e batch_size=5: o Ctrl-C chega na gravação final, que leva t6 e t7.
+
+    A gravação interrompida é refeita antes de a interrupção ser relançada, e o
+    arquivo fica com as 7 linhas pagas.
+    """
+    textos = [f"t{i}" for i in range(1, 8)]
+    ckpt = tmp_path / "ckpt.csv"
+    grava = core._save_checkpoint
+    gravacoes: list[int] = []
+
+    def grava_e_interrompe(df, *args, **kwargs):
+        gravacoes.append(int(df["_dataframeit_status"].eq("processed").sum()))
+        if len(gravacoes) == 2:
+            _ctrl_c()
+        return grava(df, *args, **kwargs)
+
+    pagas, llm = _llm_com_ctrl_c()
+    with (
+        patch.object(core, "_save_checkpoint", grava_e_interrompe),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": textos}),
+            llm,
+            parallel_requests=paralelo,
+            batch_size=5,
+            checkpoint_path=ckpt,
+        )
+
+    assert gravacoes == [5, 7, 7]
+    assert sorted(pagas) == textos
+    gravado = pd.read_csv(ckpt)
+    assert sorted(gravado.loc[gravado["_dataframeit_status"].eq("processed"), "texto"]) == textos
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    saida = _roda(
+        pd.DataFrame({"texto": textos}),
+        llm_ok,
+        parallel_requests=paralelo,
+        batch_size=5,
+        checkpoint_path=ckpt,
+    )
+
+    assert retomada == []
+    assert list(saida["campo1"]) == [f"r-{texto}" for texto in textos]
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_ao_marcar_as_linhas_de_uma_interrupcao_grava_a_cauda(tmp_path, paralelo):
+    """A cota acaba na 8ª chamada, e o Ctrl-C chega enquanto as linhas restantes são marcadas.
+
+    Com batch_size=5, o arquivo só tem 5 das 7 linhas pagas até a gravação do
+    Ctrl-C, que leva as outras duas.
+    """
+    ckpt = tmp_path / "ckpt.csv"
+    marca = core._mark_unreached
+
+    def interrompe_e_marca(*args, **kwargs):
+        _ctrl_c()
+        return marca(*args, **kwargs)
+
+    _, llm = _llm_que_esgota(7, ProviderUsageLimitError("usage limit"))
+    with (
+        patch.object(core, "_mark_unreached", interrompe_e_marca),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": [f"t{i}" for i in range(12)]}),
+            llm,
+            parallel_requests=paralelo,
+            batch_size=5,
+            checkpoint_path=ckpt,
+        )
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].eq("processed").sum() == 7
 
 
 def _sigint_com_restart(reinicia: bool) -> Generator[None, None, None]:
