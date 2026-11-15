@@ -609,12 +609,8 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         and df[field_name].dtype == object
         and _keeps_nan(field.annotation)
     }
-    # O status ausente pode ser o pd.NA da coluna `string` de convert_dtypes.
-    processed_positions = [
-        position
-        for position, status in enumerate(df[status_col])
-        if pd.notna(status) and status == "processed"
-    ]
+    # O isin lê o pd.NA, status ausente da coluna `string` de convert_dtypes.
+    processed_positions = np.flatnonzero(df[status_col].isin(["processed"])).tolist()
     for position in processed_positions:
         row = df.iloc[position]
         row_values = {}
@@ -1987,9 +1983,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         # de estrutura não guarda o NaN como valor, e `nan_columns` não muda nada.
         _as_object_columns(df_pandas, expected_columns)
 
-        is_pending, processed_count = _get_processing_indices(df_pandas, status_col, resume=resume)
-        # Com reprocess_columns, toda linha é processada; sem ele, a pendente.
-        to_process = [bool(reprocess_columns) or pending for pending in is_pending]
+        to_process, processed_count = _get_processing_indices(
+            df_pandas, status_col, resume=resume, reprocess=bool(reprocess_columns)
+        )
         _warn_missing_texts(
             df_pandas,
             text_column,
@@ -2183,9 +2179,9 @@ def _silent_slice_write() -> AbstractContextManager[None]:
 
 
 def _get_processing_indices(
-    df: pd.DataFrame, status_col: str, *, resume: bool
+    df: pd.DataFrame, status_col: str, *, resume: bool, reprocess: bool = False
 ) -> tuple[list[bool], int]:
-    """Retorna (linhas pendentes por posição, contagem de linhas com status).
+    """Retorna (linhas a processar por posição, contagem de linhas com status).
 
     A seleção depende só do status de cada linha, e nunca da ordem dos rótulos do
     índice, que pode vir fora de ordem (sort_values, sample, filtro), ser textual ou
@@ -2194,15 +2190,18 @@ def _get_processing_indices(
     Com resume=True, só a linha sem status fica pendente: linhas 'processed' e
     'error' são preservadas, e o usuário limpa o status de um erro para reprocessá-lo.
     Com resume=False, fica pendente toda linha que não esteja 'processed'.
-    Quando reprocess_columns está definido, a execução ignora a seleção e
-    processa todas as linhas.
+    Com reprocess=True (reprocess_columns definido), toda linha é processada,
+    e a contagem é a mesma.
     """
     status = df[status_col]
-    if not resume:
-        return status.ne("processed").tolist(), 0
-
-    is_pending = status.isna()
-    processed_count = int((~is_pending).sum())
+    if resume:
+        is_pending = status.isna()
+        processed_count = int((~is_pending).sum())
+    else:
+        is_pending = status.ne("processed")
+        processed_count = 0
+    if reprocess:
+        return [True] * len(df), processed_count
     return is_pending.tolist(), processed_count
 
 
@@ -3894,8 +3893,9 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # arquivo. O Ctrl-C que corta a gravação final a refaz. A falha de gravação
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
     with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
-        for i, (idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc=desc)):
-            if not to_process[i]:
+        rows = tqdm(df.iterrows(), total=len(df), desc=desc)
+        for (idx, row), chosen in zip(rows, to_process, strict=True):
+            if not chosen:
                 continue
             started = time.monotonic()
             success, values = process_row(idx, row)
@@ -4102,9 +4102,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # chamada, que o RowResult entrega ao callback.
     rows_to_process = [
         (position, idx, row)
-        for position, (idx, row) in enumerate(
-            (idx, row) for i, (idx, row) in enumerate(df.iterrows()) if to_process[i]
-        )
+        for position, (idx, row) in enumerate(itertools.compress(df.iterrows(), to_process))
     ]
 
     if not rows_to_process:

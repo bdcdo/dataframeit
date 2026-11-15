@@ -89,6 +89,14 @@ def test_resume_functionality():
     assert pending == [False, False, True, True]
     assert count == 2
 
+    # Com reprocess_columns, toda linha é processada, e a contagem é a mesma
+    for resume, esperado in ((True, 2), (False, 0)):
+        selecao, count = _get_processing_indices(
+            df, "_dataframeit_status", resume=resume, reprocess=True
+        )
+        assert selecao == [True, True, True, True]
+        assert count == esperado
+
     # Com todas linhas processadas
     df["_dataframeit_status"] = "processed"
     pending, count = _get_processing_indices(df, "_dataframeit_status", resume=True)
