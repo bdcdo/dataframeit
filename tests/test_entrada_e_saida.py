@@ -479,7 +479,8 @@ def _saida_com_linha_pendente(categoria):
 
 
 @pytest.mark.parametrize(
-    ("resume", "reprocess_columns"), [(True, None), (True, ["nota"]), (False, ["nota"])]
+    ("resume", "reprocess_columns"),
+    [(True, None), (True, ["nota"]), (False, None), (False, ["nota"])],
 )
 def test_retomada_manual_com_valor_em_linha_sem_status_levanta(resume, reprocess_columns):
     _recusa(
@@ -505,17 +506,6 @@ def test_retomada_manual_com_valor_so_na_linha_processada_segue():
 
     assert llm.call_count == 1
     assert resultado["categoria"].tolist() == ["llm-a", "llm-b"]
-
-
-def test_retomada_manual_sem_reprocess_columns_e_resume_false_so_avisa():
-    # Sem reprocess_columns, resume=False devolve a entrada sem processar, e
-    # o valor da linha sem status não corre risco.
-    entrada = _saida_com_linha_pendente(["llm-a", "rótulo humano"])
-    with pytest.warns(UserWarning, match=r"Colunas \['categoria', 'nota'\] já existem"):
-        resultado, llm = _rodar(entrada, questions=ModeloCategoria, resume=False)
-
-    llm.assert_not_called()
-    assert resultado["categoria"].tolist() == ["llm-a", "rótulo humano"]
 
 
 class ModeloComExcluido(BaseModel):

@@ -75,6 +75,7 @@ from .utils import (
     ConversionInfo,
     _admits_none,
     _column_rank,
+    _excluded_fields,
     _is_structure_class,
     _json_default,
     _keeps_nan,
@@ -1779,11 +1780,21 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         return from_pandas(df_pandas, conversion_info, status_col)
 
     # Sem coluna de status, nem a da execução retomada do checkpoint, toda
-    # linha conta como nova. Vem depois da entrada vazia, que não tem linha a
-    # sobrescrever.
+    # linha conta como nova; com ela na entrada, a linha sem status. A linha
+    # pendente do checkpoint retomado já foi checada antes de a entrada
+    # recebê-lo. Vem depois da entrada vazia, que não tem linha a sobrescrever.
     if status_col not in df_pandas.columns:
         _raise_if_overwritten(
             df_pandas, questions, reprocessed_columns, nan_columns, status_col=status_col
+        )
+    elif input_has_status:
+        _raise_if_overwritten(
+            df_pandas,
+            questions,
+            reprocessed_columns,
+            nan_columns,
+            status_col=status_col,
+            pending=df_pandas[status_col].isna().to_numpy(),
         )
     # A coluna do campo com exclude=True, que a execução não grava, não conta.
     excluded_fields = _excluded_fields(questions)
@@ -1796,18 +1807,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             stacklevel=1,
         )
         return from_pandas(df_pandas, conversion_info, status_col)
-    # Com a coluna de status na entrada, a linha sem status recebe a resposta
-    # em todos os campos. A do checkpoint retomado já foi checada antes de a
-    # entrada recebê-lo.
-    if input_has_status:
-        _raise_if_overwritten(
-            df_pandas,
-            questions,
-            reprocessed_columns,
-            nan_columns,
-            status_col=status_col,
-            pending=df_pandas[status_col].isna().to_numpy(),
-        )
 
     incompatible_columns = []
     processed_values = {}
@@ -3136,13 +3135,6 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         and not _default_may_be_none(field)
         and field_name not in excluded_fields
         and field_name not in omittable_fields
-    )
-
-
-def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
-    """Os campos com exclude=True, que não saem no model_dump e que a execução não grava."""
-    return frozenset(
-        field_name for field_name, field in model.model_fields.items() if field.exclude
     )
 
 

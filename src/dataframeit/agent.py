@@ -35,7 +35,7 @@ from .llm import (
     chat_model,
 )
 from .search import get_provider
-from .utils import is_list_of_pydantic_model, resolve_forward_refs
+from .utils import _excluded_fields, is_list_of_pydantic_model, resolve_forward_refs
 
 if TYPE_CHECKING:
     from langchain_core.runnables import Runnable
@@ -668,11 +668,12 @@ class _FieldExtractor:
 
         # Como o model_dump dos outros modos, a resposta deixa de fora o campo
         # com exclude=True, que a execução não grava.
+        excluded = _excluded_fields(self.pydantic_model)
         response = {
             "data": {
                 name: row.data.get(name)
-                for name, field in self.pydantic_model.model_fields.items()
-                if not field.exclude
+                for name in self.pydantic_model.model_fields
+                if name not in excluded
             },
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
