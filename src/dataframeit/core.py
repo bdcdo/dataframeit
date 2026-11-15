@@ -357,7 +357,9 @@ def _as_object_columns(
     como NaN, que dali em diante é valor: a saída polars, que guarda o NaN
     dessas colunas, mostraria NaN na linha pendente e na de erro.
     """
-    with _silent_slice_write(df):
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
         for col in columns:
             if col in df.columns and df[col].dtype != object:
                 values = df[col].astype(object)
@@ -878,7 +880,9 @@ def _apply_processed_values(
     by_column: dict[str, dict[int, Any]] = {}
     for (position, field_name), value in values.items():
         by_column.setdefault(field_name, {})[position] = value
-    with _silent_slice_write(df):
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
         for field_name, cells in by_column.items():
             column = df[field_name].to_numpy(dtype=object, copy=True)
             for position, value in cells.items():
@@ -2107,7 +2111,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
 
-def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)
+def _setup_columns(  # noqa: C901, PLR0913 (uma família de colunas por recurso ligado)
     df: pd.DataFrame,
     expected_columns: list[str],
     status_column: str | None,
@@ -2153,30 +2157,21 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     new_cols = [col for col in expected_columns if col not in df.columns]
     needs_status = status_col not in df.columns
     needs_error = error_col not in df.columns
-    needs_tokens = [col for col in token_cols if col not in df.columns] if track_tokens else []
+    needs_tokens = [col for col in token_cols if col not in df.columns]
     needs_search = [col for col in search_cols if col not in df.columns]
     needs_trace = [col for col in trace_cols if col not in df.columns]
 
-    if (
-        not new_cols
-        and not needs_status
-        and not needs_error
-        and not needs_tokens
-        and not needs_search
-        and not needs_trace
-    ):
-        return
-
-    with _silent_slice_write(df):
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
         for col in new_cols:
             df[col] = None
         if needs_status:
             df[status_col] = None
         if needs_error:
             df[error_col] = None
-        if track_tokens:
-            for col in needs_tokens:
-                df[col] = None
+        for col in needs_tokens:
+            df[col] = None
         for col in needs_search:
             df[col] = None
         for col in needs_trace:
@@ -3514,24 +3509,24 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
     demais ficam sem status, inclusive a que tinha 'error' e ia ser refeita,
     para que a retomada as encontre.
     """
-    unreached = np.fromiter((idx not in registered for idx in df.index), bool, len(df))
-    unreached &= np.asarray(to_process, dtype=bool)
-    status = df[status_col].to_numpy(dtype=object)
-    details = df["_error_details"].to_numpy(dtype=object)
+    unreached = np.fromiter((idx not in registered for idx in df.index), bool)
+    unreached &= np.asarray(to_process)
+    status = df[status_col].to_numpy()
+    details = df["_error_details"].to_numpy()
     processed = unreached & (status == "processed")
-    flag = np.zeros(len(df), dtype=bool)
-    if reprocess_columns:
-        flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL)
+    flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL) & bool(reprocess_columns)
     clear = unreached & ~processed & ~(pd.isna(status) & pd.isna(details))
     # A linha 'error' sai da verificação na primeira coluna em que tem valor.
     errors = np.flatnonzero(clear & (status == "error"))
     for column in value_columns:
         nan_is_value = _nan_is_value(df, column, nan_columns)
-        cells = df[column].to_numpy(dtype=object)[errors]
+        cells = df[column].to_numpy()[errors]
         holds = np.fromiter(
-            (not _is_absent(cell, nan_is_value=nan_is_value) for cell in cells), bool, len(cells)
+            (not _is_absent(cell, nan_is_value=nan_is_value) for cell in cells), bool
         )
-        clear[errors[holds]] = False
+        # O numpy grava None como False num array de bool, e o teste de mutação
+        # troca um pelo outro à toa.
+        clear[errors[holds]] = False  # pragma: no mutate
         errors = errors[~holds]
     if flag.any():
         df.loc[flag, "_error_details"] = _INTERRUPTED_REPROCESS_DETAIL
@@ -3639,10 +3634,16 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     # Armazenar traces: um por campo ou grupo nos modos por campo, ou um só
     if trace_mode:
         if search_config and search_config.per_field:
-            _set_field_traces(df, idx, result.get("traces", {}))
+            # Com trace_mode, a linha passou pelo agente campo a campo, que sempre devolve os traces.
+            _set_field_traces(df, idx, result["traces"])
         else:
             # Com trace_mode, a linha passou por call_agent, que sempre devolve o trace.
-            _set_cell(df, idx, "_trace", json.dumps(result["trace"], ensure_ascii=False))
+            trace = json.dumps(
+                result["trace"],
+                # O None que o teste de mutação põe no lugar do False também desliga o escape.
+                ensure_ascii=False,  # pragma: no mutate
+            )
+            _set_cell(df, idx, "_trace", trace)
 
     _set_cell(df, idx, status_col, "processed")
     # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
@@ -3869,7 +3870,9 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # Linhas registradas nesta execução; o abort e o Ctrl-C marcam as demais.
     registered: set[Hashable] = set()
     # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
-    marked = False
+    # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
+    # início, e o teste de mutação troca à toa o valor inicial.
+    marked = False  # pragma: no mutate
     mark_unreached = partial(
         _mark_unreached,
         df,
@@ -3958,7 +3961,8 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
     with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
         rows = tqdm(df.iterrows(), total=len(df), desc=desc)
-        for (idx, row), chosen in zip(rows, to_process, strict=True):
+        # to_process tem uma posição por linha, e o strict do zip não muda o resultado.
+        for (idx, row), chosen in zip(rows, to_process, strict=True):  # pragma: no mutate
             if not chosen:
                 continue
             started = time.monotonic()
@@ -4119,7 +4123,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     lock = threading.Lock()
     current_workers = parallel_requests
     initial_workers = parallel_requests
-    workers_reduced = False
     rate_limit_event = threading.Event()
     abort_event = threading.Event()
     # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
@@ -4127,7 +4130,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # O abort e o Ctrl-C marcam as demais.
     counted: set[Hashable] = set()
     # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
-    marked = False
+    # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
+    # início, e o teste de mutação troca à toa o valor inicial.
+    marked = False  # pragma: no mutate
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -4203,7 +4208,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
 
     def process_single_row(row_data: _RowData) -> None:
         """Processa uma única linha (executada em thread separada)."""
-        nonlocal current_workers, workers_reduced
+        nonlocal current_workers
 
         started = time.monotonic()
         _position, idx, row = row_data
@@ -4272,16 +4277,20 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             try:
                 rate_limited = is_rate_limit_error(e)
             except Exception:  # noqa: BLE001 (ver o comentário acima)
-                rate_limited = False
+                # Só o `if` abaixo o lê, e o None que o teste de mutação põe no
+                # lugar é também falso.
+                rate_limited = False  # pragma: no mutate
             if rate_limited:
                 with lock:
                     if current_workers > 1:
                         old_workers = current_workers
                         current_workers = max(1, current_workers // 2)
-                        workers_reduced = True
                         warnings.warn(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            stacklevel=_user_stacklevel(),
+                            # Na thread do executor, _user_stacklevel() devolve 1, o
+                            # padrão, e tirar o argumento, como faz o teste de mutação,
+                            # não muda nada.
+                            stacklevel=_user_stacklevel(),  # pragma: no mutate
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo
@@ -4392,7 +4401,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         warnings.warn(
                             f"Erro inesperado no executor depois de registrar a linha "
                             f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                            stacklevel=1,
+                            # O padrão é 1, e tirar o argumento, como faz o teste de
+                            # mutação, não muda nada.
+                            stacklevel=1,  # pragma: no mutate
                         )
                     else:
                         with lock:
@@ -4409,7 +4420,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # completa antes de gravar.
     with _on_ctrl_c(
         mark_uncounted_rows,
-        partial(_try_save_checkpoint, df, writer.checkpoint) if writer else (lambda: None),
+        # _on_ctrl_c descarta o que a gravação devolve, e o teste de mutação troca
+        # à toa o None da gravação vazia.
+        partial(_try_save_checkpoint, df, writer.checkpoint)
+        if writer
+        else (lambda: None),  # pragma: no mutate
     ):
         if abort_event.is_set():
             mark_unreached(counted)
@@ -4423,6 +4438,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     token_stats["elapsed_seconds"] = elapsed
     token_stats["initial_workers"] = initial_workers
     token_stats["final_workers"] = current_workers
-    token_stats["workers_reduced"] = workers_reduced
+    token_stats["workers_reduced"] = current_workers < initial_workers
 
     return token_stats
