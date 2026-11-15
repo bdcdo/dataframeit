@@ -25,18 +25,24 @@ SECOES = {
     "docs/index.md": "## O que é?",
     "docs/en/index.md": "## What is it?",
 }
-# Títulos do quickstart: os passos em ordem, a seção do exemplo completo e,
-# por último, o passo com a tabela de saída.
+# Títulos do quickstart: os passos em ordem (o último traz a tabela de saída) e
+# a seção do exemplo completo.
 QUICKSTARTS = {
     "docs/getting-started/quickstart.md": (
-        ["## Passo 1: Defina seu Modelo Pydantic", "## Passo 2: Prepare seus Dados"],
+        [
+            "## Passo 1: Defina seu Modelo Pydantic",
+            "## Passo 2: Prepare seus Dados",
+            "## Passo 3: Processe!",
+        ],
         "## Exemplo Completo",
-        "## Passo 3: Processe!",
     ),
     "docs/en/getting-started/quickstart.md": (
-        ["## Step 1: Define your Pydantic Model", "## Step 2: Prepare your Data"],
+        [
+            "## Step 1: Define your Pydantic Model",
+            "## Step 2: Prepare your Data",
+            "## Step 3: Process!",
+        ],
         "## Complete Example",
-        "## Step 3: Process!",
     ),
 }
 
@@ -47,11 +53,15 @@ def _secao(nome, titulo):
     return texto[inicio : texto.index("\n## ", inicio + 1)]
 
 
+def _blocos(secao):
+    """Blocos Python da seção, sem o recuo de uma aba do MkDocs."""
+    blocos = re.findall(r"^( *)```python\n(.*?)^\1```", secao, re.DOTALL | re.MULTILINE)
+    assert blocos
+    return [textwrap.dedent(codigo) for _, codigo in blocos]
+
+
 def _codigo(secao):
-    """Primeiro bloco Python da seção, sem o recuo de uma aba do MkDocs."""
-    bloco = re.search(r"^( *)```python\n(.*?)^\1```", secao, re.DOTALL | re.MULTILINE)
-    assert bloco is not None
-    return textwrap.dedent(bloco.group(2))
+    return _blocos(secao)[0]
 
 
 def _tabela(secao):
@@ -130,13 +140,27 @@ def test_exemplo_rapido_imprime_a_tabela_da_pagina(nome):
 @pytest.mark.parametrize("nome", sorted(QUICKSTARTS))
 def test_passos_do_quickstart_imprimem_a_tabela_do_passo_3(nome):
     """Os blocos dos passos, rodados em sequência (no passo 2, a aba DataFrame)."""
-    passos, _, ultimo = QUICKSTARTS[nome]
-    secao_da_tabela = _secao(nome, ultimo)
-    codigo = "\n".join(_codigo(_secao(nome, titulo)) for titulo in [*passos, ultimo])
-    _confere(codigo, secao_da_tabela)
+    passos, _ = QUICKSTARTS[nome]
+    codigo = "\n".join(_codigo(_secao(nome, titulo)) for titulo in passos)
+    _confere(codigo, _secao(nome, passos[-1]))
+
+
+@pytest.mark.parametrize("nome", sorted(QUICKSTARTS))
+def test_abas_lista_e_dicionario_do_quickstart_tem_os_textos_do_dataframe(nome):
+    aba_df, aba_lista, aba_dict = _blocos(_secao(nome, QUICKSTARTS[nome][0][1]))
+    escopos = [{}, {}, {}]
+    for codigo, escopo in zip([aba_df, aba_lista, aba_dict], escopos, strict=True):
+        exec(codigo, escopo)  # noqa: S102 (código da própria documentação)
+    df = escopos[0]["df"]
+    lista, dicionario = (
+        escopo["texts" if "texts" in escopo else "textos"] for escopo in escopos[1:]
+    )
+
+    assert lista == df.iloc[:, 1].tolist()
+    assert dicionario == dict(zip(df.iloc[:, 0], df.iloc[:, 1], strict=True))
 
 
 @pytest.mark.parametrize("nome", sorted(QUICKSTARTS))
 def test_exemplo_completo_do_quickstart_salva_a_tabela_do_passo_3(nome):
-    _, completo, ultimo = QUICKSTARTS[nome]
-    _confere(_codigo(_secao(nome, completo)), _secao(nome, ultimo))
+    passos, completo = QUICKSTARTS[nome]
+    _confere(_codigo(_secao(nome, completo)), _secao(nome, passos[-1]))

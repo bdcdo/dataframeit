@@ -101,7 +101,7 @@ print(resultado)
 | 0004567-89.2024.8.26.0053 | José Lima pede que... | Estado de São Paulo | público | parcialmente procedente |
 | 0007890-12.2024.8.26.0114 | Ana Costa pede... | Município de Campinas | público | improcedente |
 
-Sem `text_column`, o dataframeit procura a coluna de texto entre alguns nomes comuns e levanta `ValueError` se o DataFrame tiver várias colunas e nenhuma com esses nomes ([FAQ](../guides/faq.md#valueerror-sobre-a-coluna-de-texto)). Lista e dicionário não têm coluna a escolher, e a chamada dispensa `text_column`.
+Sem `text_column`, o dataframeit procura a coluna de texto entre alguns nomes comuns e levanta `ValueError` se o DataFrame tiver várias colunas e nenhuma com esses nomes ([FAQ](../guides/faq.md#valueerror-sobre-a-coluna-de-texto)). Com lista ou dicionário, passe `textos` no lugar de `df` e deixe `text_column` de fora: não há coluna a escolher.
 
 Com `track_tokens=True`, o padrão, a saída traz também as colunas de uso de tokens `_input_tokens`, `_cached_input_tokens`, `_output_tokens` e `_reasoning_tokens`, omitidas acima; ver [Colunas Adicionadas](../reference/api.md#colunas-adicionadas).
 

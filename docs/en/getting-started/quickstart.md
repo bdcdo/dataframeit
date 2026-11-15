@@ -101,7 +101,7 @@ print(result)
 | 0004567-89.2024.8.26.0053 | José Lima asks... | State of São Paulo | public | partially granted |
 | 0007890-12.2024.8.26.0114 | Ana Costa seeks... | Municipality of Campinas | public | denied |
 
-Without `text_column`, dataframeit looks for the text column among a few common names and raises `ValueError` when a DataFrame with several columns has none of them ([FAQ](../guides/faq.md#valueerror-about-the-text-column)). A list or a dictionary has no column to choose, and the call does without `text_column`.
+Without `text_column`, dataframeit looks for the text column among a few common names and raises `ValueError` when a DataFrame with several columns has none of them ([FAQ](../guides/faq.md#valueerror-about-the-text-column)). With a list or a dictionary, pass `texts` instead of `df` and leave out `text_column`: there is no column to choose.
 
 With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out above; see [Added Columns](../reference/api.md#added-columns).
 
