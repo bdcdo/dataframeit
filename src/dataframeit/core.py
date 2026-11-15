@@ -1089,10 +1089,10 @@ def _validate_search_overrides(
         raise ValueError(msg)
 
 
-def _validate_field_prompts(label: str, extra: dict[str, Any]) -> None:
-    """Recusa prompt, prompt_replace ou prompt_append de campo que não é texto."""
-    for key in ("prompt", "prompt_replace", "prompt_append"):
-        value = extra.get(key)
+def _validate_prompts(label: str, config: dict[str, Any], keys: tuple[str, ...]) -> None:
+    """Recusa o prompt de campo ou de grupo que não é texto nem None."""
+    for key in keys:
+        value = config.get(key)
         if value is not None and not isinstance(value, str):
             msg = f"{label}: {key} deve ser texto, não {type(value).__name__}"
             raise ValueError(msg)
@@ -1155,7 +1155,9 @@ def _validate_field_configs(
                     "está dentro de outra lista, o que não é suportado"
                 )
                 raise ValueError(msg)
-            _validate_field_prompts(f"Campo '{path}'", extra)
+            _validate_prompts(
+                f"Campo '{path}'", extra, ("prompt", "prompt_replace", "prompt_append")
+            )
             _validate_search_overrides(
                 f"Campo '{path}'",
                 extra.get("search_depth"),
@@ -1266,6 +1268,7 @@ def _validate_search_groups(  # noqa: C901 (uma checagem por regra de search_gro
                     )
                     raise ValueError(msg)
 
+        _validate_prompts(f"Grupo '{group_name}'", group_config, ("prompt",))
         _validate_search_overrides(
             f"Grupo '{group_name}'",
             group_config.get("search_depth"),

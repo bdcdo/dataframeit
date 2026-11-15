@@ -424,7 +424,21 @@ def test_prompt_none_por_campo_e_aceito():
     class Modelo(BaseModel):
         a: str = Field(json_schema_extra={"prompt": None, "prompt_append": "Seja breve."})
 
-    assert _executar(Modelo, search_per_field=True).called
+    prompt = _executar(Modelo, search_per_field=True).call_args.args[2]
+    assert prompt.endswith("Seja breve.")
+
+
+def test_prompt_nao_texto_por_grupo_e_recusado_antes_de_processar():
+    class Modelo(BaseModel):
+        b: str = ""
+        c: str = ""
+
+    with pytest.raises(ValueError, match="Grupo 'g': prompt deve ser texto, não int"):
+        _executar(
+            Modelo,
+            search_per_field=True,
+            search_groups={"g": {"fields": ["b", "c"], "prompt": 123}},
+        )
 
 
 def test_group_config_aceita_max_search_calls():
