@@ -22,6 +22,7 @@ import sys
 import types
 import typing
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -34,7 +35,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Callable, Collection, Hashable, Mapping
+    from collections.abc import Callable, Collection, Generator, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -1017,17 +1018,25 @@ def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qua
     return value
 
 
-def _detach_from_parent(df: pd.DataFrame) -> None:
-    """Desliga o DataFrame do original de que é fatia, para gravar nele sem aviso.
+@contextmanager
+def _silent_slice_write(df: pd.DataFrame) -> Generator[None, None, None]:
+    """Contexto em que gravar coluna em `df`, se for fatia de outro DataFrame, não avisa.
 
-    No pandas 2, gravar coluna numa fatia emite SettingWithCopyWarning enquanto
-    `_is_copy` apontar para o original. Desligar a referência vale só para este
-    DataFrame, ao contrário da opção `mode.chained_assignment`, que é global do
-    processo: duas threads que a trocassem ao mesmo tempo poderiam deixá-la
-    desligada. No pandas 3, a cópia na escrita substitui o aviso.
+    O pandas 2 avisa ao escrever numa fatia enquanto `_is_copy` aponta para o
+    original. A referência é desligada só neste DataFrame e volta na saída, sem
+    tocar a opção global `mode.chained_assignment`, que outra thread pode estar
+    usando; a escrita do usuário na fatia, depois, avisa como antes. No pandas
+    3, a cópia na escrita substitui esse aviso.
     """
-    if hasattr(pd.errors, "SettingWithCopyWarning"):
-        df._is_copy = None  # noqa: SLF001 (atributo que o pandas 2 consulta para avisar)
+    if not hasattr(pd.errors, "SettingWithCopyWarning"):
+        yield
+        return
+    parent = df._is_copy  # noqa: SLF001 (atributo que o pandas 2 consulta para avisar)
+    df._is_copy = None  # noqa: SLF001
+    try:
+        yield
+    finally:
+        df._is_copy = parent  # noqa: SLF001
 
 
 def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> None:
@@ -1039,10 +1048,10 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
         df: DataFrame a normalizar.
         complex_fields: Set com nomes das colunas a normalizar.
     """
-    _detach_from_parent(df)
-    for col in complex_fields:
-        if col in df.columns:
-            df[col] = df[col].apply(normalize_value)
+    with _silent_slice_write(df):
+        for col in complex_fields:
+            if col in df.columns:
+                df[col] = df[col].apply(normalize_value)
 
 
 def read_df(

@@ -88,12 +88,12 @@ from .utils import (
     ConversionInfo,
     _admits_none,
     _column_rank,
-    _detach_from_parent,
     _dropped_by_model_serializer,
     _excluded_fields,
     _is_structure_class,
     _json_default,
     _keeps_nan,
+    _silent_slice_write,
     _user_stacklevel,
     accepts_only_text,
     from_pandas,
@@ -351,12 +351,13 @@ def _as_object_columns(
     como NaN, que dali em diante é valor: a saída polars, que guarda o NaN
     dessas colunas, mostraria NaN na linha pendente e na de erro.
     """
-    for col in columns:
-        if col in df.columns and df[col].dtype != object:
-            values = df[col].astype(object)
-            if col in nan_columns:
-                values = values.where(df[col].notna(), None)
-            df[col] = values
+    with _silent_slice_write(df):
+        for col in columns:
+            if col in df.columns and df[col].dtype != object:
+                values = df[col].astype(object)
+                if col in nan_columns:
+                    values = values.where(df[col].notna(), None)
+                df[col] = values
 
 
 def _is_missing_text(value: object) -> bool:
@@ -904,11 +905,12 @@ def _apply_processed_values(
     by_column: dict[str, dict[int, Any]] = {}
     for (position, field_name), value in values.items():
         by_column.setdefault(field_name, {})[position] = value
-    for field_name, cells in by_column.items():
-        column = df[field_name].to_numpy(dtype=object, copy=True)
-        for position, value in cells.items():
-            column[position] = value
-        df[field_name] = pd.Series(column, index=df.index, dtype=object)
+    with _silent_slice_write(df):
+        for field_name, cells in by_column.items():
+            column = df[field_name].to_numpy(dtype=object, copy=True)
+            for position, value in cells.items():
+                column[position] = value
+            df[field_name] = pd.Series(column, index=df.index, dtype=object)
 
 
 @contextmanager
@@ -1692,8 +1694,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # Converter para pandas se necessário
     annotations = {name: field.annotation for name, field in questions.model_fields.items()}
     df_pandas, conversion_info = to_pandas(data, annotations)
-    # A execução grava colunas na entrada; numa fatia de outro DataFrame, sem aviso.
-    _detach_from_parent(df_pandas)
 
     # Determinar coluna de texto
     is_dataframe_type = conversion_info.original_type in (
@@ -1809,15 +1809,16 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             structures=frozenset(complex_fields),
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
-            empty_text_fields = _resume_from_checkpoint(
-                df_pandas,
-                checkpoint,
-                questions,
-                text_column=text_column,
-                status_col=status_col,
-                reprocessed_columns=reprocessed_columns,
-                nan_columns=nan_columns,
-            )
+            with _silent_slice_write(df_pandas):
+                empty_text_fields = _resume_from_checkpoint(
+                    df_pandas,
+                    checkpoint,
+                    questions,
+                    text_column=text_column,
+                    status_col=status_col,
+                    reprocessed_columns=reprocessed_columns,
+                    nan_columns=nan_columns,
+                )
 
     # Entradas vazias têm um resultado bem definido e não dependem de provider.
     if df_pandas.empty:
@@ -1974,8 +1975,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         # coluna `string` de convert_dtypes, vira None: a marca das linhas não
         # alcançadas compara o status e o detalhe com texto, e a comparação com
         # o pd.NA não é booleana.
-        for col in control_columns:
-            df_pandas[col] = df_pandas[col].where(df_pandas[col].notna(), None)
+        with _silent_slice_write(df_pandas):
+            for col in control_columns:
+                df_pandas[col] = df_pandas[col].where(df_pandas[col].notna(), None)
         _apply_processed_values(df_pandas, processed_values)
 
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
@@ -2156,19 +2158,20 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    for col in new_cols:
-        df[col] = None
-    if needs_status:
-        df[status_col] = None
-    if needs_error:
-        df[error_col] = None
-    if track_tokens:
-        for col in needs_tokens:
+    with _silent_slice_write(df):
+        for col in new_cols:
             df[col] = None
-    for col in needs_search:
-        df[col] = None
-    for col in needs_trace:
-        df[col] = None
+        if needs_status:
+            df[status_col] = None
+        if needs_error:
+            df[error_col] = None
+        if track_tokens:
+            for col in needs_tokens:
+                df[col] = None
+        for col in needs_search:
+            df[col] = None
+        for col in needs_trace:
+            df[col] = None
 
 
 def _get_processing_indices(
@@ -3542,7 +3545,8 @@ def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]
     for key, trace in traces.items():
         column = f"_trace_{key}"
         if column not in df.columns:
-            df[column] = None
+            with _silent_slice_write(df):
+                df[column] = None
         _set_cell(df, idx, column, json.dumps(trace, ensure_ascii=False))
 
 

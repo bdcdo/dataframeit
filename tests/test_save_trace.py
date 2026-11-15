@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 from dataframeit.agent import _extract_trace
-from dataframeit.core import dataframeit
+from dataframeit.core import _set_field_traces, dataframeit
 
 
 class SimpleModel(BaseModel):
@@ -389,7 +389,7 @@ _RESPOSTAS = {
 }
 
 
-def _executar_ficha(monkeypatch, dados=None):
+def _executar_ficha(monkeypatch):
     """Roda call_agent de verdade; só o agente LangChain e a busca são falsos.
 
     Cada invocação responde o modelo montado para a chamada e registra uma
@@ -440,7 +440,7 @@ def _executar_ficha(monkeypatch, dados=None):
         patch("dataframeit.agent.get_provider", return_value=provider),
     ):
         resultado = dataframeit(
-            pd.DataFrame({"texto": ["ficha da Ana"]}) if dados is None else dados,
+            pd.DataFrame({"texto": ["ficha da Ana"]}),
             questions=Ficha,
             prompt="Extraia de {texto}",
             use_search=True,
@@ -466,14 +466,14 @@ def test_trace_por_campo_inclui_buscas_aninhadas_e_por_item(monkeypatch):
     ]
 
 
-def test_trace_aninhado_ganha_coluna_numa_fatia_de_outro_dataframe(monkeypatch):
+def test_trace_aninhado_ganha_coluna_numa_fatia_de_outro_dataframe():
     """A coluna do trace aninhado nasce na fatia sem o aviso de escrita em fatia do pandas 2."""
     base = pd.DataFrame({"texto": ["outra", "ficha da Ana"]})
+    fatia = base[base["texto"] != "outra"]
 
-    resultado, _ = _executar_ficha(monkeypatch, base[base["texto"] != "outra"])
+    _set_field_traces(fatia, 1, {"endereco.cep": {"search_queries": ["cep"]}})
 
-    trace = json.loads(resultado.loc[1, "_trace_endereco.cep"])
-    assert trace["search_queries"] == ["NestedSearch_endereco_cep"]
+    assert json.loads(fatia.loc[1, "_trace_endereco.cep"]) == {"search_queries": ["cep"]}
 
 
 def test_busca_por_item_grava_o_valor_em_cada_item_e_soma_o_uso(monkeypatch):

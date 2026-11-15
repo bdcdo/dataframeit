@@ -3,7 +3,7 @@ import pytest
 
 from dataframeit import llm as llm_module
 from dataframeit.core import _setup_columns
-from dataframeit.utils import _detach_from_parent
+from dataframeit.utils import _silent_slice_write
 
 
 @pytest.mark.filterwarnings("error")
@@ -19,8 +19,6 @@ def test_setup_columns_mutates_slice_without_warnings(copy_input):
     if copy_input:
         df_copy = df_copy.copy()
 
-    # Como dataframeit faz com a entrada antes de gravar nela.
-    _detach_from_parent(df_copy)
     _setup_columns(
         df_copy,
         expected_columns=["campo1", "campo2"],
@@ -63,8 +61,8 @@ def test_build_prompt_preserves_other_placeholders():
 
 
 @pytest.mark.parametrize("legacy_warning", [False, True])
-def test_detach_from_parent_only_with_legacy_warning(monkeypatch, legacy_warning):
-    """Só o pandas com o aviso de escrita em fatia tem a referência ao original a desligar."""
+def test_silent_slice_write_desliga_a_fatia_so_durante_o_contexto(monkeypatch, legacy_warning):
+    """Só o pandas com o aviso de escrita em fatia tem a referência desligada, e ela volta na saída."""
     if legacy_warning:
         monkeypatch.setattr(pd.errors, "SettingWithCopyWarning", UserWarning, raising=False)
     else:
@@ -72,6 +70,17 @@ def test_detach_from_parent_only_with_legacy_warning(monkeypatch, legacy_warning
     df = pd.DataFrame({"texto": ["a"]})
     object.__setattr__(df, "_is_copy", "original")
 
-    _detach_from_parent(df)
+    dentro = []
 
-    assert df.__dict__["_is_copy"] == (None if legacy_warning else "original")
+    def escrita_que_falha():
+        with _silent_slice_write(df):
+            dentro.append(df.__dict__["_is_copy"])
+            msg = "escrita"
+            raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="escrita"):
+        escrita_que_falha()
+
+    assert dentro == [None if legacy_warning else "original"]
+
+    assert df.__dict__["_is_copy"] == "original"

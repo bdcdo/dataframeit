@@ -380,8 +380,8 @@ def test_normalize_complex_columns_numa_fatia_de_outro_dataframe():
 def test_normalize_complex_columns_em_threads_nao_desliga_o_aviso_do_processo(monkeypatch):
     """Duas threads normalizando fatias ao mesmo tempo não deixam o aviso do pandas 2 desligado.
 
-    A ordem forçada é a que deixava a opção global em None: a thread A começa,
-    a B começa, a A termina e a B termina por último.
+    A ordem forçada intercala as duas: a thread A começa, a B começa, a A
+    termina e a B termina por último, ainda sem avisar na escrita.
     """
     original = utils_module.normalize_value
     a_comecou, b_comecou, a_terminou = threading.Event(), threading.Event(), threading.Event()
@@ -417,6 +417,26 @@ def test_normalize_complex_columns_em_threads_nao_desliga_o_aviso_do_processo(mo
 
     assert depois == "warn"
     assert [fatia["itens"].iloc[0] for fatia in fatias] == [["a"], ["b"]]
+
+
+@pytest.mark.skipif(
+    not hasattr(pd.errors, "SettingWithCopyWarning"),
+    reason="o aviso de escrita em fatia só existe no pandas 2",
+)
+def test_normalize_complex_columns_mantem_o_aviso_da_escrita_seguinte_na_fatia():
+    """Depois da normalização, a escrita do usuário na fatia ainda avisa que o original não muda."""
+    base = pd.DataFrame({"itens": ['["a"]', '["b"]'], "id": [1, 2]})
+    fatia = base[base["id"] > 1]
+    normalize_complex_columns(fatia, {"itens"})
+
+    with (
+        pd.option_context("mode.chained_assignment", "warn"),
+        pytest.warns(
+            getattr(pd.errors, "SettingWithCopyWarning"),  # noqa: B009 (só existe no pandas 2; o ty usa o 3)
+            match="copy of a slice",
+        ),
+    ):
+        fatia["id"] = 0
 
 
 def test_normalize_complex_columns_nonexistent():
