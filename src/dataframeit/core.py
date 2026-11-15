@@ -1306,9 +1306,11 @@ def _validate_status_column(
     # linha teria dois valores numa célula. O nome fica recusado mesmo com a
     # opção que cria a coluna desligada, porque uma retomada com ela ligada
     # (track_tokens é o padrão) gravaria por cima do status.
+    # O segundo argumento de _column_rank só decide o rank do próprio status
+    # padrão, que a linha de cima já excluiu: trocá-lo não muda o resultado.
     if (
         status_col != "_dataframeit_status"
-        and _column_rank(status_col, "_dataframeit_status") != _USER_COLUMN
+        and _column_rank(status_col, "_dataframeit_status") != _USER_COLUMN  # pragma: no mutate
     ):
         msg = (
             f"status_column='{status_col}' é o nome de uma coluna de controle do dataframeit, "
@@ -3070,7 +3072,7 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
     ]
     if not candidates:
         return
-    has_text = ~df[text_column].map(_is_missing_text).to_numpy(dtype=bool)
+    has_text = ~df[text_column].map(_is_missing_text).astype(bool).to_numpy()
     new_rows = has_text if pending is None else has_text & pending
     overwritten = [
         col for col in candidates if _holds_value(df, col, df[col][new_rows], nan_columns)
@@ -3169,12 +3171,13 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
     parquet.
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
-    if reason is not None or saved is None:
+    # _checkpoint_mismatch só devolve o checkpoint lido quando não há motivo
+    # para recusá-lo. O aviso sem categoria é um UserWarning.
+    if saved is None:
         warnings.warn(
             f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
             "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
             "passe-o como entrada.",
-            UserWarning,
             stacklevel=_user_stacklevel(),
         )
         return frozenset()
@@ -3211,16 +3214,22 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         # None por NaN. Na coluna relida com outro dtype, como o float64 do
         # parquet, a célula nula é o None que a execução gravou, e nos objetos
         # o NaN contaria como valor.
+        # O np.empty de objetos começa com None em toda célula.
         if target is None:
-            values = pd.Series([None] * len(df), dtype=object).to_numpy().copy()
+            values = np.empty(len(df), dtype=object)
+            target = column
         else:
             values = df[target].to_numpy(dtype=object).copy()
         saved_values = saved[column].to_numpy(dtype=object)
         if saved[column].dtype != object:
             saved_values[saved[column].isna().to_numpy()] = None
         values[concluded] = saved_values[concluded]
-        df[column if target is None else target] = pd.Series(
-            values, index=df.index, dtype=object, copy=False
+        df[target] = pd.Series(
+            values,
+            index=df.index,
+            dtype=object,
+            # copy só decide se o pandas copia `values`, que é um array novo.
+            copy=False,  # pragma: no mutate
         )
     if checkpoint.path.suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
         return frozenset()
