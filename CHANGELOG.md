@@ -30,7 +30,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
-- Sem busca web, nos providers do LangChain, o resumo de `track_tokens` soma os tokens das tentativas recusadas pelo modelo numa linha que acaba com erro, como a que esgota as tentativas, ou que interrompe a execução; antes, esse uso sumia.
+- Sem busca web, nos providers do LangChain, o resumo de `track_tokens` soma os tokens que as tentativas recusadas informaram numa linha que acaba com erro, como a que esgota as tentativas, ou que interrompe a execução; antes, esse uso sumia. A linha cuja exceção tem texto ilegível também soma ao resumo o uso e o custo que a exceção traz.
 - No modo por campo (`search_per_field=True`), o resumo de `track_tokens` soma os tokens e as buscas das chamadas já feitas, inclusive as buscas aninhadas e as dos itens de lista, numa linha que acaba com erro, como a recusada pelo modelo ou a que falha numa chamada posterior, ou que interrompe a execução; antes, esse uso sumia (#371).
 - No modo por campo, a linha em que a `condition` de um campo pulado fica verdadeira com a linha completa, porque ela ou um `model_validator` dependem de um campo extraído depois dela, fica com status `error` e a orientação de declarar esse campo em `depends_on`; antes, a execução gravava o campo vazio, e a retomada recusava o DataFrame por campo incompatível (#371).
 - No modo por grupo (`search_groups`), a `condition` que lê um campo do mesmo grupo é avaliada depois da busca dos itens da lista desse campo, e lê o valor que a linha grava, como no modo por campo; antes, ela lia a lista sem os subcampos buscados e podia pular o campo (#371).

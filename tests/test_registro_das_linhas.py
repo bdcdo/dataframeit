@@ -104,8 +104,13 @@ def test_custo_do_erro_entra_no_resumo_so_quando_informado(custo, esperado):
     assert estatisticas["cost_usd"] == esperado
 
 
-def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo():
-    erro = _ErroComCusto("falhou")
+class _ErroIlegivelComCusto(_ErroIlegivel, _ErroComCusto):
+    pass
+
+
+@pytest.mark.parametrize("registro", ["normal", "reserva"])
+def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo(registro):
+    erro = _ErroComCusto("falhou") if registro == "normal" else _ErroIlegivelComCusto()
     erro.cost_usd = 0.25
     erro.row_usage = {  # ty: ignore[unresolved-attribute]
         "input_tokens": 10,
@@ -119,7 +124,7 @@ def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo():
     df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
 
     with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
-        core._record_error(
+        core._record_error_safely(
             df,
             0,
             erro,
