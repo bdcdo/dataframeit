@@ -1000,7 +1000,9 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
     # max_search_calls buscas por execução, e então a taxa real passa da
     # estimada sem aviso. Com search_groups a linha tem menos execuções que
     # campos, e contar uma por campo só sobe a estimativa, que cresce com elas.
-    run_seconds = queries_per_row * _MIN_SEARCH_RUN_SECONDS
+    # Com a duração de 1 s, multiplicar e dividir dão o mesmo, e o teste de
+    # mutação, que troca uma operação pela outra, não tem o que medir.
+    run_seconds = queries_per_row * _MIN_SEARCH_RUN_SECONDS  # pragma: no mutate
     estimated_rpm = 60 * parallel_requests * queries_per_row / (run_seconds + rate_limit_delay)
 
     if estimated_rpm > provider_limit * 0.8:
@@ -1037,7 +1039,12 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
         + "."
     )
 
-    warnings.warn(msg, UserWarning, stacklevel=_user_stacklevel())
+    warnings.warn(
+        msg,
+        # UserWarning é também a categoria padrão, e o teste de mutação a troca à toa.
+        UserWarning,  # pragma: no mutate
+        stacklevel=_user_stacklevel(),
+    )
 
 
 def _validate_search_overrides(
