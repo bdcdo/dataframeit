@@ -525,6 +525,10 @@ def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc(texto, esperado):
     mensagem.encode("utf-8")
 
 
+def test_caixa_generica_de_erro_sem_mensagem_deixa_os_detalhes_em_branco():
+    assert _detalhes(_caixa_generica("")) == [""]
+
+
 def test_caixa_generica_alinha_o_tipo_com_nome_largo():
     class 接続エラー(Exception):  # noqa: N801, PLC2401 (nome largo de propósito)
         pass
@@ -611,27 +615,6 @@ def _sem_o_pacote(monkeypatch, pacote):
     monkeypatch.setattr(importlib, "import_module", importar)
 
 
-@pytest.mark.parametrize(
-    ("provider", "pacote", "instalar", "sugere_all"),
-    [
-        ("openai", "langchain_openai", "langchain-openai", True),
-        ("azure_openai", "langchain_openai", "langchain-openai", True),
-        ("mistralai", "langchain_mistralai", "langchain-mistralai", False),
-        ("cohere", "langchain_cohere", "langchain-cohere", False),
-        ("bedrock", "langchain_aws", "langchain-aws", False),
-    ],
-)
-def test_dica_do_extra_all_so_para_provider_cujo_pacote_esta_nele(
-    monkeypatch, provider, pacote, instalar, sugere_all
-):
-    _sem_o_pacote(monkeypatch, pacote)
-
-    with pytest.raises(ImportError, match=f"pip install {instalar} ") as exc_info:
-        validate_provider_dependencies(provider)
-
-    assert ("dataframeit[all]" in str(exc_info.value)) is sugere_all
-
-
 def test_sem_metadados_do_pacote_a_dica_do_extra_all_some(monkeypatch):
     """Sem os metadados, não há como saber o que o extra traz, e a dica não sai."""
 
@@ -651,6 +634,10 @@ def _linha_do_pip(instalar):
     return f"║      pip install {instalar:<62} ║"
 
 
+def _linha_da_biblioteca(pacote, nome):
+    return f"║  A biblioteca '{pacote}' é necessária para usar {nome}.            ║"
+
+
 @pytest.mark.parametrize(
     ("provider", "ausente", "instalar", "nome", "alternativa"),
     [
@@ -658,7 +645,17 @@ def _linha_do_pip(instalar):
         ("openai", "langchain", "langchain", "LangChain", "dataframeit[all]"),
         ("openai", "langchain_core", "langchain-core", "LangChain Core", "dataframeit[all]"),
         ("openai", "langchain_openai", "langchain-openai", "OpenAI", "dataframeit[all]"),
+        (
+            "azure_openai",
+            "langchain_openai",
+            "langchain-openai",
+            "Azure OpenAI",
+            "dataframeit[all]",
+        ),
+        # O extra all só traz os providers que têm extra próprio.
         ("mistralai", "langchain_mistralai", "langchain-mistralai", "Mistral AI", None),
+        ("cohere", "langchain_cohere", "langchain-cohere", "Cohere", None),
+        ("bedrock", "langchain_aws", "langchain-aws", "AWS Bedrock", None),
     ],
 )
 def test_pacote_ausente_nomeia_o_pacote_o_provider_e_o_comando(
@@ -670,7 +667,7 @@ def test_pacote_ausente_nomeia_o_pacote_o_provider_e_o_comando(
             validate_provider_dependencies(provider)
 
     linhas = str(exc_info.value).splitlines()
-    assert f"║  A biblioteca '{ausente}' é necessária para usar {nome}.            ║" in linhas
+    assert _linha_da_biblioteca(ausente, nome) in linhas
     pip = linhas.index(_linha_do_pip(instalar))
     if alternativa is None:
         # Sem alternativa, a linha em branco depois do comando leva direto ao fim.
@@ -696,7 +693,7 @@ def test_pacote_de_busca_ausente_nomeia_o_pacote_e_o_servico(
         validate_search_dependencies(search_provider)
 
     linhas = str(exc_info.value).splitlines()
-    assert f"║  A biblioteca '{pacote}' é necessária para usar {nome}.            ║" in linhas
+    assert _linha_da_biblioteca(pacote, nome) in linhas
     assert _linha_do_pip(instalar) in linhas
 
 

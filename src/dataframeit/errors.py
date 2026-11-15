@@ -137,6 +137,9 @@ NON_RECOVERABLE_ERRORS = (
     "ContextOverflowError",
 )
 
+# Os padrões em minúsculas, como a mensagem com que is_recoverable_error os compara.
+_NON_RECOVERABLE_PATTERNS = tuple(pattern.lower() for pattern in NON_RECOVERABLE_ERRORS)
+
 
 # Auth via credenciais de SDK (sem env var de API key) compartilhada por
 # todos os providers Bedrock. Linhas mantidas curtas para caber em caixas de 80 cols.
@@ -1023,7 +1026,7 @@ def is_recoverable_error(error: Exception) -> bool:
 
     # Só o padrão não-recuperável muda a decisão; sem ele, o erro é transitório.
     return not any(
-        _matches_error_pattern(pattern.lower(), error_str) for pattern in NON_RECOVERABLE_ERRORS
+        _matches_error_pattern(pattern, error_str) for pattern in _NON_RECOVERABLE_PATTERNS
     )
 
 

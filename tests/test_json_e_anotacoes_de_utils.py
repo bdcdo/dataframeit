@@ -81,7 +81,7 @@ class _Folha(BaseModel):
         (Optional[Literal[2]], True),
         (Literal["a"], False),
         (Literal[True, False], False),
-        (Optional[Literal[1.5]], False),
+        (Optional[Literal["b"]], False),
         (str, False),
     ],
 )

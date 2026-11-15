@@ -46,7 +46,7 @@ jobs:
       # ganha um `# pragma: no mutate` com o motivo num comentário.
       - name: Report mutants
         run: |
-          uv run --python 3.13 $EXTRAS --with mutmut==3.8.1 mutmut results > "$RUNNER_TEMP/resultados.txt"
+          uv run --python 3.13 --extra dev --with mutmut==3.8.1 mutmut results > "$RUNNER_TEMP/resultados.txt"
           {
             echo '```'
             cat "$RUNNER_TEMP/resultados.txt"

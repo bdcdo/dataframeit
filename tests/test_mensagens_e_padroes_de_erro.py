@@ -176,21 +176,6 @@ def test_permissao_negada_na_busca_nomeia_o_provedor_de_busca():
     assert "OpenAI" not in mensagem
 
 
-def test_caixa_generica_traz_o_tipo_do_erro():
-    class ErroQualquer(Exception):
-        pass
-
-    mensagem = get_friendly_error_message(ErroQualquer("algo deu errado"), "openai")
-
-    assert f"║  Tipo: {'ErroQualquer':<69} ║" in mensagem.splitlines()
-
-
-def test_caixa_generica_de_erro_sem_mensagem_deixa_os_detalhes_em_branco():
-    mensagem = get_friendly_error_message(Exception(), "openai")
-
-    assert f"║  Detalhes: {'':<65} ║" in mensagem.splitlines()
-
-
 def test_resposta_recusada_e_fora_do_contrato_tem_o_texto_completo():
     assert get_friendly_error_message(ProviderRejectedOutputError("regra x")) == (
         "RESPOSTA RECUSADA PELA VALIDAÇÃO DO MODELO PYDANTIC\n"
@@ -218,15 +203,19 @@ def test_status_599_conta_como_status_http_de_erro():
 # =============================================================================
 
 
-def _esperas(monkeypatch):
+@pytest.mark.parametrize(
+    ("argumentos", "esperas_esperadas"),
+    [
+        # Três tentativas, com espera de base_delay=1 dobrando a cada uma.
+        ({}, [1.0, 2.0]),
+        # A espera para em max_delay=30.
+        ({"base_delay": 100}, [30.0, 30.0]),
+    ],
+)
+def test_padrao_de_tentativas_e_esperas(monkeypatch, argumentos, esperas_esperadas):
     esperas = []
     monkeypatch.setattr(time, "sleep", esperas.append)
     monkeypatch.setattr(random, "uniform", lambda *_: 0)
-    return esperas
-
-
-def test_padrao_sao_tres_tentativas_com_espera_de_um_e_dois_segundos(monkeypatch):
-    esperas = _esperas(monkeypatch)
     chamadas = []
 
     def falha():
@@ -234,22 +223,10 @@ def test_padrao_sao_tres_tentativas_com_espera_de_um_e_dois_segundos(monkeypatch
         raise TimeoutError
 
     with pytest.warns(UserWarning, match="Tentativa"), pytest.raises(TimeoutError):
-        retry_with_backoff(falha)
+        retry_with_backoff(falha, **argumentos)
 
+    assert esperas == esperas_esperadas
     assert len(chamadas) == 3
-    assert esperas == [1.0, 2.0]
-
-
-def test_espera_padrao_para_em_trinta_segundos(monkeypatch):
-    esperas = _esperas(monkeypatch)
-
-    def falha():
-        raise TimeoutError
-
-    with pytest.warns(UserWarning, match="Tentativa"), pytest.raises(TimeoutError):
-        retry_with_backoff(falha, base_delay=100)
-
-    assert esperas == [30.0, 30.0]
 
 
 def test_sucesso_na_primeira_tentativa_registra_zero_retries():
