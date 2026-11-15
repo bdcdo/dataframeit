@@ -1784,24 +1784,20 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # linha conta como nova; com ela na entrada, a linha sem status. A linha
     # pendente do checkpoint retomado já foi checada antes de a entrada
     # recebê-lo. Vem depois da entrada vazia, que não tem linha a sobrescrever.
-    if status_col not in df_pandas.columns:
-        _raise_if_overwritten(
-            df_pandas, questions, reprocessed_columns, nan_columns, status_col=status_col
-        )
-    elif input_has_status:
+    if status_col not in df_pandas.columns or input_has_status:
         _raise_if_overwritten(
             df_pandas,
             questions,
             reprocessed_columns,
             nan_columns,
+            text_column=text_column,
             status_col=status_col,
-            pending=df_pandas[status_col].isna().to_numpy(),
+            pending=df_pandas[status_col].isna().to_numpy() if input_has_status else None,
         )
     # A coluna do campo com exclude=True, que a execução não grava, não conta.
     excluded_fields = _excluded_fields(questions)
-    existing_cols = [
-        col for col in expected_columns if col in df_pandas.columns and col not in excluded_fields
-    ]
+    value_columns = [col for col in expected_columns if col not in excluded_fields]
+    existing_cols = [col for col in value_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
@@ -1952,6 +1948,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 status_col=status_col,
                 expected_columns=expected_columns,
                 nan_columns=nan_columns,
+                value_columns=value_columns,
                 config=config,
                 backend=backend,
                 is_pending=is_pending,
@@ -1971,6 +1968,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 status_col=status_col,
                 expected_columns=expected_columns,
                 nan_columns=nan_columns,
+                value_columns=value_columns,
                 config=config,
                 backend=backend,
                 is_pending=is_pending,
@@ -2943,12 +2941,21 @@ def _checkpoint_mismatch(
     return None, saved
 
 
+def _holds_value(
+    df: pd.DataFrame, column: str, values: Iterable[object], nan_columns: Collection[str]
+) -> bool:
+    """Se alguma das células `values` da coluna conta como valor, e não como ausente."""
+    nan_is_value = column in nan_columns and df[column].dtype == object
+    return any(not _is_absent(value, nan_is_value=nan_is_value) for value in values)
+
+
 def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução que a checagem lê)
     df: pd.DataFrame,
     questions: type[BaseModel],
     reprocessed_columns: frozenset[str],
     nan_columns: frozenset[str],
     *,
+    text_column: str,
     status_col: str,
     pending: np.ndarray | None = None,
 ) -> None:
@@ -2959,20 +2966,22 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
     recebe a resposta em todos os campos, e a coluna de entrada com o nome de
     um deles perderia o valor que tem nela; só a de reprocess_columns foi
     pedida, a coluna sem valor nas linhas novas não tem o que perder, e a do
-    campo com exclude=True a execução não grava.
+    campo com exclude=True a execução não grava. A linha sem texto não vai ao
+    LLM e fica com o valor que tem.
     """
     expected_columns = list(questions.model_fields)
     excluded_fields = _excluded_fields(questions)
-    overwritten = [
+    candidates = [
         col
         for col in expected_columns
-        if col in df.columns
-        and col not in reprocessed_columns
-        and col not in excluded_fields
-        and any(
-            not _is_absent(value, nan_is_value=col in nan_columns and df[col].dtype == object)
-            for value in (df[col] if pending is None else df[col][pending])
-        )
+        if col in df.columns and col not in reprocessed_columns and col not in excluded_fields
+    ]
+    if not candidates:
+        return
+    has_text = ~df[text_column].map(_is_missing_text).to_numpy(dtype=bool)
+    new_rows = has_text if pending is None else has_text & pending
+    overwritten = [
+        col for col in candidates if _holds_value(df, col, df[col][new_rows], nan_columns)
     ]
     if not overwritten:
         return
@@ -3087,6 +3096,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         questions,
         reprocessed_columns,
         nan_columns,
+        text_column=text_column,
         status_col=status_col,
         pending=~concluded,
     )
@@ -3379,24 +3389,33 @@ class _SnapshotWriter:
                 self.last_saved = label
 
 
-def _mark_unreached(
+def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das colunas delas)
     df: pd.DataFrame,
     indices: list,
     *,
     status_col: str,
     reprocess_columns: Sequence[str] | None,
+    value_columns: Collection[str],
+    nan_columns: Collection[str],
 ) -> None:
     """Marca as linhas que uma interrupção impediu de processar.
 
     A linha já processada que ia ser reprocessada guarda os valores anteriores,
-    e o detalhe registra que eles não foram atualizados. As demais ficam sem
-    status, inclusive a que tinha 'error' e ia ser refeita, para que a retomada
-    as encontre.
+    e o detalhe registra que eles não foram atualizados. A linha 'error' com
+    valor numa das `value_columns`, como a que guarda os valores de um
+    reprocessamento que falhou, fica como estava: sem status, a retomada
+    seguinte recusaria esses valores (`_raise_if_overwritten`). As demais
+    ficam sem status, inclusive a que tinha 'error' e ia ser refeita, para que
+    a retomada as encontre.
     """
     for idx in indices:
-        if reprocess_columns and _get_cell(df, idx, status_col) == "processed":
+        status = _get_cell(df, idx, status_col)
+        if reprocess_columns and status == "processed":
             _set_cell(df, idx, "_error_details", _INTERRUPTED_REPROCESS_DETAIL)
-        else:
+        elif status != "error" or not any(
+            _holds_value(df, column, [_get_cell(df, idx, column)], nan_columns)
+            for column in value_columns
+        ):
             _set_cell(df, idx, status_col, None)
             _set_cell(df, idx, "_error_details", None)
 
@@ -3646,6 +3665,7 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
     status_col: str,
     expected_columns: list,
     nan_columns: Collection[str] = (),
+    value_columns: Collection[str] = (),
     config: LLMConfig,
     backend: ProviderBackend,
     is_pending: list[bool],
@@ -3665,6 +3685,7 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
         status_col: Coluna de status ('processed' ou 'error').
         expected_columns: Campos do modelo, gravados em colunas de mesmo nome.
         nan_columns: Campos cujo NaN é valor, repassados a `_invoke_row`.
+        value_columns: Campos que a execução grava, sem os de exclude=True.
         config: Configuração do LLM.
         backend: Implementação do provider vinculada à execução.
         is_pending: Por posição, se a linha está pendente.
@@ -3738,6 +3759,8 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
                     [df.index[j] for j in range(i, len(df)) if reprocess_columns or is_pending[j]],
                     status_col=status_col,
                     reprocess_columns=reprocess_columns,
+                    value_columns=value_columns,
+                    nan_columns=nan_columns,
                 )
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
                 _record_error_safely(
@@ -3869,6 +3892,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     status_col: str,
     expected_columns: list,
     nan_columns: Collection[str] = (),
+    value_columns: Collection[str] = (),
     config: LLMConfig,
     backend: ProviderBackend,
     is_pending: list[bool],
@@ -3892,6 +3916,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
         status_col: Coluna de status ('processed' ou 'error').
         expected_columns: Campos do modelo, gravados em colunas de mesmo nome.
         nan_columns: Campos cujo NaN é valor, repassados a `_invoke_row`.
+        value_columns: Campos que a execução grava, sem os de exclude=True.
         config: Configuração do LLM.
         backend: Implementação do provider vinculada à execução.
         is_pending: Por posição, se a linha está pendente.
@@ -4187,6 +4212,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
             [idx for _, idx, _ in rows_to_process if idx not in recorded],
             status_col=status_col,
             reprocess_columns=reprocess_columns,
+            value_columns=value_columns,
+            nan_columns=nan_columns,
         )
 
     # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de

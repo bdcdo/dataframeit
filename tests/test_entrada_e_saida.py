@@ -653,6 +653,52 @@ def test_retomada_do_checkpoint_com_coluna_de_campo_com_exclude_segue(tmp_path):
     assert resultado["anotacao"].tolist() == ["humana a", "humana b"]
 
 
+def test_valor_em_linha_sem_texto_nao_conta_na_checagem_da_entrada_sem_status():
+    # A linha sem texto não vai ao LLM, e o valor dela fica.
+    resultado, llm = _rodar(
+        pd.DataFrame({"texto": ["a", None], "categoria": [None, "humano"]}),
+        questions=ModeloCategoria,
+        llm=_responde(categoria="llm", nota=1),
+    )
+
+    assert llm.call_count == 1
+    assert resultado["categoria"].tolist() == ["llm", "humano"]
+    assert resultado["_error_details"].tolist() == [None, "Texto ausente"]
+
+
+def test_valor_em_linha_sem_texto_nao_conta_na_checagem_da_retomada_manual():
+    entrada = _saida_com_linha_pendente(["llm-a", "humano"])
+    entrada["texto"] = ["a", ""]
+
+    resultado, llm = _rodar(entrada, questions=ModeloCategoria, resume=True)
+
+    llm.assert_not_called()
+    assert resultado["categoria"].tolist() == ["llm-a", "humano"]
+    assert resultado["_error_details"].tolist() == [None, "Texto ausente"]
+
+
+def test_valor_em_linha_sem_texto_nao_conta_na_checagem_da_retomada_do_checkpoint(tmp_path):
+    checkpoint = tmp_path / "c.csv"
+    _rodar_sem_avisos(
+        pd.DataFrame({"texto": ["a", "b", None]}),
+        ModeloCategoria,
+        _responde_em_sequencia({"categoria": "llm-a", "nota": 1}, ProviderAbortError("limite")),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    resultado, llm = _rodar(
+        pd.DataFrame({"texto": ["a", "b", None], "categoria": [None, None, "humano"]}),
+        questions=ModeloCategoria,
+        llm=_responde(categoria="llm-b", nota=2),
+        batch_size=1,
+        checkpoint_path=checkpoint,
+    )
+
+    assert llm.call_count == 1
+    assert resultado["categoria"].tolist() == ["llm-a", "llm-b", "humano"]
+
+
 def test_coluna_de_campo_sem_valor_nenhum_recebe_a_resposta():
     df = pd.DataFrame({"texto": ["a", "b"], "categoria": [None, np.nan]})
 
@@ -1109,6 +1155,51 @@ def test_falha_ao_reprocessar_diz_que_os_valores_ficaram(parallel_requests):
     detalhe = resultado["_error_details"].iloc[0]
     assert detalhe.startswith("[Erro não-recuperável] ProviderError: chave recusada")
     assert detalhe.endswith("(reprocess_columns falhou; a linha mantém os valores anteriores)")
+
+
+@pytest.mark.parametrize("falhas", [1, 2])
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_linha_com_valores_mantidos_que_a_interrupcao_nao_alcancou_fica_como_estava(
+    parallel_requests, falhas
+):
+    def falha_em_a(text, *args, **kwargs):
+        if text.endswith("a"):
+            msg = "chave recusada"
+            raise ProviderError(msg)
+        return {"data": {"categoria": "nova-b"}, "usage": None}
+
+    processada = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "categoria": ["llm-a", "llm-b"],
+            "nota": [1, 2],
+            "_dataframeit_status": ["processed", "processed"],
+        }
+    )
+    opcoes = {
+        "questions": ModeloCategoria,
+        "reprocess_columns": ["categoria"],
+        "parallel_requests": parallel_requests,
+    }
+    # A segunda falha seguida grava o erro sem a nota dos valores mantidos.
+    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
+        com_erro, _ = _rodar(processada, llm=falha_em_a, **opcoes)
+    if falhas == 2:
+        with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
+            com_erro, _ = _rodar(com_erro, llm=falha_em_a, **opcoes)
+    detalhe = com_erro["_error_details"].iloc[0]
+    interrompida = _rodar_sem_avisos(
+        com_erro, llm=_responde_em_sequencia(ProviderAbortError("limite")), **opcoes
+    )
+
+    assert interrompida["_dataframeit_status"].tolist() == ["error", "processed"]
+    assert interrompida["_error_details"].iloc[0] == detalhe
+
+    resultado, llm = _rodar(interrompida, questions=ModeloCategoria, resume=True)
+
+    llm.assert_not_called()
+    assert resultado["categoria"].tolist() == ["llm-a", "nova-b"]
+    assert resultado["nota"].tolist() == [1, 2]
 
 
 # =============================================================================
