@@ -11,10 +11,13 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - Teste de mutação de `errors.py` e `utils.py` com o `mutmut`, configurado no `pyproject.toml` e rodado pelo workflow `mutation.yml` toda segunda-feira e sob demanda, fora do CI do PR. Os mutantes que sobreviviam e mudavam o resultado viraram testes: cada padrão de texto que decide uma caixa de erro, o texto das mensagens de pacote ausente, os defaults de `retry_with_backoff` e os casos de `parse_json` sem bloco JSON. Os que não mudam o resultado ganharam `# pragma: no mutate` com o motivo (#212).
 
+- O teste de mutação cobre também `conditional.py` e `core.py`, menos a própria `dataframeit()`, que o mutmut chamaria por um trampolim em que `_user_stacklevel` não acha o quadro dela. Os 467 sobreviventes de `core.py` e os 16 de `conditional.py` viraram testes, reescrita do trecho que não decidia nada ou `# pragma: no mutate` com o motivo.
+
 - Um teste confere as permissões do `docs.yml`, que nenhum check de PR executa: o workflow só concede `contents: read`, o job `deploy` tem exatamente `pages: write` e `id-token: write`, e nenhum outro job escreve. O PR que mexer nelas reprova no job de testes, antes do merge (#268).
 
 ### Alterado
 
+- Os avisos de `core.py` apontam a chamada de `dataframeit()` por `_user_stacklevel()`, e não por um `stacklevel` fixo. O aviso de redução de workers por rate limit, que sai da thread do executor, passa a apontar a linha do aviso, e não o `concurrent.futures`.
 - O aviso de coluna Object da saída polars aponta a chamada de `dataframeit()` por `_user_stacklevel()`, como os demais avisos, e não por um `stacklevel` fixo. O `_retry_info` de `retry_with_backoff` guarda só `retries`, o único campo que o `core` lê, e a caixa de autenticação por credenciais de SDK lê a dica do provider sem texto padrão, que nenhum provider usava. (#212).
 
 - A seleção das linhas que a execução processa (todas com `reprocess_columns`, só as pendentes sem ele) é calculada uma vez, e o laço sequencial, o paralelo e a marca das linhas não alcançadas por uma interrupção usam a mesma; `_record_error` e os registros de reserva não devolvem mais a mensagem de erro, que ninguém lia. Sem mudança de comportamento (#358).
@@ -34,6 +37,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Os testes rodados pelo mutmut voltam a ter o handler padrão do SIGINT (`tests/conftest.py`). O forkserver do mutmut o ignora, e os testes de Ctrl-C falhavam ou esperavam até o timeout em todo mutante que os incluía, que contava como morto. Os 62 sobreviventes de `utils.py` que isso escondia viraram testes, reescrita ou pragma.
 - Sem busca web, nos providers do LangChain, o resumo de `track_tokens` soma os tokens que as tentativas recusadas informaram numa linha que acaba com erro, como a que esgota as tentativas, ou que interrompe a execução; antes, esse uso sumia. A linha cuja exceção tem texto ilegível também soma ao resumo o uso e o custo que a exceção traz (#372).
 - No modo por campo (`search_per_field=True`), o resumo de `track_tokens` soma os tokens e as buscas das chamadas já feitas, inclusive as buscas aninhadas e as dos itens de lista, numa linha que acaba com erro, como a recusada pelo modelo ou a que falha numa chamada posterior, ou que interrompe a execução; antes, esse uso sumia (#371).
 - No modo por campo, a linha em que a `condition` de um campo pulado fica verdadeira com a linha completa, porque ela ou um `model_validator` dependem de um campo extraído depois dela, fica com status `error` e a orientação de declarar esse campo em `depends_on`; antes, a execução gravava o campo vazio, e a retomada recusava o DataFrame por campo incompatível (#371).
