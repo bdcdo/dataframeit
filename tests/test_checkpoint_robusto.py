@@ -1229,3 +1229,32 @@ def test_retomada_com_status_pd_na_de_convert_dtypes(reprocess_columns):
 
     assert chamadas == (["b"] if reprocess_columns is None else ["a", "b"])
     assert saida["campo"].tolist() == ["v-a", "v-b"]
+
+
+def test_retomada_do_checkpoint_numa_fatia_nao_avisa_escrita_em_fatia(tmp_path):
+    """Retomar do checkpoint uma fatia de outro DataFrame não emite o aviso de escrita em fatia do pandas 2."""
+    ckpt = tmp_path / "ckpt.csv"
+    base = pd.DataFrame({"texto": ["fora", "a", "b"]})
+    chamadas, llm = _llm_contador()
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        dataframeit(
+            base[base["texto"] != "fora"].copy(),
+            questions=ModeloSimples,
+            prompt="Analise {texto}",
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+        retomado = dataframeit(
+            base[base["texto"] != "fora"],
+            questions=ModeloSimples,
+            prompt="Analise {texto}",
+            batch_size=1,
+            checkpoint_path=ckpt,
+            resume=True,
+        )
+
+    assert chamadas == ["a", "b"]
+    assert retomado["campo"].tolist() == ["v-a", "v-b"]
