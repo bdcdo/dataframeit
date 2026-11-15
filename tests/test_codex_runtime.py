@@ -872,10 +872,7 @@ def test_app_server_que_morre_no_turno_devolve_as_linhas_processadas(
     monkeypatch.setattr(codex_provider, "_close_client", fecha_depois_da_escrita)
 
     try:
-        with (
-            pytest.warns(UserWarning, match="não-recuperável"),
-            pytest.warns(UserWarning, match="Execução interrompida.*app-server do Codex encerrou"),
-        ):
+        with pytest.warns(UserWarning, match="Execução interrompida.*app-server do Codex encerrou"):
             resultado = dataframeit(
                 pd.DataFrame({"texto": ["a", "b", "c"]}),
                 _Answer,

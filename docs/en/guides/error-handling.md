@@ -90,7 +90,7 @@ With OpenAI, the SDK validates the response inside the call and raises before re
 
 ### Quota exhausted (stops the run)
 
-OpenAI's `insufficient_quota`, which arrives as HTTP 429, the Tavily plan or pay-as-you-go limit (status 432 or 433) and the Exa credits or budget running out (status 402) are only solved by adding credit to the account. They become `ProviderUsageLimitError`, without a new attempt: the run stops and leaves the remaining rows without status, for resuming. See [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
+OpenAI's `insufficient_quota`, which arrives as HTTP 429, the Tavily plan or pay-as-you-go limit (status 432 or 433) and the Exa credits or budget running out (status 402) are only solved by adding credit to the account. They become `ProviderUsageLimitError`, without a new attempt: the run stops and leaves the remaining rows without status, for resuming. The run-interrupted warning says to resume once the quota is back, through credit, a plan change or the period renewal in the service account; for the web search quota, it also suggests `use_search=False` or another `search_provider`. See [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
 
 ### Web search errors
 

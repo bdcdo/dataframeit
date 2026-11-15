@@ -50,7 +50,10 @@ def search_failure(
         # Import local: errors importa search no topo do módulo.
         from dataframeit.errors import ProviderUsageLimitError  # noqa: PLC0415
 
-        return ProviderUsageLimitError(f"{usage_limit_message} ({type(error).__name__}: {error})")
+        return ProviderUsageLimitError(
+            f"{usage_limit_message} ({type(error).__name__}: {error}); para seguir sem esta "
+            "busca, use use_search=False ou outro search_provider"
+        )
     return SearchToolError(provider=provider, error=error, status_code=status)
 
 

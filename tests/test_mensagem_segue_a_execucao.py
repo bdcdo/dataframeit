@@ -31,6 +31,7 @@ from dataframeit.errors import (
     ProviderOverloadedError,
     ProviderRejectedOutputError,
     ProviderTransientError,
+    ProviderUsageLimitError,
     get_friendly_error_message,
 )
 
@@ -62,13 +63,17 @@ def _titulo(mensagem):
     return next(linha.strip("║ ") for linha in mensagem.splitlines() if linha.strip("╔═╗ "))
 
 
-def _executar(fabrica, monkeypatch):
+def _executar(fabrica, monkeypatch, parallel_requests=2):
     """Roda duas linhas que falham com o erro da fábrica e lê o que a execução avisou."""
     monkeypatch.setattr(core.time, "sleep", lambda _segundos: None)
     monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
 
-    def llm(*_args, **_kwargs):
+    def tentativa():
         raise fabrica()
+
+    # O retry roda como no call_langchain: os avisos dele entram na leitura.
+    def llm(*_args, **_kwargs):
+        return errors.retry_with_backoff(tentativa, max_retries=1)
 
     with (
         patch("dataframeit.core.call_langchain", side_effect=llm),
@@ -80,7 +85,7 @@ def _executar(fabrica, monkeypatch):
             pd.DataFrame({"texto": ["a", "b"]}),
             _Campo,
             "{texto}",
-            parallel_requests=2,
+            parallel_requests=parallel_requests,
             max_retries=1,
             track_tokens=False,
         )
@@ -88,6 +93,7 @@ def _executar(fabrica, monkeypatch):
     textos = [str(aviso.message) for aviso in avisos]
     falhas = [texto for texto in textos if texto.startswith("Falha ao processar linha")]
     return SimpleNamespace(
+        avisos=textos,
         falhas=falhas,
         caixa_rate_limit=any(CAIXA_RATE_LIMIT in falha for falha in falhas),
         caixa_timeout=any(CAIXA_TIMEOUT in falha for falha in falhas),
@@ -110,6 +116,8 @@ def _conferir_coerencia(execucao, *, aborta=False):
     if aborta:
         assert execucao.interrompida
         assert execucao.falhas == []
+        # A parada é deliberada, e o retry não a anuncia como erro não-recuperável.
+        assert not any("não-recuperável" in aviso for aviso in execucao.avisos)
     else:
         assert not execucao.interrompida
         assert len(execucao.falhas) == 2
@@ -588,3 +596,24 @@ def test_caixa_de_timeout_so_para_o_erro_repetido(fabrica, timeout, monkeypatch)
 
     _conferir_coerencia(execucao)
     assert execucao.caixa_timeout is timeout
+
+
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+@pytest.mark.parametrize("motivo", ["motivo da parada", "motivo da parada."])
+@pytest.mark.parametrize(
+    ("classe", "orienta"),
+    [(ProviderUsageLimitError, True), (ProviderAbortError, False)],
+    ids=["cota-esgotada", "outra-parada"],
+)
+def test_aviso_de_interrupcao_orienta_a_cota_esgotada(
+    classe, orienta, motivo, parallel_requests, monkeypatch
+):
+    execucao = _executar(lambda: classe(motivo), monkeypatch, parallel_requests)
+
+    _conferir_coerencia(execucao, aborta=True)
+    aviso = next(aviso for aviso in execucao.avisos if aviso.startswith(INTERRUPCAO))
+    assert "motivo da parada" in aviso
+    assert ("renovação do período" in aviso) is orienta
+    assert ".." not in aviso
+    # A dica da busca web vem só na mensagem da cota da busca.
+    assert "use_search" not in aviso

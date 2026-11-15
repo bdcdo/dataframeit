@@ -623,7 +623,10 @@ def test_chave_invalida_do_tavily_aponta_a_chave_do_tavily(
 
 @pytest.mark.parametrize("paralelo", [1, 2])
 def test_limite_do_plano_do_tavily_interrompe_a_execucao(tavily_disponivel, monkeypatch, paralelo):
-    with pytest.warns(UserWarning, match=r"interrompida.*limite de uso do plano do Tavily"):
+    with pytest.warns(
+        UserWarning,
+        match=r"interrompida.*limite de uso do plano do Tavily.*use_search=False.*renovação do período",
+    ):
         resultado, chamadas = _rodar_agente_real_com_tavily(
             tavily_disponivel,
             monkeypatch,
@@ -645,7 +648,10 @@ def test_credito_esgotado_do_exa_interrompe_a_execucao(monkeypatch, paralelo):
         monkeypatch,
         ValueError('Request failed with status code 402: {"error":"x","tag":"NO_MORE_CREDITS"}'),
     )
-    with pytest.warns(UserWarning, match=r"interrompida.*crédito ou orçamento do Exa esgotado"):
+    with pytest.warns(
+        UserWarning,
+        match=r"interrompida.*crédito ou orçamento do Exa esgotado.*use_search=False.*renovação do período",
+    ):
         resultado = _rodar_agente_real(
             monkeypatch,
             "exa_search_results_json",
