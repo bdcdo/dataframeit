@@ -6,8 +6,10 @@ mesmo após serialização/deserialização (ex: salvar/carregar de Excel/CSV).
 
 import importlib.util
 import json
+import os
 import tempfile
 import types
+import typing
 from collections import ChainMap, Counter, OrderedDict, UserDict, UserString, defaultdict, deque
 from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet, Sequence
 from collections.abc import Set as AbstractSet
@@ -567,9 +569,20 @@ def test_read_df_sem_modelo_normaliza_coluna_json_depois_de_coluna_numerica(tmp_
     assert list(df["itens"]) == [["a"], ["b"]]
 
 
+class _CaminhoProprio:
+    """`os.PathLike` que não é `pathlib.Path`."""
+
+    def __init__(self, caminho):
+        self.caminho = str(caminho)
+
+    def __fspath__(self):
+        return self.caminho
+
+
+@pytest.mark.parametrize("como", [Path, _CaminhoProprio])
 @pytest.mark.parametrize("modelo", [None, ModelWithList, SimpleModel])
-def test_read_df_aceita_caminho_como_path(tmp_path, modelo):
-    """O caminho em `Path`, com sufixo maiúsculo, lê como o mesmo caminho em texto.
+def test_read_df_aceita_caminho_como_path(tmp_path, modelo, como):
+    """O caminho `os.PathLike`, com sufixo maiúsculo, lê como o mesmo caminho em texto.
 
     O ModelWithList passa pela releitura do campo int e o SimpleModel, também
     pela do campo de texto.
@@ -584,9 +597,14 @@ def test_read_df_aceita_caminho_como_path(tmp_path, modelo):
         }
     ).to_csv(caminho, index=False)
 
-    df = read_df(caminho, modelo)
+    df = read_df(como(caminho), modelo)
 
     pd.testing.assert_frame_equal(df, read_df(str(caminho), modelo))
+
+
+def test_read_df_get_type_hints_resolve_o_caminho():
+    """A anotação do caminho resolve em tempo de execução, como pede o `validate_call`."""
+    assert typing.get_type_hints(read_df)["path"] == str | os.PathLike[str]
 
 
 def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():

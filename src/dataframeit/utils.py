@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import math
 import numbers
+import os  # noqa: TC003 (get_type_hints resolve a anotação de read_df)
 import re
 import sys
 import types
@@ -32,7 +33,6 @@ from pandas.api.types import is_integer_dtype, is_string_dtype
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import Callable, Collection, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
@@ -1085,18 +1085,19 @@ def read_df(
         >>> # Sem normalização
         >>> df = read_df('dados.csv', normalize=False)
     """
-    if not Path(path).exists():
-        msg = f"Arquivo não encontrado: {path}"
+    file = Path(path)
+    if not file.exists():
+        msg = f"Arquivo não encontrado: {file}"
         raise FileNotFoundError(msg)
 
     # Detectar formato pelo sufixo
-    ext = Path(path).suffix.lower()
+    ext = file.suffix.lower()
 
     reader = _READERS.get(ext)
     if reader is None:
         msg = f"Formato '{ext}' não suportado. Use: .xlsx, .xls, .csv, .parquet ou .json"
         raise ValueError(msg)
-    df = reader(path, **kwargs)
+    df = reader(file, **kwargs)
     if not isinstance(df, pd.DataFrame):
         # Leitor de pedaços ou dict de abas: a normalização e as releituras
         # trabalham sobre as colunas de um DataFrame, e o objeto sai como o
@@ -1104,8 +1105,8 @@ def read_df(
         return df
 
     if model is not None:
-        _reread_text_columns(df, path, ext, model, kwargs)
-        _reread_int_columns(df, path, ext, model, kwargs)
+        _reread_text_columns(df, file, ext, model, kwargs)
+        _reread_int_columns(df, file, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -1124,11 +1125,7 @@ def read_df(
 
 
 def _reread_text_columns(
-    df: pd.DataFrame,
-    path: str | os.PathLike[str],
-    ext: str,
-    model: type[BaseModel],
-    kwargs: dict,
+    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict
 ) -> None:
     """Relê como texto cru os campos de texto do modelo, in-place.
 
@@ -1185,11 +1182,7 @@ def _int_or_read(text: str, read: object) -> object:
 
 
 def _reread_int_columns(
-    df: pd.DataFrame,
-    path: str | os.PathLike[str],
-    ext: str,
-    model: type[BaseModel],
-    kwargs: dict,
+    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict
 ) -> None:
     """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
 
