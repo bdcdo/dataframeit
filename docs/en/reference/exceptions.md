@@ -8,7 +8,7 @@ The configuration is validated before the first call to the model. A problem her
 
 | Exception | When it occurs |
 |-----------|----------------|
-| `ImportError` | The package for the provider or the search provider is missing. The message says what to install: for LangChain providers, the provider's package (e.g. `pip install langchain-anthropic`) or the `all` extra; for `claude_code` and `codex`, the provider's extra; for web search, the search provider's package (e.g. `pip install langchain-tavily`) |
+| `ImportError` | The package for the provider or the search provider is missing. The message says what to install: for LangChain providers, the provider's package (e.g. `pip install langchain-anthropic`) and, when the package is in the `all` extra, `all` as well; for `claude_code` and `codex`, the provider's extra; for web search, the search provider's package (e.g. `pip install langchain-tavily`) |
 | `ValueError` | Invalid parameter: `questions` or `prompt` missing, `max_retries < 1`, `batch_size` without `checkpoint_path`, `search_groups` without `search_per_field=True`, missing search API key, previously processed rows incompatible with the current model |
 | `ProviderConfigurationError` | Configuration incompatible with the provider's contract, such as a `model_kwargs` that `codex` does not accept or a Pydantic schema it cannot represent. It is a subclass of `ValueError` |
 

@@ -4,7 +4,7 @@
 
 ### `ImportError` pedindo para instalar um pacote
 
-O provider escolhido precisa do pacote dele, e a mensagem diz o que instalar. Nos providers do LangChain, ela sugere o pacote do provider ou o extra `all`:
+O provider escolhido precisa do pacote dele, e a mensagem diz o que instalar. Nos providers do LangChain, ela sugere o pacote do provider e, quando o pacote está no extra `all`, também o `all`:
 
 ```bash
 pip install langchain-anthropic
@@ -12,7 +12,7 @@ pip install langchain-anthropic
 pip install dataframeit[all]
 ```
 
-O extra do provider, como `dataframeit[anthropic]`, instala o mesmo pacote. O `all` traz os providers que têm extra, menos o Codex; os providers do LangChain sem extra próprio, como Cohere e Mistral, precisam do pacote `langchain-<provider>`, que o `all` não inclui. No `claude_code` e no `codex`, a mensagem pede o extra do provider (`dataframeit[claude-code]`, `dataframeit[codex]`), e na busca web, o pacote do provedor de busca. Os extras estão em [Instalação](../getting-started/installation.md).
+O extra do provider, como `dataframeit[anthropic]`, instala o mesmo pacote. O `all` traz os providers que têm extra, menos o Codex; os providers do LangChain sem extra próprio, como Cohere e Mistral, precisam do pacote `langchain-<provider>`, que o `all` não inclui, e a mensagem sugere só ele. No `claude_code` e no `codex`, a mensagem pede o extra do provider (`dataframeit[claude-code]`, `dataframeit[codex]`), e na busca web, o pacote do provedor de busca. Os extras estão em [Instalação](../getting-started/installation.md).
 
 ### Erro de autenticação (401 ou 403)
 
