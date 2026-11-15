@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -31,7 +30,7 @@ from .conditional import (
 )
 from .errors import ProviderOutputError, retry_with_backoff, validation_error_summary
 from .llm import (
-    _TOKEN_KEYS,
+    _USAGE_COUNTERS,
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
@@ -59,8 +58,6 @@ if TYPE_CHECKING:
     from .search import SearchProvider
 
 logger = logging.getLogger(__name__)
-
-_USAGE_COUNTERS = (*_TOKEN_KEYS, "search_credits", "search_count")
 
 
 def _empty_usage() -> Usage:
@@ -292,16 +289,13 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
 ) -> tuple[list[Any], list[Any] | None]:
     """Enriquece cada item de uma lista com buscas específicas.
 
-    O uso de cada chamada é somado em `usage` assim que ela volta, e o das
-    chamadas feitas fica nele também quando uma posterior falha.
-
     Args:
         list_items: Lista de dicionários (items extraídos pelo LLM).
         inner_model: Modelo Pydantic do item interno.
         search_fields: Lista de ConfiguredField.
         text: Texto original sendo processado.
         config: Configuração do LLM.
-        usage: Uso acumulado da linha.
+        usage: Uso da linha, em que cada chamada soma o seu assim que volta.
         save_trace: Modo de trace.
 
     Returns:
@@ -546,14 +540,11 @@ def _run_nested_searches(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Executa buscas para campos configurados em modelos aninhados.
 
-    O uso de cada chamada é somado em `usage` assim que ela volta, e o das
-    chamadas feitas fica nele também quando uma posterior falha.
-
     Args:
         text: Texto a ser processado.
         nested_fields: Lista de ConfiguredField.
         config: Configuração do LLM.
-        usage: Uso acumulado da linha.
+        usage: Uso da linha, em que cada chamada soma o seu assim que volta.
         save_trace: Modo de trace.
 
     Returns:
@@ -693,10 +684,8 @@ class _FieldExtractor:
             self._check_skipped(row, data)
         except Exception as error:
             # A linha falhou, mas as chamadas já feitas foram cobradas; o core
-            # soma esse uso ao resumo. Atributo dinâmico, lido com getattr; a
-            # exceção que não aceita atributo segue sem ele.
-            with suppress(AttributeError):
-                error.row_usage = row.usage  # ty: ignore[unresolved-attribute]
+            # soma esse uso ao resumo. Atributo dinâmico, lido com getattr.
+            error.row_usage = row.usage  # ty: ignore[unresolved-attribute]
             raise
         response = {
             "data": data,

@@ -160,6 +160,8 @@ _TOKEN_KEYS = (
     "total_tokens",
     "reasoning_tokens",
 )
+# Os tokens e os contadores de busca, que o uso da linha e o resumo somam.
+_USAGE_COUNTERS = (*_TOKEN_KEYS, "search_credits", "search_count")
 
 
 def _parse_usage_metadata(meta: object) -> Usage:

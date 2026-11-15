@@ -69,7 +69,7 @@ from .errors import (
     validate_search_dependencies,
 )
 from .llm import (
-    _TOKEN_KEYS,
+    _USAGE_COUNTERS,
     LLMConfig,
     SearchConfig,
     SearchGroupConfig,
@@ -3600,7 +3600,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
 
 def _add_usage_stats(token_stats: TokenStats, usage: Usage) -> None:
     """Soma ao resumo da execução o uso de uma linha."""
-    for key in (*_TOKEN_KEYS, "search_credits", "search_count"):
+    for key in _USAGE_COUNTERS:
         token_stats[key] += usage.get(key, 0)
     token_stats["cost_usd"] += usage.get("cost_usd") or 0
 

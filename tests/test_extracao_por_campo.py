@@ -160,21 +160,6 @@ def test_erro_da_linha_leva_o_uso_das_chamadas_ja_feitas(falha):
     assert erro.value.row_usage["input_tokens"] == 2 * (len(agente.chamadas) - 1)  # ty: ignore[unresolved-attribute]
 
 
-class _ErroSemAtributos(Exception):
-    @override
-    def __setattr__(self, name, value):
-        raise AttributeError(name)
-
-
-def test_erro_que_nao_aceita_atributo_segue_sem_o_uso():
-    agente = _AgenteQueFalha("Completo_a", _ErroSemAtributos("caiu"))
-
-    with pytest.raises(_ErroSemAtributos, match="caiu") as erro:
-        _rodar(agente, Completo, _config())
-
-    assert not hasattr(erro.value, "row_usage")
-
-
 # =============================================================================
 # prompts
 # =============================================================================
