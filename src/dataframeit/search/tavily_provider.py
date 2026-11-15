@@ -17,7 +17,7 @@ from typing import Any, Literal, TypeVar
 
 from langchain_core.tools import BaseTool, ToolException
 
-from .base import SearchProvider, SearchToolError, register_provider
+from .base import SearchProvider, register_provider, search_failure
 
 T = TypeVar("T")
 
@@ -39,13 +39,13 @@ def _levantar_erro(resultado: T) -> T:
     status = int(encontrado.group(1)) if encontrado else None
     if status in _ERROS_DO_MODELO or "can only be set during instantiation" in str(erro):
         raise ToolException(str(erro)) from erro
-    if status in _LIMITES_DE_USO:
-        # Import local: errors importa search no topo do módulo.
-        from dataframeit.errors import ProviderUsageLimitError  # noqa: PLC0415
-
-        msg = f"limite de uso do plano do Tavily esgotado ({type(erro).__name__}: {erro})"
-        raise ProviderUsageLimitError(msg) from erro
-    raise SearchToolError(provider="tavily", error=erro, status_code=status) from erro
+    raise search_failure(
+        erro,
+        status,
+        provider="tavily",
+        usage_limit_statuses=_LIMITES_DE_USO,
+        usage_limit_message="limite de uso do plano do Tavily esgotado",
+    ) from erro
 
 
 @register_provider

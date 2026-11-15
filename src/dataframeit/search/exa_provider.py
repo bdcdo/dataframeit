@@ -16,12 +16,14 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 
-from .base import SearchProvider, SearchToolError, register_provider
+from .base import SearchProvider, register_provider, search_failure
 
 # Até este número de resultados, a Exa cobra a faixa de preço mais baixa.
 _MAX_RESULTS_FAIXA_BASICA = 25
 # O cliente exa_py só põe o status no texto: "Request failed with status code 401: ...".
 _STATUS_NO_TEXTO = re.compile(r"^Request failed with status code (\d{3})")
+# Crédito da conta ou orçamento da chave ou do time esgotado: só a conta resolve.
+_LIMITES_DE_USO = (402,)
 
 
 @register_provider
@@ -85,7 +87,8 @@ class ExaProvider(SearchProvider):
         # construtor sem usá-los: são argumentos do _run, que o modelo escolhe,
         # e o _run devolve repr(e) em vez de levantar. A ferramenta abaixo usa
         # só o cliente autenticado, fixa os dois limites e deixa o erro subir
-        # até o retry, como SearchToolError.
+        # até o retry, como SearchToolError, ou como ProviderUsageLimitError no
+        # crédito esgotado.
         exa = ExaSearchResults()
 
         def exa_search(query: str) -> str:
@@ -97,9 +100,13 @@ class ExaProvider(SearchProvider):
                     text={"max_characters": 1000},
                 )
             except Exception as erro:
-                status = _STATUS_NO_TEXTO.match(str(erro))
-                raise SearchToolError(
-                    provider="exa", error=erro, status_code=int(status.group(1)) if status else None
+                encontrado = _STATUS_NO_TEXTO.match(str(erro))
+                raise search_failure(
+                    erro,
+                    int(encontrado.group(1)) if encontrado else None,
+                    provider="exa",
+                    usage_limit_statuses=_LIMITES_DE_USO,
+                    usage_limit_message="crédito ou orçamento do Exa esgotado",
                 ) from erro
             return str(resultados)
 

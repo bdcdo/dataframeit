@@ -33,6 +33,27 @@ class SearchToolError(RuntimeError):
         return f"{type(self.error).__name__}: {self.error}"
 
 
+def search_failure(
+    error: Exception,
+    status: int | None,
+    *,
+    provider: str,
+    usage_limit_statuses: tuple[int, ...],
+    usage_limit_message: str,
+) -> Exception:
+    """Exceção a levantar pela falha do cliente de busca.
+
+    O status de limite de uso, que só crédito na conta resolve, dá
+    ProviderUsageLimitError, que interrompe a execução; os demais, SearchToolError.
+    """
+    if status in usage_limit_statuses:
+        # Import local: errors importa search no topo do módulo.
+        from dataframeit.errors import ProviderUsageLimitError  # noqa: PLC0415
+
+        return ProviderUsageLimitError(f"{usage_limit_message} ({type(error).__name__}: {error})")
+    return SearchToolError(provider=provider, error=error, status_code=status)
+
+
 class SearchProvider(ABC):
     """Interface abstrata para provedores de busca web.
 

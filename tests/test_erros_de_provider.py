@@ -216,19 +216,40 @@ def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
     assert levantado.value.__cause__ is erro
 
 
-def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
-    class ErroDaIntegracao(Exception):
-        pass
+def _embrulhada(causa):
+    """Como um `raise ErroDaIntegracao(...) from causa`."""
+    erro = Exception("chamada ao modelo falhou")
+    erro.__cause__ = causa
+    return erro
 
-    # Como um `raise ErroDaIntegracao(...) from causa`.
-    erro = ErroDaIntegracao("chamada ao modelo falhou")
-    erro.__cause__ = _cota_esgotada_da_openai()
-    chamadas, func = _falha_sempre(erro)
+
+def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
+    chamadas, func = _falha_sempre(_embrulhada(_cota_esgotada_da_openai()))
 
     with pytest.raises(ProviderUsageLimitError):
         retry_with_backoff(func, max_retries=3, base_delay=0.0)
 
     assert len(chamadas) == 1
+
+
+@pytest.mark.parametrize(
+    ("fabrica", "detalhe"),
+    [
+        (_cota_esgotada_da_openai, "provider de LLM esgotada"),
+        (lambda: _embrulhada(_cota_esgotada_da_openai()), "provider de LLM esgotada"),
+        (
+            lambda: ProviderUsageLimitError("limite de uso do plano do Tavily esgotado"),
+            "plano do Tavily",
+        ),
+    ],
+    ids=["insufficient-quota", "insufficient-quota-embrulhada", "provider-usage-limit-error"],
+)
+def test_cota_esgotada_escolhe_a_caixa_de_cota_e_nao_a_de_rate_limit(fabrica, detalhe):
+    mensagem = get_friendly_error_message(fabrica(), "openai")
+
+    assert "COTA DE USO ESGOTADA" in mensagem
+    assert "LIMITE DE REQUISIÇÕES" not in mensagem
+    assert detalhe in mensagem
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
