@@ -11,7 +11,7 @@ import logging
 import time
 from copy import copy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from pydantic import BaseModel, create_model
 
@@ -21,6 +21,7 @@ from .conditional import (
     FieldConfig,
     _collect_configured_fields,
     _get_field_config,
+    _model_field_configs,
     get_field_execution_order,
     get_group_execution_units,
     should_skip_field,
@@ -234,18 +235,25 @@ def _with_field_overrides(config: LLMConfig, field_config: FieldConfig) -> LLMCo
     )
 
 
+class _ListSearch(TypedDict):
+    """Campo List[Model] cujo modelo interno tem campos com configuração de busca."""
+
+    inner_model: type[BaseModel]
+    search_fields: list[ConfiguredField]
+
+
 def _get_list_fields_with_nested_search(
     pydantic_model: type[BaseModel],
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, _ListSearch]:
     """Identifica campos List[Model] que têm configuração de busca em modelos internos.
 
     Args:
         pydantic_model: Modelo Pydantic a analisar.
 
     Returns:
-        Dicionário: {field_name: {'inner_model': Model, 'search_fields': [ConfiguredField]}}
+        Dicionário do nome do campo para o modelo interno e os campos de busca dele.
     """
-    list_fields_with_search = {}
+    list_fields_with_search: dict[str, _ListSearch] = {}
 
     for field_name, field_info in pydantic_model.model_fields.items():
         is_list, inner_model = is_list_of_pydantic_model(
@@ -647,7 +655,7 @@ class _FieldExtractor:
     execution_order: list[str]
     dependencies: dict[str, list[str]]
     units: tuple[_Unit, ...]
-    list_fields: dict[str, dict[str, Any]]
+    list_fields: dict[str, _ListSearch]
     nested_fields: tuple[ConfiguredField, ...]
     omitted_fields: frozenset[str]
 
@@ -825,12 +833,7 @@ def field_extractor(
         ValueError: Se há dependências inválidas ou circulares, inclusive entre
             um grupo e campos de fora dele.
     """
-    field_configs = {
-        name: _get_field_config(info.json_schema_extra)
-        if isinstance(info.json_schema_extra, dict)
-        else {}
-        for name, info in pydantic_model.model_fields.items()
-    }
+    field_configs = _model_field_configs(pydantic_model)
     execution_order, dependencies = get_field_execution_order(pydantic_model, field_configs)
     groups = _search_config(config).groups or {}
     units, _, unit_dependencies = get_group_execution_units(pydantic_model, groups, dependencies)

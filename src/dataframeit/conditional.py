@@ -88,6 +88,16 @@ def _get_field_config(extra: dict[str, Any]) -> FieldConfig:
     }
 
 
+def _model_field_configs(pydantic_model: type[BaseModel]) -> dict[str, FieldConfig]:
+    """Configuração de cada campo de primeiro nível; vazia sem json_schema_extra em dict."""
+    return {
+        name: _get_field_config(info.json_schema_extra)
+        if isinstance(info.json_schema_extra, dict)
+        else {}
+        for name, info in pydantic_model.model_fields.items()
+    }
+
+
 # Operadores de comparação de uma condição em dict, na ordem em que são
 # procurados: símbolo usado no log e função que compara valor e operando.
 _CONDITION_OPERATORS: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {

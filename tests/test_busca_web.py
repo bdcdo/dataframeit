@@ -401,6 +401,32 @@ def test_max_search_calls_invalido_por_campo():
         _executar(Modelo, search_per_field=True)
 
 
+@pytest.mark.parametrize("chave", ["prompt", "prompt_replace", "prompt_append"])
+def test_prompt_nao_texto_por_campo_e_recusado_antes_de_processar(chave):
+    class Item(BaseModel):
+        nome: str = Field(json_schema_extra={chave: ["não", "é", "texto"]})
+
+    class Modelo(BaseModel):
+        a: str = Field(json_schema_extra={chave: 123})
+        itens: list[Item] = []
+
+    with pytest.raises(ValueError, match=f"Campo 'a': {chave} deve ser texto, não int"):
+        _executar(Modelo, search_per_field=True)
+
+    class SoAninhado(BaseModel):
+        itens: list[Item] = []
+
+    with pytest.raises(ValueError, match=f"Campo 'itens.nome': {chave} deve ser texto, não list"):
+        _executar(SoAninhado, search_per_field=True)
+
+
+def test_prompt_none_por_campo_e_aceito():
+    class Modelo(BaseModel):
+        a: str = Field(json_schema_extra={"prompt": None, "prompt_append": "Seja breve."})
+
+    assert _executar(Modelo, search_per_field=True).called
+
+
 def test_group_config_aceita_max_search_calls():
     assert SearchGroupConfig(fields=["a"], max_search_calls=2).max_search_calls == 2
 
