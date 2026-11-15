@@ -135,6 +135,8 @@ Você pode configurar prompts e parâmetros de busca específicos para cada camp
 | `max_results` | Override de número de resultados (1-20) |
 | `max_search_calls` | Override do máximo de buscas do agente deste campo |
 
+Os prompts são texto, e um valor fora dessas formas, como um `prompt` que não é texto ou `max_results` fora de 1 a 20, levanta `ValueError` antes de processar.
+
 !!! note "Requer search_per_field=True"
     A configuração por campo só funciona quando `search_per_field=True`. Se você usar `json_schema_extra` com configurações de prompt ou busca sem habilitar `search_per_field`, um erro será levantado.
 

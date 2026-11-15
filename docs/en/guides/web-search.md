@@ -135,6 +135,8 @@ You can configure prompts and search parameters specific to each field using Pyd
 | `max_results` | Results override (1-20) |
 | `max_search_calls` | Override of this field agent's maximum searches |
 
+The prompts are text, and a value outside these forms, such as a `prompt` that is not text or `max_results` outside 1 to 20, raises `ValueError` before processing.
+
 !!! note "Requires search_per_field=True"
     Per-field configuration only works when `search_per_field=True`. If you use `json_schema_extra` with prompt or search settings without enabling `search_per_field`, an error is raised.
 

@@ -53,7 +53,7 @@ from .conditional import (
     _CONDITIONAL_KEYS,
     _FIELD_CONFIG_KEYS,
     _collect_configured_fields,
-    _get_field_config,
+    _model_field_configs,
     _walk_fields,
     evaluate_condition,
     get_field_execution_order,
@@ -523,12 +523,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     if conditions:
         with suppress(ValueError):
             execution_order, _ = get_field_execution_order(
-                pydantic_model,
-                {
-                    field_name: _get_field_config(field.json_schema_extra)
-                    for field_name, field in pydantic_model.model_fields.items()
-                    if isinstance(field.json_schema_extra, dict)
-                },
+                pydantic_model, _model_field_configs(pydantic_model)
             )
             conditions = {
                 field_name: conditions[field_name]
@@ -1094,6 +1089,15 @@ def _validate_search_overrides(
         raise ValueError(msg)
 
 
+def _validate_prompts(label: str, config: dict[str, Any], keys: tuple[str, ...]) -> None:
+    """Recusa o prompt de campo ou de grupo que não é texto nem None."""
+    for key in keys:
+        value = config.get(key)
+        if value is not None and not isinstance(value, str):
+            msg = f"{label}: {key} deve ser texto, não {type(value).__name__}"
+            raise ValueError(msg)
+
+
 def _is_positive_int(value: object) -> bool:
     """Inteiro >= 1; bool é subclasse de int, mas True não é uma contagem."""
     return isinstance(value, numbers.Integral) and not isinstance(value, bool) and int(value) >= 1
@@ -1151,6 +1155,9 @@ def _validate_field_configs(
                     "está dentro de outra lista, o que não é suportado"
                 )
                 raise ValueError(msg)
+            _validate_prompts(
+                f"Campo '{path}'", extra, ("prompt", "prompt_replace", "prompt_append")
+            )
             _validate_search_overrides(
                 f"Campo '{path}'",
                 extra.get("search_depth"),
@@ -1176,13 +1183,7 @@ def _validate_field_configs(
             raise ValueError(msg)
         return
 
-    field_configs = {
-        field_name: _get_field_config(field_info.json_schema_extra)
-        if isinstance(field_info.json_schema_extra, dict)
-        else {}
-        for field_name, field_info in questions.model_fields.items()
-    }
-    _, dependencies = get_field_execution_order(questions, field_configs)
+    _, dependencies = get_field_execution_order(questions, _model_field_configs(questions))
     if search_config.groups:
         get_group_execution_units(questions, search_config.groups, dependencies)
 
@@ -1267,6 +1268,7 @@ def _validate_search_groups(  # noqa: C901 (uma checagem por regra de search_gro
                     )
                     raise ValueError(msg)
 
+        _validate_prompts(f"Grupo '{group_name}'", group_config, ("prompt",))
         _validate_search_overrides(
             f"Grupo '{group_name}'",
             group_config.get("search_depth"),
