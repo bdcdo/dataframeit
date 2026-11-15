@@ -451,6 +451,7 @@ def test_encerramento_do_backend_fecha_os_pipes_do_app_server(tmp_path, monkeypa
     coletor de lixo, cada um com um `ResourceWarning`.
     """
     esperado = pytest.raises(type(saida)) if saida is not None else contextlib.nullcontext()
+    processo = None
     with socket.socket() as closed_port:
         closed_port.bind(("127.0.0.1", 0))
         port = closed_port.getsockname()[1]
@@ -465,6 +466,7 @@ def test_encerramento_do_backend_fecha_os_pipes_do_app_server(tmp_path, monkeypa
             if saida is not None:
                 raise saida
 
+    assert processo is not None
     assert _pipes_fechados(processo)
 
 
@@ -558,6 +560,7 @@ def test_app_server_que_nao_sai_no_fechamento_e_recolhido(
     processos = _guarda_os_processos(monkeypatch)
     ctrl_c = ctrl_c_no_bloco or waits_interrompidos
     esperado = pytest.raises(KeyboardInterrupt) if ctrl_c else contextlib.nullcontext()
+    chamadas = None
     with socket.socket() as closed_port, _avisos_de_recurso() as avisos:
         closed_port.bind(("127.0.0.1", 0))
         port = closed_port.getsockname()[1]
@@ -581,6 +584,7 @@ def test_app_server_que_nao_sai_no_fechamento_e_recolhido(
                     os.waitpid(processo.pid, os.WNOHANG)
             assert _pipes_fechados(processo)
             # Cada Ctrl+C simulado caiu num `wait` do fechamento.
+            assert chamadas is not None
             assert len(chamadas) >= max(waits_interrompidos, default=0)
         finally:
             # Sem a correção, o app-server segue parado, e o teste o recolhe.
