@@ -1478,14 +1478,16 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             Se False, processa toda linha que não esteja 'processed'. Com False e a
             coluna de status presente, se alguma coluna do modelo já existe no
             DataFrame e reprocess_columns não foi passado, emite um aviso e devolve
-            a entrada sem processar. Quando a entrada chega sem a coluna de status
-            e não há checkpoint a reler, com True ou False, toda linha conta como
-            nova, e uma coluna com algum valor e com o nome de um campo do modelo
-            levanta ValueError antes de qualquer chamada, a menos que esteja em
-            reprocess_columns; o mesmo vale para o valor nas linhas sem status,
-            com a coluna de status na entrada, e nas que o checkpoint deixou
-            pendentes, na retomada de um checkpoint_path. A coluna de um campo
-            com exclude=True, que a execução não grava, não conta.
+            a entrada sem processar; se não existe, a linha 'processed' é validada
+            como com True, e o campo obrigatório que ela não tem levanta ValueError.
+            Quando a entrada chega sem a coluna de status e não há checkpoint a
+            reler, com True ou False, toda linha conta como nova, e uma coluna com
+            algum valor e com o nome de um campo do modelo levanta ValueError
+            antes de qualquer chamada, a menos que esteja em reprocess_columns; o
+            mesmo vale para o valor nas linhas sem status, com a coluna de status
+            na entrada, e nas que o checkpoint deixou pendentes, na retomada de um
+            checkpoint_path. A coluna de um campo com exclude=True, que a execução
+            não grava, não conta.
         reprocess_columns: Lista de colunas para forçar reprocessamento. Útil para
             atualizar colunas específicas com novas instruções sem perder outras.
         model: Nome do modelo LLM. Se None, usa o default do provider em
@@ -1858,16 +1860,15 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
-    incompatible_columns = []
-    processed_values = {}
-    if resume or reprocess_columns:
-        incompatible_columns, processed_values = _validate_processed_rows(
-            df_pandas,
-            status_col,
-            questions,
-            complex_fields,
-            empty_text_fields=empty_text_fields,
-        )
+    # Com resume=False também: a linha 'processed' não vai ao modelo, e o campo
+    # que ela não tem sairia vazio sem aviso.
+    incompatible_columns, processed_values = _validate_processed_rows(
+        df_pandas,
+        status_col,
+        questions,
+        complex_fields,
+        empty_text_fields=empty_text_fields,
+    )
     uncovered_columns = [
         column for column in incompatible_columns if column not in reprocessed_columns
     ]

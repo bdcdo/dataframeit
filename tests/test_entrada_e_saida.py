@@ -1132,10 +1132,23 @@ def test_resume_false_nao_refaz_linha_ja_processada(parallel_requests):
     """Com resume=False, só a linha que não está 'processed' vai ao LLM."""
     df = pd.DataFrame({"texto": ["a", "b"], "_dataframeit_status": ["processed", "processed"]})
 
-    resultado, call_langchain = _rodar(df, resume=False, parallel_requests=parallel_requests)
+    resultado, call_langchain = _rodar(
+        df, questions=ModeloOpcional, resume=False, parallel_requests=parallel_requests
+    )
 
     call_langchain.assert_not_called()
     assert resultado["x"].isna().all()
+
+
+def test_resume_false_com_campo_novo_obrigatorio_nas_linhas_processadas_levanta_erro():
+    """A linha 'processed' sem o campo obrigatório do modelo é acusada, como com resume=True."""
+    df = pd.DataFrame({"texto": ["a", "b", "c"]})
+    _rodar(df, questions=ModeloNotaInteira, llm=_responde(nota=1))
+
+    with pytest.raises(ValueError, match=r"campos incompatíveis \['x'\]"):
+        _rodar(df, resume=False)
+
+    assert "x" not in df.columns
 
 
 # =============================================================================
