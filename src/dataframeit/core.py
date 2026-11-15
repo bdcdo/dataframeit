@@ -1045,12 +1045,7 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
         + "."
     )
 
-    warnings.warn(
-        msg,
-        # UserWarning é também a categoria padrão, e o teste de mutação a troca à toa.
-        UserWarning,  # pragma: no mutate
-        stacklevel=_user_stacklevel(),
-    )
+    warnings.warn(msg, stacklevel=_user_stacklevel())
 
 
 def _validate_search_overrides(
@@ -2979,8 +2974,6 @@ def _write_checkpoint_signature(path: Path, meta: dict[str, Any]) -> None:
         warnings.warn(
             f"Falha ao gravar a assinatura do checkpoint em {target}: {error}. "
             "O checkpoint é gravado, mas não será retomado automaticamente.",
-            # UserWarning é também a categoria padrão, e o teste de mutação a troca à toa.
-            UserWarning,  # pragma: no mutate
             stacklevel=_user_stacklevel(),
         )
 
