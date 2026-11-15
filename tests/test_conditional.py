@@ -32,7 +32,7 @@ from dataframeit.conditional import (
     should_skip_field,
     topological_sort,
 )
-from dataframeit.core import _executed_form, _validate_processed_rows
+from dataframeit.core import _executed_form, _validate_processed_rows, _validated_where_same
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -1723,6 +1723,8 @@ def _rodar_com_parada(modelo, parar_em=None, df=None, **kwargs):
     """Roda dataframeit por campo em `df`, ou em duas linhas; a cota acaba ao chegar em `parar_em`."""
     resposta = {
         "tags": ["pf"],
+        "evento": {"data": dt.date(2024, 1, 1), "nome": "x"},
+        "eventos": [{"data": dt.date(2024, 1, 1), "nome": "x"}],
         "itens": [{"tag": "pf"}],
         "data": dt.date(2024, 1, 1),
         "datas": [dt.date(2024, 1, 1)],
@@ -1873,6 +1875,77 @@ class _ComValidadorEExcluido(BaseModel):
 def test_valor_relido_chega_a_condicao_na_forma_da_execucao(campo, relido, esperado):
     """Cada valor relido é convertido à forma em que a execução o passa às condições."""
     assert _executed_form(_ComValidadorEExcluido)(campo, relido) == esperado
+
+
+class _EventoComValidador(BaseModel):
+    data: dt.date
+    nome: Annotated[str, AfterValidator(lambda texto: texto + "!")]
+
+
+class _ComSubmodeloComValidador(BaseModel):
+    evento: _EventoComValidador
+    cpf: str = Field(
+        json_schema_extra={"condition": {"field": "evento.data", "equals": "2024-01-01"}}
+    )
+
+
+class _ComListaDeSubmodeloComValidador(BaseModel):
+    eventos: list[_EventoComValidador]
+    cpf: str = Field(
+        json_schema_extra=field_condition(
+            lambda dados: dados["eventos"][0]["data"] != dt.date(2024, 1, 1),
+            depends_on="eventos",
+        )
+    )
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+@pytest.mark.parametrize("modelo", [_ComSubmodeloComValidador, _ComListaDeSubmodeloComValidador])
+def test_validador_que_muda_o_item_deixa_so_ele_como_relido_na_retomada(modelo, formato, tmp_path):
+    """O validador do submodelo muda o nome a cada passada, e a data ao lado volta ao tipo do campo.
+
+    Validado de novo na retomada, o nome muda e fica como foi relido; a data
+    gravada como texto chega à condição como date, como na execução, e o cpf
+    é pulado nos dois caminhos.
+    """
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    checkpoint = tmp_path / f"checkpoint.{formato}"
+    campo = next(iter(modelo.model_fields))
+
+    direta = _rodar_com_parada(modelo)
+    _rodar_com_parada(modelo, parar_em="b", checkpoint_path=checkpoint, batch_size=1)
+    retomada = _rodar_com_parada(modelo, checkpoint_path=checkpoint, batch_size=1)
+
+    assert direta["cpf"].tolist() == [None, None]
+    assert retomada["cpf"].tolist() == [None, None]
+    assert retomada[campo].tolist() == direta[campo].tolist()
+
+
+_PRIMEIRO_DE_JANEIRO = dt.date(2024, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("validado", "relido", "esperado"),
+    [
+        # A chave int que o checkpoint grava como texto diz o mesmo.
+        (
+            {1: _PRIMEIRO_DE_JANEIRO, 2: "x!!"},
+            {"1": "2024-01-01", "2": "x!"},
+            {1: _PRIMEIRO_DE_JANEIRO, 2: "x!"},
+        ),
+        ((_PRIMEIRO_DE_JANEIRO, "x!!"), ["2024-01-01", "x!"], (_PRIMEIRO_DE_JANEIRO, "x!")),
+        # O item int não diz o mesmo que o float relido do JSON.
+        ([1, "x!!"], [1.0, "x!"], [1.0, "x!"]),
+        # Sem o mesmo formato dos dois lados, a estrutura fica como foi relida.
+        ({"a": _PRIMEIRO_DE_JANEIRO}, {"b": "2024-01-01"}, {"b": "2024-01-01"}),
+        ([_PRIMEIRO_DE_JANEIRO, "x!!"], ["2024-01-01"], ["2024-01-01"]),
+        ({"a": _PRIMEIRO_DE_JANEIRO}, ["2024-01-01"], ["2024-01-01"]),
+    ],
+)
+def test_valor_validado_substitui_o_relido_item_a_item(validado, relido, esperado):
+    """Cada item volta validado quando diz o mesmo que o relido."""
+    assert _validated_where_same(validado, relido) == esperado
 
 
 @pytest.mark.parametrize(
