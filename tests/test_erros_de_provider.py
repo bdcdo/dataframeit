@@ -499,10 +499,32 @@ def _largura_exibida(texto):
     )
 
 
-def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc():
-    texto = unicodedata.normalize("NFD", "ação") + " \x1b[31m接続\x1b[0m\u2028🔥"
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        (unicodedata.normalize("NFD", "ação") + " \x1b[31m接続\x1b[0m\u2028🔥", "ação 接続 🔥"),
+        ("\x1b]8;;https://x.io\x07link\x1b]8;;\x1b\\ ok", "link ok"),
+        ("\x1b(Bsem\x1b7 escape\x1b=", "sem escape"),
+        ("osc \x1b]sem terminador fica", "osc sem terminador fica"),
+        ("byte \udcff solto", "byte solto"),
+    ],
+    ids=["nfc-ansi-separador", "osc-hiperlink", "escapes-curtos", "osc-sem-terminador", "surrogate"],
+)
+def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc(texto, esperado):
+    mensagem = _caixa_generica(texto)
 
-    assert _detalhes(_caixa_generica(texto)) == ["ação 接続 🔥"]
+    assert _detalhes(mensagem) == [esperado]
+    mensagem.encode("utf-8")
+
+
+def test_caixa_generica_alinha_o_tipo_com_nome_largo():
+    class 接続エラー(Exception):  # noqa: N801 (nome largo de propósito)
+        pass
+
+    linhas = get_friendly_error_message(接続エラー("falhou"), "openai").splitlines()
+
+    assert "Tipo: 接続エラー" in linhas[4]
+    assert {_largura_exibida(linha) for linha in linhas} == {80}
 
 
 # =============================================================================

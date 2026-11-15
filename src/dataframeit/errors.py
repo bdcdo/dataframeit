@@ -803,7 +803,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ║  ERRO NO PROCESSAMENTO                                                       ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
-║  Tipo: {error_name:<69} ║
+║  Tipo: {_pad_display(error_name, 69)} ║
 ║                                                                              ║
 {_generic_box_details(str(error))}
 ║                                                                              ║
@@ -841,15 +841,17 @@ def _generic_box_details(message: str) -> str:
     indent = " " * len(_GENERIC_BOX_DETAIL_LABEL)
     labels = [_GENERIC_BOX_DETAIL_LABEL] + [indent] * (len(lines) - 1)
     return "\n".join(
-        f"║  {label}{line}{' ' * (_GENERIC_BOX_DETAIL_WIDTH - _display_width(line))} ║"
+        f"║  {label}{_pad_display(line, _GENERIC_BOX_DETAIL_WIDTH)} ║"
         for label, line in zip(labels, lines, strict=True)
     )
 
 
-# Sequência de escape do terminal: CSI (cor ANSI, como '\x1b[31m'), OSC (título,
-# hiperlink), terminada em BEL ou ST, e as de dois caracteres.
+# Sequência de escape do terminal (ECMA-48): CSI (cor ANSI, como '\x1b[31m'),
+# OSC (título, hiperlink) terminada em BEL ou ST, e as demais, de bytes
+# intermediários e um byte final (como '\x1b(B' e '\x1b7'). O OSC sem
+# terminador perde só o '\x1b]', e não o resto da mensagem.
 _TERMINAL_ESCAPE = re.compile(
-    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])"
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])"
 )
 
 
@@ -859,13 +861,13 @@ def _box_text(text: str) -> str:
     O espaço Unicode, que inclui os separadores de linha que o splitlines parte
     (U+2028, U+2029, U+0085), vira espaço; os demais caracteres de controle e
     de formatação, que o terminal não mostra ou mostra com largura imprevisível,
-    saem.
+    saem, como o surrogate solto, que o print não codifica em UTF-8.
     """
     text = _TERMINAL_ESCAPE.sub("", unicodedata.normalize("NFC", text))
     return "".join(
         " " if char.isspace() else char
         for char in text
-        if char.isspace() or unicodedata.category(char) not in {"Cc", "Cf"}
+        if char.isspace() or unicodedata.category(char) not in {"Cc", "Cf", "Cs"}
     )
 
 
@@ -878,6 +880,11 @@ def _char_width(char: str) -> int:
 
 def _display_width(text: str) -> int:
     return sum(map(_char_width, text))
+
+
+def _pad_display(text: str, width: int) -> str:
+    """Completa o texto com espaços até ``width`` colunas exibidas."""
+    return text + " " * (width - _display_width(text))
 
 
 def _cut_display(text: str, width: int) -> str:
@@ -895,24 +902,26 @@ def _wrap_display(text: str, width: int, max_lines: int) -> list[str]:
 
     Como o textwrap, junta as palavras por um espaço e corta a palavra maior que
     a linha, mas mede a largura exibida. Passando de ``max_lines``, a última
-    linha perde palavras até caber ' ...'.
+    linha perde palavras até caber ' ...'. A quebra para quando passa do teto,
+    e cada medida percorre no máximo uma linha, para que a mensagem enorme, ou
+    com um token de centenas de milhares de caracteres, não trave a caixa.
     """
     placeholder = " ..."
     lines: list[str] = []
     line = ""
     for word in text.split():
+        if len(lines) > max_lines:
+            break
         candidate = f"{line} {word}" if line else word
-        if _display_width(candidate) <= width:
+        if _cut_display(candidate, width) == candidate:
             line = candidate
             continue
         if line:
             lines.append(line)
-        rest = word
-        while _display_width(rest) > width:
-            head = _cut_display(rest, width)
+        line = word
+        while (head := _cut_display(line, width)) != line and len(lines) <= max_lines:
             lines.append(head)
-            rest = rest[len(head) :]
-        line = rest
+            line = line[len(head) :]
     if line:
         lines.append(line)
     if len(lines) <= max_lines:
