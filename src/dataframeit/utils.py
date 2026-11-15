@@ -316,7 +316,7 @@ def _skipping_model(
     de `hidden`, como o obrigatório fora do dump, ficam fora dele, longe do
     serializador do campo, salvo o que o @model_serializer tira, que chega a
     ele como na execução, com o None no lugar do valor. Nos dois, o None não
-    passa pelos validadores do campo.
+    passa pelos validadores do campo, nem com o validate_default do modelo.
     """
     if not skipped and not hidden:
         return model
@@ -331,7 +331,7 @@ def _skipping_model(
                 Field(None, exclude=field_name not in serializer_dropped, validate_default=False),
             )
             if field_name in hidden
-            else (Any, None)
+            else (Any, Field(None, validate_default=False))
             for field_name in skipped | hidden
         },
     )

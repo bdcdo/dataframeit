@@ -617,8 +617,8 @@ class _Row:
     dropped: set[str] = field(default_factory=set)
     # Os campos anulados por condição falsa, antes ou depois da chamada.
     skipped: set[str] = field(default_factory=set)
-    # O que as condições leem: o valor de `data` com os validadores do campo,
-    # que é o que a execução grava e a retomada relê.
+    # O que as condições leem: o valor de `data` com os validadores do modelo,
+    # que é o que a execução grava e a retomada relê (_update_view).
     view: dict[str, Any] = field(default_factory=dict)
 
     def wants(self, field_name: str) -> bool:
@@ -671,8 +671,7 @@ class _FieldExtractor:
     nested_fields: tuple[ConfiguredField, ...]
     excluded_fields: frozenset[str]
     omitted_fields: frozenset[str]
-    # Os campos que alguma condição lê, os únicos que passam pelos validadores
-    # um a um (_condition_value).
+    # Os campos que alguma condição lê, os únicos que ela lê validados (_update_view).
     condition_inputs: frozenset[str]
 
     def __call__(
@@ -690,37 +689,47 @@ class _FieldExtractor:
             response["traces"] = row.traces
         return response
 
-    def _validated_data(self, row: _Row) -> dict[str, Any]:
-        """A resposta da linha montada, validada pelo modelo do usuário, na ordem do modelo.
+    def _validate_row(self, row: _Row) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Os valores da linha montada até aqui e o model_dump dela validada pelo modelo do usuário.
 
         Cada chamada valida a resposta só pelo campo, e os validadores do
-        modelo (`field_validator`, `model_validator`) rodam aqui, sobre a linha
-        inteira, como nos outros modos e na retomada. Fica fora da validação, e
-        com o valor que tinha, o campo sem resposta: o pulado pela condição e o
-        None de um campo não pedido, que veio de `known`, como o pulado na
-        retomada, e o que o dump da chamada tirou ou tira (exclude,
-        exclude_if), como o obrigatório fora do dump na retomada
-        (`_skipping_model`). O campo validado que o dump da linha tira, como
-        pelo exclude_if do valor validado, sai da resposta. A linha recusada
-        levanta ProviderOutputError, com o caminho e a regra de cada erro, ou
-        com a exceção que o validador levantou.
+        modelo (`field_validator`, `model_validator`) rodam aqui, sobre a linha,
+        como nos outros modos e na retomada. Fica fora da validação o campo sem
+        resposta: o pulado pela condição, o ainda não extraído e o None de um
+        campo não pedido, que veio de `known`, como o pulado na retomada, e o
+        que o dump da chamada tirou ou tira (exclude, exclude_if), como o
+        obrigatório fora do dump na retomada (`_skipping_model`). Levanta o
+        erro da validação ou a exceção do validador ou do serializador.
         """
         skipped = frozenset(
             row.skipped
+            | (self.pydantic_model.model_fields.keys() - row.data.keys())
             | {name for name, value in row.data.items() if value is None and not row.wants(name)}
         )
         hidden = frozenset(row.dropped | self.excluded_fields) - skipped
         values = {
-            name: row.data.get(name)
+            name: row.data[name]
             for name in self.pydantic_model.model_fields
             if name not in skipped and name not in hidden
         }
+        dumped = (
+            _skipping_model(self.pydantic_model, skipped, hidden)
+            .model_validate(values, strict=False, by_alias=False, by_name=True)
+            .model_dump(by_alias=False)
+        )
+        return values, dumped
+
+    def _validated_data(self, row: _Row) -> dict[str, Any]:
+        """A resposta da linha montada, validada pelo modelo do usuário, na ordem do modelo.
+
+        O campo fora da validação (`_validate_row`) fica com o valor que tinha,
+        e o validado que o dump da linha tira, como pelo exclude_if do valor
+        validado, sai da resposta. A linha recusada levanta
+        ProviderOutputError, com o caminho e a regra de cada erro, ou com a
+        exceção que o validador levantou.
+        """
         try:
-            dumped = (
-                _skipping_model(self.pydantic_model, skipped, hidden)
-                .model_validate(values, strict=False, by_alias=False, by_name=True)
-                .model_dump(by_alias=False)
-            )
+            values, dumped = self._validate_row(row)
         except ValidationError as error:
             msg = f"Linha recusada pelo modelo: {validation_error_summary(error)}"
             raise ProviderOutputError(msg) from error
@@ -740,24 +749,6 @@ class _FieldExtractor:
             and name not in self.omitted_fields
             and name not in row.dropped
         }
-
-    def _condition_value(self, field_name: str, value: object) -> object:
-        """O valor do campo com os validadores do modelo, que é o que a condição lê.
-
-        O campo é validado sozinho, com os outros como `Any = None`. O
-        validador que cai sem os outros campos deixa a condição ler a resposta
-        como veio; o campo que o dump tira, ela lê como None, como a retomada.
-        """
-        others = frozenset(self.pydantic_model.model_fields) - {field_name}
-        try:
-            dumped = (
-                _skipping_model(self.pydantic_model, others, frozenset())
-                .model_validate({field_name: value}, strict=False, by_alias=False, by_name=True)
-                .model_dump(by_alias=False)
-            )
-        except Exception:  # noqa: BLE001 (o validador e o serializador são do usuário)
-            return value
-        return dumped.get(field_name)
 
     def _search_nested_fields(self, row: _Row) -> None:
         """Busca os campos aninhados com configuração própria antes das unidades.
@@ -809,11 +800,28 @@ class _FieldExtractor:
         row.add_result(result, unit.key)
 
     def _update_view(self, row: _Row, names: list[str]) -> None:
+        """Atualiza o que as condições leem dos campos `names`, já gravados em row.data.
+
+        O campo que alguma condição lê entra com o valor da linha montada até
+        aqui validada pelo modelo do usuário (`_validate_row`), que é o que a
+        execução grava e a retomada relê. Se a linha parcial não passa no
+        modelo, a condição lê a resposta como veio; o campo que o dump tira,
+        ela lê como None, como a retomada.
+        """
+        inputs = [
+            name for name in names if name in self.condition_inputs and name not in row.dropped
+        ]
+        dumped = {}
+        if inputs:
+            try:
+                _, dumped = self._validate_row(row)
+            except Exception:  # noqa: BLE001 (o validador e o serializador são do usuário)
+                dumped = {name: row.data[name] for name in inputs}
         for name in names:
             if name in row.dropped:
                 row.view[name] = None
-            elif name in self.condition_inputs:
-                row.view[name] = self._condition_value(name, row.data[name])
+            elif name in inputs:
+                row.view[name] = dumped.get(name)
             else:
                 row.view[name] = row.data[name]
 

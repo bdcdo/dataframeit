@@ -748,6 +748,56 @@ def test_condicao_le_o_valor_validado_que_a_execucao_grava_e_a_retomada_rele():
     assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
 
 
+class ModeloComNormalizacaoPeloModelo(BaseModel):
+    normaliza: bool
+    uf: str
+    valor: str = Field(json_schema_extra={"condition": {"field": "uf", "equals": "SP"}})
+
+    @model_validator(mode="after")
+    def _normaliza(self):
+        if self.normaliza:
+            self.uf = self.uf.upper()
+        return self
+
+
+def test_condicao_le_o_valor_que_o_validador_do_modelo_da_com_os_outros_campos():
+    respostas = {"normaliza": True, "uf": "sp", "valor": "x"}
+    modelo = ModeloComNormalizacaoPeloModelo
+
+    resultado = _rodar_com_dump(pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True)
+    assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+    resultado["_dataframeit_status"] = "processed"
+    retomada = _rodar_com_dump(resultado, modelo, respostas, por_campo=True)
+    assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+
+class ModeloQueValidaODefault(BaseModel):
+    model_config = ConfigDict(validate_default=True)
+
+    tem_valor: bool
+    valor: str | None = Field(
+        None, json_schema_extra={"condition": {"field": "tem_valor", "equals": True}}
+    )
+
+    @field_validator("valor")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+
+def test_campo_pulado_nao_passa_pelo_validador_com_validate_default():
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloQueValidaODefault,
+        {"tem_valor": False, "valor": "x"},
+        por_campo=True,
+    )
+
+    assert "_error_details" not in resultado.columns
+    assert resultado["valor"].tolist() == [None]
+
+
 class ModeloComSerializadorQueLeOPulado(BaseModel):
     tem_valor: bool
     valor: str | None = Field(
