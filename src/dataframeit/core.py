@@ -4211,22 +4211,24 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
                         recorded.add(outcome["idx"])
                 pbar.update(1)
 
-    if abort_event.is_set():
-        _mark_unreached(
-            df,
-            [idx for _, idx, _ in rows_to_process if idx not in recorded],
-            status_col=status_col,
-            reprocess_columns=reprocess_columns,
-            value_columns=value_columns,
-            nan_columns=nan_columns,
-        )
+    # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
+    # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
+    # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
+    # ao arquivo, como no modo sequencial.
+    with _on_ctrl_c(lambda: _try_save_checkpoint(df, checkpoint)) if checkpoint else nullcontext():
+        if abort_event.is_set():
+            _mark_unreached(
+                df,
+                [idx for _, idx, _ in rows_to_process if idx not in recorded],
+                status_col=status_col,
+                reprocess_columns=reprocess_columns,
+                value_columns=value_columns,
+                nan_columns=nan_columns,
+            )
 
-    # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
-    # fora e as marcas de uma interrupção, que não contam como linha processada.
-    # Fica fora do `with` acima; um Ctrl-C durante ela a refaz antes de ser
-    # relançado, e a cauda chega ao arquivo.
-    if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
-        with _on_ctrl_c(lambda: _try_save_checkpoint(df, writer.checkpoint)):
+        # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+        # fora e as marcas de uma interrupção, que não contam como linha processada.
+        if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
             _try_save_checkpoint(df, writer.checkpoint)
 
     elapsed = time.time() - start_time

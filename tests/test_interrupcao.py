@@ -527,6 +527,38 @@ def test_ctrl_c_na_gravacao_final_refaz_a_gravacao_e_a_retomada_nao_paga_a_cauda
     assert list(saida["campo1"]) == [f"r-{texto}" for texto in textos]
 
 
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_ao_marcar_as_linhas_de_uma_interrupcao_grava_a_cauda(tmp_path, paralelo):
+    """A cota acaba na 8ª chamada, e o Ctrl-C chega enquanto as linhas restantes são marcadas.
+
+    Com batch_size=5, o arquivo só tem 5 das 7 linhas pagas até a gravação do
+    Ctrl-C, que leva as outras duas.
+    """
+    ckpt = tmp_path / "ckpt.csv"
+    marca = core._mark_unreached
+
+    def interrompe_e_marca(*args, **kwargs):
+        _ctrl_c()
+        return marca(*args, **kwargs)
+
+    _, llm = _llm_que_esgota(7, ProviderUsageLimitError("usage limit"))
+    with (
+        patch.object(core, "_mark_unreached", interrompe_e_marca),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _roda(
+            pd.DataFrame({"texto": [f"t{i}" for i in range(12)]}),
+            llm,
+            parallel_requests=paralelo,
+            batch_size=5,
+            checkpoint_path=ckpt,
+        )
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].eq("processed").sum() == 7
+
+
 def _sigint_com_restart(reinicia: bool) -> Generator[None, None, None]:
     """Liga ou desliga o SA_RESTART do SIGINT durante o teste.
 
