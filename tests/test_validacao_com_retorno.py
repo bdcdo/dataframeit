@@ -89,12 +89,18 @@ def _sucesso(modelo=None, tokens=(20, 7)):
     }
 
 
-def _chamar(respostas, max_retries=3):
+def _llm_falso(respostas):
+    """O patch do LLM cujo structured output devolve `respostas`, e esse structured output."""
     structured = MagicMock()
     structured.invoke.side_effect = respostas
     base = MagicMock()
     base.with_structured_output.return_value = structured
-    with patch("dataframeit.llm._create_langchain_llm", return_value=base):
+    return patch("dataframeit.llm._create_langchain_llm", return_value=base), structured
+
+
+def _chamar(respostas, max_retries=3):
+    llm, structured = _llm_falso(respostas)
+    with llm:
         resultado = call_langchain("TEXTO", ComEvidencia, "Leia: {texto}", _config(max_retries))
     return resultado, structured
 
@@ -537,12 +543,9 @@ class TestUsoDaLinhaQueFalha:
     def test_uso_entra_no_resumo_com_a_linha_que_falha(  # noqa: PLR0913, PLR0917 (parametrização)
         self, fim, aviso, status, tokens, paralelo, caplog
     ):
-        structured = MagicMock()
-        structured.invoke.side_effect = [_falha(INVALIDO), fim]
-        base = MagicMock()
-        base.with_structured_output.return_value = structured
+        llm, _ = _llm_falso([_falha(INVALIDO), fim])
         with (
-            patch("dataframeit.llm._create_langchain_llm", return_value=base),
+            llm,
             patch("dataframeit.core.validate_provider_dependencies"),
             caplog.at_level(logging.INFO, logger="dataframeit.stats"),
             pytest.warns(UserWarning, match="Tentativa 1/2"),

@@ -108,11 +108,13 @@ class _ErroIlegivelComCusto(_ErroIlegivel, _ErroComCusto):
     pass
 
 
-@pytest.mark.parametrize("registro", ["normal", "reserva"])
-def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo(registro):
-    erro = _ErroComCusto("falhou") if registro == "normal" else _ErroIlegivelComCusto()
+@pytest.mark.parametrize(
+    "classe", [_ErroComCusto, _ErroIlegivelComCusto], ids=["normal", "reserva"]
+)
+def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo(classe):
+    erro = classe()
     erro.cost_usd = 0.25
-    erro.row_usage = {  # ty: ignore[unresolved-attribute]
+    erro.row_usage = {
         "input_tokens": 10,
         "output_tokens": 5,
         "total_tokens": 15,
