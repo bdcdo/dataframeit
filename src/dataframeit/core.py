@@ -3814,22 +3814,20 @@ def _process_rows(  # noqa: C901, PLR0913 (estado da execução repassado por da
 
             if success and config.rate_limit_delay > 0:
                 time.sleep(config.rate_limit_delay)
+
+        # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+        # fora e as marcas de uma interrupção, que não contam como linha processada.
+        if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
+            _try_save_checkpoint(df, checkpoint)
     except KeyboardInterrupt:
         # Ctrl-C: grava as linhas registradas desde a última gravação, que a
         # retomada pagaria de novo, e relança a interrupção. A linha cuja chamada
-        # foi cortada não chegou a ser registrada e fica pendente. A falha de
-        # gravação vira aviso em _try_save_checkpoint e não troca a interrupção.
-        if checkpoint and rows_processed_this_run > rows_saved:
+        # foi cortada não chegou a ser registrada e fica pendente. O Ctrl-C que
+        # corta a gravação final a refaz. A falha de gravação vira aviso em
+        # _try_save_checkpoint e não troca a interrupção.
+        if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
             _try_save_checkpoint(df, checkpoint)
         raise
-
-    # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
-    # fora e as marcas de uma interrupção, que não contam como linha processada.
-    # Fica fora do laço e do except acima; um Ctrl-C durante ela a refaz antes
-    # de ser relançado, e a cauda chega ao arquivo.
-    if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
-        with _on_ctrl_c(lambda: _try_save_checkpoint(df, checkpoint)):
-            _try_save_checkpoint(df, checkpoint)
 
     return token_stats
 
@@ -4215,7 +4213,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0912, PLR0913, PLR0915 (estado com
     # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
     # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
     # ao arquivo, como no modo sequencial.
-    with _on_ctrl_c(lambda: _try_save_checkpoint(df, checkpoint)) if checkpoint else nullcontext():
+    with (
+        _on_ctrl_c(lambda: _try_save_checkpoint(df, writer.checkpoint)) if writer else nullcontext()
+    ):
         if abort_event.is_set():
             _mark_unreached(
                 df,
