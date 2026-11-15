@@ -1199,3 +1199,33 @@ def test_coluna_do_usuario_com_userstring_vai_ao_checkpoint(tmp_path, formato, v
     chamadas.clear()
     assert roda() == []
     assert chamadas == ["b"]
+
+
+@pytest.mark.parametrize("reprocess_columns", [None, ["campo"]], ids=["retomada", "reprocesso"])
+def test_retomada_com_status_pd_na_de_convert_dtypes(reprocess_columns):
+    """O status pd.NA da coluna `string` conta como linha sem status."""
+    chamadas, llm = _llm_contador()
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo": ["v-a", None],
+            "_dataframeit_status": ["processed", None],
+        }
+    ).convert_dtypes()
+    assert df["_dataframeit_status"].isna().tolist() == [False, True]
+
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=llm),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        saida = dataframeit(
+            df,
+            ModeloSimples,
+            "{texto}",
+            text_column="texto",
+            resume=True,
+            reprocess_columns=reprocess_columns,
+        )
+
+    assert chamadas == (["b"] if reprocess_columns is None else ["a", "b"])
+    assert saida["campo"].tolist() == ["v-a", "v-b"]
