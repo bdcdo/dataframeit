@@ -10,6 +10,7 @@ import warnings
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from unittest.mock import patch
 
 import pandas as pd
@@ -1291,3 +1292,74 @@ def test_ctrl_c_ao_marcar_um_reprocessamento_interrompido_completa_as_marcas(par
     assert df.loc[antigas, "_error_details"].eq(core._INTERRUPTED_REPROCESS_DETAIL).all()
     assert df.loc[~antigas, "_error_details"].isna().all()
     assert df["_dataframeit_status"].eq("processed").all()
+
+
+@requer_pthread_kill
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_ctrl_c_deixa_sem_status_a_linha_com_erro_que_ia_ser_refeita(tmp_path, paralelo):
+    """resume=False refaz as linhas com erro, e o Ctrl-C chega durante a 3ª chamada.
+
+    Como na interrupção por limite de uso, a linha com erro que não foi
+    alcançada volta a ficar sem status, no DataFrame do usuário e no
+    checkpoint, e a retomada a refaz.
+    """
+    textos = [f"t{i}" for i in range(6)]
+    df = pd.DataFrame(
+        {
+            "texto": textos,
+            "_dataframeit_status": ["error"] * 6,
+            "_error_details": ["falha"] * 6,
+        }
+    )
+    ckpt = tmp_path / "ckpt.csv"
+    pagas, llm = _llm_com_ctrl_c(na_chamada=3)
+
+    with pytest.raises(KeyboardInterrupt):
+        _roda(
+            df, llm, resume=False, parallel_requests=paralelo, batch_size=100, checkpoint_path=ckpt
+        )
+
+    for saida in (df, pd.read_csv(ckpt)):
+        alcancadas = saida["texto"].isin(pagas)
+        assert (~alcancadas).sum() >= 1
+        assert saida.loc[alcancadas, "_dataframeit_status"].eq("processed").all()
+        assert (
+            saida.loc[~alcancadas, ["_dataframeit_status", "_error_details"]].isna().all(axis=None)
+        )
+
+    retomada, llm_ok = _llm_com_ctrl_c()
+    saida = _roda(pd.DataFrame({"texto": textos}), llm_ok, batch_size=100, checkpoint_path=ckpt)
+    assert sorted(retomada) == sorted(set(textos) - set(pagas))
+    assert list(saida["campo1"]) == [f"r-{texto}" for texto in textos]
+
+
+def test_marcas_da_interrupcao_sem_reprocessamento_poupam_a_linha_gravada_pela_execucao():
+    """A linha 'processed' que o Ctrl-C alcança antes do registro fica como está.
+
+    Sem reprocess_columns, a linha pendente que aparece 'processed' foi gravada
+    por esta execução. A com erro e valor também fica; só a com erro sem valor
+    volta a ficar sem status. Sem nada a mudar, as marcas dizem que não mudaram.
+    """
+    df = pd.DataFrame(
+        {
+            "campo1": ["novo", "antigo", None, None],
+            "_dataframeit_status": ["processed", "error", "error", None],
+            "_error_details": [None, "falha", "falha", None],
+        },
+        dtype=object,
+    )
+    marca = partial(
+        core._mark_unreached,
+        df,
+        set(),
+        is_pending=[True] * 4,
+        status_col="_dataframeit_status",
+        reprocess_columns=None,
+        value_columns=["campo1"],
+        nan_columns=set(),
+    )
+
+    assert marca() is True
+    assert df["_dataframeit_status"].tolist() == ["processed", "error", None, None]
+    assert df["_error_details"].tolist() == [None, "falha", None, None]
+    assert marca() is False
