@@ -26,6 +26,9 @@ theme:
   font:
     text: Inter
     code: JetBrains Mono
+  # Sem navigation.instant: ela não recarrega o cabeçalho, e o seletor de
+  # idioma do mkdocs-static-i18n ficaria com o link da primeira página aberta;
+  # o plugin avisa da incompatibilidade, e o aviso aborta o build --strict.
   features:
     - navigation.tracking
     - navigation.tabs
