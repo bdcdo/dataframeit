@@ -1363,3 +1363,27 @@ def test_marcas_da_interrupcao_sem_reprocessamento_poupam_a_linha_gravada_pela_e
     assert df["_dataframeit_status"].tolist() == ["processed", "error", None, None]
     assert df["_error_details"].tolist() == [None, "falha", None, None]
     assert marca() is False
+
+
+@pytest.mark.parametrize("reprocess_columns", [None, ["campo1"]], ids=["retomada", "reprocesso"])
+@pytest.mark.parametrize("paralelo", [1, 3])
+def test_interrupcao_marca_as_linhas_com_status_pd_na(paralelo, reprocess_columns):
+    """A marca das linhas não alcançadas lê o status pd.NA de convert_dtypes como ausente."""
+    df = pd.DataFrame(
+        {
+            "texto": [f"linha{i}" for i in range(6)],
+            "campo1": ["antigo"] + [None] * 5,
+            "_dataframeit_status": ["processed"] + [None] * 5,
+        }
+    ).convert_dtypes()
+    _, llm = _llm_que_esgota(0, ProviderUsageLimitError("usage limit"))
+
+    with pytest.warns(UserWarning, match=r"interrompida.*usage limit"):
+        saida = _roda(
+            df, llm, resume=True, reprocess_columns=reprocess_columns, parallel_requests=paralelo
+        )
+
+    status = saida["_dataframeit_status"]
+    assert status.iloc[0] == "processed"
+    assert status.iloc[1:].isna().all()
+    assert saida["campo1"].iloc[0] == "antigo"

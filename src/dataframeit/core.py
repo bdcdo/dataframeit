@@ -1855,6 +1855,13 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
+    # O status ausente que chega como pd.NA, como o da coluna `string` de
+    # convert_dtypes, vira None: a comparação do pd.NA com o texto do status não
+    # é booleana, e a validação da retomada e a marca da interrupção a usam.
+    if status_col in df_pandas.columns:
+        status = df_pandas[status_col]
+        df_pandas[status_col] = status.astype(object).where(status.notna(), None)
+
     incompatible_columns = []
     processed_values = {}
     if resume or reprocess_columns:
