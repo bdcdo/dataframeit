@@ -1480,7 +1480,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             DataFrame e reprocess_columns não foi passado, emite um aviso e devolve
             a entrada sem processar; fora desse caso, a linha 'processed' é
             validada como com True: o campo obrigatório que ela não tem levanta
-            ValueError, e o que tem padrão o recebe.
+            ValueError, e o que tem padrão ou admite None recebe o padrão, ou
+            None, com aviso.
             Quando a entrada chega sem a coluna de status e não há checkpoint a
             reler, com True ou False, toda linha conta como nova, e uma coluna com
             algum valor e com o nome de um campo do modelo levanta ValueError
@@ -1854,7 +1855,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     excluded_fields = _excluded_fields(questions)
     value_columns = [col for col in expected_columns if col not in excluded_fields]
     existing_cols = [col for col in value_columns if col in df_pandas.columns]
-    if existing_cols and not resume and not reprocess_columns:
+    # Sem a coluna de status, toda linha é nova, como com resume=True, e o
+    # valor que a execução sobrescreveria já foi recusado em _raise_if_overwritten.
+    if existing_cols and not resume and not reprocess_columns and input_has_status:
         warnings.warn(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
             stacklevel=1,
@@ -1870,6 +1873,16 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         complex_fields,
         empty_text_fields=empty_text_fields,
     )
+    # O campo sem coluna nunca foi perguntado às linhas já processadas, que só
+    # o recebem pelo reprocessamento; sem ele, ficam com o padrão ou None.
+    has_processed_rows = (
+        status_col in df_pandas.columns and df_pandas[status_col].isin(["processed"]).any()
+    )
+    new_columns = (
+        [col for col in value_columns if col not in df_pandas.columns] if has_processed_rows else []
+    )
+    to_reprocess = {*reprocessed_columns, *incompatible_columns, *new_columns}
+    suggested_columns = [col for col in expected_columns if col in to_reprocess]
     uncovered_columns = [
         column for column in incompatible_columns if column not in reprocessed_columns
     ]
@@ -1877,9 +1890,18 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         msg = (
             "O DataFrame contém linhas processadas incompatíveis com o modelo atual: "
             f"campos incompatíveis {uncovered_columns}. "
-            f"Inclua-os em reprocess_columns={incompatible_columns!r}."
+            f"Inclua-os em reprocess_columns={suggested_columns!r}."
         )
         raise ValueError(msg)
+    unfilled_columns = [column for column in new_columns if column not in reprocessed_columns]
+    if unfilled_columns:
+        warnings.warn(
+            f"As linhas já processadas não têm as colunas {unfilled_columns}, e esta "
+            "execução não as preenche nelas: ficam com o padrão de cada campo, ou None. "
+            f"Para preenchê-las, passe reprocess_columns={suggested_columns!r}.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
     if (

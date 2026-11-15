@@ -30,6 +30,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- A linha `'processed'` sem a coluna de um campo do modelo que admite `None` ou tem padrão recebe o padrão, ou `None`, com um aviso que sugere o `reprocess_columns` que a preenche, com `resume=True` e `resume=False`. O `ValueError` de campos incompatíveis sugere em `reprocess_columns`, na ordem do modelo, também esses campos e os já passados nele (#278).
+- Com `resume=False` e sem a coluna de status, a coluna do modelo sem valor não faz mais a chamada devolver a entrada sem processar: toda linha é processada, como com `resume=True` (#278).
 - Com `resume=False`, a linha `'processed'` que não tem um campo obrigatório do modelo levanta o mesmo `ValueError` de campos incompatíveis de `resume=True`, com a sugestão de `reprocess_columns`, e o campo com padrão recebe o padrão nessa linha, no lugar de `None`. Antes, a segunda chamada com um modelo de outros campos sobre um DataFrame já processado não mandava nenhuma linha ao modelo, não avisava e devolvia as colunas novas vazias (#278).
 - Os testes do CI rodam `pytest --cov`, que toma o pacote do `source_pkgs` do `pyproject.toml`, e não emitem mais o `CoverageWarning` "Module dataframeit was previously imported, but not measured", que vinha de `--cov=dataframeit` listar o pacote duas vezes (#202).
 - A moldura das caixas genérica e de cota esgotada da mensagem amigável fica alinhada com emoji, texto CJK, acento decomposto, sequência ANSI e separador de linha Unicode na mensagem do erro: o texto é normalizado em NFC, perde escapes do terminal e caracteres de controle, e a quebra e o preenchimento medem a largura exibida no terminal (#310).
