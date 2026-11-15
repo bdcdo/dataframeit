@@ -760,9 +760,25 @@ class ModeloComNormalizacaoPeloModelo(BaseModel):
         return self
 
 
-def test_condicao_le_o_valor_que_o_validador_do_modelo_da_com_os_outros_campos():
+class ModeloComNormalizacaoDepoisDoCampo(BaseModel):
+    """O campo lido pela condição vem antes do que o model_validator usa para normalizá-lo."""
+
+    uf: str
+    normaliza: bool
+    valor: str = Field(json_schema_extra={"condition": {"field": "uf", "equals": "SP"}})
+
+    @model_validator(mode="after")
+    def _normaliza(self):
+        if self.normaliza:
+            self.uf = self.uf.upper()
+        return self
+
+
+@pytest.mark.parametrize(
+    "modelo", [ModeloComNormalizacaoPeloModelo, ModeloComNormalizacaoDepoisDoCampo]
+)
+def test_condicao_le_o_valor_que_o_validador_do_modelo_da_com_os_outros_campos(modelo):
     respostas = {"normaliza": True, "uf": "sp", "valor": "x"}
-    modelo = ModeloComNormalizacaoPeloModelo
 
     resultado = _rodar_com_dump(pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True)
     assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]

@@ -800,30 +800,30 @@ class _FieldExtractor:
         row.add_result(result, unit.key)
 
     def _update_view(self, row: _Row, names: list[str]) -> None:
-        """Atualiza o que as condições leem dos campos `names`, já gravados em row.data.
+        """Atualiza o que as condições leem, depois que os campos `names` entraram em row.data.
 
-        O campo que alguma condição lê entra com o valor da linha montada até
-        aqui validada pelo modelo do usuário (`_validate_row`), que é o que a
-        execução grava e a retomada relê. Se a linha parcial não passa no
-        modelo, a condição lê a resposta como veio; o campo que o dump tira,
-        ela lê como None, como a retomada.
+        Os campos que alguma condição lê entram, todos, com o valor da linha
+        montada até aqui validada pelo modelo do usuário (`_validate_row`),
+        que é o que a execução grava e a retomada relê: a resposta nova pode
+        mudar, por um model_validator, o valor de um campo já lido. Se a linha
+        parcial não passa no modelo, a condição lê a resposta como veio; o
+        campo que o dump tira, ela lê como None, como a retomada.
         """
-        inputs = [
-            name for name in names if name in self.condition_inputs and name not in row.dropped
-        ]
-        dumped = {}
-        if inputs:
-            try:
-                _, dumped = self._validate_row(row)
-            except Exception:  # noqa: BLE001 (o validador e o serializador são do usuário)
-                dumped = {name: row.data[name] for name in inputs}
         for name in names:
-            if name in row.dropped:
-                row.view[name] = None
-            elif name in inputs:
-                row.view[name] = dumped.get(name)
-            else:
-                row.view[name] = row.data[name]
+            row.view[name] = None if name in row.dropped else row.data[name]
+        inputs = [
+            name
+            for name in self.condition_inputs
+            if name in row.data and name not in row.dropped and name not in row.skipped
+        ]
+        if not inputs:
+            return
+        try:
+            _, dumped = self._validate_row(row)
+        except Exception:  # noqa: BLE001 (o validador e o serializador são do usuário)
+            return
+        for name in inputs:
+            row.view[name] = dumped.get(name)
 
     def _active_fields(self, row: _Row, requested: list[str]) -> tuple[list[str], list[str]]:
         """Campos pedidos ao agente e, entre eles, os de condição avaliada depois da resposta.
