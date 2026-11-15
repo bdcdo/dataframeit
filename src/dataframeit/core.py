@@ -1514,8 +1514,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             N linhas processadas nesta execução. Combinado com `resume=True`, permite
             retomar execuções longas após kill/crash sem perder progresso.
             Requer `checkpoint_path`.
-        checkpoint_path: Caminho do arquivo de checkpoint, em texto ou `os.PathLike`. Formato inferido pela extensão
-            (.csv, .xlsx, .parquet). Escrita atômica via .tmp + rename. Requer `batch_size`.
+        checkpoint_path: Caminho do arquivo de checkpoint, em texto ou `os.PathLike`.
+            Formato inferido pela extensão (.csv, .xlsx, .parquet). Escrita atômica
+            via .tmp + rename. Requer `batch_size`.
             Ao lado dele, `<checkpoint>.dataframeit.json` guarda a assinatura da
             execução; com `resume=True`, a mesma chamada retoma do checkpoint
             quando a assinatura bate, e senão avisa e o sobrescreve.
@@ -1587,8 +1588,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         ):
             msg = f"batch_size deve ser int >= 1; recebido {batch_size!r}"
             raise ValueError(msg)
-        _validate_checkpoint_extension(checkpoint_path)
-        checkpoint = _Checkpoint(Path(checkpoint_path), batch_size)
+        path = Path(checkpoint_path)
+        _validate_checkpoint_extension(path)
+        checkpoint = _Checkpoint(path, batch_size)
 
     # Providers de SDK usam structured output direto, sem o agente LangChain de busca.
     if use_search and provider in {"claude_code", "codex"}:
@@ -3195,9 +3197,9 @@ def _default_may_be_none(field: FieldInfo) -> bool:
         return False
 
 
-def _validate_checkpoint_extension(path: str | os.PathLike[str]) -> None:
+def _validate_checkpoint_extension(path: Path) -> None:
     """Valida extensão suportada e dependência opcional necessária."""
-    ext = Path(path).suffix.lower()
+    ext = path.suffix.lower()
     if ext not in _SUPPORTED_CHECKPOINT_EXTS:
         msg = (
             f"Extensão {ext or '(nenhuma)'} não suportada para checkpoint. "
@@ -3274,7 +3276,7 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 
 def _save_checkpoint(
     df: pd.DataFrame,
-    path: str | Path,
+    path: Path,
     meta: dict | None = None,
     structures: Collection[str] | None = None,
 ) -> None:
@@ -3289,7 +3291,6 @@ def _save_checkpoint(
     colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
     coluna de objeto, porque gravariam o repr de qualquer estrutura.
     """
-    path = Path(path)
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
     if ext == ".csv":
