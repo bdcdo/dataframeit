@@ -109,7 +109,7 @@ resultado = dataframeit(
 )
 ```
 
-Cada agente valida a resposta só pela anotação do campo dele. A linha montada passa depois pelo modelo inteiro, com os `field_validator` e os `model_validator`, e sai com os mesmos valores do modo de um agente só. Ficam fora dessa validação os campos sem resposta na linha: o pulado por `condition`, o que o `model_dump` deixa de fora e o não pedido em `reprocess_columns` que está vazio. O `model_validator` os vê como `None`. A `condition` lê a resposta do agente antes dos validadores. A linha que o modelo recusa fica com status `error`, sem nova tentativa, e o detalhe leva o caminho e a regra de cada erro.
+Cada agente valida a resposta só pela anotação do campo dele. A linha montada passa depois pelo modelo inteiro, com os `field_validator` e os `model_validator`, e sai com os mesmos valores do modo de um agente só. Ficam fora dessa validação os campos sem resposta na linha: o pulado por `condition`, o que o `model_dump` deixa de fora e o não pedido em `reprocess_columns` que está vazio. O `model_validator` os vê como `None`. A `condition` lê o valor que o campo terá na saída: o campo passa pelos validadores do modelo sozinho, com os outros como `None`, e o validador que falha sem eles deixa a condição ler a resposta do agente. A linha que o modelo recusa fica com status `error`, sem nova tentativa, e o detalhe leva o caminho e a regra de cada erro, ou a exceção que o validador levantou.
 
 ### Busca Profunda
 

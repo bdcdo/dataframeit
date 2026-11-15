@@ -45,7 +45,7 @@ from pandas.api.types import infer_dtype, is_bool, is_scalar
 # O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
 # `__getattr__` que o checker de tipos lê como `object`.
 from pandas.core.util.hashing import hash_pandas_object
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, ValidationError
 from tqdm import tqdm
 from typing_extensions import override
 
@@ -94,6 +94,7 @@ from .utils import (
     _json_default,
     _keeps_nan,
     _silent_slice_write,
+    _skipping_model,
     _user_stacklevel,
     accepts_only_text,
     from_pandas,
@@ -530,7 +531,6 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 if field_name in conditions
             }
     as_executed = _executed_form(pydantic_model)
-    skipping_models: dict[tuple[frozenset[str], frozenset[str]], Any] = {}
     # O campo com exclude=True não sai no model_dump, e a execução não grava a
     # coluna dele: a célula guarda o None com que a coluna foi criada ou o que a
     # entrada trazia. Não há resposta paga a conferir, e a célula fica fora da
@@ -566,37 +566,6 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         and _admits_none(field.annotation)
         and (field.default_factory is not None or field.default is not None)
     )
-
-    def model_skipping(skipped: frozenset[str], hidden: frozenset[str]) -> type[BaseModel]:
-        """O modelo de validação com os campos pulados e os obrigatórios fora do dump trocados."""
-        if not skipped and not hidden:
-            return pydantic_model
-        key = (skipped, hidden)
-        if key not in skipping_models:
-            # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
-            skipping_models[key] = create_model(  # ty: ignore[no-matching-overload]
-                f"{pydantic_model.__name__}CheckpointSkipped",
-                __base__=pydantic_model,
-                **{
-                    # O None no lugar do obrigatório fora do dump não passa
-                    # pelos validadores do campo. O campo continua fora do
-                    # dump, longe do serializador dele, salvo o que o
-                    # @model_serializer tira, que chega a ele como na execução,
-                    # com o None no lugar do valor.
-                    field_name: (
-                        Any,
-                        Field(
-                            None,
-                            exclude=field_name not in serializer_dropped,
-                            validate_default=False,
-                        ),
-                    )
-                    if field_name in hidden
-                    else (Any, None)
-                    for field_name in skipped | hidden
-                },
-            )
-        return skipping_models[key]
 
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
@@ -681,7 +650,9 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             projected[field_name] = value
 
         validated_data, rejected = _validate_row(
-            model_skipping(skipped, required_excluded | frozenset(omitted_required)),
+            _skipping_model(
+                pydantic_model, skipped, required_excluded | frozenset(omitted_required)
+            ),
             projected,
             rejected_fields,
         )

@@ -726,6 +726,80 @@ def test_campo_obrigatorio_pulado_pela_condicao_fica_fora_da_validacao():
     assert resultado["valor"].tolist() == [None, None]
 
 
+class ModeloComCondicaoSobreValorNormalizado(BaseModel):
+    uf: str
+    valor: str = Field(json_schema_extra={"condition": {"field": "uf", "equals": "SP"}})
+
+    @field_validator("uf")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+
+def test_condicao_le_o_valor_validado_que_a_execucao_grava_e_a_retomada_rele():
+    respostas = {"uf": "sp", "valor": "x"}
+    modelo = ModeloComCondicaoSobreValorNormalizado
+
+    resultado = _rodar_com_dump(pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True)
+    assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+    resultado["_dataframeit_status"] = "processed"
+    retomada = _rodar_com_dump(resultado, modelo, respostas, por_campo=True)
+    assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+
+class ModeloComSerializadorQueLeOPulado(BaseModel):
+    tem_valor: bool
+    valor: str | None = Field(
+        None, json_schema_extra={"condition": {"field": "tem_valor", "equals": True}}
+    )
+
+    @model_serializer(mode="wrap")
+    def _preenche(self, handler):
+        dados = handler(self)
+        dados["valor"] = dados["valor"] or "vazio"
+        return dados
+
+
+def test_campo_pulado_pela_condicao_chega_ao_serializador_como_none():
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloComSerializadorQueLeOPulado,
+        {"tem_valor": False, "valor": "x"},
+        por_campo=True,
+    )
+
+    assert "_error_details" not in resultado.columns
+    assert resultado["valor"].tolist() == [None]
+
+
+class ModeloComValidadorQueLeOPulado(BaseModel):
+    tem_valor: bool
+    valor: str | None = Field(
+        None, json_schema_extra={"condition": {"field": "tem_valor", "equals": True}}
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _le_o_valor(cls, dados):
+        dados["resumo"] = dados["valor"]
+        return dados
+
+
+def test_excecao_do_validador_na_linha_montada_fica_no_erro_da_linha():
+    with pytest.warns(UserWarning, match="Linha recusada pelo modelo: KeyError: 'valor'"):
+        resultado = _rodar_com_dump(
+            pd.DataFrame({"texto": ["a"]}),
+            ModeloComValidadorQueLeOPulado,
+            {"tem_valor": False, "valor": "x"},
+            por_campo=True,
+        )
+
+    assert resultado["_error_details"].tolist() == [
+        "[Erro não-recuperável] ProviderOutputError: Linha recusada pelo modelo: KeyError: 'valor'"
+    ]
+
+
 class ModeloComExcludeIfDoValidado(BaseModel):
     categoria: str
     obs: str | None = Field(None, exclude_if=lambda valor: valor is None)

@@ -13,7 +13,7 @@ from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, ValidationError, create_model
 
 from .conditional import (
     _CONDITIONAL_KEYS,
@@ -43,6 +43,7 @@ from .search import get_provider
 from .utils import (
     _dropped_by_model_serializer,
     _excluded_fields,
+    _skipping_model,
     is_list_of_pydantic_model,
     models_outside_lists,
     resolve_forward_refs,
@@ -616,6 +617,9 @@ class _Row:
     dropped: set[str] = field(default_factory=set)
     # Os campos anulados por condição falsa, antes ou depois da chamada.
     skipped: set[str] = field(default_factory=set)
+    # O que as condições leem: o valor de `data` com os validadores do campo,
+    # que é o que a execução grava e a retomada relê.
+    view: dict[str, Any] = field(default_factory=dict)
 
     def wants(self, field_name: str) -> bool:
         return self.only_fields is None or field_name in self.only_fields
@@ -667,8 +671,8 @@ class _FieldExtractor:
     nested_fields: tuple[ConfiguredField, ...]
     excluded_fields: frozenset[str]
     omitted_fields: frozenset[str]
-    # Os modelos de validação por conjunto de campos sem resposta (_validation_model).
-    validation_models: dict[frozenset[str], type[BaseModel]] = field(default_factory=dict)
+    # Sem condição, ninguém lê row.view, e os validadores não rodam por campo.
+    has_conditions: bool
 
     def __call__(
         self, text: str, only_fields: set[str] | None = None, known: dict[str, Any] | None = None
@@ -703,33 +707,36 @@ class _FieldExtractor:
         Cada chamada valida a resposta só pelo campo, e os validadores do
         modelo (`field_validator`, `model_validator`) rodam aqui, sobre a linha
         inteira, como nos outros modos e na retomada. Fica fora da validação, e
-        com o valor que tinha, o campo sem resposta: o pulado pela condição, o
-        que o dump da chamada tirou ou tira (exclude, exclude_if) e o None de
-        um campo não pedido, que veio de `known`. No modelo de validação, ele
-        vira `Any = None`, longe dos validadores do campo e do dump. O campo
-        validado que o dump da linha tira, como pelo exclude_if do valor
-        validado, sai da resposta. A linha recusada levanta
-        ProviderOutputError, com o caminho e a regra de cada erro.
+        com o valor que tinha, o campo sem resposta: o pulado pela condição e o
+        None de um campo não pedido, que veio de `known`, como o pulado na
+        retomada, e o que o dump da chamada tirou ou tira (exclude,
+        exclude_if), como o obrigatório fora do dump na retomada
+        (`_skipping_model`). O campo validado que o dump da linha tira, como
+        pelo exclude_if do valor validado, sai da resposta. A linha recusada
+        levanta ProviderOutputError, com o caminho e a regra de cada erro, ou
+        com a exceção que o validador levantou.
         """
-        hidden = frozenset(
+        skipped = frozenset(
             row.skipped
-            | row.dropped
-            | self.excluded_fields
             | {name for name, value in row.data.items() if value is None and not row.wants(name)}
         )
+        hidden = frozenset(row.dropped | self.excluded_fields) - skipped
         values = {
             name: row.data.get(name)
             for name in self.pydantic_model.model_fields
-            if name not in hidden
+            if name not in skipped and name not in hidden
         }
         try:
             dumped = (
-                self._validation_model(hidden)
+                _skipping_model(self.pydantic_model, skipped, hidden)
                 .model_validate(values, strict=False, by_alias=False, by_name=True)
                 .model_dump(by_alias=False)
             )
         except ValidationError as error:
             msg = f"Linha recusada pelo modelo: {validation_error_summary(error)}"
+            raise ProviderOutputError(msg) from error
+        except Exception as error:
+            msg = f"Linha recusada pelo modelo: {type(error).__name__}: {error}"
             raise ProviderOutputError(msg) from error
         return {
             name: dumped[name] if name in values else row.data.get(name)
@@ -737,21 +744,23 @@ class _FieldExtractor:
             if name not in values or name in dumped
         }
 
-    def _validation_model(self, hidden: frozenset[str]) -> type[BaseModel]:
-        """O modelo do usuário com os campos de `hidden` trocados por `Any = None` fora do dump."""
-        if not hidden:
-            return self.pydantic_model
-        if hidden not in self.validation_models:
-            # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
-            self.validation_models[hidden] = create_model(  # ty: ignore[no-matching-overload]
-                f"{self.pydantic_model.__name__}Validation",
-                __base__=self.pydantic_model,
-                **{
-                    name: (Any, Field(None, exclude=True, validate_default=False))
-                    for name in hidden
-                },
+    def _condition_value(self, field_name: str, value: object) -> object:
+        """O valor do campo com os validadores do modelo, que é o que a condição lê.
+
+        O campo é validado sozinho, com os outros como `Any = None`. O
+        validador que cai sem os outros campos deixa a condição ler a resposta
+        como veio; o campo que o dump tira, ela lê como None, como a retomada.
+        """
+        others = frozenset(self.pydantic_model.model_fields) - {field_name}
+        try:
+            dumped = (
+                _skipping_model(self.pydantic_model, others, frozenset())
+                .model_validate({field_name: value}, strict=False, by_alias=False, by_name=True)
+                .model_dump(by_alias=False)
             )
-        return self.validation_models[hidden]
+        except Exception:  # noqa: BLE001 (o validador e o serializador são do usuário)
+            return value
+        return dumped.get(field_name)
 
     def _search_nested_fields(self, row: _Row) -> None:
         """Busca os campos aninhados com configuração própria antes das unidades.
@@ -774,7 +783,7 @@ class _FieldExtractor:
         requested = [name for name in unit.fields if row.wants(name)]
         for name in unit.fields:
             if name not in requested:
-                row.data[name] = row.known.get(name)
+                row.data[name] = row.view[name] = row.known.get(name)
 
         active, post_call = self._active_fields(row, requested)
         if not active:
@@ -791,15 +800,23 @@ class _FieldExtractor:
             row.data[name] = result["data"].get(name)
             if name not in result["data"]:
                 row.dropped.add(name)
+        self._update_view(row, active)
         # Em ordem de dependência, para que um campo anulado aqui também anule
         # quem depende dele na mesma chamada.
         for name in post_call:
-            if should_skip_field(name, self.field_configs[name], row.data):
-                row.data[name] = None
+            if should_skip_field(name, self.field_configs[name], row.view):
+                row.data[name] = row.view[name] = None
                 row.skipped.add(name)
-        for name in active:
-            self._enrich_items(row, name)
+        enriched = [name for name in active if self._enrich_items(row, name)]
+        self._update_view(row, enriched)
         row.add_result(result, unit.key)
+
+    def _update_view(self, row: _Row, names: list[str]) -> None:
+        for name in names:
+            if name in row.dropped:
+                row.view[name] = None
+            elif self.has_conditions:
+                row.view[name] = self._condition_value(name, row.data[name])
 
     def _active_fields(self, row: _Row, requested: list[str]) -> tuple[list[str], list[str]]:
         """Campos pedidos ao agente e, entre eles, os de condição avaliada depois da resposta.
@@ -813,8 +830,8 @@ class _FieldExtractor:
             if any(dep.split(".")[0] in requested for dep in self.dependencies[name]):
                 active.append(name)
                 post_call.add(name)
-            elif should_skip_field(name, self.field_configs[name], row.data):
-                row.data[name] = None
+            elif should_skip_field(name, self.field_configs[name], row.view):
+                row.data[name] = row.view[name] = None
                 row.skipped.add(name)
             else:
                 active.append(name)
@@ -851,16 +868,17 @@ class _FieldExtractor:
         )
         return model, prompt, config
 
-    def _enrich_items(self, row: _Row, field_name: str) -> None:
+    def _enrich_items(self, row: _Row, field_name: str) -> bool:
         """Busca, item a item, os campos configurados de um List[Model] já extraído.
 
         O valor que não é lista, como o texto de `Union[list[Item], str]`, não
-        tem item onde gravar a busca e fica como o agente o devolveu.
+        tem item onde gravar a busca e fica como o agente o devolveu. Devolve
+        se a lista foi enriquecida.
         """
         spec = self.list_fields.get(field_name)
         items = row.data[field_name]
         if spec is None or not isinstance(items, list) or not items:
-            return
+            return False
         enriched, usage, traces = _enrich_list_items_with_search(
             items,
             spec["inner_model"],
@@ -872,6 +890,7 @@ class _FieldExtractor:
         row.data[field_name] = enriched
         row.add_usage(usage)
         row.add_trace(f"{field_name}_items", traces)
+        return True
 
 
 def field_extractor(
@@ -940,6 +959,9 @@ def field_extractor(
         excluded_fields=excluded_fields,
         omitted_fields=excluded_fields
         | _dropped_by_model_serializer(pydantic_model, excluded_fields),
+        has_conditions=any(
+            field_config.get("condition") is not None for field_config in field_configs.values()
+        ),
     )
 
 
