@@ -544,11 +544,11 @@ def test_saida_com_a_coluna_de_status_devolvida_mantem_a_correcao(tmp_path, stat
 
 
 class ComDict(BaseModel):
-    extra: dict
+    extra: dict  # ty: ignore[missing-type-argument]
 
 
 class ComListaDeDicts(BaseModel):
-    extra: list[dict]
+    extra: list[dict]  # ty: ignore[missing-type-argument]
 
 
 _ESTRUTURAS = {
@@ -913,7 +913,7 @@ def test_volta_ao_tipo_distingue_int_de_float(tmp_path, formato):
 
 
 def test_estrutura_funda_demais_para_o_json_fica_como_relida():
-    profunda: list = []
+    profunda: list[Any] = []
     for _ in range(100_000):
         profunda = [profunda]
 

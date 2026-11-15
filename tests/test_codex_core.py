@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import threading
 from contextlib import contextmanager
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import Mock
 
 import pandas as pd
@@ -86,7 +86,7 @@ class RecordingCodexBackend:
         self._lock = threading.Lock()
         self.instances.append(self)
 
-    def invoke(self, text: str) -> dict:
+    def invoke(self, text: str) -> dict[str, Any]:
         with self._lock:
             self.calls.append(text)
         return {"data": {"value": text}, "usage": None}

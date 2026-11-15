@@ -225,6 +225,11 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 [tool.ty.src]
 include = ["src", "tests"]
 
+[tool.ty.rules]
+# Genérico sem argumento (`dict`, `list`) vira `dict[Unknown, Unknown]`, e o ty
+# deixa de conferir o que entra e sai do valor.
+missing-type-argument = "error"
+
 [tool.vulture]
 paths = ["src"]
 min_confidence = 80

@@ -892,7 +892,7 @@ class _TransporteDoSdkFalso:
 
     def __init__(self, erro_de_saida):
         self.erro_de_saida = erro_de_saida
-        self.fila: asyncio.Queue = asyncio.Queue()
+        self.fila: asyncio.Queue[Any] = asyncio.Queue()
 
     async def connect(self):
         pass

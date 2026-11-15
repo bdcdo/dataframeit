@@ -286,7 +286,7 @@ class _TimerFalso:
     o 429; `reduzido` deixa o teste esperar por esse instante.
     """
 
-    intervalos: list
+    intervalos: list[float]
     reduzido: threading.Event
 
     def __init__(self, intervalo, funcao):
@@ -373,7 +373,7 @@ def test_rate_limit_baixa_o_teto_da_reposicao(monkeypatch):
     liberar = {texto: threading.Event() for texto in "bcd"}
     terminou = {texto: threading.Event() for texto in "bcd"}
     trava = threading.Lock()
-    em_voo: set = set()
+    em_voo: set[str] = set()
     em_voo_quando_e_comecou = []
 
     # A primeira espera do laço volta com 'a', a única que não fica presa; a

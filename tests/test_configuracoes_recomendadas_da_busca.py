@@ -8,6 +8,7 @@ da doc e roda as pontas de cada faixa contra o aviso.
 import re
 import warnings
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,7 +34,7 @@ def _faixa(texto: str) -> list[int]:
     return [int(numero) for numero in texto.split(TRACO_DE_FAIXA)]
 
 
-def _linhas_da_tabela(caminho: Path, titulo: str) -> list[tuple]:
+def _linhas_da_tabela(caminho: Path, titulo: str) -> list[tuple[Any, ...]]:
     """(provedor, search_per_field, campos, parallel_requests, rate_limit_delay) de cada linha."""
     secao = caminho.read_text(encoding="utf-8").split(titulo + "\n", 1)[1].split("\n### ", 1)[0]
     linhas = []

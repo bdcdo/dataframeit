@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pandas as pd
@@ -308,7 +309,7 @@ def test_handler_de_reserva_e_instalado_uma_vez():
 class _Barra:
     """Registra o rótulo, o total e os avanços da barra de progresso."""
 
-    criadas: list
+    criadas: list[Any]
 
     def __init__(self, iterable=None, total=None, desc=None):
         self.iterable, self.total, self.desc, self.n = iterable, total, desc, 0

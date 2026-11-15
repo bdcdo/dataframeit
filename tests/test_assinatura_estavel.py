@@ -1286,7 +1286,7 @@ def test_mudanca_no_valor_ou_no_call_da_subclasse_de_tipo_embutido_muda_a_assina
 def test_valor_embutido_que_levanta_ao_ser_lido_fica_de_fora():
     """A assinatura não pode levantar: o valor que não se lê fica de fora, como o atributo."""
 
-    class Quebrada(tuple):
+    class Quebrada(tuple[object, ...]):
         __slots__ = ()
 
         def __iter__(self):

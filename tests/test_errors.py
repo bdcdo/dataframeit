@@ -2,6 +2,7 @@
 
 import linecache
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -124,7 +125,7 @@ class TestFriendlyAuthErrorWithoutEnvVar:
         assert "export OPENAI_API_KEY" in msg
 
 
-class _ResultadoQueFalhaAoAnotar(dict):
+class _ResultadoQueFalhaAoAnotar(dict[str, Any]):
     """Dict cuja gravação de chave levanta um erro transitório."""
 
     def __setitem__(self, chave, valor):

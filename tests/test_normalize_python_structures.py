@@ -85,7 +85,7 @@ class ComplexModel(BaseModel):
     """Modelo complexo com múltiplos tipos."""
 
     condicoes_de_saude: list[str] | None = None
-    tratamentos: list[dict] | None = None
+    tratamentos: list[dict] | None = None  # ty: ignore[missing-type-argument]
     danos_morais: tuple[Literal["sim", "nao"], float] | None = None
     nome: str
     status: Literal["ativo", "inativo"] = "ativo"
@@ -133,7 +133,7 @@ def test_is_complex_type_optional():
 def test_is_complex_type_annotated_dentro_de_optional():
     """O Pydantic tira o Annotated só do nível de cima da anotação."""
     assert is_complex_type(Annotated[list[str], Field(min_length=1)] | None) is True
-    assert is_complex_type(Optional[Annotated[dict, Field(description="x")]]) is True
+    assert is_complex_type(Optional[Annotated[dict, Field(description="x")]]) is True  # ty: ignore[missing-type-argument]
     assert is_complex_type(Annotated[str, Field(min_length=1)] | None) is False
 
 
