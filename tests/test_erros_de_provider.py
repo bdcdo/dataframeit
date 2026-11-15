@@ -489,14 +489,15 @@ def test_caixa_generica_mantem_a_moldura_alinhada(texto):
 
 def _largura_exibida(texto):
     """Colunas que o texto ocupa no terminal: largo e cheio contam 2, marca combinante 0."""
-    return sum(
-        0
-        if unicodedata.combining(char) or unicodedata.category(char) in {"Mn", "Me", "Cf", "Cc"}
-        else 2
-        if unicodedata.east_asian_width(char) in {"W", "F"}
-        else 1
-        for char in texto
-    )
+
+    def colunas(char):
+        if unicodedata.category(char) in {"Mn", "Me", "Cf", "Cc"}:
+            return 0
+        if unicodedata.east_asian_width(char) in {"W", "F"}:
+            return 2
+        return 1
+
+    return sum(map(colunas, texto))
 
 
 @pytest.mark.parametrize(
@@ -508,7 +509,13 @@ def _largura_exibida(texto):
         ("osc \x1b]sem terminador fica", "osc sem terminador fica"),
         ("byte \udcff solto", "byte solto"),
     ],
-    ids=["nfc-ansi-separador", "osc-hiperlink", "escapes-curtos", "osc-sem-terminador", "surrogate"],
+    ids=[
+        "nfc-ansi-separador",
+        "osc-hiperlink",
+        "escapes-curtos",
+        "osc-sem-terminador",
+        "surrogate",
+    ],
 )
 def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc(texto, esperado):
     mensagem = _caixa_generica(texto)
@@ -518,7 +525,7 @@ def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc(texto, esperado):
 
 
 def test_caixa_generica_alinha_o_tipo_com_nome_largo():
-    class 接続エラー(Exception):  # noqa: N801 (nome largo de propósito)
+    class 接続エラー(Exception):  # noqa: N801, PLC2401 (nome largo de propósito)
         pass
 
     linhas = get_friendly_error_message(接続エラー("falhou"), "openai").splitlines()

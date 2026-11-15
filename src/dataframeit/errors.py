@@ -859,13 +859,14 @@ def _box_text(text: str) -> str:
     """Texto para a moldura: em NFC, sem escape do terminal e sem caractere de controle.
 
     O espaço Unicode, que inclui os separadores de linha que o splitlines parte
-    (U+2028, U+2029, U+0085), vira espaço; os demais caracteres de controle e
-    de formatação, que o terminal não mostra ou mostra com largura imprevisível,
-    saem, como o surrogate solto, que o print não codifica em UTF-8.
+    (U+2028, U+2029, U+0085), fica, e o split de _wrap_display o troca pelo
+    espaço entre as palavras; os demais caracteres de controle e de formatação,
+    que o terminal não mostra ou mostra com largura imprevisível, saem, como o
+    surrogate solto, que o print não codifica em UTF-8.
     """
     text = _TERMINAL_ESCAPE.sub("", unicodedata.normalize("NFC", text))
     return "".join(
-        " " if char.isspace() else char
+        char
         for char in text
         if char.isspace() or unicodedata.category(char) not in {"Cc", "Cf", "Cs"}
     )
