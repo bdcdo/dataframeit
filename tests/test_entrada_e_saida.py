@@ -15,7 +15,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, Strict, create_model
+from pydantic import BaseModel, ConfigDict, Field, Strict, create_model, model_serializer
 from pydantic_core import core_schema
 from typing_extensions import TypeAliasType
 
@@ -552,6 +552,82 @@ def test_busca_por_campo_nao_grava_o_campo_com_exclude():
     assert llm.call_count == 2
     assert resultado["categoria"].tolist() == ["llm-categoria"]
     assert resultado["anotacao"].tolist() == ["nota humana"]
+
+
+class ModeloComExcludeIf(BaseModel):
+    categoria: str
+    anotacao: str = Field(exclude_if=lambda valor: valor == "")
+
+
+class ModeloComSerializador(BaseModel):
+    categoria: str
+    interno: str
+
+    @model_serializer(mode="wrap")
+    def _sem_interno(self, handler):
+        dados = handler(self)
+        dados.pop("interno", None)
+        return dados
+
+
+def _rodar_com_dump(entrada, modelo, respostas, *, por_campo, **opcoes):
+    """Roda com as `respostas` por campo, passadas pelo model_dump do modelo de cada chamada."""
+
+    def responde(text, model, *args, **kwargs):
+        valores = {campo: respostas[campo] for campo in model.model_fields}
+        return {"data": model(**valores).model_dump(by_alias=False), "usage": {}}
+
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=responde),
+        patch("dataframeit.core.call_langchain", side_effect=responde),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        return dataframeit(
+            entrada,
+            questions=modelo,
+            prompt="Analise {texto}",
+            use_search=por_campo,
+            search_per_field=por_campo,
+            track_tokens=False,
+            **opcoes,
+        )
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+def test_campo_que_o_model_serializer_tira_nao_e_gravado(por_campo):
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloComSerializador,
+        {"categoria": "llm", "interno": "llm-interno"},
+        por_campo=por_campo,
+    )
+
+    assert resultado["categoria"].tolist() == ["llm"]
+    assert resultado["interno"].tolist() == [None]
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+def test_campo_que_o_exclude_if_tira_mantem_o_valor_no_reprocessamento(por_campo):
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "categoria": ["velha"],
+            "anotacao": ["anterior"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado = _rodar_com_dump(
+        entrada,
+        ModeloComExcludeIf,
+        {"categoria": "nova", "anotacao": ""},
+        por_campo=por_campo,
+        reprocess_columns=["categoria", "anotacao"],
+    )
+
+    assert resultado["categoria"].tolist() == ["nova"]
+    assert resultado["anotacao"].tolist() == ["anterior"]
 
 
 def test_retomada_do_checkpoint_com_coluna_de_campo_com_exclude_segue(tmp_path):

@@ -277,6 +277,31 @@ def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     )
 
 
+def _dropped_by_model_serializer(
+    model: type[BaseModel], excluded_fields: frozenset[str]
+) -> frozenset[str]:
+    """Os campos que o @model_serializer do modelo tira do dump.
+
+    O serializador recebe a instância com None em todos os campos, e o campo
+    que falta no dump dela é o que ele tira sem olhar a resposta. O que ele
+    tira só com alguns valores não se separa assim e é conferido como os
+    outros; o serializador ou o model_post_init que cai com None não tira
+    nenhum. O campo com exclude=True não chega ao serializador e não conta.
+    Os avisos do pydantic sobre o None num campo de outro tipo não saem ao
+    usuário.
+    """
+    if not model.__pydantic_decorators__.model_serializers:
+        return frozenset()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            probe = model.model_construct(**dict.fromkeys(model.model_fields, None))
+            dumped = probe.model_dump(by_alias=False).keys()
+    except Exception:  # noqa: BLE001 (o serializador e o model_post_init são do usuário e podem cair com o None)
+        return frozenset()
+    return frozenset(model.model_fields) - dumped - excluded_fields
+
+
 def _keeps_nan(annotation: object) -> bool:
     """Se a coluna do campo guarda o NaN como valor: a anotação admite float e não é estrutura.
 
