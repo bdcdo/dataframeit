@@ -411,9 +411,9 @@ def test_tool_lists_find_tool_offered_by_runtime(tmp_path, monkeypatch):
     modelo de cada forma de request: com `use_responses_lite`, as ferramentas
     vão num item `additional_tools` do `input`; sem, na chave `tools` do topo.
     """
-    override = "features.view_image=false"
-    assert override in _CODEX_CONFIG_OVERRIDES
-    overrides = tuple(item for item in _CODEX_CONFIG_OVERRIDES if item != override)
+    view_image = "features.view_image=false"
+    assert view_image in _CODEX_CONFIG_OVERRIDES
+    overrides = tuple(item for item in _CODEX_CONFIG_OVERRIDES if item != view_image)
     one_per_shape = {}
     for model in _bundled_models(tmp_path):
         one_per_shape.setdefault(bool(model.get("use_responses_lite")), model["slug"])
