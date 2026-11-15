@@ -374,10 +374,10 @@ def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], o
     A execução passa às condições o model_dump da resposta validada pelo
     modelo do campo, e o checkpoint grava a data, o Decimal e a chave de dict
     como texto. Validado de novo sem strict, como em `_validate_row`, o valor
-    volta ao tipo do campo, e só substitui o relido quando diz o mesmo
-    (`_same_value`): um validador que muda o valor a cada passada não roda
-    duas vezes. O campo com exclude=True, que o dump deixa de fora, a execução
-    viu como None.
+    volta ao tipo do campo, e só substitui o relido onde diz o mesmo
+    (`_validated_where_same`): o item que um validador muda a cada passada
+    fica como foi relido. O campo com exclude=True, que o dump deixa de fora,
+    a execução viu como None.
     """
     from .agent import _field_model  # noqa: PLC0415 (ver _provider_backend)
 
@@ -398,7 +398,7 @@ def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], o
             )
         except ValidationError:
             return value
-        return validated if _same_value(validated, value) else value
+        return _validated_where_same(validated, value)
 
     return convert
 
@@ -670,9 +670,9 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         # O arquivo não guarda o tipo de todo valor (ver _validate_row). O
         # model_dump da linha validada traz o tipo declarado de volta, com o
         # contexto da linha inteira para os validadores. Ele só substitui o
-        # valor relido quando diz o mesmo (_same_value): a volta muda o tipo,
-        # nunca o conteúdo. Um validador que muda o valor de novo deixa o
-        # valor como foi relido.
+        # valor relido onde diz o mesmo (_validated_where_same): a volta muda
+        # o tipo, nunca o conteúdo. O item que um validador muda de novo fica
+        # como foi relido.
         for field_name, value in projected.items():
             if field_name not in validated_data:
                 continue
@@ -686,8 +686,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 and validated == value
             ):
                 continue
+            # O validado que diz o mesmo é gravado mesmo quando é o próprio
+            # valor relido: a célula guarda o Timestamp, e o valor relido, o
+            # datetime que a validação devolve.
             if _same_value(validated, value):
                 values_to_fill[(position, field_name)] = validated
+            elif (converted := _validated_where_same(validated, value)) is not value:
+                values_to_fill[(position, field_name)] = converted
 
     ordered_incompatible = [field for field in expected_columns if field in incompatible_fields]
     return ordered_incompatible, values_to_fill
@@ -797,6 +802,45 @@ def _same_json(left: object, right: object) -> bool:
         return json.dumps(left, default=_json_default) == json.dumps(right, default=_json_default)
     except (TypeError, ValueError, RecursionError):
         return False
+
+
+def _validated_where_same(
+    validated: object, value: object, same: Callable[[object, object], bool] = _same_value
+) -> object:
+    """O valor validado onde diz o mesmo que o relido, e o relido no resto.
+
+    Desce pelo dict, pela lista e pela tupla de mesmo tamanho dos dois lados,
+    item a item e chave a chave na ordem em que vieram: um validador que muda
+    um item a cada passada deixa só esse item como relido, e a data ao lado
+    dele volta ao tipo do campo. O valor do campo se compara por `same`
+    (`_same_value`), e os itens, que o checkpoint grava em JSON, pelo texto
+    JSON (`_same_json`), que distingue 1 de 1.0. A chave precisa dizer o
+    mesmo como chave JSON, como a int que o checkpoint grava como texto. Sem
+    a mesma forma dos dois lados, devolve o próprio `value`.
+    """
+    if same(validated, value):
+        return validated
+    if isinstance(validated, dict) and isinstance(value, dict) and len(validated) == len(value):
+        if not all(
+            _same_json({key: None}, {read_key: None})
+            for key, read_key in zip(validated, value, strict=True)
+        ):
+            return value
+        return {
+            key: _validated_where_same(item, read, _same_json)
+            for (key, item), read in zip(validated.items(), value.values(), strict=True)
+        }
+    if (
+        isinstance(validated, (list, tuple))
+        and isinstance(value, (list, tuple))
+        and len(validated) == len(value)
+    ):
+        items = [
+            _validated_where_same(item, read, _same_json)
+            for item, read in zip(validated, value, strict=True)
+        ]
+        return tuple(items) if isinstance(validated, tuple) else items
+    return value
 
 
 def _apply_processed_values(
