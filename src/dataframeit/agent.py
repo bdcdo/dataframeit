@@ -82,6 +82,14 @@ def _query_model(name: str, fields: dict[str, tuple]) -> type[BaseModel]:
     return create_model(name, **fields)  # ty: ignore[no-matching-overload]
 
 
+def _field_model(owner: type[BaseModel], field_name: str) -> type[BaseModel]:
+    """O modelo com só o campo `field_name` de `owner`, com que a extração por campo o pede."""
+    return _query_model(
+        f"{owner.__name__}_{field_name}",
+        {field_name: _llm_field_spec(owner.model_fields[field_name], owner)},
+    )
+
+
 def _llm_field(field_info: FieldInfo) -> FieldInfo:
     """Cópia do FieldInfo sem as chaves de configuração da biblioteca.
 
@@ -732,10 +740,7 @@ class _FieldExtractor:
     def _field_request(self, field_name: str) -> tuple[type[BaseModel], str, LLMConfig]:
         field_info = self.pydantic_model.model_fields[field_name]
         field_config = self.field_configs[field_name]
-        model = _query_model(
-            f"{self.pydantic_model.__name__}_{field_name}",
-            {field_name: _llm_field_spec(field_info, self.pydantic_model)},
-        )
+        model = _field_model(self.pydantic_model, field_name)
         prompt = _build_field_prompt(
             self.user_prompt, field_name, field_info.description, field_config
         )

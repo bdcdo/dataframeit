@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel, Field, create_model
+from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, create_model
 from pydantic.json_schema import JsonDict
 
 from dataframeit import ProviderUsageLimitError, dataframeit, field_condition
@@ -32,7 +32,7 @@ from dataframeit.conditional import (
     should_skip_field,
     topological_sort,
 )
-from dataframeit.core import _validate_processed_rows
+from dataframeit.core import _executed_form, _validate_processed_rows
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 
 
@@ -1719,9 +1719,18 @@ class _ComListaDeSubmodelo(BaseModel):
     cpf: str = Field(json_schema_extra={"condition": {"field": "itens", "equals": [{"tag": "pf"}]}})
 
 
-def _rodar_com_parada(modelo, parar_em=None, **kwargs):
-    """Roda dataframeit por campo em duas linhas; a cota acaba ao chegar em `parar_em`."""
-    resposta = {"tags": ["pf"], "itens": [{"tag": "pf"}], "cpf": "123"}
+def _rodar_com_parada(modelo, parar_em=None, df=None, **kwargs):
+    """Roda dataframeit por campo em `df`, ou em duas linhas; a cota acaba ao chegar em `parar_em`."""
+    resposta = {
+        "tags": ["pf"],
+        "itens": [{"tag": "pf"}],
+        "data": dt.date(2024, 1, 1),
+        "datas": [dt.date(2024, 1, 1)],
+        "valores": [Decimal("1.5")],
+        "valor": Decimal("0.1"),
+        "mapa": {1: "a"},
+        "cpf": "123",
+    }
 
     def call_agent(text, model, *args, **kw):
         if text == parar_em:
@@ -1738,7 +1747,7 @@ def _rodar_com_parada(modelo, parar_em=None, **kwargs):
     ):
         warnings.simplefilter("ignore")
         return dataframeit(
-            pd.DataFrame({"texto": ["a", "b"]}),
+            pd.DataFrame({"texto": ["a", "b"]}) if df is None else df,
             questions=modelo,
             prompt="{texto}",
             use_search=True,
@@ -1766,3 +1775,138 @@ def test_condicao_sobre_colecao_de_enum_extrai_o_campo_na_execucao_e_na_retomada
 
     assert direta["cpf"].tolist() == ["123", "123"]
     assert retomada["cpf"].tolist() == ["123", "123"]
+
+
+class _ComData(BaseModel):
+    data: dt.date
+    cpf: str = Field(json_schema_extra={"condition": {"field": "data", "equals": "2024-01-01"}})
+
+
+class _ComListaDeData(BaseModel):
+    datas: list[dt.date]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "datas", "equals": ["2024-01-01"]}})
+
+
+class _ComListaDeDecimal(BaseModel):
+    valores: list[Decimal]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "valores", "equals": ["1.5"]}})
+
+
+class _ComDictDeChaveInteira(BaseModel):
+    mapa: dict[int, str]
+    cpf: str = Field(json_schema_extra={"condition": {"field": "mapa", "equals": {"1": "a"}}})
+
+
+# O operando Decimal não é JsonValue, o tipo que o pydantic declara.
+_DIFERENTE_DE_UM_DECIMO: Any = {"field": "valor", "not_equals": Decimal("0.1")}
+
+
+class _ComDecimal(BaseModel):
+    valor: Decimal
+    cpf: str = Field(json_schema_extra={"condition": _DIFERENTE_DE_UM_DECIMO})
+
+
+class _ComCondicaoCallableSobreData(BaseModel):
+    data: dt.date
+    cpf: str = Field(
+        json_schema_extra=field_condition(
+            lambda dados: dados["data"] != dt.date(2024, 1, 1), depends_on="data"
+        )
+    )
+
+
+@pytest.mark.parametrize("formato", ["csv", "parquet"])
+@pytest.mark.parametrize(
+    "modelo",
+    [
+        _ComData,
+        _ComListaDeData,
+        _ComListaDeDecimal,
+        _ComDecimal,
+        _ComDictDeChaveInteira,
+        _ComCondicaoCallableSobreData,
+    ],
+)
+def test_condicao_sobre_valor_gravado_como_texto_pula_o_campo_na_execucao_e_na_retomada(
+    modelo, formato, tmp_path
+):
+    """A data, o Decimal e a chave inteira chegam à condição no tipo do campo nos dois caminhos.
+
+    O checkpoint os grava como texto. Na execução, a condição é falsa e o cpf
+    fica None; relido, o valor passa pelo modelo do campo antes da condição, e
+    a retomada também pula o cpf, sem acusar a linha nem restaurar texto vazio.
+    """
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+    checkpoint = tmp_path / f"checkpoint.{formato}"
+
+    direta = _rodar_com_parada(modelo)
+    _rodar_com_parada(modelo, parar_em="b", checkpoint_path=checkpoint, batch_size=1)
+    retomada = _rodar_com_parada(modelo, checkpoint_path=checkpoint, batch_size=1)
+
+    assert direta["cpf"].tolist() == [None, None]
+    assert retomada["cpf"].tolist() == [None, None]
+
+
+class _ComValidadorEExcluido(BaseModel):
+    data: dt.date
+    tag: Annotated[str, AfterValidator(lambda texto: texto + "!")]
+    valor: Decimal
+    nota: Annotated[str, BeforeValidator(lambda valor: valor.strip())] = Field("x", exclude=True)
+
+
+@pytest.mark.parametrize(
+    ("campo", "relido", "esperado"),
+    [
+        ("data", "2024-01-01", dt.date(2024, 1, 1)),
+        # O CSV relê o Decimal como float.
+        ("valor", 0.1, Decimal("0.1")),
+        # O valor que o tipo recusa vai como foi relido.
+        ("data", "não é data", "não é data"),
+        # O validador que muda o valor a cada passada não roda de novo.
+        ("tag", "pf!", "pf!"),
+        # O campo com exclude=True é None para a execução, e a célula nem é validada.
+        ("nota", 3, None),
+        ("data", None, None),
+    ],
+)
+def test_valor_relido_chega_a_condicao_na_forma_da_execucao(campo, relido, esperado):
+    """Cada valor relido é convertido à forma em que a execução o passa às condições."""
+    assert _executed_form(_ComValidadorEExcluido)(campo, relido) == esperado
+
+
+@pytest.mark.parametrize(
+    ("tipo", "relido", "operando"),
+    [
+        (dt.date, "2024-01-01", dt.date(2024, 1, 1)),
+        (Decimal, 0.1, Decimal("0.1")),
+    ],
+)
+def test_reprocessamento_passa_a_condicao_o_valor_ja_gravado_no_tipo_do_campo(
+    tipo, relido, operando
+):
+    """No reprocess_columns, o valor relido em outro tipo chega à condição no tipo do campo.
+
+    A linha é recusada pelo cpf ausente com a condição verdadeira, e a célula
+    do valor fica como foi relida; a condição do reprocessamento a vê no tipo
+    do campo.
+    """
+    # O operando date ou Decimal não é JsonValue, o tipo que o pydantic declara.
+    condicao: Any = {"field": "valor", "equals": operando}
+    modelo = create_model(
+        "ComOperandoTipado",
+        valor=(tipo, ...),
+        cpf=(str, Field(json_schema_extra={"condition": condicao})),
+    )
+    df = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "valor": [relido],
+            "cpf": [None],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado = _rodar_com_parada(modelo, df=df, resume=True, reprocess_columns=["cpf"])
+
+    assert resultado["cpf"].tolist() == ["123"]

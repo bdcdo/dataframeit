@@ -223,19 +223,18 @@ def get_nested_value(data: dict[str, Any], field_path: str) -> Any:  # noqa: ANN
 
 
 def _by_value(value: object) -> object:
-    """O valor na forma em que a retomada o relê do checkpoint.
+    """O valor na forma em que o checkpoint o grava.
 
-    Na execução, o campo chega à condição pelo `model_dump` da resposta, com o
-    membro de Enum como membro e a coleção no tipo do campo (tupla, conjunto,
-    deque). Relido do checkpoint, que grava a estrutura em JSON
-    (`_json_default`), o membro chega como o valor dele e a coleção, como lista
-    ou dict. Levados o campo e o operando a essa forma, a condição dá o mesmo
-    resultado nos dois caminhos, com o operando escrito como valor ou como
-    membro. A conversão desce pelos itens e pelos valores do dict, a forma em
-    que o submodelo chega.
+    O campo chega à condição pelo `model_dump` da resposta, com o membro de
+    Enum como membro e a coleção no tipo do campo (tupla, conjunto, deque).
+    O checkpoint grava a estrutura em JSON (`_json_default`), com o membro
+    pelo valor e a coleção como lista ou dict. Levados o campo e o operando a
+    essa forma, a condição vale com o operando escrito como valor ou como
+    membro, e com a coleção escrita como lista. A conversão desce pelos itens
+    e pelos valores do dict, a forma em que o submodelo chega.
 
     O conjunto sai na ordem fixa do `_json_default`, e por isso é igual ao
-    conjunto do operando em qualquer ordem e à lista relida.
+    conjunto do operando em qualquer ordem.
     """
     if isinstance(value, Enum):
         return value.value
