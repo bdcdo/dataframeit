@@ -4,20 +4,20 @@ This guide shows you how to use DataFrameIt in 5 minutes.
 
 ## Step 1: Define your Pydantic Model
 
-The Pydantic model defines the structure of data you want to extract:
+The Pydantic model defines the structure of the data you want to extract from each text:
 
 ```python
-from pydantic import BaseModel, Field
 from typing import Literal
 
-class Sentiment(BaseModel):
-    """Sentiment analysis of a text."""
-    sentiment: Literal['positive', 'negative', 'neutral'] = Field(
-        description="Overall sentiment of the text"
+from pydantic import BaseModel, Field
+
+class Decision(BaseModel):
+    """Information extracted from a ruling."""
+    defendant: str = Field(description="Name of the defendant")
+    defendant_type: Literal['public', 'private'] = Field(
+        description="Whether the defendant is a public body or a private party"
     )
-    confidence: Literal['high', 'medium', 'low'] = Field(
-        description="Confidence level in the classification"
-    )
+    outcome: Literal['granted', 'partially granted', 'denied']
 ```
 
 !!! tip "Tip"
@@ -33,11 +33,15 @@ DataFrameIt accepts various input types:
     import pandas as pd
 
     df = pd.DataFrame({
-        'text': [
-            'Excellent product! Exceeded expectations.',
-            'Terrible service, never buying again.',
-            'Delivery ok, average product.'
-        ]
+        'case_number': ['0001234-56.2024.8.26.0100', '0004567-89.2024.8.26.0053', '0007890-12.2024.8.26.0114'],
+        'ruling': [
+            'Maria Souza sues Banco Alfa S.A. over an undue charge. '
+            'The claim is GRANTED and the defendant must pay R$ 5,000.00 in moral damages.',
+            'José Lima asks the State of São Paulo to supply the prescribed drug. '
+            'The claim is PARTIALLY GRANTED, only for the generic version.',
+            'Ana Costa seeks damages from the Municipality of Campinas after falling into a pothole. '
+            'There is no proof of harm. The claim is DENIED.',
+        ],
     })
     ```
 
@@ -45,9 +49,12 @@ DataFrameIt accepts various input types:
 
     ```python
     texts = [
-        'Excellent product! Exceeded expectations.',
-        'Terrible service, never buying again.',
-        'Delivery ok, average product.'
+        'Maria Souza sues Banco Alfa S.A. over an undue charge. '
+        'The claim is GRANTED and the defendant must pay R$ 5,000.00 in moral damages.',
+        'José Lima asks the State of São Paulo to supply the prescribed drug. '
+        'The claim is PARTIALLY GRANTED, only for the generic version.',
+        'Ana Costa seeks damages from the Municipality of Campinas after falling into a pothole. '
+        'There is no proof of harm. The claim is DENIED.',
     ]
     ```
 
@@ -55,9 +62,18 @@ DataFrameIt accepts various input types:
 
     ```python
     texts = {
-        'review_001': 'Excellent product! Exceeded expectations.',
-        'review_002': 'Terrible service, never buying again.',
-        'review_003': 'Delivery ok, average product.'
+        '0001234-56.2024.8.26.0100': (
+            'Maria Souza sues Banco Alfa S.A. over an undue charge. '
+            'The claim is GRANTED and the defendant must pay R$ 5,000.00 in moral damages.'
+        ),
+        '0004567-89.2024.8.26.0053': (
+            'José Lima asks the State of São Paulo to supply the prescribed drug. '
+            'The claim is PARTIALLY GRANTED, only for the generic version.'
+        ),
+        '0007890-12.2024.8.26.0114': (
+            'Ana Costa seeks damages from the Municipality of Campinas after falling into a pothole. '
+            'There is no proof of harm. The claim is DENIED.'
+        ),
     }
     ```
 
@@ -67,9 +83,11 @@ DataFrameIt accepts various input types:
 from dataframeit import dataframeit
 
 result = dataframeit(
-    df,                                      # Your data
-    Sentiment,                               # Pydantic model
-    "Analyze the sentiment of the text."     # Prompt
+    df,                                          # Your data
+    Decision,                                    # Pydantic model
+    "Extract the information from the ruling.",  # Prompt
+    provider='openai',                           # the default; or 'google_genai', 'anthropic', 'groq'
+    text_column='ruling',                        # the column with the text to analyze
 )
 
 print(result)
@@ -77,39 +95,53 @@ print(result)
 
 **Output:**
 
-```
-                                        text sentiment confidence
-0  Excellent product! Exceeded expectations.  positive       high
-1      Terrible service, never buying again.  negative       high
-2               Delivery ok, average product.   neutral     medium
-```
+| case_number | ruling | defendant | defendant_type | outcome |
+|-------------|--------|-----------|----------------|---------|
+| 0001234-56.2024.8.26.0100 | Maria Souza sues... | Banco Alfa S.A. | private | granted |
+| 0004567-89.2024.8.26.0053 | José Lima asks... | State of São Paulo | public | partially granted |
+| 0007890-12.2024.8.26.0114 | Ana Costa seeks... | Municipality of Campinas | public | denied |
+
+Without `text_column`, dataframeit looks for the text column among a few common names and raises `ValueError` when a DataFrame with several columns has none of them ([FAQ](../guides/faq.md#valueerror-about-the-text-column)). A list or a dictionary has no column to choose, and the call does without `text_column`.
 
 With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out above; see [Added Columns](../reference/api.md#added-columns).
 
 ## Complete Example
 
 ```python
-from pydantic import BaseModel, Field
 from typing import Literal
+
 import pandas as pd
+from pydantic import BaseModel, Field
+
 from dataframeit import dataframeit
 
 # 1. Pydantic Model
-class Sentiment(BaseModel):
-    sentiment: Literal['positive', 'negative', 'neutral']
-    confidence: Literal['high', 'medium', 'low']
+class Decision(BaseModel):
+    defendant: str = Field(description="Name of the defendant")
+    defendant_type: Literal['public', 'private'] = Field(description="Whether the defendant is a public body or a private party")
+    outcome: Literal['granted', 'partially granted', 'denied']
 
 # 2. Data
 df = pd.DataFrame({
-    'text': [
-        'Excellent product! Exceeded expectations.',
-        'Terrible service, never buying again.',
-        'Delivery ok, average product.'
-    ]
+    'case_number': ['0001234-56.2024.8.26.0100', '0004567-89.2024.8.26.0053', '0007890-12.2024.8.26.0114'],
+    'ruling': [
+        'Maria Souza sues Banco Alfa S.A. over an undue charge. '
+        'The claim is GRANTED and the defendant must pay R$ 5,000.00 in moral damages.',
+        'José Lima asks the State of São Paulo to supply the prescribed drug. '
+        'The claim is PARTIALLY GRANTED, only for the generic version.',
+        'Ana Costa seeks damages from the Municipality of Campinas after falling into a pothole. '
+        'There is no proof of harm. The claim is DENIED.',
+    ],
 })
 
 # 3. Process
-result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.")
+result = dataframeit(
+    df,
+    Decision,
+    "Extract the information from the ruling.",
+    provider='openai',
+    text_column='ruling',
+)
 
 # 4. Save
 result.to_excel('result.xlsx', index=False)

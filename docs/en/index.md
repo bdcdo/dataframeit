@@ -25,18 +25,52 @@
 DataFrameIt processes text in DataFrames using **Large Language Models (LLMs)** and extracts structured information defined by **Pydantic models**. One function, one model and one prompt are all you need.
 
 ```python
-from pydantic import BaseModel
 from typing import Literal
+
 import pandas as pd
+from pydantic import BaseModel, Field
+
 from dataframeit import dataframeit
 
-class Sentiment(BaseModel):
-    sentiment: Literal['positive', 'negative', 'neutral']
-    confidence: Literal['high', 'medium', 'low']
+# 1. Define what to extract from each decision
+class Decision(BaseModel):
+    defendant: str = Field(description="Name of the defendant")
+    defendant_type: Literal['public', 'private'] = Field(description="Whether the defendant is a public body or a private party")
+    outcome: Literal['granted', 'partially granted', 'denied']
 
-df = pd.DataFrame({'text': ['Excellent product!', 'Terrible service.']})
-result = dataframeit(df, Sentiment, "Analyze the sentiment of the text.")
+# 2. Your data: one decision per row
+df = pd.DataFrame({
+    'case_number': ['0001234-56.2024.8.26.0100', '0004567-89.2024.8.26.0053', '0007890-12.2024.8.26.0114'],
+    'ruling': [
+        'Maria Souza sues Banco Alfa S.A. over an undue charge. '
+        'The claim is GRANTED and the defendant must pay R$ 5,000.00 in moral damages.',
+        'José Lima asks the State of São Paulo to supply the prescribed drug. '
+        'The claim is PARTIALLY GRANTED, only for the generic version.',
+        'Ana Costa seeks damages from the Municipality of Campinas after falling into a pothole. '
+        'There is no proof of harm. The claim is DENIED.',
+    ],
+})
+
+# 3. Process!
+result = dataframeit(
+    df,
+    Decision,
+    "Extract the information from the ruling.",
+    provider='openai',     # the default; or 'google_genai', 'anthropic', 'groq'
+    text_column='ruling',  # the column with the text to analyze
+)
+print(result)
 ```
+
+**Output:**
+
+| case_number | ruling | defendant | defendant_type | outcome |
+|-------------|--------|-----------|----------------|---------|
+| 0001234-56.2024.8.26.0100 | Maria Souza sues... | Banco Alfa S.A. | private | granted |
+| 0004567-89.2024.8.26.0053 | José Lima asks... | State of São Paulo | public | partially granted |
+| 0007890-12.2024.8.26.0114 | Ana Costa seeks... | Municipality of Campinas | public | denied |
+
+Without `text_column`, dataframeit looks for the text column among a few common names and raises `ValueError` when a DataFrame with several columns has none of them ([FAQ](guides/faq.md#valueerror-about-the-text-column)). With `track_tokens=True`, the default, the output also has the token usage columns `_input_tokens`, `_cached_input_tokens`, `_output_tokens` and `_reasoning_tokens`, left out of the table above.
 
 ## Features
 
