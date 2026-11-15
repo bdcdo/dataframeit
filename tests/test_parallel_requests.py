@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit import ProviderOverloadedError, core
 from dataframeit.core import dataframeit
@@ -440,6 +441,7 @@ def test_rate_limit_baixa_o_teto_da_reposicao(monkeypatch):
 class _ErroIlegivel(Exception):
     """Erro cujo texto não pode ser montado, como o de um SDK com __str__ quebrado."""
 
+    @override
     def __str__(self):
         msg = "sem texto"
         raise RuntimeError(msg)
@@ -532,6 +534,7 @@ def test_falha_fora_do_tratamento_da_linha_marca_a_linha_no_paralelo():
 
 def test_texto_do_erro_sem_str_nem_repr_fica_so_com_o_tipo():
     class _ErroMudo(_ErroIlegivel):
+        @override
         def __repr__(self):
             msg = "sem repr"
             raise RuntimeError(msg)

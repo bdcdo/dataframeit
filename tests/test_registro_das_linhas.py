@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit import ProviderAbortError, ProviderOverloadedError, core
 from dataframeit.core import dataframeit
@@ -24,6 +25,7 @@ class Modelo(BaseModel):
 
 
 class _ErroIlegivel(Exception):
+    @override
     def __str__(self):
         msg = "sem texto"
         raise RuntimeError(msg)
@@ -237,6 +239,7 @@ class _Coletor(logging.Handler):
         super().__init__()
         self.registros = []
 
+    @override
     def emit(self, record):
         self.registros.append(record)
 

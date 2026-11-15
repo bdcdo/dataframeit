@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit import codex as codex_provider
 from dataframeit import dataframeit
@@ -120,8 +121,8 @@ def _feature_states(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     command = [os.fspath(bundled_codex_path())]
-    for override in _CODEX_CONFIG_OVERRIDES:
-        command += ["-c", override]
+    for config_override in _CODEX_CONFIG_OVERRIDES:
+        command += ["-c", config_override]
     command += ["features", "list"]
     env = {
         **os.environ,
@@ -178,9 +179,9 @@ def test_disabled_features_exist_in_bundled_runtime(tmp_path):
     """
     states = _feature_states(tmp_path)
     disabled = [
-        override.removeprefix("features.").removesuffix("=false")
-        for override in _CODEX_CONFIG_OVERRIDES
-        if override.startswith("features.")
+        config_override.removeprefix("features.").removesuffix("=false")
+        for config_override in _CODEX_CONFIG_OVERRIDES
+        if config_override.startswith("features.")
     ]
 
     assert disabled
@@ -251,7 +252,8 @@ class _RecordingProvider(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"error":{"message":"mock","type":"invalid_request_error"}}')
 
-    def log_message(self, format, *args):  # noqa: A002 (nome do parâmetro da classe base)
+    @override
+    def log_message(self, format, *args):
         pass
 
 
@@ -718,7 +720,8 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
             self.wfile.write(_evento_sse(evento))
             self.wfile.flush()
 
-    def log_message(self, format, *args):  # noqa: A002 (nome do parâmetro da classe base)
+    @override
+    def log_message(self, format, *args):
         pass
 
 

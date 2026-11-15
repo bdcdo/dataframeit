@@ -33,7 +33,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic.alias_generators import to_camel
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, override
 
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
@@ -2182,6 +2182,7 @@ class PosInitQueCaiComNone(BaseModel):
     outro: str
     obs: str
 
+    @override
     def model_post_init(self, context):
         self.outro.strip()
 

@@ -61,6 +61,8 @@ dependencies = [
     "pandas>=2.1.2",
     "pydantic>=2.12",
     "tqdm>=4.1.0",
+    # `override` para Python 3.11; o piso é o que o pydantic 2.12 já exige.
+    "typing-extensions>=4.14.1",
 ]
 
 [project.optional-dependencies]
@@ -229,6 +231,9 @@ include = ["src", "tests"]
 # Genérico sem argumento (`dict`, `list`) vira `dict[Unknown, Unknown]`, e o ty
 # deixa de conferir o que entra e sai do valor.
 missing-type-argument = "error"
+# Método que sobrescreve outro sem `@override`: a classe base que renomeia ou
+# remove o método deixa a sobrescrita órfã sem que o ty perceba.
+missing-override-decorator = "error"
 
 [tool.vulture]
 paths = ["src"]

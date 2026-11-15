@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, ValidationError, create_model
+from typing_extensions import override
 
 from dataframeit import dataframeit
 from dataframeit.claude_code import _raise_for_result_error
@@ -128,6 +129,7 @@ class TestFriendlyAuthErrorWithoutEnvVar:
 class _ResultadoQueFalhaAoAnotar(dict[str, Any]):
     """Dict cuja gravação de chave levanta um erro transitório."""
 
+    @override
     def __setitem__(self, chave, valor):
         msg = "falha ao anotar o resultado"
         raise ProviderTransientError(msg)

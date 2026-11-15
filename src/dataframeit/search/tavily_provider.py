@@ -16,6 +16,7 @@ import warnings
 from typing import Any, Literal, TypeVar
 
 from langchain_core.tools import BaseTool, ToolException
+from typing_extensions import override
 
 from .base import SearchProvider, register_provider, search_failure
 
@@ -53,46 +54,55 @@ class TavilyProvider(SearchProvider):
     """Implementação do provedor de busca Tavily."""
 
     @property
+    @override
     def name(self) -> str:
         """Identificador do provedor."""
         return "tavily"
 
     @property
+    @override
     def env_var(self) -> str:
         """Variável de ambiente da API key."""
         return "TAVILY_API_KEY"
 
     @property
+    @override
     def package_name(self) -> str:
         """Módulo Python da integração LangChain."""
         return "langchain_tavily"
 
     @property
+    @override
     def install_name(self) -> str:
         """Nome do pacote para pip install."""
         return "langchain-tavily"
 
     @property
+    @override
     def signup_url(self) -> str:
         """Página para criar conta e obter a API key."""
         return "https://app.tavily.com"
 
     @property
+    @override
     def friendly_name(self) -> str:
         """Nome exibido nas mensagens de erro."""
         return "Tavily Search"
 
     @property
+    @override
     def free_tier(self) -> str:
         """Plano de entrada, exibido na mensagem de API key ausente."""
         return "1000 buscas/mês"
 
     @property
+    @override
     def requests_per_minute(self) -> int:
         """Limite aproximado de requisições por minuto."""
         # Plano gratuito/básico
         return 100
 
+    @override
     def create_tool(
         self,
         max_results: int,
@@ -133,9 +143,11 @@ class TavilyProvider(SearchProvider):
             tentar outra consulta.
             """
 
+            @override
             def _run(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 return _levantar_erro(super()._run(*args, **kwargs))
 
+            @override
             async def _arun(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 return _levantar_erro(await super()._arun(*args, **kwargs))
 
@@ -146,6 +158,7 @@ class TavilyProvider(SearchProvider):
             include_answer=False,
         )
 
+    @override
     def calculate_credits(
         self, search_count: int, search_depth: str = "basic", **kwargs: Any
     ) -> int:

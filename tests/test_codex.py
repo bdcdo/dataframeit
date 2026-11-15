@@ -26,6 +26,7 @@ import pandas as pd
 import pytest
 from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
 from pydantic.errors import PydanticInvalidForJsonSchema
+from typing_extensions import override
 
 from dataframeit import codex as codex_module
 from dataframeit.codex import (
@@ -1722,6 +1723,7 @@ class TestSchemaMalformado:
             valor: str
 
             @classmethod
+            @override
             def model_json_schema(cls, *args, **kwargs):
                 return ["não", "é", "objeto"]
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit.core import _Checkpoint, _save_checkpoint, _SnapshotWriter, dataframeit
 
@@ -722,6 +723,7 @@ def test_modelo_sem_json_schema_ainda_assina_o_checkpoint(tmp_path):
         campo1: str
 
         @classmethod
+        @override
         def model_json_schema(cls, *args, **kwargs):
             msg = "sem schema"
             raise TypeError(msg)

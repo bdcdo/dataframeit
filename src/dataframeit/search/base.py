@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from typing_extensions import override
+
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
@@ -28,6 +30,7 @@ class SearchToolError(RuntimeError):
         self.error = error
         self.status_code = status_code
 
+    @override
     def __str__(self) -> str:
         """Tipo e mensagem do erro do cliente de busca."""
         return f"{type(self.error).__name__}: {self.error}"
