@@ -95,7 +95,7 @@ class ConversionInfo:
     """Informações sobre a conversão de dados para pandas DataFrame."""
 
     original_type: str
-    original_index: pd.Index | list[Any] | None = None  # Índice/chaves originais para reconversão
+    original_index: pd.Index | list[Any] | None = None  # Índice da pandas.Series de entrada
     series_name: Hashable | None = None  # Nome original da Series (se aplicável)
     # DataFrame polars de entrada, de onde a saída tira as colunas que a execução não escreve
     polars_frame: PolarsDataFrame | None = None
@@ -204,12 +204,14 @@ def to_pandas(
         keys = list(data.keys())
         values = list(data.values())
         # tupleize_cols=False: com chaves-tupla, o pd.Index padrão criaria um
-        # MultiIndex, e a saída mudaria de forma para o usuário.
-        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=pd.Index(keys, tupleize_cols=False))
-        return df, ConversionInfo(
-            original_type=ORIGINAL_TYPE_DICT,
-            original_index=keys,
+        # MultiIndex, e a saída mudaria de forma para o usuário. O None, que o
+        # teste de mutação põe no lugar do False, também é falso.
+        index = pd.Index(
+            keys,
+            tupleize_cols=False,  # pragma: no mutate
         )
+        df = pd.DataFrame({DEFAULT_TEXT_COLUMN: values}, index=index)
+        return df, ConversionInfo(original_type=ORIGINAL_TYPE_DICT)
 
     msg = (
         f"Tipo não suportado: {type(data).__name__}. "
@@ -296,7 +298,7 @@ def _dropped_by_model_serializer(
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            probe = model.model_construct(**dict.fromkeys(model.model_fields, None))
+            probe = model.model_construct(**dict.fromkeys(model.model_fields))
             dumped = probe.model_dump(by_alias=False).keys()
     except Exception:  # noqa: BLE001 (o serializador e o model_post_init são do usuário e podem cair com o None)
         return frozenset()
@@ -418,7 +420,7 @@ def from_pandas(
                 # que não o tem, como o None. O map_elements guarda o que a função
                 # devolve, sem inspecionar.
                 items = values.tolist()
-                positions = pl.Series(col, range(len(items)), dtype=pl.Int64)
+                positions = pl.Series(col, range(len(items)))
                 columns.append(positions.map_elements(items.__getitem__, return_dtype=pl.Object))
                 as_object.append(col)
         if as_object:
@@ -427,7 +429,6 @@ def from_pandas(
                 "coluna tipada e saem com o tipo Object, com os objetos Python que o modelo "
                 "devolveu, exceto o Enum fora de lista ou dict, que sai pelo valor. Converta-as "
                 "antes de gravar em arquivo.",
-                UserWarning,
                 stacklevel=_user_stacklevel(),
             )
         return pl.DataFrame(columns)
@@ -792,7 +793,12 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
     if (origin or annotation) is dict:
         values = pd.Series(
             [
-                json.dumps(value, ensure_ascii=False, default=_json_default)
+                json.dumps(
+                    value,
+                    # O None, que o teste de mutação põe no lugar do False, também é falso.
+                    ensure_ascii=False,  # pragma: no mutate
+                    default=_json_default,
+                )
                 if isinstance(value, dict)
                 else value
                 for value in values
@@ -1202,7 +1208,13 @@ def _reread_text_columns(
     text_columns = [f for f in get_text_fields(model) if f in df.columns]
     if not text_columns:
         return
-    raw = reader(path, usecols=text_columns, dtype=str, na_filter=False)
+    # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
+    raw = reader(
+        path,
+        usecols=text_columns,  # pragma: no mutate
+        dtype=str,
+        na_filter=False,
+    )
     for col in text_columns:
         df[col] = raw[col].mask(raw[col] == "")
 
@@ -1266,16 +1278,36 @@ def _reread_int_columns(
     if not columns:
         return
     if ext == ".parquet":
-        raw = pd.read_parquet(path, columns=columns, dtype_backend="numpy_nullable")
+        # O columns só poupa a leitura das outras colunas, que a releitura não usa.
+        raw = pd.read_parquet(
+            path,
+            columns=columns,  # pragma: no mutate
+            dtype_backend="numpy_nullable",
+        )
         exact = {
             col: [None if pd.isna(v) else int(v) for v in raw[col]]
             for col in columns
             if is_integer_dtype(raw[col])
         }
     else:
-        raw = pd.read_csv(path, usecols=columns, dtype=str, na_filter=False)
+        # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
+        raw = pd.read_csv(
+            path,
+            usecols=columns,  # pragma: no mutate
+            dtype=str,
+            na_filter=False,
+        )
+        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
+        # têm o mesmo tamanho: o strict não decide nada.
         exact = {
-            col: [_int_or_read(text, read) for text, read in zip(raw[col], df[col], strict=True)]
+            col: [
+                _int_or_read(text, read)
+                for text, read in zip(
+                    raw[col],
+                    df[col],
+                    strict=True,  # pragma: no mutate
+                )
+            ]
             for col in columns
         }
     for col, values in exact.items():
