@@ -122,7 +122,9 @@ all = [
     "openpyxl>=3.1",
 ]
 dev = [
-    "pytest>=7.0",
+    # O filterwarnings = ["error"] depende de o pytest.warns devolver o aviso
+    # que não casa com o match, o que o pytest faz a partir do 8.0.
+    "pytest>=8.0",
     "pytest-cov>=4.0",
     "pytest-repeat>=0.9.4",
     "ruff>=0.16,<0.18",
@@ -265,6 +267,21 @@ DEP003 = ["codex_cli_bin", "numpy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Os ignores casam pela mensagem, sem o módulo: o pytest.warns devolve o aviso
+# que não casa com o módulo "warnings", e o filtro por módulo deixaria de valer.
+filterwarnings = [
+    "error",
+    # O langsmith, que o langchain-core instala, chama no import do seu plugin
+    # do pytest a função que o Python 3.14 depreca.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+    # No piso das dependências: o pyarrow 12 chama ao gravar parquet o
+    # is_sparse que o pandas 2.1 depreca, o claude-agent-sdk 0.1.48 deixa
+    # abertos os streams do anyio de cada consulta, e o SDK da OpenAI avisa ao
+    # serializar a resposta com o modelo no campo parsed.
+    "ignore:is_sparse is deprecated:FutureWarning",
+    "ignore:Unclosed <MemoryObject(Send|Receive)Stream:ResourceWarning",
+    "ignore:(?s)Pydantic serializer warnings.*field_name='parsed':UserWarning",
+]
 
 [tool.coverage.run]
 branch = true

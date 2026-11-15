@@ -8,6 +8,7 @@ import sys
 import threading
 import types
 import warnings
+from contextlib import nullcontext
 from dataclasses import fields, replace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -229,6 +230,13 @@ def _config_claude_code(**model_kwargs):
     )
 
 
+def _aviso_sem_retry(classe):
+    """O erro não recuperável avisa que não haverá retry; o transitório, com max_retries=1, não."""
+    if issubclass(classe, ProviderTransientError):
+        return nullcontext()
+    return pytest.warns(UserWarning, match="Erro não-recuperável detectado")
+
+
 def _chamar(config=None):
 
     return call_claude_code(
@@ -433,7 +441,7 @@ def _resultado(**campos):
 def test_result_message_com_erro_vira_erro_classificado(sdk_falso, campos, classe):
     sdk_falso["mensagens_do_sdk"] = [_resultado(is_error=True, **campos)]
 
-    with pytest.raises(classe) as erro:
+    with _aviso_sem_retry(classe), pytest.raises(classe) as erro:
         _chamar()
 
     assert type(erro.value) is classe
@@ -505,7 +513,7 @@ def test_status_do_sdk_e_normalizado_antes_de_classificar(
         )
     ]
 
-    with pytest.raises(classe) as erro:
+    with _aviso_sem_retry(classe), pytest.raises(classe) as erro:
         _chamar()
 
     assert type(erro.value) is classe
@@ -563,7 +571,8 @@ def test_custo_soma_as_tentativas_re_tentadas(sdk_falso):
         _resposta_valida(0.2),
     ]
 
-    resultado = _chamar(replace(_config_claude_code(), max_retries=2))
+    with pytest.warns(UserWarning, match="Tentativa 1/2 falhou"):
+        resultado = _chamar(replace(_config_claude_code(), max_retries=2))
     assert resultado["usage"]["cost_usd"] == pytest.approx(0.3)
 
 
@@ -571,7 +580,10 @@ def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
     sdk_falso["mensagens_do_sdk"] = [
         _resultado(is_error=True, subtype="error_max_budget_usd", total_cost_usd=0.5),
     ]
-    with pytest.raises(ProviderError) as erro:
+    with (
+        pytest.warns(UserWarning, match="Erro não-recuperável detectado"),
+        pytest.raises(ProviderError) as erro,
+    ):
         _chamar()
     # cost_usd é anexado à exceção pelo provider, fora da classe.
     assert erro.value.cost_usd == pytest.approx(0.5)  # ty: ignore[unresolved-attribute]

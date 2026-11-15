@@ -68,7 +68,10 @@ def test_uma_chamada_por_linha_em_sucesso_em_erro_e_em_texto_ausente(paralelo):
     df = pd.DataFrame({"texto": ["a", "b", None, "d"]}, index=["x", "y", "z", "w"])
     coletor = _Coletor()
 
-    with pytest.warns(UserWarning, match="sem texto"):
+    with (
+        pytest.warns(UserWarning, match="Falha ao processar linha y"),
+        pytest.warns(UserWarning, match="sem texto"),
+    ):
         saida = _roda(df, parallel_requests=paralelo, on_row_done=coletor)
 
     linhas = coletor.por_posicao()
@@ -182,9 +185,12 @@ def test_caminho_polars_entrega_o_mesmo_row_result(paralelo):
     pl = pytest.importorskip("polars")
     coletor = _Coletor()
 
-    saida = _roda(
-        pl.DataFrame({"texto": ["a", "b", "d"]}), parallel_requests=paralelo, on_row_done=coletor
-    )
+    with pytest.warns(UserWarning, match="Falha ao processar linha 1"):
+        saida = _roda(
+            pl.DataFrame({"texto": ["a", "b", "d"]}),
+            parallel_requests=paralelo,
+            on_row_done=coletor,
+        )
 
     assert isinstance(saida, pl.DataFrame)
     linhas = coletor.por_posicao()
@@ -206,6 +212,7 @@ def test_linha_cuja_gravacao_falhou_fora_do_worker_tambem_e_entregue():
     coletor = _Coletor()
     with (
         patch("dataframeit.core._record_missing_text", side_effect=gravacao_que_falha),
+        pytest.warns(UserWarning, match="sem texto não vão ao LLM"),
         pytest.warns(UserWarning, match="Falha ao processar linha 1"),
     ):
         saida = _roda(
