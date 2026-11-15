@@ -39,7 +39,7 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-from pandas.api.extensions import ExtensionArray
+from pandas.api.extensions import ExtensionArray, ExtensionDtype
 from pandas.api.types import infer_dtype, is_bool, is_scalar
 
 # O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
@@ -2817,11 +2817,13 @@ def _holds_set(name: object) -> bool:
     return isinstance(name, tuple) and any(_holds_set(item) for item in name)
 
 
-def _data_form(value: object, descent: _Descent) -> object:
+def _data_form(
+    value: pd.DataFrame | pd.Series | np.ndarray | pd.Index | ExtensionArray, descent: _Descent
+) -> object:
     """DataFrame e Series por `_table_form`; ndarray, Index e array do pandas, por `_array_form`."""
     if isinstance(value, (pd.DataFrame, pd.Series)):
         return _table_form(value, descent)
-    return _array_form(cast("np.ndarray | pd.Index | ExtensionArray", value), descent)
+    return _array_form(value, descent)
 
 
 def _table_form(value: pd.DataFrame | pd.Series, descent: _Descent) -> object:
@@ -2883,6 +2885,15 @@ def _dtype_form(dtype: object, descent: _Descent) -> object:
     return str(dtype)
 
 
+# Os tipos que o `hash_pandas_object` lê pelos valores: bool, int, uint, timedelta,
+# datetime, float e complex (o float e o complex estendidos ficam de fora, ver
+# `_extended`).
+_HASHED_KINDS = frozenset("biumMfc")
+# O maior float e o maior complex que o `hash_pandas_object` lê, em bytes.
+_FLOAT64_SIZE = np.dtype(np.float64).itemsize
+_COMPLEX128_SIZE = np.dtype(np.complex128).itemsize
+
+
 def _column_cells(column: pd.Series, descent: _Descent) -> object:
     """Células da coluna, na ordem, por um valor que não muda de um processo a outro.
 
@@ -2901,20 +2912,32 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
     """
     if isinstance(column.dtype, pd.CategoricalDtype):
         column = column.cat.codes
-    kind = column.dtype.kind
-    hashable = (kind in "biumMfc" and not _extended(column.dtype)) or infer_dtype(
-        column, skipna=False
+    hashable = (column.dtype.kind in _HASHED_KINDS and not _extended(column.dtype)) or infer_dtype(
+        column,
+        # O teste de mutação troca o False por None, que o pandas também lê como falso.
+        skipna=False,  # pragma: no mutate
     ) == "string"
     if not hashable:
         return _stable(column.tolist(), descent)
-    cells = hash_pandas_object(column, index=False).to_numpy()
+    cells = hash_pandas_object(
+        column,
+        # O teste de mutação troca o False por None, que o pandas também lê como falso.
+        index=False,  # pragma: no mutate
+    ).to_numpy()
     return hashlib.sha256(cells.tobytes()).hexdigest()
 
 
-def _extended(dtype: object) -> bool:
-    """Se o tipo é float ou complex estendido, como o `longdouble`, maior que o de 64 bits."""
-    kind, itemsize = getattr(dtype, "kind", ""), getattr(dtype, "itemsize", 0)
-    return (kind == "f" and itemsize > 8) or (kind == "c" and itemsize > 16)  # noqa: PLR2004 (float64, complex128)
+def _extended(dtype: np.dtype | ExtensionDtype) -> bool:
+    """Se o tipo é float ou complex estendido, como o `longdouble`, maior que o de 64 bits.
+
+    O tipo do pandas sem `itemsize`, como o esparso, não é estendido.
+    """
+    itemsize = getattr(dtype, "itemsize", None)
+    if itemsize is None:
+        return False
+    return (dtype.kind == "f" and itemsize > _FLOAT64_SIZE) or (
+        dtype.kind == "c" and itemsize > _COMPLEX128_SIZE
+    )
 
 
 def _stable_repr(value: object) -> str:
@@ -2951,20 +2974,21 @@ def _write_checkpoint_signature(path: Path, meta: dict[str, Any]) -> None:
     target = _signature_path(path)
     tmp = target.with_name(target.name + ".tmp")
     try:
-        tmp.write_text(json.dumps({**meta, "checkpoint": _file_hash(path)}), encoding="utf-8")
+        tmp.write_bytes(json.dumps({**meta, "checkpoint": _file_hash(path)}).encode())
         tmp.replace(target)
     except OSError as error:
         warnings.warn(
             f"Falha ao gravar a assinatura do checkpoint em {target}: {error}. "
             "O checkpoint é gravado, mas não será retomado automaticamente.",
-            UserWarning,
+            # UserWarning é também a categoria padrão, e o teste de mutação a troca à toa.
+            UserWarning,  # pragma: no mutate
             stacklevel=_user_stacklevel(),
         )
 
 
 def _read_checkpoint_signature(path: Path) -> dict[str, Any] | None:
     try:
-        meta = json.loads(_signature_path(path).read_text(encoding="utf-8"))
+        meta = json.loads(_signature_path(path).read_bytes())
     except (OSError, ValueError):
         return None
     return meta if isinstance(meta, dict) else None
