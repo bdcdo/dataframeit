@@ -122,7 +122,9 @@ def test_exa_com_credito_esgotado_levanta_provider_usage_limit_error(monkeypatch
     monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
-    with pytest.raises(ProviderUsageLimitError, match="crédito do Exa esgotado") as erro:
+    with pytest.raises(
+        ProviderUsageLimitError, match="crédito ou orçamento do Exa esgotado"
+    ) as erro:
         ferramenta.invoke({"query": "x"})
     assert erro.value.__cause__ is erro_do_cliente
     assert tag in str(erro.value)
@@ -654,7 +656,7 @@ def test_credito_esgotado_do_exa_interrompe_a_execucao(monkeypatch, paralelo):
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
-        pytest.warns(UserWarning, match=r"interrompida.*crédito do Exa esgotado"),
+        pytest.warns(UserWarning, match=r"interrompida.*crédito ou orçamento do Exa esgotado"),
     ):
         resultado = dataframeit(
             pd.DataFrame({"texto": ["a", "b", "c"]}),

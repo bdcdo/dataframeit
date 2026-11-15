@@ -106,7 +106,7 @@ class ExaProvider(SearchProvider):
                     # Import local: errors importa search no topo do módulo.
                     from dataframeit.errors import ProviderUsageLimitError  # noqa: PLC0415
 
-                    msg = f"crédito do Exa esgotado ({type(erro).__name__}: {erro})"
+                    msg = f"crédito ou orçamento do Exa esgotado ({type(erro).__name__}: {erro})"
                     raise ProviderUsageLimitError(msg) from erro
                 raise SearchToolError(provider="exa", error=erro, status_code=status) from erro
             return str(resultados)

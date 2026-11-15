@@ -596,10 +596,10 @@ def get_friendly_error_message(  # noqa: C901, PLR0911, PLR0912 (uma saída por 
     # que pode ser do modelo, não muda a caixa.
     if is_rate_limit_error(error):
         # O 429 do Tavily e do Exa chega como erro da ferramenta de busca, e a
-        # caixa nomeia o serviço que recusou. As caixas de limite de uso, mais
-        # abaixo, ficam para a cota do plano, que não é rate limit nem reduz os
-        # workers. O ProviderError vem do provider de LLM, e o texto vazio dele
-        # mantém o nome do provider.
+        # caixa nomeia o serviço que recusou. A cota de uso esgotada, que não é
+        # rate limit nem reduz os workers, saiu acima, na caixa de cota. O
+        # ProviderError vem do provider de LLM, e o texto vazio dele mantém o
+        # nome do provider.
         service = "Tavily" if is_tavily else "Exa" if is_exa else provider_name
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
