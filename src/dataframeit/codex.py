@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import BaseModel, ValidationError
 from pydantic.errors import PydanticUserError
+from typing_extensions import override
 
 from .errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
@@ -533,8 +534,8 @@ def _write_model_catalog(workspace: Path, env: dict[str, str]) -> Path:
     from codex_cli_bin import bundled_codex_path  # noqa: PLC0415 (extra codex opcional)
 
     command = [os.fspath(bundled_codex_path())]
-    for override in _CODEX_CONFIG_OVERRIDES:
-        command += ["--config", override]
+    for config_override in _CODEX_CONFIG_OVERRIDES:
+        command += ["--config", config_override]
     command += ["debug", "models"]
     # Com CODEX_API_KEY no ambiente, `debug models` baixa o catálogo da API com
     # essa chave, que o app-server do turno ignora: o catálogo seria de uma
@@ -770,7 +771,8 @@ def _open_client(codex_config: CodexConfig) -> Codex:
                         sdk_client.close()
                 raise
 
-        def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 (assinatura de object.__setattr__)
+        @override
+        def __setattr__(self, name: str, value: Any) -> None:
             if name == "_client":
                 value.close = functools.partial(_close_sdk_client, value, value.close)
             super().__setattr__(name, value)

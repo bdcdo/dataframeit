@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit import codex as codex_provider
 from dataframeit import dataframeit
@@ -120,8 +121,8 @@ def _feature_states(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     command = [os.fspath(bundled_codex_path())]
-    for override in _CODEX_CONFIG_OVERRIDES:
-        command += ["-c", override]
+    for config_override in _CODEX_CONFIG_OVERRIDES:
+        command += ["-c", config_override]
     command += ["features", "list"]
     env = {
         **os.environ,
@@ -251,7 +252,8 @@ class _RecordingProvider(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"error":{"message":"mock","type":"invalid_request_error"}}')
 
-    def log_message(self, format, *args):  # noqa: A002 (nome do parâmetro da classe base)
+    @override
+    def log_message(self, format, *args):
         pass
 
 
@@ -409,9 +411,9 @@ def test_tool_lists_find_tool_offered_by_runtime(tmp_path, monkeypatch):
     modelo de cada forma de request: com `use_responses_lite`, as ferramentas
     vão num item `additional_tools` do `input`; sem, na chave `tools` do topo.
     """
-    override = "features.view_image=false"
-    assert override in _CODEX_CONFIG_OVERRIDES
-    overrides = tuple(item for item in _CODEX_CONFIG_OVERRIDES if item != override)
+    view_image = "features.view_image=false"
+    assert view_image in _CODEX_CONFIG_OVERRIDES
+    overrides = tuple(item for item in _CODEX_CONFIG_OVERRIDES if item != view_image)
     one_per_shape = {}
     for model in _bundled_models(tmp_path):
         one_per_shape.setdefault(bool(model.get("use_responses_lite")), model["slug"])
@@ -718,7 +720,8 @@ class _ProviderQueMorreNoSegundoTurno(BaseHTTPRequestHandler):
             self.wfile.write(_evento_sse(evento))
             self.wfile.flush()
 
-    def log_message(self, format, *args):  # noqa: A002 (nome do parâmetro da classe base)
+    @override
+    def log_message(self, format, *args):
         pass
 
 

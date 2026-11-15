@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit import ProviderAbortError, ProviderUsageLimitError, core, dataframeit
 
@@ -289,6 +290,7 @@ def test_falha_ao_despachar_a_linha_interrompe_e_grava_o_checkpoint(tmp_path):
 
 
 class _InterrupcaoIlegivel(ProviderAbortError):
+    @override
     def __str__(self):
         msg = "sem texto"
         raise RuntimeError(msg)

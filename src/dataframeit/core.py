@@ -47,6 +47,7 @@ from pandas.api.types import infer_dtype, is_bool, is_scalar
 from pandas.core.util.hashing import hash_pandas_object
 from pydantic import BaseModel, Field, ValidationError, create_model
 from tqdm import tqdm
+from typing_extensions import override
 
 from .conditional import (
     _CONDITIONAL_KEYS,
@@ -130,6 +131,7 @@ class _FallbackHandler(logging.Handler):
 
     is_dataframeit_fallback = True
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         logger: logging.Logger | None = logging.getLogger(record.name)
         while logger is not None:

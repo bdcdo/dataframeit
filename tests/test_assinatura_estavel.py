@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_core import PydanticSerializationError
+from typing_extensions import override
 
 from dataframeit import core, field_condition
 from dataframeit.core import _run_signature
@@ -309,6 +310,7 @@ class SemSchema(BaseModel):
     campo1: str
 
     @classmethod
+    @override
     def model_json_schema(cls, *args, **kwargs):
         msg = "sem schema"
         raise TypeError(msg)
@@ -1289,6 +1291,7 @@ def test_valor_embutido_que_levanta_ao_ser_lido_fica_de_fora():
     class Quebrada(tuple[object, ...]):
         __slots__ = ()
 
+        @override
         def __iter__(self):
             msg = "sem iteração"
             raise RuntimeError(msg)

@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import override
 
 from dataframeit import ProviderUsageLimitError, dataframeit
 from dataframeit.agent import _blocked_tool_call_ids, _extract_trace, _recursion_limit, call_agent
@@ -471,6 +472,7 @@ def test_sem_resultados_nao_conta_como_busca_bloqueada():
 class ModeloQueSempreBusca(GenericFakeChatModel):
     """Modelo falso que responde a toda chamada com as mensagens dadas, sem ver ferramentas."""
 
+    @override
     def bind_tools(self, tools, **kwargs):
         return self
 

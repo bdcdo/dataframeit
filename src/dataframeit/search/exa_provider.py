@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
+from typing_extensions import override
 
 from .base import SearchProvider, register_provider, search_failure
 
@@ -31,46 +32,55 @@ class ExaProvider(SearchProvider):
     """Implementação do provedor de busca Exa."""
 
     @property
+    @override
     def name(self) -> str:
         """Identificador do provedor."""
         return "exa"
 
     @property
+    @override
     def env_var(self) -> str:
         """Variável de ambiente da API key."""
         return "EXA_API_KEY"
 
     @property
+    @override
     def package_name(self) -> str:
         """Módulo Python da integração LangChain."""
         return "langchain_exa"
 
     @property
+    @override
     def install_name(self) -> str:
         """Nome do pacote para pip install."""
         return "langchain-exa"
 
     @property
+    @override
     def signup_url(self) -> str:
         """Página para criar conta e obter a API key."""
         return "https://exa.ai"
 
     @property
+    @override
     def friendly_name(self) -> str:
         """Nome exibido nas mensagens de erro."""
         return "Exa Search"
 
     @property
+    @override
     def free_tier(self) -> str:
         """Plano de entrada, exibido na mensagem de API key ausente."""
         return "plano pago"
 
     @property
+    @override
     def requests_per_minute(self) -> int:
         """Limite aproximado de requisições por minuto."""
         # Plano padrão: ~5 QPS
         return 300
 
+    @override
     def create_tool(self, max_results: int, **kwargs: Any) -> BaseTool:
         """Cria ferramenta ExaSearchResults.
 
@@ -116,6 +126,7 @@ class ExaProvider(SearchProvider):
             description=exa.description,
         )
 
+    @override
     def calculate_credits(self, search_count: int, max_results: int = 5, **kwargs: Any) -> int:
         """Calcula créditos Exa consumidos.
 
