@@ -1,9 +1,4 @@
-"""Conversões de entrada e saída, classes de valores e releituras de utils.py.
-
-Os testes vieram dos mutantes que sobreviviam ao teste de mutação de utils.py
-quando o forkserver do mutmut ignorava o SIGINT: cada um fixa um caso em que a
-troca de um operador, de um literal ou de um argumento mudaria o resultado.
-"""
+"""Conversões de entrada e saída, classes de valores e releituras de utils.py."""
 
 import datetime as dt
 import re

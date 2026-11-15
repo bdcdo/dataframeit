@@ -7,6 +7,7 @@ from types import MethodType
 from typing import Literal
 
 import pandas as pd
+import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from dataframeit.core import (
@@ -201,13 +202,6 @@ def test_subclasse_chamavel_de_tupla_entra_pelo_valor_e_pelo_estado():
     }
 
 
-def test_subclasse_de_series_guarda_as_celulas_na_forma_canonica():
-    forma = _held_value(pd.Series([int], name="tipo"), _Descent())
-
-    assert isinstance(forma, dict)
-    assert forma["columns"] == [["tipo", "object", ["int"]]]
-
-
 def test_slots_atribuidos_entram_pelo_nome_guardado():
     assert _slot_values(_Xadrez()) == {"cheio": 2, "__marca__": 1, "_Xadrez__peca": "rei"}
 
@@ -239,8 +233,9 @@ def test_chave_de_conjunto_entra_pelas_folhas_na_forma_canonica():
     assert _stable({frozenset({int}): 1}, _Descent()) == {"['int']": 1}
 
 
-def test_series_entra_pelas_celulas_na_forma_canonica():
-    forma = _stable(pd.Series([int], name="tipo"), _Descent())
+@pytest.mark.parametrize("forma_de", [_stable, _held_value], ids=["stable", "valor-guardado"])
+def test_series_entra_pelas_celulas_na_forma_canonica(forma_de):
+    forma = forma_de(pd.Series([int], name="tipo"), _Descent())
 
     assert isinstance(forma, dict)
     assert forma["columns"] == [["tipo", "object", ["int"]]]

@@ -151,3 +151,20 @@ def test_override_do_grupo_fora_da_faixa_nomeia_o_grupo(override, mensagem):
             use_search=True,
             search_per_field=True,
         )
+
+
+def test_estimativa_multiplica_as_execucoes_da_linha_pela_duracao_de_cada_uma(monkeypatch):
+    """Com execuções de 2 s, a linha de 4 campos leva 8 s: 11 workers fazem ~330 req/min."""
+    monkeypatch.setattr("dataframeit.core._MIN_SEARCH_RUN_SECONDS", 2.0)
+    aviso = _aviso(
+        num_rows=100,
+        num_fields=4,
+        parallel_requests=11,
+        search_per_field=True,
+        rate_limit_delay=0.0,
+    )
+    assert aviso is not None
+    assert aviso.endswith(
+        "taxa estimada ~330 req/min (limite Tavily Search: ~100/min). "
+        "Para evitar HTTP 429, use: parallel_requests=10, rate_limit_delay=26.3."
+    )

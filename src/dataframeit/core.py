@@ -1002,9 +1002,7 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
     # max_search_calls buscas por execução, e então a taxa real passa da
     # estimada sem aviso. Com search_groups a linha tem menos execuções que
     # campos, e contar uma por campo só sobe a estimativa, que cresce com elas.
-    # Com a duração de 1 s, multiplicar e dividir dão o mesmo, e o teste de
-    # mutação, que troca uma operação pela outra, não tem o que medir.
-    run_seconds = queries_per_row * _MIN_SEARCH_RUN_SECONDS  # pragma: no mutate
+    run_seconds = queries_per_row * _MIN_SEARCH_RUN_SECONDS
     estimated_rpm = 60 * parallel_requests * queries_per_row / (run_seconds + rate_limit_delay)
 
     if estimated_rpm > provider_limit * 0.8:
@@ -2106,7 +2104,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
 
-def _setup_columns(  # noqa: C901, PLR0913 (uma família de colunas por recurso ligado)
+def _setup_columns(  # noqa: PLR0913 (uma família de colunas por recurso ligado)
     df: pd.DataFrame,
     expected_columns: list[str],
     status_column: str | None,
@@ -2148,29 +2146,13 @@ def _setup_columns(  # noqa: C901, PLR0913 (uma família de colunas por recurso 
             # Coluna única
             trace_cols = ["_trace"]
 
-    # Identificar colunas que precisam ser criadas
-    new_cols = [col for col in expected_columns if col not in df.columns]
-    needs_status = status_col not in df.columns
-    needs_error = error_col not in df.columns
-    needs_tokens = [col for col in token_cols if col not in df.columns]
-    needs_search = [col for col in search_cols if col not in df.columns]
-    needs_trace = [col for col in trace_cols if col not in df.columns]
-
+    columns = (*expected_columns, status_col, error_col, *token_cols, *search_cols, *trace_cols)
     # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
     # teste de mutação, não muda nada; no pandas 2, a troca levanta.
     with _silent_slice_write(df):  # pragma: no mutate
-        for col in new_cols:
-            df[col] = None
-        if needs_status:
-            df[status_col] = None
-        if needs_error:
-            df[error_col] = None
-        for col in needs_tokens:
-            df[col] = None
-        for col in needs_search:
-            df[col] = None
-        for col in needs_trace:
-            df[col] = None
+        for col in columns:
+            if col not in df.columns:
+                df[col] = None
 
 
 def _get_processing_indices(
@@ -3160,7 +3142,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
     # _checkpoint_mismatch só devolve o checkpoint lido quando não há motivo
-    # para recusá-lo. O aviso sem categoria é um UserWarning.
+    # para recusá-lo.
     if saved is None:
         warnings.warn(
             f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
@@ -3593,12 +3575,16 @@ def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]
             # teste de mutação, não muda nada; no pandas 2, a troca levanta.
             with _silent_slice_write(df):  # pragma: no mutate
                 df[column] = None
-        # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
-        value = json.dumps(
-            trace,
-            ensure_ascii=False,  # pragma: no mutate
-        )
-        _set_cell(df, idx, column, value)
+        _set_cell(df, idx, column, _trace_text(trace))
+
+
+def _trace_text(trace: object) -> str:
+    """O rastro em JSON, com o texto não ASCII como está."""
+    # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
+    return json.dumps(
+        trace,
+        ensure_ascii=False,  # pragma: no mutate
+    )
 
 
 def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
@@ -3650,12 +3636,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
             _set_field_traces(df, idx, result["traces"])
         else:
             # Com trace_mode, a linha passou por call_agent, que sempre devolve o trace.
-            trace = json.dumps(
-                result["trace"],
-                # O None que o teste de mutação põe no lugar do False também desliga o escape.
-                ensure_ascii=False,  # pragma: no mutate
-            )
-            _set_cell(df, idx, "_trace", trace)
+            _set_cell(df, idx, "_trace", _trace_text(result["trace"]))
 
     _set_cell(df, idx, status_col, "processed")
     # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
@@ -3973,10 +3954,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
     with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
         rows = tqdm(df.iterrows(), total=len(df), desc=desc)
-        # to_process tem uma posição por linha, e o strict do zip não muda o resultado.
-        for (idx, row), chosen in zip(rows, to_process, strict=True):  # pragma: no mutate
-            if not chosen:
-                continue
+        for idx, row in itertools.compress(rows, to_process):
             started = time.monotonic()
             success, values = process_row(idx, row)
             if "abort" in token_stats:
@@ -4431,14 +4409,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
     # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
     # completa antes de gravar.
-    with _on_ctrl_c(
-        mark_uncounted_rows,
-        # _on_ctrl_c descarta o que a gravação devolve, e o teste de mutação troca
-        # à toa o None da gravação vazia.
-        partial(_try_save_checkpoint, df, writer.checkpoint)
-        if writer
-        else (lambda: None),  # pragma: no mutate
-    ):
+    def save_tail() -> None:
+        if writer:
+            _try_save_checkpoint(df, writer.checkpoint)
+
+    with _on_ctrl_c(mark_uncounted_rows, save_tail):
         if abort_event.is_set():
             mark_unreached(counted)
 

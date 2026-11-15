@@ -1,10 +1,4 @@
-"""Comparação do valor relido na retomada com o que a validação do modelo devolve.
-
-Os testes vieram dos mutantes que sobreviviam ao teste de mutação das funções
-que conferem as linhas já processadas em core.py: cada um fixa um caso em que
-a troca de um operador, de um argumento ou de um `continue` mudaria o
-resultado.
-"""
+"""Comparação do valor relido na retomada com o que a validação do modelo devolve."""
 
 import datetime as dt
 import logging

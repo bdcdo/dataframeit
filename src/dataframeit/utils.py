@@ -1298,18 +1298,8 @@ def _reread_int_columns(
             na_filter=False,
         )
         # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
-        # têm o mesmo tamanho: o strict não decide nada.
-        exact = {
-            col: [
-                _int_or_read(text, read)
-                for text, read in zip(
-                    raw[col],
-                    df[col],
-                    strict=True,  # pragma: no mutate
-                )
-            ]
-            for col in columns
-        }
+        # têm o mesmo tamanho.
+        exact = {col: list(map(_int_or_read, raw[col], df[col])) for col in columns}
     for col, values in exact.items():
         if any(type(v) is int for v in values):
             df[col] = pd.Series(values, index=df.index, dtype=object)

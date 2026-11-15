@@ -1,8 +1,7 @@
 """Arquivo que a gravação do checkpoint escreve e mensagens dela.
 
-Os testes vieram dos mutantes que sobreviviam ao teste de mutação da gravação
-do checkpoint em core.py: o arquivo sai com as colunas exatas, sem índice, com
-o texto não ASCII como está, e o temporário da gravação não sobra ao lado.
+O arquivo sai com as colunas exatas, sem índice, com o texto não ASCII como
+está, e o temporário da gravação não sobra ao lado.
 """
 
 import re
