@@ -45,7 +45,7 @@ from dataframeit.errors import (
     get_friendly_error_message,
     validate_search_dependencies,
 )
-from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig, Usage
 from dataframeit.search import TavilyProvider
 from dataframeit.utils import (
     ORIGINAL_TYPE_PANDAS_DF,
@@ -1938,8 +1938,9 @@ def test_enrich_list_items_with_search():
     )
 
     with patch("dataframeit.agent.call_agent", side_effect=mock_call_agent):
-        _enriched, usage, _traces = _enrich_list_items_with_search(
-            list_items, PedidoItem, search_fields, "texto", config
+        usage: Usage = {}
+        _enriched, _traces = _enrich_list_items_with_search(
+            list_items, PedidoItem, search_fields, "texto", config, usage
         )
 
     # Deve ter chamado para cada item (2 itens x campos de busca por item)

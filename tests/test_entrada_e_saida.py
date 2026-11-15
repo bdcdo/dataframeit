@@ -859,21 +859,26 @@ def _responde_com_uso(respostas):
     return responde
 
 
+@pytest.mark.parametrize("paralelo", [1, 2])
 @pytest.mark.parametrize(
-    ("respostas", "erro"),
+    ("fim", "aviso", "status", "chamadas"),
     [
-        ({"inicio": 2031, "fim": 2030}, "Linha recusada pelo modelo"),
-        ({"inicio": 2031, "fim": RuntimeError("busca caiu")}, "busca caiu"),
+        (2030, "Linha recusada pelo modelo", "error", 2),
+        (RuntimeError("busca caiu"), "busca caiu", "error", 1),
+        (ProviderAbortError("limite"), "interrompida", None, 1),
     ],
-    ids=["recusada-pelo-modelo", "chamada-posterior-falha"],
+    ids=["recusada-pelo-modelo", "chamada-posterior-falha", "abort"],
 )
-def test_uso_das_chamadas_feitas_entra_no_resumo_com_a_linha_em_erro(respostas, erro, caplog):
+def test_uso_das_chamadas_feitas_entra_no_resumo_com_a_linha_que_falha(  # noqa: PLR0913, PLR0917 (parametrização)
+    fim, aviso, status, chamadas, paralelo, caplog
+):
+    respostas = {"inicio": 2031, "fim": fim}
     with (
         patch("dataframeit.agent.call_agent", side_effect=_responde_com_uso(respostas)),
         patch("dataframeit.core.validate_provider_dependencies"),
         patch("dataframeit.core.validate_search_dependencies"),
         caplog.at_level(logging.INFO, logger="dataframeit.stats"),
-        pytest.warns(UserWarning, match=erro),
+        pytest.warns(UserWarning, match=aviso),
     ):
         resultado = dataframeit(
             pd.DataFrame({"texto": ["a"]}),
@@ -882,10 +887,12 @@ def test_uso_das_chamadas_feitas_entra_no_resumo_com_a_linha_em_erro(respostas, 
             use_search=True,
             search_per_field=True,
             max_retries=1,
+            parallel_requests=paralelo,
+            # Abaixo do limite do Tavily com dois workers; a linha que falha não espera.
+            rate_limit_delay=2,
         )
 
-    assert resultado["_dataframeit_status"].tolist() == ["error"]
-    chamadas = 2 if "recusada" in erro else 1
+    assert resultado["_dataframeit_status"].tolist() == [status]
     saida = caplog.text
     assert f"Total de tokens: {15 * chamadas}\n" in saida
     assert f"Total de buscas: {chamadas}\n" in saida

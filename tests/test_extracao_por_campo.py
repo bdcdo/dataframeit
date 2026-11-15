@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, Field, create_model
+from typing_extensions import override
 
 from dataframeit import field_condition
 from dataframeit.agent import field_extractor
@@ -126,6 +127,52 @@ def test_usage_soma_contador_ausente_como_zero_no_modo_por_grupo():
 
     assert resultado["usage"]["input_tokens"] == 4
     assert resultado["usage"]["output_tokens"] == 0
+
+
+class _AgenteQueFalha(_Agente):
+    """Levanta `erro` na chamada ao modelo `falha`, depois de registrá-la."""
+
+    def __init__(self, falha, erro):
+        super().__init__(RESPOSTAS, usage={"input_tokens": 2})
+        self.falha = falha
+        self.erro = erro
+
+    @override
+    def __call__(self, text, model, prompt, config, save_trace=None):
+        resultado = super().__call__(text, model, prompt, config, save_trace)
+        if model.__name__ == self.falha:
+            raise self.erro
+        return resultado
+
+
+@pytest.mark.parametrize(
+    "falha",
+    ["NestedSearch_interno_outro", "Completo_interno", "ItemSearch_0_preco"],
+)
+def test_erro_da_linha_leva_o_uso_das_chamadas_ja_feitas(falha):
+    agente = _AgenteQueFalha(falha, RuntimeError("caiu"))
+
+    with pytest.raises(RuntimeError, match="caiu") as erro:
+        _rodar(agente, Completo, _config())
+
+    assert agente.nomes[-1] == falha
+    # Todas as chamadas antes da que falhou, inclusive a do campo da lista enriquecida.
+    assert erro.value.row_usage["input_tokens"] == 2 * (len(agente.chamadas) - 1)  # ty: ignore[unresolved-attribute]
+
+
+class _ErroSemAtributos(Exception):
+    @override
+    def __setattr__(self, name, value):
+        raise AttributeError(name)
+
+
+def test_erro_que_nao_aceita_atributo_segue_sem_o_uso():
+    agente = _AgenteQueFalha("Completo_a", _ErroSemAtributos("caiu"))
+
+    with pytest.raises(_ErroSemAtributos, match="caiu") as erro:
+        _rodar(agente, Completo, _config())
+
+    assert not hasattr(erro.value, "row_usage")
 
 
 # =============================================================================
