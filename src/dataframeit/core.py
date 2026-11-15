@@ -2980,7 +2980,10 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
             "e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que o "
             "checkpoint ainda não processou"
         )
-        resume_hint = ""
+        resume_hint = (
+            " Com reprocess_columns, a execução refaz essas colunas também nas linhas que o "
+            "checkpoint concluiu."
+        )
     msg = (
         f"As colunas {overwritten} já existem no DataFrame com o nome de campos do "
         f"modelo, {reason}. Renomeie ou remova essas colunas, ou passe "

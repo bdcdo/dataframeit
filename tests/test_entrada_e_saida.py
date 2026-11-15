@@ -385,7 +385,9 @@ def test_coluna_com_nome_de_campo_acrescentada_antes_da_retomada_levanta(tmp_pat
         r"As colunas \['categoria'\] já existem no DataFrame com o nome de campos do modelo, "
         r"e a resposta do LLM sobrescreveria o valor que elas têm nas linhas que o checkpoint "
         r"ainda não processou\. Renomeie ou remova essas colunas, ou passe "
-        r"reprocess_columns=\['categoria'\] para sobrescrevê-las de propósito\.$",
+        r"reprocess_columns=\['categoria'\] para sobrescrevê-las de propósito\. Com "
+        r"reprocess_columns, a execução refaz essas colunas também nas linhas que o "
+        r"checkpoint concluiu\.$",
         batch_size=1,
         checkpoint_path=checkpoint,
         prompt="Analise {texto}",
