@@ -466,6 +466,9 @@ def _get_missing_search_api_key_message(provider: SearchProvider) -> str:
 """.strip()
 
 
+# Status do Tavily para o limite do plano (432) e o do pay-as-you-go (433).
+_TAVILY_USAGE_LIMIT_STATUSES = (432, 433)
+
 # Textos que só aparecem em erro de chave inválida, qualquer que seja o status.
 _INVALID_KEY_MARKERS = (
     "api_key_invalid",
@@ -526,8 +529,8 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # tipo e o começo da mensagem, e a de conexão, que só o texto decide, nunca
     # sai. Os demais erros, como os do LangChain, que embrulham os SDKs de vários
     # providers, são lidos pelo texto: sem status, em todas as caixas; com
-    # status, o texto ainda decide a de chave inválida e as do Tavily e do Exa, e
-    # o status decide as outras.
+    # status, o texto ainda decide a de chave inválida e, fora do SearchToolError,
+    # as do Tavily e do Exa, e o status decide as outras.
     error_str = (
         "" if isinstance(error, ProviderError) else f"{type(error).__name__}: {error}".lower()
     )
@@ -536,10 +539,15 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # O erro da ferramenta de busca diz o serviço pela classe, e os demais, pelo
     # nome no texto: 'exa' como palavra, contando '_' como separador, casa
     # 'EXA_API_KEY' e 'exa-py', mas não 'hexagonal'.
-    is_tavily = search_name == "tavily" or (not search_name and "tavily" in error_str)
-    is_exa = search_name == "exa" or (
-        not search_name and re.search(r"(?<![a-z0-9])exa(?![a-z0-9])", error_str) is not None
+    service = search_name or (
+        "tavily"
+        if "tavily" in error_str
+        else "exa"
+        if re.search(r"(?<![a-z0-9])exa(?![a-z0-9])", error_str)
+        else None
     )
+    is_tavily = service == "tavily"
+    is_exa = service == "exa"
 
     def is_category(patterns: Iterable[str], codes: Iterable[int] = ()) -> bool:
         """Com status HTTP estruturado, só ele decide; sem, valem os padrões."""
@@ -548,6 +556,18 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
         return any(
             _matches_error_pattern(pattern, error_str) for pattern in (*patterns, *map(str, codes))
         )
+
+    def is_search_category(patterns: Iterable[str], codes: Iterable[int] = ()) -> bool:
+        """Caixa do Tavily ou do Exa: no SearchToolError, como is_category; nos demais, o texto.
+
+        O status do SearchToolError é o do provedor de busca, e um "invalid" na
+        mensagem de um 500 não é chave inválida. Os demais erros só chegam às
+        caixas da busca pelo nome do serviço no texto, e o status deles pode ser
+        de outra requisição.
+        """
+        if search_name:
+            return is_category(patterns, codes)
+        return any(pattern in error_str for pattern in patterns)
 
     # === ERROS DE RATE LIMIT ===
     # A caixa sai quando, e só quando, a execução reduz os workers: a decisão é a
@@ -584,7 +604,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 """.strip()
 
     # === ERROS TAVILY ===
-    if is_tavily and any(p in error_str for p in ["apikey", "api_key", "missing", "invalid"]):
+    if is_tavily and is_search_category(["apikey", "api_key", "missing", "invalid"], (401,)):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  ERRO DE AUTENTICAÇÃO TAVILY                                                 ║
@@ -601,7 +621,9 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    if "usagelimitexceeded" in error_str or (is_tavily and "limit" in error_str):
+    if "usagelimitexceeded" in error_str or (
+        is_tavily and is_search_category(["limit"], _TAVILY_USAGE_LIMIT_STATUSES)
+    ):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
@@ -619,8 +641,8 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 """.strip()
 
     # === ERROS EXA ===
-    if is_exa and any(
-        p in error_str for p in ["apikey", "api_key", "missing", "invalid", "unauthorized"]
+    if is_exa and is_search_category(
+        ["apikey", "api_key", "missing", "invalid", "unauthorized"], (401,)
     ):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -638,7 +660,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    if is_exa and any(p in error_str for p in ["limit", "quota", "exceeded"]):
+    if is_exa and is_search_category(["limit", "quota", "exceeded"]):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE USO EXA EXCEDIDO                                                  ║
@@ -996,20 +1018,25 @@ def is_rate_limit_error(error: Exception) -> bool:
 def _usage_limit_error(error: Exception) -> ProviderUsageLimitError | None:
     """Cota de uso esgotada, que só se resolve na conta e interrompe a execução.
 
-    O `insufficient_quota` da OpenAI chega como 429, e o limite do plano do
-    Tavily, como status 432: repetir a linha não traz crédito, e reduzir os
-    workers não ajuda. O código da OpenAI é lido do atributo `code` que o SDK
-    preenche com o corpo da resposta; o status do Tavily, do texto do erro da
-    ferramenta de busca, único lugar em que o cliente dele o põe.
+    O `insufficient_quota` da OpenAI chega como 429, e o limite do plano ou do
+    pay-as-you-go do Tavily, como status 432 ou 433: repetir a linha não traz
+    crédito, e reduzir os workers não ajuda. O código da OpenAI é lido do
+    atributo `code` que o SDK preenche com o corpo da resposta, na exceção ou
+    na primeira causa explícita que o tenha, como em _http_error_status.
     """
     if isinstance(error, SearchToolError):
-        if error.provider == "tavily" and "Error 432:" in str(error):
+        if error.provider == "tavily" and error.status_code in _TAVILY_USAGE_LIMIT_STATUSES:
             return ProviderUsageLimitError(f"limite de uso do plano do Tavily esgotado ({error})")
         return None
-    if getattr(error, "code", None) == "insufficient_quota":
-        return ProviderUsageLimitError(
-            f"cota da conta no provider de LLM esgotada; adicione crédito ({error})"
-        )
+    seen = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "code", None) == "insufficient_quota":
+            return ProviderUsageLimitError(
+                f"cota da conta no provider de LLM esgotada; adicione crédito ({error})"
+            )
+        current = current.__cause__
     return None
 
 

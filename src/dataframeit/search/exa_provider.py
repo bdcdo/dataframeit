@@ -11,6 +11,7 @@ Recomendado para:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -19,6 +20,8 @@ from .base import SearchProvider, SearchToolError, register_provider
 
 # Até este número de resultados, a Exa cobra a faixa de preço mais baixa.
 _MAX_RESULTS_FAIXA_BASICA = 25
+# O cliente exa_py só põe o status no texto: "Request failed with status code 401: ...".
+_STATUS_NO_TEXTO = re.compile(r"^Request failed with status code (\d{3})")
 
 
 @register_provider
@@ -94,7 +97,10 @@ class ExaProvider(SearchProvider):
                     text={"max_characters": 1000},
                 )
             except Exception as erro:
-                raise SearchToolError(provider="exa", error=erro) from erro
+                status = _STATUS_NO_TEXTO.match(str(erro))
+                raise SearchToolError(
+                    provider="exa", error=erro, status_code=int(status.group(1)) if status else None
+                ) from erro
             return str(resultados)
 
         return StructuredTool.from_function(

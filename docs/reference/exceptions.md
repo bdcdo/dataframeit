@@ -55,11 +55,13 @@ ValueError
 | `ProviderRejectedOutputError` | Sim | A resposta não passou na validação do modelo Pydantic. Nos providers do LangChain, a nova tentativa leva ao modelo a resposta recusada e o erro; no `claude_code`, repete o pedido |
 | `ProviderOutputError` | Não | O provider terminou sem resposta utilizável, como um turno do `codex` sem conteúdo ou com resposta que não passa na validação do modelo Pydantic |
 | `ProviderAbortError` | Não | Falha depois da qual nenhuma linha passaria, como o runtime do `codex` encerrado; a execução para |
-| `ProviderUsageLimitError` | Não | Cota de uso da conta esgotada, como a do `codex`, o `insufficient_quota` da OpenAI e o limite do plano do Tavily (status 432); a execução para |
+| `ProviderUsageLimitError` | Não | Cota de uso da conta esgotada, como a do `codex`, o `insufficient_quota` da OpenAI e o limite do plano ou do pay-as-you-go do Tavily (status 432 ou 433); a execução para |
 
 O `ProviderError` e as subclasses trazem em `status_code` o status HTTP que o provider informou fora da mensagem, ou `None` quando ele não informou: no `claude_code`, o `api_error_status` do SDK; no `codex`, o status HTTP do turno que falhou, e 401 no código `unauthorized`. A caixa do aviso de falha da linha sai da classe e desse status, e não da mensagem, que pode trazer texto do modelo. A classe decide primeiro: o `ProviderOverloadedError` dá a caixa de limite de requisições, com ou sem status, e o `ProviderRejectedOutputError` dá a caixa da validação. Nas demais classes, o status decide: 401 dá a caixa de autenticação, 403 a de permissão, e 408 ou 504, num `ProviderTransientError`, a de timeout. Sem classe nem status que decidam, a caixa é a genérica, com o tipo e a mensagem em até três linhas, terminada em reticências quando passa disso. A caixa de conexão, que só o texto decide, não sai para o `ProviderError`.
 
 Erros dos providers via LangChain não usam essas classes. Eles são classificados pelo tipo que a própria LangChain declara, pelo status HTTP e pela mensagem. Os detalhes estão em [Tratamento de Erros](../guides/error-handling.md).
+
+A falha do provedor de busca chega como `SearchToolError`, de `dataframeit.search` e subclasse de `RuntimeError`. Ela traz em `provider` o provedor de busca (`'tavily'` ou `'exa'`), em `status_code` o status HTTP que o cliente pôs no texto, ou `None`, e em `error` o erro original; a mensagem é o tipo e o texto desse erro. O aviso de falha da linha aponta a chave e o plano do provedor de busca, e não os do provider de LLM.
 
 ## Falhas que interrompem a execução
 

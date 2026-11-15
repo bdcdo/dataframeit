@@ -38,7 +38,9 @@ def _levantar_erro(resultado: T) -> T:
         "can only be set during instantiation" in str(erro)
     ):
         raise ToolException(str(erro)) from erro
-    raise SearchToolError(provider="tavily", error=erro) from erro
+    raise SearchToolError(
+        provider="tavily", error=erro, status_code=int(status.group(1)) if status else None
+    ) from erro
 
 
 @register_provider

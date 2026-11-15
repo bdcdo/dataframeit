@@ -90,11 +90,11 @@ Na OpenAI, o SDK valida a resposta dentro da chamada e levanta o erro antes de d
 
 ### Cota esgotada (interrompe a execução)
 
-O `insufficient_quota` da OpenAI, que chega como HTTP 429, e o limite do plano do Tavily (status 432) só se resolvem com crédito na conta. Eles viram `ProviderUsageLimitError`, sem nova tentativa: a execução para e deixa as linhas restantes sem status, para a retomada. Ver [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
+O `insufficient_quota` da OpenAI, que chega como HTTP 429, e o limite do plano ou do pay-as-you-go do Tavily (status 432 ou 433) só se resolvem com crédito na conta. Eles viram `ProviderUsageLimitError`, sem nova tentativa: a execução para e deixa as linhas restantes sem status, para a retomada. Ver [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
 
 ### Erros da busca web
 
-A falha do provedor de busca chega como `SearchToolError` (de `dataframeit.search`), com o tipo e a mensagem do erro do cliente no texto e o erro original em `__cause__`. O aviso de falha da linha aponta a chave e o plano do Tavily ou do Exa, e não os do provider de LLM.
+A falha do provedor de busca chega como `SearchToolError` (de `dataframeit.search`), com o tipo e a mensagem do erro do cliente no texto. O aviso de falha da linha aponta a chave e o plano do Tavily ou do Exa, e não os do provider de LLM. Os atributos estão em [Exceções](../reference/exceptions.md#erros-durante-o-processamento).
 
 ## Processamento Incremental
 

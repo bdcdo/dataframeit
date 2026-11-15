@@ -14,14 +14,23 @@ class SearchToolError(RuntimeError):
 
     A mensagem dos clientes do Tavily e do Exa não nomeia o serviço ("Error 401:
     ..."), e por isso a classe leva o nome do provedor que falhou: é por ele que
-    a mensagem amigável aponta a chave e o plano da busca. O erro original fica
-    em `__cause__`, e o tipo dele abre a mensagem.
+    a mensagem amigável aponta a chave e o plano da busca. Os dois clientes só
+    põem o status HTTP no texto, e cada provedor o extrai para `status_code`, de
+    onde a classificação o lê como o de qualquer erro HTTP. O erro original fica
+    em `error` e em `__cause__`, e o tipo dele abre a mensagem.
     """
 
-    def __init__(self, provider: str, error: Exception) -> None:
-        """Guarda o nome do provedor de busca ('tavily', 'exa') e o texto do erro."""
-        super().__init__(f"{type(error).__name__}: {error}")
+    def __init__(self, provider: str, error: Exception, status_code: int | None = None) -> None:
+        """Guarda o provedor de busca ('tavily', 'exa'), o erro do cliente e o status."""
+        # Todos os argumentos em args, para que pickle e copy reconstruam o erro.
+        super().__init__(provider, error, status_code)
         self.provider = provider
+        self.error = error
+        self.status_code = status_code
+
+    def __str__(self) -> str:
+        """Tipo e mensagem do erro do cliente de busca."""
+        return f"{type(self.error).__name__}: {self.error}"
 
 
 class SearchProvider(ABC):

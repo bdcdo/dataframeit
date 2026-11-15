@@ -55,11 +55,13 @@ ValueError
 | `ProviderRejectedOutputError` | Yes | The response failed validation against the Pydantic model. With LangChain providers, the new attempt sends the model the rejected response and the error; with `claude_code`, it repeats the request |
 | `ProviderOutputError` | No | The provider finished without a usable response, such as a `codex` turn with no content or with a response that fails validation against the Pydantic model |
 | `ProviderAbortError` | No | A failure after which no row would get through, such as a terminated `codex` runtime; the run stops |
-| `ProviderUsageLimitError` | No | Account usage quota exhausted, such as the `codex` one, OpenAI's `insufficient_quota` and the Tavily plan limit (status 432); the run stops |
+| `ProviderUsageLimitError` | No | Account usage quota exhausted, such as the `codex` one, OpenAI's `insufficient_quota` and the Tavily plan or pay-as-you-go limit (status 432 or 433); the run stops |
 
 `ProviderError` and its subclasses carry in `status_code` the HTTP status the provider reported outside the message, or `None` when it reported none: in `claude_code`, the SDK's `api_error_status`; in `codex`, the HTTP status of the failed turn, and 401 for the `unauthorized` code. The box in the row failure warning comes from the class and this status, not from the message, which may carry model text. The class decides first: `ProviderOverloadedError` gives the request-limit box, with or without a status, and `ProviderRejectedOutputError` gives the validation box. For the other classes, the status decides: 401 gives the authentication box, 403 the permission box, and 408 or 504, on a `ProviderTransientError`, the timeout box. When neither the class nor the status decides, the box is the generic one, with the type and the message in up to three lines, ending in an ellipsis when it is longer. The connection box, which only the message text decides, does not appear for a `ProviderError`.
 
 Errors from providers via LangChain do not use these classes. They are classified by the type LangChain itself declares, by the HTTP status and by the message. The details are in [Error Handling](../guides/error-handling.md).
+
+A search provider failure arrives as `SearchToolError`, from `dataframeit.search` and a subclass of `RuntimeError`. It carries in `provider` the search provider (`'tavily'` or `'exa'`), in `status_code` the HTTP status the client put in the text, or `None`, and in `error` the original error; the message is that error's type and text. The row failure warning points to the search provider's key and plan, not to the LLM provider's.
 
 ## Failures that stop the run
 

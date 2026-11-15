@@ -1,8 +1,10 @@
 """Classificação e mensagens de erro dos providers."""
 
+import copy
 import importlib
 import importlib.metadata
 import importlib.util
+import pickle
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,9 +112,27 @@ def test_limite_do_tavily_escolhe_a_caixa_de_limite():
     assert "LIMITE DE USO TAVILY" in mensagem
 
 
+def _erro_do_tavily(status, texto):
+    # Como _levantar_erro do provedor Tavily o monta: o status só no texto do cliente.
+    return SearchToolError("tavily", ValueError(f"Error {status}: {texto}"), status)
+
+
+def _erro_do_exa(status, texto):
+    return SearchToolError(
+        "exa", ValueError(f"Request failed with status code {status}: {texto}"), status
+    )
+
+
 def test_chave_invalida_da_busca_aponta_a_chave_do_tavily_e_nao_a_do_llm():
     # O cliente do Tavily não nomeia o serviço no texto.
-    erro = SearchToolError("tavily", ValueError("Error 401: Unauthorized"))
+    mensagem = get_friendly_error_message(_erro_do_tavily(401, "Unauthorized"), "openai")
+    assert "AUTENTICAÇÃO TAVILY" in mensagem
+    assert "TAVILY_API_KEY" in mensagem
+    assert "OPENAI_API_KEY" not in mensagem
+
+
+def test_falha_da_busca_sem_status_e_sem_caixa_propria_aponta_a_chave_da_busca():
+    erro = SearchToolError("tavily", ValueError("401 unauthorized"))
     mensagem = get_friendly_error_message(erro, "openai")
     assert "AUTENTICAÇÃO" in mensagem
     assert "TAVILY_API_KEY" in mensagem
@@ -120,19 +140,42 @@ def test_chave_invalida_da_busca_aponta_a_chave_do_tavily_e_nao_a_do_llm():
 
 
 def test_chave_invalida_real_do_exa_escolhe_a_caixa_do_exa():
-    erro = SearchToolError(
-        "exa", ValueError('Request failed with status code 401: {"error":"Unauthorized"}')
-    )
+    erro = _erro_do_exa(401, '{"error":"Unauthorized"}')
     mensagem = get_friendly_error_message(erro, "anthropic")
     assert "AUTENTICAÇÃO EXA" in mensagem
     assert "ANTHROPIC_API_KEY" not in mensagem
 
 
-def test_rate_limit_da_busca_nomeia_o_servico_da_busca():
-    erro = SearchToolError("exa", ValueError("Request failed with status code 429: slow down"))
+@pytest.mark.parametrize(
+    "erro",
+    [
+        _erro_do_tavily(500, "Invalid upstream response"),
+        _erro_do_tavily(500, "rate limit of upstream"),
+        _erro_do_exa(400, "Invalid numResults"),
+        _erro_do_exa(400, "numResults limit is 100"),
+    ],
+)
+def test_status_da_busca_decide_a_caixa_e_nao_o_texto(erro):
     mensagem = get_friendly_error_message(erro, "openai")
+    assert "AUTENTICAÇÃO" not in mensagem
+    assert "LIMITE DE USO" not in mensagem
+
+
+def test_rate_limit_da_busca_nomeia_o_servico_da_busca():
+    mensagem = get_friendly_error_message(_erro_do_exa(429, "slow down"), "openai")
     assert "LIMITE DE REQUISIÇÕES" in mensagem
     assert "para o Exa" in mensagem
+
+
+def test_erro_da_busca_sobrevive_a_pickle_e_copy():
+    erro = _erro_do_tavily(401, "Unauthorized")
+    copias = (pickle.loads(pickle.dumps(erro)), copy.copy(erro))  # noqa: S301 (dado do próprio teste)
+    for copia in copias:
+        assert (copia.provider, copia.status_code, str(copia)) == (
+            "tavily",
+            401,
+            "ValueError: Error 401: Unauthorized",
+        )
 
 
 # =============================================================================
@@ -150,16 +193,20 @@ def _falha_sempre(erro):
     return chamadas, func
 
 
-def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
+def _cota_esgotada_da_openai():
     httpx = pytest.importorskip("httpx")
     openai = pytest.importorskip("openai")
     requisicao = httpx.Request("POST", "https://api.openai.com/v1/x")
-    erro = openai.RateLimitError(
+    return openai.RateLimitError(
         "Error code: 429 - {'error': {'message': 'You exceeded your current quota', "
         "'type': 'insufficient_quota', 'code': 'insufficient_quota'}}",
         response=httpx.Response(429, request=requisicao),
         body={"code": "insufficient_quota"},
     )
+
+
+def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
+    erro = _cota_esgotada_da_openai()
     chamadas, func = _falha_sempre(erro)
 
     with pytest.raises(ProviderUsageLimitError, match="adicione crédito") as levantado:
@@ -169,9 +216,24 @@ def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
     assert levantado.value.__cause__ is erro
 
 
-def test_limite_do_plano_do_tavily_interrompe_sem_nova_tentativa():
-    erro = SearchToolError("tavily", ValueError("Error 432: exceeds your plan's usage limit."))
+def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
+    class ErroDaIntegracao(Exception):
+        pass
+
+    # Como um `raise ErroDaIntegracao(...) from causa`.
+    erro = ErroDaIntegracao("chamada ao modelo falhou")
+    erro.__cause__ = _cota_esgotada_da_openai()
     chamadas, func = _falha_sempre(erro)
+
+    with pytest.raises(ProviderUsageLimitError):
+        retry_with_backoff(func, max_retries=3, base_delay=0.0)
+
+    assert len(chamadas) == 1
+
+
+@pytest.mark.parametrize("status", [432, 433])
+def test_limite_do_plano_do_tavily_interrompe_sem_nova_tentativa(status):
+    chamadas, func = _falha_sempre(_erro_do_tavily(status, "exceeds your usage limit."))
 
     with pytest.raises(ProviderUsageLimitError, match="plano do Tavily"):
         retry_with_backoff(func, max_retries=3, base_delay=0.0)
@@ -179,20 +241,22 @@ def test_limite_do_plano_do_tavily_interrompe_sem_nova_tentativa():
     assert len(chamadas) == 1
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize(
-    "erro",
+    ("erro", "tentativas"),
     [
-        SearchToolError("tavily", ValueError("Error 500: Internal server error.")),
-        SearchToolError("exa", ValueError("Error 432: x")),
+        (_erro_do_tavily(500, "Internal server error."), 2),
+        # Só o Tavily tem status de limite de uso; o 432 do Exa é um 4xx definitivo.
+        (_erro_do_exa(432, "x"), 1),
     ],
 )
-def test_outras_falhas_da_busca_seguem_o_retry(erro):
+def test_outras_falhas_da_busca_nao_viram_limite_de_uso(erro, tentativas):
     chamadas, func = _falha_sempre(erro)
 
-    with pytest.warns(UserWarning, match="Tentativa"), pytest.raises(SearchToolError):
+    with pytest.raises(SearchToolError):
         retry_with_backoff(func, max_retries=2, base_delay=0.0)
 
-    assert len(chamadas) == 2
+    assert len(chamadas) == tentativas
 
 
 # =============================================================================

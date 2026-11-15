@@ -91,7 +91,27 @@ def test_exa_levanta_o_erro_do_provider(monkeypatch):
     with pytest.raises(SearchToolError, match="RuntimeError: 401") as erro:
         ferramenta.invoke({"query": "x"})
     assert erro.value.provider == "exa"
+    assert erro.value.status_code is None
     assert isinstance(erro.value.__cause__, RuntimeError)
+
+
+def test_exa_extrai_o_status_do_texto_do_cliente(monkeypatch):
+    pytest.importorskip("langchain_exa")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
+
+    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
+
+    def falha(self, query, **kwargs):
+        # Texto que o exa_py levanta quando a API responde com erro.
+        msg = 'Request failed with status code 401: {"error":"Invalid API key"}'
+        raise ValueError(msg)
+
+    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
+
+    ferramenta = get_provider("exa").create_tool(max_results=3)
+    with pytest.raises(SearchToolError) as erro:
+        ferramenta.invoke({"query": "x"})
+    assert erro.value.status_code == 401
 
 
 # =============================================================================
@@ -130,6 +150,7 @@ def test_tavily_levanta_o_erro_do_provider(tavily_disponivel, monkeypatch, mensa
     with pytest.raises(SearchToolError, match=f"ValueError: {mensagem[:9]}") as erro:
         ferramenta.invoke({"query": "x"})
     assert erro.value.provider == "tavily"
+    assert erro.value.status_code == int(mensagem[6:9])
     assert isinstance(erro.value.__cause__, ValueError)
 
 
@@ -159,8 +180,9 @@ def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
     monkeypatch.setattr(tavily_disponivel, "raw_results_async", falha)
 
     ferramenta = get_provider("tavily").create_tool(max_results=3)
-    with pytest.raises(SearchToolError, match="Error 432"):
+    with pytest.raises(SearchToolError, match="Error 432") as erro:
         asyncio.run(ferramenta.ainvoke({"query": "x"}))
+    assert erro.value.status_code == 432
 
 
 def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponivel, monkeypatch):
