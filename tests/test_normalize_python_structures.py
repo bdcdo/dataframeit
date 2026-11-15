@@ -27,6 +27,7 @@ import pytest
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
+from dataframeit import utils as utils_module
 from dataframeit.utils import (
     _json_default,
     _normalize_all_json_columns,
@@ -369,6 +370,50 @@ def test_normalize_complex_columns_numa_fatia_de_outro_dataframe():
     normalize_complex_columns(fatia, {"itens"})
 
     assert fatia.loc[1, "itens"] == ["b", "c"]
+
+
+@pytest.mark.skipif(
+    not hasattr(pd.errors, "SettingWithCopyWarning"),
+    reason="a opção mode.chained_assignment só tem efeito no pandas 2",
+)
+def test_normalize_complex_columns_nao_troca_a_opcao_global_do_aviso(monkeypatch):
+    """A escrita na fatia não troca `mode.chained_assignment`, que vale para todas as threads."""
+    original = utils_module.normalize_value
+    durante = []
+
+    def normaliza_e_le_a_opcao(value):
+        durante.append(pd.get_option("mode.chained_assignment"))
+        return original(value)
+
+    monkeypatch.setattr(utils_module, "normalize_value", normaliza_e_le_a_opcao)
+    base = pd.DataFrame({"itens": ['["a"]', '["b"]'], "id": [1, 2]})
+    fatia = base[base["id"] > 1]
+
+    with pd.option_context("mode.chained_assignment", "warn"):
+        normalize_complex_columns(fatia, {"itens"})
+
+    assert durante == ["warn"]
+    assert fatia.loc[1, "itens"] == ["b"]
+
+
+@pytest.mark.skipif(
+    not hasattr(pd.errors, "SettingWithCopyWarning"),
+    reason="o aviso de escrita em fatia só existe no pandas 2",
+)
+def test_normalize_complex_columns_mantem_o_aviso_da_escrita_seguinte_na_fatia():
+    """Depois da normalização, a escrita do usuário na fatia ainda avisa que o original não muda."""
+    base = pd.DataFrame({"itens": ['["a"]', '["b"]'], "id": [1, 2]})
+    fatia = base[base["id"] > 1]
+    normalize_complex_columns(fatia, {"itens"})
+
+    with (
+        pd.option_context("mode.chained_assignment", "warn"),
+        pytest.warns(
+            getattr(pd.errors, "SettingWithCopyWarning"),  # noqa: B009 (só existe no pandas 2; o ty usa o 3)
+            match="copy of a slice",
+        ),
+    ):
+        fatia["id"] = 0
 
 
 def test_normalize_complex_columns_nonexistent():

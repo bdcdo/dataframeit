@@ -22,7 +22,7 @@ import sys
 import types
 import typing
 import warnings
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -35,7 +35,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Callable, Collection, Hashable, Mapping
+    from collections.abc import Callable, Collection, Generator, Hashable, Mapping
 
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
@@ -1018,15 +1018,25 @@ def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qua
     return value
 
 
-def _silent_slice_write() -> AbstractContextManager[None]:
-    """Contexto em que gravar coluna num DataFrame que é fatia de outro não avisa.
+@contextmanager
+def _silent_slice_write(df: pd.DataFrame) -> Generator[None, None, None]:
+    """Contexto em que gravar coluna em `df`, se for fatia de outro DataFrame, não avisa.
 
-    O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
-    escrita substitui esse aviso e a opção que o controla não se aplica.
+    O pandas 2 avisa ao escrever numa fatia enquanto `_is_copy` aponta para o
+    original. A referência é desligada só neste DataFrame e volta na saída, sem
+    tocar a opção global `mode.chained_assignment`, que outra thread pode estar
+    usando; a escrita do usuário na fatia, depois, avisa como antes. No pandas
+    3, a cópia na escrita substitui esse aviso.
     """
-    if hasattr(pd.errors, "SettingWithCopyWarning"):
-        return pd.option_context("mode.chained_assignment", None)
-    return nullcontext()
+    if not hasattr(pd.errors, "SettingWithCopyWarning"):
+        yield
+        return
+    parent = df._is_copy  # noqa: SLF001 (atributo que o pandas 2 consulta para avisar)
+    df._is_copy = None  # noqa: SLF001
+    try:
+        yield
+    finally:
+        df._is_copy = parent  # noqa: SLF001
 
 
 def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> None:
@@ -1038,7 +1048,7 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
         df: DataFrame a normalizar.
         complex_fields: Set com nomes das colunas a normalizar.
     """
-    with _silent_slice_write():
+    with _silent_slice_write(df):
         for col in complex_fields:
             if col in df.columns:
                 df[col] = df[col].apply(normalize_value)

@@ -351,7 +351,7 @@ def _as_object_columns(
     como NaN, que dali em diante é valor: a saída polars, que guarda o NaN
     dessas colunas, mostraria NaN na linha pendente e na de erro.
     """
-    with _silent_slice_write():
+    with _silent_slice_write(df):
         for col in columns:
             if col in df.columns and df[col].dtype != object:
                 values = df[col].astype(object)
@@ -905,7 +905,7 @@ def _apply_processed_values(
     by_column: dict[str, dict[int, Any]] = {}
     for (position, field_name), value in values.items():
         by_column.setdefault(field_name, {})[position] = value
-    with _silent_slice_write():
+    with _silent_slice_write(df):
         for field_name, cells in by_column.items():
             column = df[field_name].to_numpy(dtype=object, copy=True)
             for position, value in cells.items():
@@ -1809,7 +1809,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             structures=frozenset(complex_fields),
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
-            with _silent_slice_write():
+            with _silent_slice_write(df_pandas):
                 empty_text_fields = _resume_from_checkpoint(
                     df_pandas,
                     checkpoint,
@@ -1975,7 +1975,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         # coluna `string` de convert_dtypes, vira None: a marca das linhas não
         # alcançadas compara o status e o detalhe com texto, e a comparação com
         # o pd.NA não é booleana.
-        with _silent_slice_write():
+        with _silent_slice_write(df_pandas):
             for col in control_columns:
                 df_pandas[col] = df_pandas[col].where(df_pandas[col].notna(), None)
         _apply_processed_values(df_pandas, processed_values)
@@ -2158,7 +2158,7 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
     ):
         return
 
-    with _silent_slice_write():
+    with _silent_slice_write(df):
         for col in new_cols:
             df[col] = None
         if needs_status:
@@ -3545,7 +3545,7 @@ def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]
     for key, trace in traces.items():
         column = f"_trace_{key}"
         if column not in df.columns:
-            with _silent_slice_write():
+            with _silent_slice_write(df):
                 df[column] = None
         _set_cell(df, idx, column, json.dumps(trace, ensure_ascii=False))
 
