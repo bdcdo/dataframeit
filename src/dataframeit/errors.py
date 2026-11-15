@@ -1080,11 +1080,14 @@ def retry_with_backoff(
             error_msg = str(e)
             retry_info["errors"].append(f"{error_name}: {error_msg[:100]}")
 
+            # core importa este módulo; o import de volta só pode vir aqui.
+            from .core import _user_stacklevel  # noqa: PLC0415 (ver o comentário acima)
+
             # Verificar se é erro não-recuperável
             if not is_recoverable_error(e):
                 warnings.warn(
                     f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
-                    stacklevel=3,
+                    stacklevel=_user_stacklevel(),
                 )
                 raise
 
@@ -1103,7 +1106,7 @@ def retry_with_backoff(
             warnings.warn(
                 f"Tentativa {attempt + 1}/{max_retries} falhou ({error_name}). "
                 f"Aguardando {total_delay:.1f}s antes de tentar novamente...",
-                stacklevel=3,
+                stacklevel=_user_stacklevel(),
             )
 
             time.sleep(total_delay)

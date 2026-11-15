@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from pydantic import BaseModel, ValidationError
 from pydantic.errors import PydanticUserError
 
+from .core import _user_stacklevel
 from .errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
     ProviderAbortError,
@@ -381,7 +382,7 @@ def _to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:  # noqa: C
             "Anotações sem efeito de validação descartadas do schema enviado ao Codex: "
             + ", ".join(sorted(dropped_annotations)),
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
     if strict_schema.get("type") != "object":
         msg = (
@@ -1195,7 +1196,7 @@ def _resolve_model(client: Codex, workspace: Path, requested: str | None) -> str
         warnings.warn(
             f"provider='codex' sem model: o Codex vai usar {started.model!r}",
             UserWarning,
-            stacklevel=4,
+            stacklevel=_user_stacklevel(),
         )
     elif started.model != requested:
         msg = f"O Codex resolveu o modelo {started.model!r}, e não o pedido {requested!r}"
