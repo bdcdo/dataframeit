@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from pydantic import BaseModel, ValidationError
 from pydantic.errors import PydanticUserError
 
-from .core import _user_stacklevel
 from .errors import (
     CODEX_FILE_AUTH_LOGIN_COMMAND,
     ProviderAbortError,
@@ -36,6 +35,7 @@ from .errors import (
     validation_error_summary,
 )
 from .llm import LLMConfig, build_prompt
+from .utils import _user_stacklevel
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator

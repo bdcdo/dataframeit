@@ -20,6 +20,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from .search import SearchToolError, get_provider
+from .utils import _user_stacklevel
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -1079,9 +1080,6 @@ def retry_with_backoff(
             error_name = type(e).__name__
             error_msg = str(e)
             retry_info["errors"].append(f"{error_name}: {error_msg[:100]}")
-
-            # core importa este módulo; o import de volta só pode vir aqui.
-            from .core import _user_stacklevel  # noqa: PLC0415 (ver o comentário acima)
 
             # Verificar se é erro não-recuperável
             if not is_recoverable_error(e):

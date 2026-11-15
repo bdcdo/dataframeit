@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import collections.abc
 import datetime as dt
+import inspect
 import json
 import math
 import numbers
@@ -1523,3 +1524,19 @@ def get_nested_pydantic_models(field_type: object) -> list:
             for arg in get_args(value_type):
                 models.extend(get_nested_pydantic_models(arg))
     return models
+
+
+def _user_stacklevel() -> int:
+    """Devolve o stacklevel que leva o aviso à linha que chamou `dataframeit`.
+
+    Vale para o `warnings.warn` da função que chama esta, qualquer que seja o
+    caminho até ela, inclusive por um `contextlib`. Na thread do executor não há
+    essa chamada na pilha, e o aviso aponta a própria função.
+    """
+    frame, level = inspect.currentframe(), 0
+    while frame is not None:
+        code = frame.f_code
+        if code.co_name == "dataframeit" and frame.f_globals.get("__name__") == "dataframeit.core":
+            return level + 1
+        frame, level = frame.f_back, level + 1
+    return 1
