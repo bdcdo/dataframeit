@@ -2933,7 +2933,7 @@ def _checkpoint_mismatch(
         )
     if meta.get("texts") != run.get("texts"):
         return "foi gravado para outra entrada", None
-    saved = read_df(str(path), questions)
+    saved = read_df(path, questions)
     # O CSV nem sempre relê o que gravou (texto com retorno de carro isolado
     # volta partido em duas linhas em algumas versões do pandas).
     if status_col not in saved.columns or len(saved) != len(df):
