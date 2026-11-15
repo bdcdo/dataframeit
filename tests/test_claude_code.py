@@ -612,9 +612,6 @@ def test_custo_sem_tokens_aparece_no_resumo():
     resumo = _format_token_stats(
         {
             **_empty_token_stats(),
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
             "cost_usd": 0.25,
         },
         model=None,

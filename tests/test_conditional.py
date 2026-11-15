@@ -21,9 +21,10 @@ from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, create_m
 from pydantic.json_schema import JsonDict
 
 from dataframeit import ProviderUsageLimitError, dataframeit, field_condition
-from dataframeit.agent import _get_field_config, field_extractor
+from dataframeit.agent import field_extractor
 from dataframeit.conditional import (
     FieldConfig,
+    _get_field_config,
     check_dependencies_exist,
     detect_circular_dependencies,
     evaluate_condition,

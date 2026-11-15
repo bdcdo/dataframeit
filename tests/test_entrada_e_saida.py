@@ -20,9 +20,7 @@ from pydantic_core import core_schema
 from typing_extensions import TypeAliasType
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
-from dataframeit.agent import _USAGE_COUNTERS, _empty_usage
 from dataframeit.core import _empty_token_stats, _format_token_stats
-from dataframeit.llm import _TOKEN_KEYS
 
 
 class Modelo(BaseModel):
@@ -1244,12 +1242,6 @@ def test_rate_limit_delay_espera_depois_de_cada_linha(monkeypatch, parallel_requ
 # =============================================================================
 
 
-def test_contadores_zerados_trazem_as_chaves_que_o_laco_soma():
-    """A soma do uso percorre as tuplas de chaves e faz `+=` no dict zerado."""
-    assert set(_TOKEN_KEYS) <= set(_empty_token_stats())
-    assert set(_empty_usage()) == set(_USAGE_COUNTERS)
-
-
 def test_resumo_detalha_cache_e_raciocinio():
     saida = _format_token_stats(
         {
@@ -1272,9 +1264,6 @@ def test_resumo_sem_requisicao_concluida_omite_a_taxa():
     saida = _format_token_stats(
         {
             **_empty_token_stats(),
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
             "cost_usd": 0.02,
             "elapsed_seconds": 2.0,
             "requests_completed": 0,

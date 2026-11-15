@@ -47,7 +47,7 @@ _CONDITIONAL_KEYS = ("condition", "depends_on")
 
 
 class FieldConfig(TypedDict, total=False):
-    """Configuração de um campo lida do json_schema_extra (agent._get_field_config).
+    """Configuração de um campo lida do json_schema_extra por _get_field_config.
 
     `prompt` traz o `prompt` ou o `prompt_replace` do campo. Os valores chegam
     como o usuário os escreveu, e os tipos declarados são os esperados: a forma
@@ -62,6 +62,30 @@ class FieldConfig(TypedDict, total=False):
     max_search_calls: int | None
     depends_on: object
     condition: object
+
+
+def _get_field_config(extra: dict[str, Any]) -> FieldConfig:
+    """Extrai configurações relevantes do json_schema_extra.
+
+    Args:
+        extra: Dicionário json_schema_extra do campo Pydantic.
+
+    Returns:
+        Dicionário com configurações extraídas (prompt, prompt_append,
+        search_depth, max_results, depends_on, condition). `depends_on`
+        é normalmente derivado automaticamente de `condition` (quando
+        dict) — só precisa ser declarado para `condition` callable; as
+        formas aceitas estão em `_declared_depends_on`.
+    """
+    return {
+        "prompt": extra.get("prompt") or extra.get("prompt_replace"),
+        "prompt_append": extra.get("prompt_append"),
+        "search_depth": extra.get("search_depth"),
+        "max_results": extra.get("max_results"),
+        "max_search_calls": extra.get("max_search_calls"),
+        "depends_on": extra.get("depends_on", []),
+        "condition": extra.get("condition"),
+    }
 
 
 # Operadores de comparação de uma condição em dict, na ordem em que são

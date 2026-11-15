@@ -52,6 +52,7 @@ from .conditional import (
     _CONDITIONAL_KEYS,
     _FIELD_CONFIG_KEYS,
     _collect_configured_fields,
+    _get_field_config,
     _walk_fields,
     evaluate_condition,
     get_field_execution_order,
@@ -510,8 +511,6 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # campo que outra condição pulou antes dela. A configuração que não tem
     # ordem é recusada antes de processar, e aqui fica a ordem do modelo.
     if conditions:
-        from .agent import _get_field_config  # noqa: PLC0415 (ver _provider_backend)
-
         with suppress(ValueError):
             execution_order, _ = get_field_execution_order(
                 pydantic_model,
@@ -1166,8 +1165,6 @@ def _validate_field_configs(
             )
             raise ValueError(msg)
         return
-
-    from .agent import _get_field_config  # noqa: PLC0415 (ver _provider_backend)
 
     field_configs = {
         field_name: _get_field_config(field_info.json_schema_extra)
@@ -2202,7 +2199,7 @@ def _format_token_stats(
         parallel_requests: Número de workers paralelos usados.
         search_provider: Provedor de busca usado, que dá nome à seção de busca.
     """
-    if token_stats.get("total_tokens", 0) == 0 and not token_stats.get("cost_usd"):
+    if token_stats["total_tokens"] == 0 and not token_stats["cost_usd"]:
         return ""
 
     lines = [
@@ -2213,14 +2210,14 @@ def _format_token_stats(
         f"Total de tokens: {token_stats['total_tokens']:,}",
         f"  - Input:  {token_stats['input_tokens']:,} tokens",
     ]
-    if token_stats.get("cached_input_tokens", 0) > 0:
+    if token_stats["cached_input_tokens"] > 0:
         lines.append(f"    └─ Cache: {token_stats['cached_input_tokens']:,} (incluído no Input)")
     lines.append(f"  - Output: {token_stats['output_tokens']:,} tokens")
-    if token_stats.get("reasoning_tokens", 0) > 0:
+    if token_stats["reasoning_tokens"] > 0:
         lines.append(f"    └─ Reasoning: {token_stats['reasoning_tokens']:,} (incluído no Output)")
     # Só providers que informam o custo, como o claude_code, preenchem este total,
     # que inclui as tentativas re-tentadas e as linhas que falharam.
-    if token_stats.get("cost_usd", 0) > 0:
+    if token_stats["cost_usd"] > 0:
         lines.append(f"Custo informado pelo provider: US$ {token_stats['cost_usd']:.4f}")
 
     # Métricas de throughput (se disponíveis)
@@ -2243,7 +2240,7 @@ def _format_token_stats(
         lines.append(f"  - TPM (tokens/min): {tpm:,.0f}")
 
     # Métricas de busca (se houver)
-    if token_stats.get("search_count", 0) > 0:
+    if token_stats["search_count"] > 0:
         lines += [
             "-" * 60,
             f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})",

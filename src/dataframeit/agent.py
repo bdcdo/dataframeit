@@ -20,6 +20,7 @@ from .conditional import (
     _FIELD_CONFIG_KEYS,
     FieldConfig,
     _collect_configured_fields,
+    _get_field_config,
     get_field_execution_order,
     get_group_execution_units,
     should_skip_field,
@@ -67,6 +68,12 @@ def _empty_usage() -> Usage:
         "search_credits": 0,
         "search_count": 0,
     }
+
+
+def _add_usage(total: Usage, usage: Usage) -> None:
+    """Soma em `total` os contadores de `usage`; a chave ausente conta como zero."""
+    for key in _USAGE_COUNTERS:
+        total[key] = total.get(key, 0) + usage.get(key, 0)
 
 
 _LIBRARY_EXTRA_KEYS = frozenset(_FIELD_CONFIG_KEYS + _CONDITIONAL_KEYS)
@@ -139,30 +146,6 @@ def _llm_field_spec(field_info: FieldInfo, owner: type[BaseModel]) -> tuple[Any,
     dono, `list['Item']` não se resolve, e o Pydantic recusa o modelo novo.
     """
     return resolve_forward_refs(field_info.annotation, owner), _llm_field(field_info)
-
-
-def _get_field_config(extra: dict[str, Any]) -> FieldConfig:
-    """Extrai configurações relevantes do json_schema_extra.
-
-    Args:
-        extra: Dicionário json_schema_extra do campo Pydantic.
-
-    Returns:
-        Dicionário com configurações extraídas (prompt, prompt_append,
-        search_depth, max_results, depends_on, condition). `depends_on`
-        é normalmente derivado automaticamente de `condition` (quando
-        dict) — só precisa ser declarado para `condition` callable; as
-        formas aceitas estão em `conditional._declared_depends_on`.
-    """
-    return {
-        "prompt": extra.get("prompt") or extra.get("prompt_replace"),
-        "prompt_append": extra.get("prompt_append"),
-        "search_depth": extra.get("search_depth"),
-        "max_results": extra.get("max_results"),
-        "max_search_calls": extra.get("max_search_calls"),
-        "depends_on": extra.get("depends_on", []),
-        "condition": extra.get("condition"),
-    }
 
 
 def _with_text_placeholder(prompt: str) -> str:
@@ -351,10 +334,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
             search_result = result["data"].get(field_name)
             _set_nested_value(item_dict, path, search_result)
 
-            # Somar usage
-            if result.get("usage"):
-                for key in _USAGE_COUNTERS:
-                    total_usage[key] += result["usage"].get(key, 0)
+            _add_usage(total_usage, result.get("usage") or {})
 
             # Coletar trace
             if item_traces is not None and result.get("trace"):
@@ -586,10 +566,7 @@ def _run_nested_searches(
         # Armazenar contexto de busca
         search_context[path] = result["data"].get(field_name)
 
-        # Somar usage
-        if result.get("usage"):
-            for key in _USAGE_COUNTERS:
-                total_usage[key] += result["usage"].get(key, 0)
+        _add_usage(total_usage, result.get("usage") or {})
 
         # Coletar trace
         if traces is not None and result.get("trace"):
@@ -628,8 +605,7 @@ class _Row:
         return self.only_fields is None or field_name in self.only_fields
 
     def add_usage(self, usage: Usage) -> None:
-        for key in _USAGE_COUNTERS:
-            self.usage[key] += usage.get(key, 0)
+        _add_usage(self.usage, usage)
 
     def add_trace(self, key: str, trace: object) -> None:
         # traces é None quando save_trace está desligado, e aí nenhuma
