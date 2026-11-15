@@ -1535,8 +1535,10 @@ def _user_stacklevel() -> int:
     """
     frame, level = inspect.currentframe(), 0
     while frame is not None:
-        code = frame.f_code
-        if code.co_name == "dataframeit" and frame.f_globals.get("__name__") == "dataframeit.core":
+        if (
+            frame.f_code.co_name == "dataframeit"
+            and frame.f_globals.get("__name__") == f"{__package__}.core"
+        ):
             return level + 1
         frame, level = frame.f_back, level + 1
     return 1
