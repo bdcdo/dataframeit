@@ -15,7 +15,16 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, Strict, create_model, model_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    Strict,
+    create_model,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic_core import core_schema
 from typing_extensions import TypeAliasType
 
@@ -628,6 +637,266 @@ def test_campo_que_o_exclude_if_tira_mantem_o_valor_no_reprocessamento(por_campo
 
     assert resultado["categoria"].tolist() == ["nova"]
     assert resultado["anotacao"].tolist() == ["anterior"]
+
+
+class ModeloComValidadores(BaseModel):
+    uf: str
+    obs: str | None = None
+    resumo: str | None = None
+
+    @field_validator("uf")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+    @field_validator("obs")
+    @classmethod
+    def _na_vira_none(cls, valor):
+        return None if valor == "N/A" else valor
+
+    @model_validator(mode="after")
+    def _resume(self):
+        self.resumo = f"{self.uf}: {self.obs}"
+        return self
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+def test_validadores_do_modelo_rodam_na_linha_montada_campo_a_campo(por_campo):
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloComValidadores,
+        {"uf": "sp", "obs": "N/A", "resumo": "do agente"},
+        por_campo=por_campo,
+    )
+
+    assert resultado[["uf", "obs", "resumo"]].to_dict("records") == [
+        {"uf": "SP", "obs": None, "resumo": "SP: None"}
+    ]
+
+
+class ModeloComPeriodo(BaseModel):
+    inicio: int
+    fim: int
+
+    @model_validator(mode="after")
+    def _ordem(self):
+        if self.inicio > self.fim:
+            msg = "inicio depois do fim"
+            raise ValueError(msg)
+        return self
+
+
+def test_linha_que_o_modelo_recusa_campo_a_campo_fica_com_erro_sem_o_valor():
+    with pytest.warns(UserWarning, match="Linha recusada pelo modelo") as avisos:
+        resultado = _rodar_com_dump(
+            pd.DataFrame({"texto": ["a"]}),
+            ModeloComPeriodo,
+            {"inicio": 2031, "fim": 2030},
+            por_campo=True,
+        )
+
+    detalhe = resultado["_error_details"].iloc[0]
+    assert "Linha recusada pelo modelo: 1 erro(s): (resposta inteira): Value error" in detalhe
+    assert "inicio depois do fim" in detalhe
+    assert "2031" not in detalhe
+    assert "2031" not in str(avisos[0].message)
+    assert resultado["inicio"].tolist() == [None]
+
+
+class ModeloComCondicaoEValidador(BaseModel):
+    tem_valor: bool
+    valor: str = Field(json_schema_extra={"condition": {"field": "tem_valor", "equals": True}})
+
+    @field_validator("valor")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+
+def test_campo_obrigatorio_pulado_pela_condicao_fica_fora_da_validacao():
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a", "b"]}),
+        ModeloComCondicaoEValidador,
+        {"tem_valor": False, "valor": "x"},
+        por_campo=True,
+    )
+
+    assert "_error_details" not in resultado.columns
+    assert resultado["tem_valor"].tolist() == [False, False]
+    assert resultado["valor"].tolist() == [None, None]
+
+
+class ModeloComCondicaoSobreValorNormalizado(BaseModel):
+    uf: str
+    valor: str = Field(json_schema_extra={"condition": {"field": "uf", "equals": "SP"}})
+
+    @field_validator("uf")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+
+def test_condicao_le_o_valor_validado_que_a_execucao_grava_e_a_retomada_rele():
+    respostas = {"uf": "sp", "valor": "x"}
+    modelo = ModeloComCondicaoSobreValorNormalizado
+
+    resultado = _rodar_com_dump(pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True)
+    assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+    resultado["_dataframeit_status"] = "processed"
+    retomada = _rodar_com_dump(resultado, modelo, respostas, por_campo=True)
+    assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+
+class ModeloComNormalizacaoPeloModelo(BaseModel):
+    normaliza: bool
+    uf: str
+    valor: str = Field(json_schema_extra={"condition": {"field": "uf", "equals": "SP"}})
+
+    @model_validator(mode="after")
+    def _normaliza(self):
+        if self.normaliza:
+            self.uf = self.uf.upper()
+        return self
+
+
+class ModeloComNormalizacaoDepoisDoCampo(BaseModel):
+    """O campo lido pela condição vem antes do que o model_validator usa para normalizá-lo."""
+
+    uf: str
+    normaliza: bool
+    valor: str = Field(json_schema_extra={"condition": {"field": "uf", "equals": "SP"}})
+
+    @model_validator(mode="after")
+    def _normaliza(self):
+        if self.normaliza:
+            self.uf = self.uf.upper()
+        return self
+
+
+@pytest.mark.parametrize(
+    "modelo", [ModeloComNormalizacaoPeloModelo, ModeloComNormalizacaoDepoisDoCampo]
+)
+def test_condicao_le_o_valor_que_o_validador_do_modelo_da_com_os_outros_campos(modelo):
+    respostas = {"normaliza": True, "uf": "sp", "valor": "x"}
+
+    resultado = _rodar_com_dump(pd.DataFrame({"texto": ["a"]}), modelo, respostas, por_campo=True)
+    assert resultado[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+    resultado["_dataframeit_status"] = "processed"
+    retomada = _rodar_com_dump(resultado, modelo, respostas, por_campo=True)
+    assert retomada[["uf", "valor"]].to_dict("records") == [{"uf": "SP", "valor": "x"}]
+
+
+class ModeloQueValidaODefault(BaseModel):
+    model_config = ConfigDict(validate_default=True)
+
+    tem_valor: bool
+    valor: str | None = Field(
+        None, json_schema_extra={"condition": {"field": "tem_valor", "equals": True}}
+    )
+
+    @field_validator("valor")
+    @classmethod
+    def _maiuscula(cls, valor):
+        return valor.upper()
+
+
+def test_campo_pulado_nao_passa_pelo_validador_com_validate_default():
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloQueValidaODefault,
+        {"tem_valor": False, "valor": "x"},
+        por_campo=True,
+    )
+
+    assert "_error_details" not in resultado.columns
+    assert resultado["valor"].tolist() == [None]
+
+
+class ModeloComSerializadorQueLeOPulado(BaseModel):
+    tem_valor: bool
+    valor: str | None = Field(
+        None, json_schema_extra={"condition": {"field": "tem_valor", "equals": True}}
+    )
+
+    @model_serializer(mode="wrap")
+    def _preenche(self, handler):
+        dados = handler(self)
+        dados["valor"] = dados["valor"] or "vazio"
+        return dados
+
+
+def test_campo_pulado_pela_condicao_chega_ao_serializador_como_none():
+    resultado = _rodar_com_dump(
+        pd.DataFrame({"texto": ["a"]}),
+        ModeloComSerializadorQueLeOPulado,
+        {"tem_valor": False, "valor": "x"},
+        por_campo=True,
+    )
+
+    assert "_error_details" not in resultado.columns
+    assert resultado["valor"].tolist() == [None]
+
+
+class ModeloComValidadorQueLeOPulado(BaseModel):
+    tem_valor: bool
+    valor: str | None = Field(
+        None, json_schema_extra={"condition": {"field": "tem_valor", "equals": True}}
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _le_o_valor(cls, dados):
+        dados["resumo"] = dados["valor"]
+        return dados
+
+
+def test_excecao_do_validador_na_linha_montada_fica_no_erro_da_linha():
+    with pytest.warns(UserWarning, match="Linha recusada pelo modelo: KeyError: 'valor'"):
+        resultado = _rodar_com_dump(
+            pd.DataFrame({"texto": ["a"]}),
+            ModeloComValidadorQueLeOPulado,
+            {"tem_valor": False, "valor": "x"},
+            por_campo=True,
+        )
+
+    assert resultado["_error_details"].tolist() == [
+        "[Erro não-recuperável] ProviderOutputError: Linha recusada pelo modelo: KeyError: 'valor'"
+    ]
+
+
+class ModeloComExcludeIfDoValidado(BaseModel):
+    categoria: str
+    obs: str | None = Field(None, exclude_if=lambda valor: valor is None)
+
+    @field_validator("obs")
+    @classmethod
+    def _na_vira_none(cls, valor):
+        return None if valor == "N/A" else valor
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+def test_campo_que_o_exclude_if_tira_depois_do_validador_nao_e_gravado(por_campo):
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "categoria": ["velha"],
+            "obs": ["anterior"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado = _rodar_com_dump(
+        entrada,
+        ModeloComExcludeIfDoValidado,
+        {"categoria": "nova", "obs": "N/A"},
+        por_campo=por_campo,
+        reprocess_columns=["categoria", "obs"],
+    )
+
+    assert resultado["categoria"].tolist() == ["nova"]
+    assert resultado["obs"].tolist() == ["anterior"]
 
 
 def test_retomada_do_checkpoint_com_coluna_de_campo_com_exclude_segue(tmp_path):

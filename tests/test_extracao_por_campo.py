@@ -97,7 +97,7 @@ RESPOSTAS = {
 
 @pytest.mark.parametrize("grupos", [None, {"g": SearchGroupConfig(fields=["a"])}])
 def test_usage_traz_o_provedor_de_busca(grupos):
-    resultado = _rodar(_Agente({"a": "1"}), Completo, _config(grupos, provider="exa"))
+    resultado = _rodar(_Agente({"a": "1", "itens": []}), Completo, _config(grupos, provider="exa"))
     assert resultado["usage"]["search_provider"] == "exa"
 
 
@@ -455,7 +455,7 @@ def test_lista_de_mais_de_um_modelo_busca_os_campos_de_cada_modelo(anotacao):
     modelo = create_model("Obras", obras=(anotacao, None))
     agente = _Agente(
         {
-            "obras": [{"titulo": "Dom Casmurro"}, {"nome": "Central do Brasil"}],
+            "obras": [{"titulo": "Dom Casmurro", "isbn": None}],
             "isbn": "978",
             "diretor": "Walter Salles",
         }
@@ -471,12 +471,12 @@ def test_lista_de_mais_de_um_modelo_busca_os_campos_de_cada_modelo(anotacao):
         "obras.diretor": 1,
     }
     assert agente.nomes == ["NestedSearch_obras_isbn", "NestedSearch_obras_diretor", "Obras_obras"]
-    assert resultado["data"]["obras"] == [{"titulo": "Dom Casmurro"}, {"nome": "Central do Brasil"}]
+    assert resultado["data"]["obras"] == [{"titulo": "Dom Casmurro", "isbn": None}]
 
 
 @pytest.mark.parametrize(
     "resposta",
-    [[{"titulo": "Dom Casmurro"}], {"nome": "Central do Brasil"}],
+    [[{"titulo": "Dom Casmurro", "isbn": None}], {"nome": "Central do Brasil", "diretor": None}],
     ids=["lista", "modelo"],
 )
 def test_lista_ou_modelo_busca_os_campos_de_cada_modelo(resposta):

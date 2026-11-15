@@ -109,6 +109,8 @@ result = dataframeit(
 )
 ```
 
+Each agent validates its answer only against its own field's annotation. The assembled row then goes through the whole model, with its `field_validator` and `model_validator`, and comes out with the same values as the single-agent mode. Fields without an answer in the row stay out of this validation: a field skipped by `condition`, one that `model_dump` leaves out, and one not requested in `reprocess_columns` that is empty. The `model_validator` sees them as `None`. A `condition` reads the value the field will have in the output: the row assembled so far goes through the model, with fields still unanswered as `None`, and a validator that fails without them leaves the condition reading the agent's answer. A validator on the field's type, such as one in `Annotated` or in a nested model, runs in the agent call and again on the row; one that does not return the same value on the second pass gives a different value from the single-agent mode. A row the model rejects gets status `error`, without a new attempt, and the detail carries the path and rule of each error, or the exception the validator raised.
+
 ### Deep Search
 
 ```python

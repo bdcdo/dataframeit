@@ -45,7 +45,7 @@ from pandas.api.types import infer_dtype, is_bool, is_scalar
 # O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
 # `__getattr__` que o checker de tipos lê como `object`.
 from pandas.core.util.hashing import hash_pandas_object
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, ValidationError
 from tqdm import tqdm
 from typing_extensions import override
 
@@ -94,6 +94,7 @@ from .utils import (
     _json_default,
     _keeps_nan,
     _silent_slice_write,
+    _skipping_model,
     _user_stacklevel,
     accepts_only_text,
     from_pandas,
@@ -424,10 +425,11 @@ def _is_absent(value: object, *, nan_is_value: bool) -> bool:
 def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], object]:
     """Converte o valor relido de um campo à forma em que a execução o passa às condições.
 
-    A execução passa às condições o model_dump da resposta validada pelo
-    modelo do campo, e o checkpoint grava a data, o Decimal e a chave de dict
-    como texto. Validado de novo sem strict, como em `_validate_row`, o valor
-    volta ao tipo do campo, e só substitui o relido onde diz o mesmo
+    A execução passa às condições o model_dump do valor com os validadores do
+    modelo, que é o que ela grava, e o checkpoint grava a data, o Decimal e a
+    chave de dict como texto. Validado de novo sem strict pelo modelo do
+    campo, sem os validadores, que já rodaram, o valor volta ao tipo do campo,
+    e só substitui o relido onde diz o mesmo
     (`_validated_where_same`): o item que um validador muda a cada passada
     fica como foi relido. O campo com exclude=True, que o dump deixa de fora,
     a execução viu como None.
@@ -480,16 +482,13 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
 
     Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
     CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
-    na linha em que a condição do campo é falsa, que o deixa None. No modo
-    normal, a execução grava o model_dump do modelo, e o texto vazio
+    na linha em que a condição do campo é falsa, que o deixa None. A
+    execução grava o model_dump do modelo, e o texto vazio
     restaurado que a validação da linha não devolve como "" não é o que ela
     gravou: a célula é o None que um validador deu ao texto vazio, que o tipo
-    do campo recusa, e o campo é acusado. No modo por campo
-    (search_per_field), os validadores do modelo não rodam na execução, que
-    grava o texto vazio como veio, e a validação daqui acusa do mesmo jeito o
-    campo cujo validador o troca. O None que um validador dá a outra resposta
-    não se separa do texto vazio na célula: o "" restaurado passa pelo
-    validador como é, e o campo volta "", sem acusação.
+    do campo recusa, e o campo é acusado. O None que um validador dá a outra
+    resposta não se separa do texto vazio na célula: o "" restaurado passa
+    pelo validador como é, e o campo volta "", sem acusação.
     """
     incompatible_fields: set[str] = set()
     values_to_fill: dict[tuple[int, str], Any] = {}
@@ -533,7 +532,6 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 if field_name in conditions
             }
     as_executed = _executed_form(pydantic_model)
-    skipping_models: dict[tuple[frozenset[str], frozenset[str]], Any] = {}
     # O campo com exclude=True não sai no model_dump, e a execução não grava a
     # coluna dele: a célula guarda o None com que a coluna foi criada ou o que a
     # entrada trazia. Não há resposta paga a conferir, e a célula fica fora da
@@ -569,37 +567,6 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         and _admits_none(field.annotation)
         and (field.default_factory is not None or field.default is not None)
     )
-
-    def model_skipping(skipped: frozenset[str], hidden: frozenset[str]) -> type[BaseModel]:
-        """O modelo de validação com os campos pulados e os obrigatórios fora do dump trocados."""
-        if not skipped and not hidden:
-            return pydantic_model
-        key = (skipped, hidden)
-        if key not in skipping_models:
-            # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
-            skipping_models[key] = create_model(  # ty: ignore[no-matching-overload]
-                f"{pydantic_model.__name__}CheckpointSkipped",
-                __base__=pydantic_model,
-                **{
-                    # O None no lugar do obrigatório fora do dump não passa
-                    # pelos validadores do campo. O campo continua fora do
-                    # dump, longe do serializador dele, salvo o que o
-                    # @model_serializer tira, que chega a ele como na execução,
-                    # com o None no lugar do valor.
-                    field_name: (
-                        Any,
-                        Field(
-                            None,
-                            exclude=field_name not in serializer_dropped,
-                            validate_default=False,
-                        ),
-                    )
-                    if field_name in hidden
-                    else (Any, None)
-                    for field_name in skipped | hidden
-                },
-            )
-        return skipping_models[key]
 
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
@@ -684,7 +651,9 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             projected[field_name] = value
 
         validated_data, rejected = _validate_row(
-            model_skipping(skipped, required_excluded | frozenset(omitted_required)),
+            _skipping_model(
+                pydantic_model, skipped, required_excluded | frozenset(omitted_required)
+            ),
             projected,
             rejected_fields,
         )
@@ -3144,10 +3113,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
     validador dá a outra resposta, como "N/A", fica na mesma célula vazia, e a
     retomada do CSV e do XLSX o devolve como ""; o parquet guarda o None, e a
     retomada o acusa. Quem
-    quer guardar esse None declara o campo Optional[str]. No modo por campo
-    (search_per_field), os validadores do modelo não rodam na execução, e o
-    texto vazio que ela gravou num campo cujo validador o troca por None é
-    acusado do mesmo jeito no CSV e no XLSX, e volta "" do parquet. O campo com
+    quer guardar esse None declara o campo Optional[str]. O campo com
     exclude=True fica de fora, porque o model_dump não o traz e a célula dele
     guarda o None que a execução pôs ao criar a coluna, e também o campo que o
     dump pode deixar de fora conforme a resposta (`_omittable_fields`), cuja
