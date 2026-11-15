@@ -113,38 +113,11 @@ def validation_error_summary(error: ValidationError) -> str:
     carregam este resumo decide pela classe, e não pelo texto.
     """
     rules = [
-        f"{'.'.join(str(part) for part in item.get('loc', ())) or '(resposta inteira)'}: "
-        f"{item.get('msg', '')}"
+        f"{'.'.join(str(part) for part in item['loc']) or '(resposta inteira)'}: {item['msg']}"
         for item in error.errors()[:MAX_REJECTED_RULES]
     ]
     return f"{error.error_count()} erro(s): {'; '.join(rules)}"
 
-
-# Erros considerados recuperáveis (transientes)
-RECOVERABLE_ERRORS = (
-    # Timeouts e deadlines
-    "DeadlineExceeded",
-    "Timeout",
-    "TimeoutError",
-    "ReadTimeout",
-    "ConnectTimeout",
-    # Rate limits
-    "RateLimitError",
-    "ResourceExhausted",
-    "TooManyRequests",
-    "429",
-    # Erros de servidor temporários
-    "ServiceUnavailable",
-    "InternalServerError",
-    "500",
-    "502",
-    "503",
-    "504",
-    # Erros de conexão
-    "ConnectionError",
-    "ConnectionReset",
-    "SSLError",
-)
 
 # Erros não-recuperáveis (não adianta tentar novamente)
 NON_RECOVERABLE_ERRORS = (
@@ -265,11 +238,8 @@ def _infer_provider_info(provider: str | None) -> dict[str, Any]:
         "google_genai": "Google Gemini",
         "openai": "OpenAI",
         "anthropic": "Anthropic Claude",
-        "cohere": "Cohere",
-        "mistralai": "Mistral AI",
         "fireworks": "Fireworks AI",
         "together": "Together AI",
-        "groq": "Groq",
     }
     name = name_map.get(provider, provider.replace("_", " ").title())
 
@@ -300,14 +270,17 @@ def _all_extra_packages() -> frozenset[str]:
     pacote, devolve vazio: não há como saber o que o extra traz, e sugeri-lo
     poderia mandar instalar algo que não resolve.
     """
+    # O nome passa pela normalização do importlib.metadata, e o requisito tem um
+    # ";" só, o do marcador: as trocas de caixa e de partition por rpartition que
+    # o teste de mutação faz nas duas linhas marcadas não mudam o resultado.
     try:
-        requirements = importlib.metadata.requires("dataframeit") or []
+        requirements = importlib.metadata.requires("dataframeit") or []  # pragma: no mutate
     except importlib.metadata.PackageNotFoundError:
         return frozenset()
     packages = set()
     for requirement in requirements:
         # O marcador de ambiente vem depois do ";", e é nele que o extra aparece.
-        name_part, _, marker = requirement.partition(";")
+        name_part, _, marker = requirement.partition(";")  # pragma: no mutate
         match = _REQUIREMENT_NAME.match(name_part.strip())
         if match and _EXTRA_ALL_MARKER.search(marker):
             packages.add(_normalize_distribution_name(match.group()))
@@ -527,8 +500,12 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # providers, são lidos pelo texto: sem status, em todas as caixas; com
     # status, o texto ainda decide a de chave inválida e, fora do SearchToolError,
     # as do Tavily e do Exa, e o status decide as outras.
+    # Nenhum padrão casa com o texto vazio nem com o texto fixo que o teste de
+    # mutação põe no lugar dele.
     error_str = (
-        "" if isinstance(error, ProviderError) else f"{type(error).__name__}: {error}".lower()
+        ""  # pragma: no mutate
+        if isinstance(error, ProviderError)
+        else f"{type(error).__name__}: {error}".lower()
     )
     error_name = type(error).__name__
     status = _http_error_status(error)
@@ -670,10 +647,10 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
         ["authenticationerror", "invalidapikey", "api_key", "api key"], (401,)
     ):
         if env_var is None:
-            # Auth via credenciais de SDK (Vertex AI ADC, AWS creds, etc).
-            auth_hint = provider_data.get(
-                "auth_hint", "Configure as credenciais conforme a documentação do provider."
-            )
+            # Auth via credenciais de SDK (Vertex AI ADC, AWS creds, etc). Todo
+            # provider sem env_var traz em _PROVIDER_OVERRIDES a dica de como
+            # se autenticar.
+            auth_hint = provider_data["auth_hint"]
             hint_lines = "\n".join(f"║     {line:<73}║" for line in auth_hint.split("\n"))
             msg = f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -840,9 +817,10 @@ def _generic_box_details(message: str) -> str:
     ) or [""]
     indent = " " * len(_GENERIC_BOX_DETAIL_LABEL)
     labels = [_GENERIC_BOX_DETAIL_LABEL] + [indent] * (len(lines) - 1)
+    # Rótulos e linhas têm o mesmo tamanho, e o strict do zip não muda o resultado.
     return "\n".join(
         f"║  {label}{_pad_display(line, _GENERIC_BOX_DETAIL_WIDTH)} ║"
-        for label, line in zip(labels, lines, strict=True)
+        for label, line in zip(labels, lines, strict=True)  # pragma: no mutate
     )
 
 
@@ -1003,24 +981,24 @@ def _http_error_status(error: BaseException) -> int | None:
 
 
 def _matches_error_pattern(pattern: str, error_str: str) -> bool:
-    """Casa um padrão com a mensagem, já em minúsculas.
+    """Casa um padrão com a mensagem, os dois já em minúsculas.
 
     Padrões numéricos casam só como número isolado, para que '401' não case com
     '4015 tokens'.
     """
     if pattern.isdigit():
         return re.search(rf"\b{pattern}\b", error_str) is not None
-    return pattern.lower() in error_str
+    return pattern in error_str
 
 
-def is_recoverable_error(error: Exception) -> bool:  # noqa: PLR0911 (precedência da docstring)
+def is_recoverable_error(error: Exception) -> bool:
     """Verifica se um erro é recuperável (vale a pena fazer retry).
 
     A decisão segue esta precedência: as classes Provider*Error; o
     `is_retryable` do ModelError do langchain-core, quando existe; o status HTTP
     estruturado da exceção ou da sua causa (408, 409, 429 e 5xx são recuperáveis,
-    os demais 4xx não); os padrões de NON_RECOVERABLE_ERRORS e RECOVERABLE_ERRORS
-    na mensagem; e, se nada casar, o erro é tratado como recuperável.
+    os demais 4xx não); os padrões de NON_RECOVERABLE_ERRORS na mensagem; e, se
+    nenhum casar, o erro é tratado como recuperável.
 
     Args:
         error: Exceção a ser analisada.
@@ -1044,17 +1022,10 @@ def is_recoverable_error(error: Exception) -> bool:  # noqa: PLR0911 (precedênc
 
     error_str = f"{type(error).__name__}: {error}".lower()
 
-    # Verificar se é explicitamente não-recuperável
-    for pattern in NON_RECOVERABLE_ERRORS:
-        if _matches_error_pattern(pattern, error_str):
-            return False
-
-    # Verificar se é explicitamente recuperável
-    for pattern in RECOVERABLE_ERRORS:
-        if _matches_error_pattern(pattern, error_str):
-            return True
-
-    return True
+    # Só o padrão não-recuperável muda a decisão; sem ele, o erro é transitório.
+    return not any(
+        _matches_error_pattern(pattern.lower(), error_str) for pattern in NON_RECOVERABLE_ERRORS
+    )
 
 
 def is_rate_limit_error(error: Exception) -> bool:
@@ -1136,22 +1107,17 @@ def retry_with_backoff(
         max_delay: Delay máximo em segundos.
 
     Returns:
-        O dicionário devolvido por func, com as tentativas em '_retry_info'.
+        O dicionário devolvido por func, com as novas tentativas em '_retry_info'.
 
     Raises:
         ProviderAbortError: Repassado sem nova tentativa e sem aviso; a cota de
             uso esgotada chega como ProviderUsageLimitError.
         Exception: Última exceção após esgotar tentativas ou erro não-recuperável.
     """
-    retry_info = {
-        "attempts": 0,
-        "retries": 0,
-        "errors": [],
-    }
+    retry_info = {"retries": 0}
 
     attempt = 0
     while True:
-        retry_info["attempts"] = attempt + 1
         try:
             result = func()
             # Dentro do try: uma falha ao anotar o resultado também ganha nova tentativa.
@@ -1165,8 +1131,6 @@ def retry_with_backoff(
             if usage_limit is not None:
                 raise usage_limit from e
             error_name = type(e).__name__
-            error_msg = str(e)
-            retry_info["errors"].append(f"{error_name}: {error_msg[:100]}")
 
             # Verificar se é erro não-recuperável
             if not is_recoverable_error(e):

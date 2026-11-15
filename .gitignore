@@ -58,3 +58,4 @@ htmlcov/
 # Project specific
 *.log
 site/
+mutants/

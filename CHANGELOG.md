@@ -9,9 +9,13 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
+- Teste de mutação de `errors.py` e `utils.py` com o `mutmut`, configurado no `pyproject.toml` e rodado pelo workflow `mutation.yml` toda segunda-feira e sob demanda, fora do CI do PR. Os mutantes que sobreviviam e mudavam o resultado viraram testes: cada padrão de texto que decide uma caixa de erro, o texto das mensagens de pacote ausente, os defaults de `retry_with_backoff` e os casos de `parse_json` sem bloco JSON. Os que não mudam o resultado ganharam `# pragma: no mutate` com o motivo (#212).
+
 - Um teste confere as permissões do `docs.yml`, que nenhum check de PR executa: o workflow só concede `contents: read`, o job `deploy` tem exatamente `pages: write` e `id-token: write`, e nenhum outro job escreve. O PR que mexer nelas reprova no job de testes, antes do merge (#268).
 
 ### Alterado
+
+- O aviso de coluna Object da saída polars aponta a chamada de `dataframeit()` por `_user_stacklevel()`, como os demais avisos, e não por um `stacklevel` fixo. O `_retry_info` de `retry_with_backoff` guarda só `retries`, o único campo que o `core` lê, e a caixa de autenticação por credenciais de SDK lê a dica do provider sem texto padrão, que nenhum provider usava. Sai de `errors.py` a constante `RECOVERABLE_ERRORS`: o erro sem padrão de `NON_RECOVERABLE_ERRORS` já era tratado como recuperável, e os padrões dela não mudavam a classificação (#212).
 
 - A seleção das linhas que a execução processa (todas com `reprocess_columns`, só as pendentes sem ele) é calculada uma vez, e o laço sequencial, o paralelo e a marca das linhas não alcançadas por uma interrupção usam a mesma; `_record_error` e os registros de reserva não devolvem mais a mensagem de erro, que ninguém lia. Sem mudança de comportamento (#358).
 - As marcas das linhas não alcançadas por uma interrupção, no abort e no Ctrl-C, são gravadas por coluna, e não célula a célula: em 100 mil linhas, levam de centésimos de segundo, com uma coluna do modelo, a menos de um segundo, com 30, em vez de 2 a 34 segundos, e um segundo Ctrl-C tem menos tempo para cortá-las (#281, #358).

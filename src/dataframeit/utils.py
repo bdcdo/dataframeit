@@ -123,10 +123,10 @@ def parse_json(resposta: str) -> dict[str, Any]:
         # Tentar extrair entre chaves
         start = content.find("{")
         end = content.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_string = content[start : end + 1]
-        else:
-            json_string = content.strip()
+        # As duas posições só coincidem quando nenhuma chave aparece, e com
+        # `start` encontrado a troca de `>` por `>=` não muda o resultado.
+        closes_after = end > start  # pragma: no mutate
+        json_string = content[start : end + 1] if start != -1 and closes_after else content.strip()
 
     try:
         return json.loads(json_string)
@@ -267,7 +267,9 @@ def _admits_int(annotation: object) -> bool:
     return any(
         member is int
         or (
-            get_origin(member) is typing.Literal
+            # Fora do Literal, nenhuma anotação de campo tem int entre os
+            # argumentos, e trocar o `and` por `or` não muda o resultado.
+            get_origin(member) is typing.Literal  # pragma: no mutate
             and any(type(arg) is int for arg in get_args(member))
         )
         for member in _members(annotation)
@@ -431,7 +433,7 @@ def from_pandas(
                 "devolveu, exceto o Enum fora de lista ou dict, que sai pelo valor. Converta-as "
                 "antes de gravar em arquivo.",
                 UserWarning,
-                stacklevel=3,
+                stacklevel=_user_stacklevel(),
             )
         return pl.DataFrame(columns)
     return df
@@ -539,8 +541,9 @@ def _typevar_validated_as(typevar: typing.TypeVar) -> object:
 
     O default dele, a união das restrições, o limite ou, sem nenhum dos três, Any.
     """
-    # O has_default só existe no TypeVar do typing_extensions e do Python 3.13+.
-    if getattr(typevar, "has_default", lambda: False)():
+    # O has_default só existe no TypeVar do typing_extensions e do Python 3.13+. O
+    # teste de mutação troca o False do lambda por None, que também é falso.
+    if getattr(typevar, "has_default", lambda: False)():  # pragma: no mutate
         default = typevar.__default__  # ty: ignore[unresolved-attribute]
         return type(None) if default is None else default
     if typevar.__constraints__:
@@ -561,10 +564,12 @@ def _alias_applied(alias: object, args: tuple[Any, ...]) -> object:
     que não usa parâmetro nenhum fica como está.
     """
     value = alias.__value__  # ty: ignore[unresolved-attribute]
-    by_param = dict(zip(alias.__type_params__, args, strict=False))  # ty: ignore[unresolved-attribute]
+    # O teste de mutação troca o strict=False por None ou pelo default, que também
+    # são falsos, e o () do getattr por None, que o `not` trata igual.
+    by_param = dict(zip(alias.__type_params__, args, strict=False))  # ty: ignore[unresolved-attribute]  # pragma: no mutate
     if isinstance(value, typing.TypeVar):
         return by_param.get(value, value)
-    parameters = getattr(value, "__parameters__", ())
+    parameters = getattr(value, "__parameters__", ())  # pragma: no mutate
     if not parameters:
         return value
     return value[tuple(by_param.get(param, param) for param in parameters)]
@@ -1080,7 +1085,9 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
         df: DataFrame a normalizar.
         complex_fields: Set com nomes das colunas a normalizar.
     """
-    with _silent_slice_write(df):
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
         for col in complex_fields:
             if col in df.columns:
                 df[col] = df[col].apply(normalize_value)
@@ -1293,8 +1300,9 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
         if not is_string_dtype(df[col].dtype):
             continue
 
-        # Verificar se algum valor parece JSON
-        sample = df[col].dropna().head(10)
+        # Verificar se algum valor parece JSON. O tamanho da amostra limita o
+        # custo e não é contrato, e por isso fica fora do teste de mutação.
+        sample = df[col].dropna().head(10)  # pragma: no mutate
         has_json = any(isinstance(v, str) and v.strip().startswith(("[", "{")) for v in sample)
 
         if has_json:
@@ -1511,7 +1519,7 @@ def _lookup_forward_ref(name: str, owner: type[BaseModel]) -> type | None:
         return owner
 
     namespaces = (
-        getattr(owner, "__pydantic_parent_namespace__", None) or {},
+        owner.__pydantic_parent_namespace__ or {},
         vars(sys.modules[owner.__module__]) if owner.__module__ in sys.modules else {},
     )
     for namespace in namespaces:
@@ -1597,7 +1605,7 @@ def get_nested_pydantic_models(field_type: object) -> list[type[BaseModel]]:
     return list(dict.fromkeys(models))
 
 
-def _user_stacklevel() -> int:
+def _user_stacklevel() -> int:  # pragma: no mutate block
     """Devolve o stacklevel que leva o aviso à linha que chamou `dataframeit`.
 
     Vale para o `warnings.warn` da função que chama esta, qualquer que seja o
