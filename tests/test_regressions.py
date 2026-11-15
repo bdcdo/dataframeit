@@ -1,10 +1,9 @@
-from contextlib import nullcontext
-
 import pandas as pd
 import pytest
 
 from dataframeit import llm as llm_module
 from dataframeit.core import _setup_columns
+from dataframeit.utils import _detach_from_parent
 
 
 @pytest.mark.filterwarnings("error")
@@ -20,6 +19,8 @@ def test_setup_columns_mutates_slice_without_warnings(copy_input):
     if copy_input:
         df_copy = df_copy.copy()
 
+    # Como dataframeit faz com a entrada antes de gravar nela.
+    _detach_from_parent(df_copy)
     _setup_columns(
         df_copy,
         expected_columns=["campo1", "campo2"],
@@ -62,21 +63,15 @@ def test_build_prompt_preserves_other_placeholders():
 
 
 @pytest.mark.parametrize("legacy_warning", [False, True])
-def test_setup_columns_uses_option_only_with_legacy_warning(monkeypatch, legacy_warning):
-    calls = []
-
-    def option_context(*args):
-        calls.append(args)
-        return nullcontext()
-
-    monkeypatch.setattr(pd, "option_context", option_context)
+def test_detach_from_parent_only_with_legacy_warning(monkeypatch, legacy_warning):
+    """Só o pandas com o aviso de escrita em fatia tem a referência ao original a desligar."""
     if legacy_warning:
         monkeypatch.setattr(pd.errors, "SettingWithCopyWarning", UserWarning, raising=False)
     else:
         monkeypatch.delattr(pd.errors, "SettingWithCopyWarning", raising=False)
-
     df = pd.DataFrame({"texto": ["a"]})
-    _setup_columns(df, ["resposta"], None, track_tokens=False)
+    object.__setattr__(df, "_is_copy", "original")
 
-    assert calls == ([("mode.chained_assignment", None)] if legacy_warning else [])
-    assert df["resposta"].isna().all()
+    _detach_from_parent(df)
+
+    assert df.__dict__["_is_copy"] == (None if legacy_warning else "original")

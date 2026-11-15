@@ -22,7 +22,6 @@ import sys
 import types
 import typing
 import warnings
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -1018,15 +1017,17 @@ def normalize_value(value: Any) -> Any:  # noqa: ANN401, PLR0911 (célula de qua
     return value
 
 
-def _silent_slice_write() -> AbstractContextManager[None]:
-    """Contexto em que gravar coluna num DataFrame que é fatia de outro não avisa.
+def _detach_from_parent(df: pd.DataFrame) -> None:
+    """Desliga o DataFrame do original de que é fatia, para gravar nele sem aviso.
 
-    O pandas 2 ainda avisa ao escrever numa fatia; no pandas 3, a cópia na
-    escrita substitui esse aviso e a opção que o controla não se aplica.
+    No pandas 2, gravar coluna numa fatia emite SettingWithCopyWarning enquanto
+    `_is_copy` apontar para o original. Desligar a referência vale só para este
+    DataFrame, ao contrário da opção `mode.chained_assignment`, que é global do
+    processo: duas threads que a trocassem ao mesmo tempo poderiam deixá-la
+    desligada. No pandas 3, a cópia na escrita substitui o aviso.
     """
     if hasattr(pd.errors, "SettingWithCopyWarning"):
-        return pd.option_context("mode.chained_assignment", None)
-    return nullcontext()
+        df._is_copy = None  # noqa: SLF001 (atributo que o pandas 2 consulta para avisar)
 
 
 def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> None:
@@ -1038,10 +1039,10 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
         df: DataFrame a normalizar.
         complex_fields: Set com nomes das colunas a normalizar.
     """
-    with _silent_slice_write():
-        for col in complex_fields:
-            if col in df.columns:
-                df[col] = df[col].apply(normalize_value)
+    _detach_from_parent(df)
+    for col in complex_fields:
+        if col in df.columns:
+            df[col] = df[col].apply(normalize_value)
 
 
 def read_df(
