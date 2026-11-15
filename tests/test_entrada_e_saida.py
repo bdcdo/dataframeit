@@ -363,11 +363,11 @@ def test_coluna_com_nome_de_campo_e_checkpoint_levanta_sem_gravar(tmp_path):
     assert not checkpoint.exists()
 
 
-def _interrompe_na_segunda_linha(entrada, checkpoint, questions=ModeloCategoria, **opcoes):
+def _interrompe_na_segunda_linha(entrada, checkpoint, **opcoes):
     """Grava em `checkpoint` a primeira linha processada e a segunda pendente."""
     _rodar_sem_avisos(
         entrada,
-        questions,
+        ModeloCategoria,
         _responde_em_sequencia({"categoria": "llm-a", "nota": 1}, ProviderAbortError("limite")),
         batch_size=1,
         checkpoint_path=checkpoint,

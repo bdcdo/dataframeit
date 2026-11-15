@@ -1733,6 +1733,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # passa como entrada já traz a coluna, e o arquivo não é lido de novo.
     signature = None
     empty_text_fields: frozenset[str] = frozenset()
+    reprocessed_columns = frozenset(reprocess_columns or [])
     if checkpoint is not None:
         signature = _run_signature(
             questions,
@@ -1751,24 +1752,15 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             structures=frozenset(complex_fields),
         )
         if resume and status_col not in df_pandas.columns and Path(checkpoint.path).exists():
-            saved = _resumable_checkpoint(df_pandas, checkpoint, questions, status_col=status_col)
-            if saved is not None:
-                _raise_if_overwritten(
-                    df_pandas,
-                    expected_columns,
-                    reprocess_columns,
-                    nan_columns,
-                    status_col=status_col,
-                    pending=saved[status_col].isna().to_numpy(),
-                )
-                empty_text_fields = _resume_from_checkpoint(
-                    df_pandas,
-                    saved,
-                    checkpoint,
-                    questions,
-                    text_column=text_column,
-                    status_col=status_col,
-                )
+            empty_text_fields = _resume_from_checkpoint(
+                df_pandas,
+                checkpoint,
+                questions,
+                text_column=text_column,
+                status_col=status_col,
+                reprocessed_columns=reprocessed_columns,
+                nan_columns=nan_columns,
+            )
 
     # Entradas vazias têm um resultado bem definido e não dependem de provider.
     if df_pandas.empty:
@@ -1788,9 +1780,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # sobrescrever.
     if status_col not in df_pandas.columns:
         _raise_if_overwritten(
-            df_pandas, expected_columns, reprocess_columns, nan_columns, status_col=status_col
+            df_pandas, expected_columns, reprocessed_columns, nan_columns, status_col=status_col
         )
-    reprocessed_columns = set(reprocess_columns or [])
     existing_cols = [col for col in expected_columns if col in df_pandas.columns]
     if existing_cols and not resume and not reprocess_columns:
         warnings.warn(
@@ -2936,7 +2927,7 @@ def _checkpoint_mismatch(
 def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução que a checagem lê)
     df: pd.DataFrame,
     expected_columns: list[str],
-    reprocess_columns: Sequence[str] | None,
+    reprocessed_columns: frozenset[str],
     nan_columns: frozenset[str],
     *,
     status_col: str,
@@ -2950,7 +2941,6 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
     valor que tem nela; só a de reprocess_columns foi pedida, e a coluna sem
     valor nas linhas novas não tem o que perder.
     """
-    reprocessed_columns = set(reprocess_columns or [])
     overwritten = [
         col
         for col in expected_columns
@@ -2992,43 +2982,24 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
     raise ValueError(msg)
 
 
-def _resumable_checkpoint(
+def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a configuração)
     df: pd.DataFrame,
-    checkpoint: _Checkpoint,
-    questions: type[BaseModel],
-    *,
-    status_col: str,
-) -> pd.DataFrame | None:
-    """O checkpoint desta execução, relido, ou None quando ele não se retoma.
-
-    O checkpoint é retomado só quando a assinatura gravada ao lado dele é a
-    desta execução, o arquivo é o que a assinatura descreve e o texto de cada
-    linha, casada por posição, é o da entrada. Fora disso, a execução avisa e
-    começa do zero, e o arquivo é sobrescrito na primeira gravação.
-    """
-    reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
-    if reason is not None or saved is None:
-        warnings.warn(
-            f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
-            "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
-            "passe-o como entrada.",
-            UserWarning,
-            stacklevel=3,
-        )
-        return None
-    return saved
-
-
-def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint relido e a configuração)
-    df: pd.DataFrame,
-    saved: pd.DataFrame,
     checkpoint: _Checkpoint,
     questions: type[BaseModel],
     *,
     text_column: str,
     status_col: str,
+    reprocessed_columns: frozenset[str],
+    nan_columns: frozenset[str],
 ) -> frozenset[str]:
-    """Traz para a entrada, in-place, o que `saved`, o checkpoint relido, já processou.
+    """Traz para a entrada, in-place, o que um checkpoint desta execução já processou.
+
+    O checkpoint é retomado só quando a assinatura gravada ao lado dele é a
+    desta execução, o arquivo é o que a assinatura descreve e o texto de cada
+    linha, casada por posição, é o da entrada. Fora disso, a execução avisa e
+    começa do zero, e o arquivo é sobrescrito na primeira gravação. Antes de
+    alterar a entrada, recusa o valor dela num campo do modelo nas linhas que
+    o checkpoint deixou pendentes (`_raise_if_overwritten`).
 
     Das linhas já concluídas, com sucesso ou com erro, vêm as colunas que a
     execução acrescenta e os campos do modelo, sobre o que a entrada trazia
@@ -3042,8 +3013,9 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint relido e 
     checkpoint não relê. As demais colunas de entrada ficam como o usuário as
     passou, porque o CSV e o XLSX não preservam o tipo delas. As colunas se
     casam pelo nome em texto, que é como o CSV as devolve. Na linha ainda
-    pendente, o campo do modelo fica com o que a entrada trazia ou com o None
-    com que a execução cria a coluna, que é de objetos.
+    pendente, o campo do modelo fica com o que a entrada trazia, que fora de
+    reprocess_columns é ausente, ou com o None com que a execução cria a
+    coluna, que é de objetos.
 
     Devolve os campos cuja célula vazia, numa linha processada, é o texto
     vazio, para a validação da retomada (`_validate_processed_rows`); sem
@@ -3075,7 +3047,26 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint relido e 
     campo que admite None, ela volta None, e o texto vazio só sobrevive no
     parquet.
     """
+    reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
+    if reason is not None or saved is None:
+        warnings.warn(
+            f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
+            "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
+            "passe-o como entrada.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return frozenset()
+
     concluded = saved[status_col].notna().to_numpy()
+    _raise_if_overwritten(
+        df,
+        list(questions.model_fields),
+        reprocessed_columns,
+        nan_columns,
+        status_col=status_col,
+        pending=~concluded,
+    )
     by_name = {str(column): column for column in df.columns}
     model_fields = set(questions.model_fields)
     # A execução não grava o campo com exclude=True, e o checkpoint não tem o
