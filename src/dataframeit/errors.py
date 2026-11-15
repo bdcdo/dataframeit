@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from .search import SearchToolError, get_provider
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
 
     from pydantic import ValidationError
 
@@ -466,9 +466,6 @@ def _get_missing_search_api_key_message(provider: SearchProvider) -> str:
 """.strip()
 
 
-# Status do Tavily para o limite do plano (432) e o do pay-as-you-go (433).
-_TAVILY_USAGE_LIMIT_STATUSES = (432, 433)
-
 # Textos que só aparecem em erro de chave inválida, qualquer que seja o status.
 _INVALID_KEY_MARKERS = (
     "api_key_invalid",
@@ -578,10 +575,10 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # que pode ser do modelo, não muda a caixa.
     if is_rate_limit_error(error):
         # O 429 do Tavily e do Exa chega como erro da ferramenta de busca, e a
-        # caixa nomeia o serviço que recusou. As caixas
-        # de limite de uso, mais abaixo, ficam para a cota do plano, que não é
-        # rate limit nem reduz os workers. O ProviderError vem do provider de
-        # LLM, e o texto vazio dele mantém o nome do provider.
+        # caixa nomeia o serviço que recusou. As caixas de limite de uso, mais
+        # abaixo, ficam para a cota do plano, que não é rate limit nem reduz os
+        # workers. O ProviderError vem do provider de LLM, e o texto vazio dele
+        # mantém o nome do provider.
         service = "Tavily" if is_tavily else "Exa" if is_exa else provider_name
         return f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -621,9 +618,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """.strip()
 
-    if "usagelimitexceeded" in error_str or (
-        is_tavily and is_search_category(["limit"], _TAVILY_USAGE_LIMIT_STATUSES)
-    ):
+    if "usagelimitexceeded" in error_str or (is_tavily and is_search_category(["limit"])):
         return """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIMITE DE USO TAVILY EXCEDIDO                                               ║
@@ -868,10 +863,10 @@ _RECOVERABLE_CLIENT_STATUSES = frozenset({408, 409, 429})
 _HTTP_ERROR_MIN = 400
 _HTTP_SERVER_ERROR_MIN = 500
 _HTTP_ERROR_MAX = 599
-_HTTP_TOO_MANY_REQUESTS = 429
-# Sobrecarga da Anthropic. O langchain-core a classifica como ModelAPIError, e
-# não como ModelRateLimitError, mas aliviar a carga ajuda como no 429.
-_HTTP_OVERLOADED = 529
+# Status que reduzem os workers: o 429 e a sobrecarga 529 da Anthropic. O
+# langchain-core classifica o 529 como ModelAPIError, e não como
+# ModelRateLimitError, mas aliviar a carga ajuda como no 429.
+_OVERLOADED_STATUSES = (429, 529)
 
 
 def _is_recoverable_http_status(status: int) -> bool:
@@ -902,22 +897,32 @@ def _own_http_status(error: BaseException) -> int | None:
     return None
 
 
+def _explicit_cause_chain(error: BaseException) -> Iterator[BaseException]:
+    """A exceção e suas causas explícitas, cada uma uma vez.
+
+    Wrappers como o ChatGoogleGenerativeAIError encadeiam o erro do SDK com
+    `raise ... from`, por isso a busca segue `__cause__`. `__context__` fica de
+    fora: é a exceção que estava sendo tratada quando esta surgiu, e não
+    necessariamente a sua causa.
+    """
+    seen = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__
+
+
 def _http_error_status(error: BaseException) -> int | None:
     """Status HTTP da exceção ou da primeira causa explícita que o declare.
 
-    Wrappers como o ChatGoogleGenerativeAIError não carregam status próprio e
-    encadeiam o erro do SDK com `raise ... from`, por isso a busca segue
-    `__cause__`. `__context__` fica de fora: é a exceção que estava sendo tratada
-    quando esta surgiu, e não necessariamente a sua causa.
+    Wrappers como o ChatGoogleGenerativeAIError não carregam status próprio, e
+    o status fica no erro do SDK que eles encadeiam.
     """
-    seen = set()
-    current = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    for current in _explicit_cause_chain(error):
         status = _own_http_status(current)
         if status is not None:
             return status
-        current = current.__cause__
     return None
 
 
@@ -1000,7 +1005,7 @@ def is_rate_limit_error(error: Exception) -> bool:
     if isinstance(error, (ProviderError, ProviderOutputError)):
         return False
     status = _http_error_status(error)
-    if status == _HTTP_OVERLOADED or (
+    if status in _OVERLOADED_STATUSES or (
         _ModelRateLimitError is not None and isinstance(error, _ModelRateLimitError)
     ):
         return True
@@ -1008,7 +1013,7 @@ def is_rate_limit_error(error: Exception) -> bool:
         return False
 
     if status is not None:
-        return status == _HTTP_TOO_MANY_REQUESTS
+        return False
 
     error_str = f"{type(error).__name__}: {error}".lower()
     rate_limit_patterns = ("ratelimit", "resourceexhausted", "toomanyrequests", "429")
@@ -1018,25 +1023,19 @@ def is_rate_limit_error(error: Exception) -> bool:
 def _usage_limit_error(error: Exception) -> ProviderUsageLimitError | None:
     """Cota de uso esgotada, que só se resolve na conta e interrompe a execução.
 
-    O `insufficient_quota` da OpenAI chega como 429, e o limite do plano ou do
-    pay-as-you-go do Tavily, como status 432 ou 433: repetir a linha não traz
-    crédito, e reduzir os workers não ajuda. O código da OpenAI é lido do
-    atributo `code` que o SDK preenche com o corpo da resposta, na exceção ou
-    na primeira causa explícita que o tenha, como em _http_error_status.
+    O `insufficient_quota` da OpenAI chega como 429: repetir a linha não traz
+    crédito, e reduzir os workers não ajuda. O código é lido do atributo `code`
+    que o SDK preenche com o corpo da resposta, na exceção ou numa causa
+    explícita. O limite do plano do Tavily é convertido na própria ferramenta
+    de busca, onde o status é lido.
     """
-    if isinstance(error, SearchToolError):
-        if error.provider == "tavily" and error.status_code in _TAVILY_USAGE_LIMIT_STATUSES:
-            return ProviderUsageLimitError(f"limite de uso do plano do Tavily esgotado ({error})")
-        return None
-    seen = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if getattr(current, "code", None) == "insufficient_quota":
-            return ProviderUsageLimitError(
-                f"cota da conta no provider de LLM esgotada; adicione crédito ({error})"
-            )
-        current = current.__cause__
+    if any(
+        getattr(current, "code", None) == "insufficient_quota"
+        for current in _explicit_cause_chain(error)
+    ):
+        return ProviderUsageLimitError(
+            f"cota da conta no provider de LLM esgotada; adicione crédito ({error})"
+        )
     return None
 
 

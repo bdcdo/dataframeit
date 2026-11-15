@@ -17,7 +17,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, ConfigDict, Field
 
-from dataframeit import dataframeit
+from dataframeit import ProviderUsageLimitError, dataframeit
 from dataframeit.agent import _blocked_tool_call_ids, _extract_trace, _recursion_limit, call_agent
 from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
 from dataframeit.search import SearchToolError, get_provider
@@ -75,43 +75,32 @@ def test_exa_expoe_so_a_consulta_ao_modelo(exa_falso):
     assert set(ferramenta.args) == {"query"}
 
 
-def test_exa_levanta_o_erro_do_provider(monkeypatch):
-    pytest.importorskip("langchain_exa")
-    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
-
-    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
-
-    def falha(self, query, **kwargs):
-        msg = "401 Unauthorized: invalid api key"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
-
-    ferramenta = get_provider("exa").create_tool(max_results=3)
-    with pytest.raises(SearchToolError, match="RuntimeError: 401") as erro:
-        ferramenta.invoke({"query": "x"})
-    assert erro.value.provider == "exa"
-    assert erro.value.status_code is None
-    assert isinstance(erro.value.__cause__, RuntimeError)
-
-
-def test_exa_extrai_o_status_do_texto_do_cliente(monkeypatch):
-    pytest.importorskip("langchain_exa")
-    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
-
-    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
-
-    def falha(self, query, **kwargs):
+@pytest.mark.parametrize(
+    ("erro_do_cliente", "status"),
+    [
+        (RuntimeError("401 Unauthorized: invalid api key"), None),
         # Texto que o exa_py levanta quando a API responde com erro.
-        msg = 'Request failed with status code 401: {"error":"Invalid API key"}'
-        raise ValueError(msg)
+        (ValueError('Request failed with status code 401: {"error":"Invalid API key"}'), 401),
+    ],
+)
+def test_exa_levanta_o_erro_do_provider(monkeypatch, erro_do_cliente, status):
+    pytest.importorskip("langchain_exa")
+    import exa_py  # noqa: PLC0415 (o langchain_exa, pulado acima quando ausente, traz o exa_py)
+
+    monkeypatch.setenv("EXA_API_KEY", "chave-de-teste")
+
+    def falha(self, query, **kwargs):
+        raise erro_do_cliente
 
     monkeypatch.setattr(exa_py.Exa, "search_and_contents", falha)
 
     ferramenta = get_provider("exa").create_tool(max_results=3)
     with pytest.raises(SearchToolError) as erro:
         ferramenta.invoke({"query": "x"})
-    assert erro.value.status_code == 401
+    assert erro.value.provider == "exa"
+    assert erro.value.status_code == status
+    assert erro.value.__cause__ is erro_do_cliente
+    assert str(erro.value) == f"{type(erro_do_cliente).__name__}: {erro_do_cliente}"
 
 
 # =============================================================================
@@ -133,7 +122,6 @@ def tavily_disponivel(monkeypatch):
 @pytest.mark.parametrize(
     "mensagem",
     [
-        "Error 432: This request exceeds your plan's set usage limit.",
         "Error 401: Unauthorized: missing or invalid API key.",
         "Error 429: Too many requests.",
         "Error 500: Internal server error.",
@@ -171,18 +159,39 @@ def test_tavily_devolve_ao_modelo_o_erro_de_argumento(tavily_disponivel, monkeyp
     assert mensagem in str(ferramenta.invoke({"query": "x"}))
 
 
+@pytest.mark.parametrize(
+    "mensagem",
+    [
+        "Error 432: This request exceeds your plan's set usage limit.",
+        "Error 433: This request exceeds the pay-as-you-go limit.",
+    ],
+)
+def test_tavily_com_limite_de_uso_esgotado_levanta_provider_usage_limit_error(
+    tavily_disponivel, monkeypatch, mensagem
+):
+    def falha(self, **kwargs):
+        raise ValueError(mensagem)
+
+    monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
+
+    ferramenta = get_provider("tavily").create_tool(max_results=3)
+    with pytest.raises(ProviderUsageLimitError, match="plano do Tavily") as erro:
+        ferramenta.invoke({"query": "x"})
+    assert isinstance(erro.value.__cause__, ValueError)
+
+
 def test_tavily_assincrono_tambem_levanta(tavily_disponivel, monkeypatch):
 
     async def falha(self, **kwargs):
-        msg = "Error 432: usage limit."
+        msg = "Error 500: Internal server error."
         raise ValueError(msg)
 
     monkeypatch.setattr(tavily_disponivel, "raw_results_async", falha)
 
     ferramenta = get_provider("tavily").create_tool(max_results=3)
-    with pytest.raises(SearchToolError, match="Error 432") as erro:
+    with pytest.raises(SearchToolError, match="Error 500") as erro:
         asyncio.run(ferramenta.ainvoke({"query": "x"}))
-    assert erro.value.status_code == 432
+    assert erro.value.status_code == 500
 
 
 def test_tavily_sem_resultado_continua_sendo_mensagem_ao_modelo(tavily_disponivel, monkeypatch):
@@ -432,31 +441,37 @@ def test_sem_resultados_nao_conta_como_busca_bloqueada():
     assert _blocked_tool_call_ids(mensagens) == set()
 
 
+class ModeloQueSempreBusca(GenericFakeChatModel):
+    """Modelo falso que responde a toda chamada com as mensagens dadas, sem ver ferramentas."""
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+def _sempre_busca(ferramenta, chamadas=None):
+    """Mensagens infinitas, cada uma chamando a ferramenta; conta as geradas em `chamadas`."""
+    for i in itertools.count():
+        if chamadas is not None:
+            chamadas.append(i)
+        yield AIMessage(
+            content="",
+            tool_calls=[
+                {"name": ferramenta, "args": {"query": str(i)}, "id": f"c{i}", "type": "tool_call"}
+            ],
+        )
+
+
 def test_recursion_limit_interrompe_modelo_que_insiste_em_buscar():
     """Com o teto e o limite de passos, um modelo que ignora o bloqueio para cedo."""
 
     chamadas = []
-
-    class ModeloTeimoso(GenericFakeChatModel):
-        def bind_tools(self, tools, **kwargs):
-            return self
-
-    def mensagens():
-        for i in itertools.count():
-            chamadas.append(i)
-            yield AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "busca", "args": {"query": str(i)}, "id": f"c{i}", "type": "tool_call"}
-                ],
-            )
 
     def busca(query: str) -> str:
         """Busca."""
         return "x"
 
     agente = create_agent(
-        model=ModeloTeimoso(messages=mensagens()),
+        model=ModeloQueSempreBusca(messages=_sempre_busca("busca", chamadas)),
         tools=[StructuredTool.from_function(busca, name="busca")],
         response_format=ToolStrategy(Resposta),
         middleware=[
@@ -528,17 +543,6 @@ def _rodar_agente_real_com_tavily(tavily_disponivel, monkeypatch, mensagem, **kw
     """
     chamadas = []
 
-    class ModeloQueBusca(GenericFakeChatModel):
-        def bind_tools(self, tools, **kwargs):
-            return self
-
-    def mensagens():
-        for i in itertools.count():
-            yield AIMessage(
-                content="",
-                tool_calls=[{"name": "tavily_search", "args": {"query": "x"}, "id": f"c{i}"}],
-            )
-
     def falha(self, **kwargs):
         chamadas.append(1)
         raise ValueError(mensagem)
@@ -546,7 +550,7 @@ def _rodar_agente_real_com_tavily(tavily_disponivel, monkeypatch, mensagem, **kw
     monkeypatch.setattr(tavily_disponivel, "raw_results", falha)
     monkeypatch.setattr(
         "dataframeit.llm._create_langchain_llm",
-        lambda *a, **k: ModeloQueBusca(messages=mensagens()),
+        lambda *a, **k: ModeloQueSempreBusca(messages=_sempre_busca("tavily_search")),
     )
     with (
         patch("dataframeit.core.validate_provider_dependencies"),

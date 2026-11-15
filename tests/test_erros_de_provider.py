@@ -231,23 +231,12 @@ def test_cota_esgotada_embrulhada_por_outra_excecao_tambem_interrompe():
     assert len(chamadas) == 1
 
 
-@pytest.mark.parametrize("status", [432, 433])
-def test_limite_do_plano_do_tavily_interrompe_sem_nova_tentativa(status):
-    chamadas, func = _falha_sempre(_erro_do_tavily(status, "exceeds your usage limit."))
-
-    with pytest.raises(ProviderUsageLimitError, match="plano do Tavily"):
-        retry_with_backoff(func, max_retries=3, base_delay=0.0)
-
-    assert len(chamadas) == 1
-
-
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize(
     ("erro", "tentativas"),
     [
         (_erro_do_tavily(500, "Internal server error."), 2),
-        # Só o Tavily tem status de limite de uso; o 432 do Exa é um 4xx definitivo.
-        (_erro_do_exa(432, "x"), 1),
+        (_erro_do_exa(402, "x"), 1),
     ],
 )
 def test_outras_falhas_da_busca_nao_viram_limite_de_uso(erro, tentativas):

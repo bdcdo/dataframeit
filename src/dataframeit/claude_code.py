@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import ValidationError
 
 from .errors import (
+    _OVERLOADED_STATUSES,
     ProviderError,
     ProviderOverloadedError,
     ProviderRejectedOutputError,
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 # Status da API que indicam sobrecarga (429 Too Many Requests, 529 Overloaded).
-_OVERLOADED_STATUSES = (429, 529)
 
 
 def _build_json_system_prompt(json_schema: dict) -> str:
