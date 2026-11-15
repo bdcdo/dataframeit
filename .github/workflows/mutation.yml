@@ -1,0 +1,58 @@
+name: Mutation
+
+# Teste de mutação dos módulos listados em only_mutate, no [tool.mutmut] do
+# pyproject.toml. Ele altera o código (troca um operador, um literal, uma
+# condição) e confere se algum teste falha: a cobertura prova que cada linha
+# rodou, e o mutante que sobrevive mostra o resultado que nenhum assert olha.
+# Leva minutos por módulo e fica fora do CI do PR: roda toda segunda-feira e
+# sob demanda.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      EXTRAS: --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      # A versão fica fixada porque o Dependabot não atualiza versão escrita
+      # dentro de run:, e uma versão nova pode gerar outros mutantes.
+      - name: Run mutmut
+        run: uv run --python 3.13 $EXTRAS --with mutmut==3.8.1 mutmut run
+
+      # O resumo lista todo mutante não morto. O job reprova com o sobrevivente,
+      # o mutante sem teste, o suspeito e o que não foi conferido; timeout e
+      # segfault contam como detectados. O sobrevivente vira teste, ou, se não muda o resultado,
+      # ganha um `# pragma: no mutate` com o motivo num comentário.
+      - name: Report mutants
+        run: |
+          uv run --python 3.13 --extra dev --with mutmut==3.8.1 mutmut results > "$RUNNER_TEMP/resultados.txt"
+          {
+            echo '```'
+            cat "$RUNNER_TEMP/resultados.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -E ': (survived|no tests|suspicious|not checked|check was interrupted by user)$' "$RUNNER_TEMP/resultados.txt"; then
+            echo "::error::Há mutantes que nenhum teste detectou; a lista está no resumo do job."
+            exit 1
+          fi

@@ -26,6 +26,7 @@ from dataframeit.errors import (
     is_recoverable_error,
     retry_with_backoff,
     validate_provider_dependencies,
+    validate_search_dependencies,
 )
 from dataframeit.search import SearchToolError
 
@@ -524,6 +525,39 @@ def test_caixa_generica_mostra_o_texto_sem_controle_e_em_nfc(texto, esperado):
     mensagem.encode("utf-8")
 
 
+def test_largura_exibida_de_marca_que_envolve_e_de_caractere_cheio():
+    # U+20DD envolve o caractere anterior e não ocupa coluna; U+FF21, o A cheio,
+    # ocupa duas.
+    assert errors._display_width("a\u20dd") == 1
+    assert errors._display_width("\uff21") == 2
+
+
+def test_texto_que_cabe_exato_na_largura_nao_e_cortado():
+    assert errors._cut_display("abc", 3) == "abc"
+
+
+def test_primeira_palavra_da_linha_nao_ganha_espaco_antes():
+    assert errors._wrap_display("um dois", 20, 3) == ["um dois"]
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        # A última linha perde palavras inteiras, uma de cada vez, até caber ' ...'.
+        ("aaaa bbbb cccc dddd", ["aaaa ..."]),
+        ("aa bb cccc dddddddddd", ["aa bb ..."]),
+        # A que cabe exato na largura que sobra fica inteira.
+        ("aaa bbbb cccccccc", ["aaa bbbb ..."]),
+    ],
+)
+def test_corte_da_ultima_linha_tira_palavras_inteiras(texto, esperado):
+    assert errors._wrap_display(texto, 12, 1) == esperado
+
+
+def test_caixa_generica_de_erro_sem_mensagem_deixa_os_detalhes_em_branco():
+    assert _detalhes(_caixa_generica("")) == [""]
+
+
 def test_caixa_generica_alinha_o_tipo_com_nome_largo():
     class 接続エラー(Exception):  # noqa: N801, PLC2401 (nome largo de propósito)
         pass
@@ -610,40 +644,6 @@ def _sem_o_pacote(monkeypatch, pacote):
     monkeypatch.setattr(importlib, "import_module", importar)
 
 
-@pytest.mark.parametrize(
-    ("ausente", "pacote_na_mensagem"),
-    [("langchain", "langchain"), ("langchain_core", "langchain-core")],
-)
-def test_langchain_ausente_pede_a_instalacao(monkeypatch, ausente, pacote_na_mensagem):
-    _sem_o_pacote(monkeypatch, ausente)
-
-    with pytest.raises(ImportError, match=f"pip install {pacote_na_mensagem} ") as exc_info:
-        validate_provider_dependencies("openai")
-
-    assert "dataframeit[all]" in str(exc_info.value)
-
-
-@pytest.mark.parametrize(
-    ("provider", "pacote", "instalar", "sugere_all"),
-    [
-        ("openai", "langchain_openai", "langchain-openai", True),
-        ("azure_openai", "langchain_openai", "langchain-openai", True),
-        ("mistralai", "langchain_mistralai", "langchain-mistralai", False),
-        ("cohere", "langchain_cohere", "langchain-cohere", False),
-        ("bedrock", "langchain_aws", "langchain-aws", False),
-    ],
-)
-def test_dica_do_extra_all_so_para_provider_cujo_pacote_esta_nele(
-    monkeypatch, provider, pacote, instalar, sugere_all
-):
-    _sem_o_pacote(monkeypatch, pacote)
-
-    with pytest.raises(ImportError, match=f"pip install {instalar} ") as exc_info:
-        validate_provider_dependencies(provider)
-
-    assert ("dataframeit[all]" in str(exc_info.value)) is sugere_all
-
-
 def test_sem_metadados_do_pacote_a_dica_do_extra_all_some(monkeypatch):
     """Sem os metadados, não há como saber o que o extra traz, e a dica não sai."""
 
@@ -657,6 +657,73 @@ def test_sem_metadados_do_pacote_a_dica_do_extra_all_some(monkeypatch):
         validate_provider_dependencies("openai")
 
     assert "dataframeit[all]" not in str(exc_info.value)
+
+
+def _linha_do_pip(instalar):
+    return f"║      pip install {instalar:<62} ║"
+
+
+def _linha_da_biblioteca(pacote, nome):
+    return f"║  A biblioteca '{pacote}' é necessária para usar {nome}.            ║"
+
+
+@pytest.mark.parametrize(
+    ("provider", "ausente", "instalar", "nome", "alternativa"),
+    [
+        ("claude_code", "claude_agent_sdk", "dataframeit[claude-code]", "Claude Code", None),
+        ("openai", "langchain", "langchain", "LangChain", "dataframeit[all]"),
+        ("openai", "langchain_core", "langchain-core", "LangChain Core", "dataframeit[all]"),
+        ("openai", "langchain_openai", "langchain-openai", "OpenAI", "dataframeit[all]"),
+        (
+            "azure_openai",
+            "langchain_openai",
+            "langchain-openai",
+            "Azure OpenAI",
+            "dataframeit[all]",
+        ),
+        # O extra all só traz os providers que têm extra próprio.
+        ("mistralai", "langchain_mistralai", "langchain-mistralai", "Mistral AI", None),
+        ("cohere", "langchain_cohere", "langchain-cohere", "Cohere", None),
+        ("bedrock", "langchain_aws", "langchain-aws", "AWS Bedrock", None),
+    ],
+)
+def test_pacote_ausente_nomeia_o_pacote_o_provider_e_o_comando(
+    provider, ausente, instalar, nome, alternativa
+):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _sem_o_pacote(monkeypatch, ausente)
+        with pytest.raises(ImportError) as exc_info:
+            validate_provider_dependencies(provider)
+
+    linhas = str(exc_info.value).splitlines()
+    assert _linha_da_biblioteca(ausente, nome) in linhas
+    pip = linhas.index(_linha_do_pip(instalar))
+    if alternativa is None:
+        # Sem alternativa, a linha em branco depois do comando leva direto ao fim.
+        assert linhas[pip + 2].startswith("║  Após instalar, execute seu código novamente.")
+        assert not any("Ou, para instalar" in linha for linha in linhas)
+    else:
+        assert _linha_do_pip(alternativa) in linhas
+
+
+@pytest.mark.parametrize(
+    ("search_provider", "pacote", "instalar", "nome"),
+    [
+        ("tavily", "langchain_tavily", "langchain-tavily", "Tavily Search"),
+        ("exa", "langchain_exa", "langchain-exa", "Exa Search"),
+    ],
+)
+def test_pacote_de_busca_ausente_nomeia_o_pacote_e_o_servico(
+    monkeypatch, search_provider, pacote, instalar, nome
+):
+    _sem_o_pacote(monkeypatch, pacote)
+
+    with pytest.raises(ImportError) as exc_info:
+        validate_search_dependencies(search_provider)
+
+    linhas = str(exc_info.value).splitlines()
+    assert _linha_da_biblioteca(pacote, nome) in linhas
+    assert _linha_do_pip(instalar) in linhas
 
 
 def test_pacotes_do_extra_all_lidos_dos_metadados_batem_com_o_pyproject():

@@ -302,3 +302,14 @@ source = ["src/dataframeit", "*/site-packages/dataframeit"]
 fail_under = 100
 show_missing = true
 skip_covered = true
+
+# Teste de mutação, rodado pelo workflow mutation.yml. Os módulos entram um a um
+# em only_mutate: o mutmut envolve cada função mutada num trampolim, e os
+# `stacklevel` fixos de core.py apontariam o aviso para o trampolim. Os testes
+# leem os exemplos, a documentação, os READMEs e os workflows, que vão junto
+# para a cópia em mutants/.
+[tool.mutmut]
+source_paths = ["src/dataframeit"]
+only_mutate = ["src/dataframeit/errors.py", "src/dataframeit/utils.py"]
+process_isolation = "forkserver"
+also_copy = ["example/", "docs/", "README.md", "README.pt-BR.md", "README.es.md", ".github/"]

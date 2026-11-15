@@ -36,6 +36,18 @@ uv run --extra dev pre-commit install
 uv run --extra dev pre-commit run --all-files  # todos os hooks nos arquivos que os disparam
 ```
 
+### Teste de mutação
+
+O [mutmut](https://mutmut.readthedocs.io/) altera o código dos módulos listados em `only_mutate`, no `[tool.mutmut]` do `pyproject.toml`, e confere se algum teste falha com cada alteração. O workflow `mutation.yml` o roda toda segunda-feira e sob demanda, fora do CI do PR, porque leva minutos por módulo, e reprova quando algum mutante sobrevive. O sobrevivente que muda o resultado vira teste; o que não muda, como a troca de `strict=False` por `strict=None`, ganha um `# pragma: no mutate` na linha, com o motivo num comentário.
+
+```bash
+uv run --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex --with mutmut==3.8.1 mutmut run
+uv run --extra dev --with mutmut==3.8.1 mutmut results  # mutantes não mortos
+uv run --extra dev --with mutmut==3.8.1 mutmut show <nome-do-mutante>  # a alteração
+```
+
+No macOS, rode com `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`: sem ela, os processos que o mutmut cria por `fork` travam ou abortam, e os mutantes saem como timeout. O mutmut envolve cada função mutada num trampolim, que acrescenta quadros à pilha; por isso `_user_stacklevel`, que conta os quadros até `dataframeit()`, fica fora da mutação, e os avisos dos módulos mutados usam `_user_stacklevel()` no lugar de um `stacklevel` fixo.
+
 ## Fluxo
 
 1. Abra uma issue antes de uma mudança grande, para combinar o desenho.
