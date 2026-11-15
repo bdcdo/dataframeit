@@ -2988,8 +2988,13 @@ def _holds_value(
     df: pd.DataFrame, column: str, values: Iterable[object], nan_columns: Collection[str]
 ) -> bool:
     """Se alguma das células `values` da coluna conta como valor, e não como ausente."""
-    nan_is_value = column in nan_columns and df[column].dtype == object
+    nan_is_value = _nan_is_value(df, column, nan_columns)
     return any(not _is_absent(value, nan_is_value=nan_is_value) for value in values)
+
+
+def _nan_is_value(df: pd.DataFrame, column: str, nan_columns: Collection[str]) -> bool:
+    """Se o float NaN da coluna conta como valor (`_is_absent`)."""
+    return column in nan_columns and df[column].dtype == object
 
 
 def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução que a checagem lê)
@@ -3466,14 +3471,20 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
     status = df[status_col].to_numpy(dtype=object)
     details = df["_error_details"].to_numpy(dtype=object)
     processed = unreached & (status == "processed")
-    flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL) & bool(reprocess_columns)
+    flag = np.zeros(len(df), dtype=bool)
+    if reprocess_columns:
+        flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL)
     clear = unreached & ~processed & ~(pd.isna(status) & pd.isna(details))
+    # A linha 'error' sai da verificação na primeira coluna em que tem valor.
     errors = np.flatnonzero(clear & (status == "error"))
     for column in value_columns:
+        nan_is_value = _nan_is_value(df, column, nan_columns)
         cells = df[column].to_numpy(dtype=object)[errors]
-        clear[errors] &= np.fromiter(
-            (not _holds_value(df, column, [cell], nan_columns) for cell in cells), bool, len(cells)
+        holds = np.fromiter(
+            (not _is_absent(cell, nan_is_value=nan_is_value) for cell in cells), bool, len(cells)
         )
+        clear[errors[holds]] = False
+        errors = errors[~holds]
     if flag.any():
         df.loc[flag, "_error_details"] = _INTERRUPTED_REPROCESS_DETAIL
     if clear.any():
@@ -4112,7 +4123,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         if snapshot is not None:
             snapshot()
 
-    def process_single_row(row_data: _RowData) -> dict[str, Any]:
+    def process_single_row(row_data: _RowData) -> None:
         """Processa uma única linha (executada em thread separada)."""
         nonlocal current_workers, workers_reduced
 
@@ -4131,12 +4142,12 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
             _finish(row_data, started, snapshot, success=False, error=error, values={})
-            return {"success": False, "idx": idx, "error": _MISSING_TEXT_DETAIL}
+            return
 
         # Linha que ainda não foi ao provider quando a execução foi interrompida
         # é marcada no fim, com as que nem foram despachadas.
         if abort_event.is_set():
-            return {"success": False, "idx": idx, "error": None}
+            return
 
         # Verificar se devemos pausar devido a rate limit
         if rate_limit_event.is_set():
@@ -4175,7 +4186,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             with lock:
                 token_stats.setdefault("abort", _abort_reason(e))
             abort_event.set()
-            return {"success": False, "idx": idx, "error": None}
+            return
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
             # A classificação lê o texto da exceção; se ele não puder ser montado,
             # a linha segue para o registro, que tem o próprio recurso.
@@ -4198,7 +4209,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         threading.Timer(5.0, rate_limit_event.clear).start()
 
             with lock:
-                error_msg = _record_error_safely(
+                _record_error_safely(
                     df,
                     idx,
                     e,
@@ -4211,12 +4222,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
             _finish(row_data, started, snapshot, success=False, error=error, values={})
-            return {"success": False, "idx": idx, "error": error_msg}
+            return
 
         _finish(row_data, started, snapshot, success=True, error=error, values=values)
         if config.rate_limit_delay > 0:
             time.sleep(config.rate_limit_delay)
-        return {"success": True, "idx": idx}
 
     def mark_uncounted_rows() -> None:
         """Marca no Ctrl-C as linhas que nenhuma thread registrou.
@@ -4253,7 +4263,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # saída por Ctrl-C, o executor fecha e espera as threads antes de
     # save_registered_rows gravar: os `with` saem na ordem inversa.
     pending_rows = iter(rows_to_process)
-    in_flight: dict[Future[dict[str, Any]], tuple[_RowData, float]] = {}
+    in_flight: dict[Future[None], tuple[_RowData, float]] = {}
     with (
         _on_ctrl_c(mark_uncounted_rows, save_registered_rows),
         tqdm(total=len(rows_to_process), desc=desc) as pbar,
