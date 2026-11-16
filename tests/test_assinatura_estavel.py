@@ -40,14 +40,20 @@ def _roda_python(codigo, *argumentos, semente):
 
     O filho herda a pasta de trabalho do teste, onde o mutmut acha a própria
     configuração quando roda a suíte. A falha traz o fim do stderr, para que a
-    exceção do processo filho apareça.
+    exceção do processo filho apareça. O stderr inteiro do filho vai também ao
+    stderr do teste, que o pytest mostra quando o teste falha, inclusive numa
+    asserção posterior sobre a saída.
     """
     saida = subprocess.run(  # noqa: S603 (roda o próprio interpretador com código fixo do teste)
-        [sys.executable, "-c", codigo, *argumentos],
+        [sys.executable, "-X", "faulthandler", "-c", codigo, *argumentos],
         env={**os.environ, "PYTHONHASHSEED": semente},
         capture_output=True,
         text=True,
         check=False,
+    )
+    sys.stderr.write(
+        f"--- stderr do processo filho (semente {semente}, código {saida.returncode}) ---\n"
+        f"{saida.stderr}\n"
     )
     assert saida.returncode == 0, saida.stderr[-1000:]
     return json.loads(saida.stdout)
