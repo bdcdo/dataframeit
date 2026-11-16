@@ -566,7 +566,7 @@ def test_falha_ao_gravar_o_snapshot_nao_regrava_a_linha_ja_registrada(tmp_path):
             UserWarning,
             match=r"Erro inesperado no executor depois de registrar a linha \d, que mantém o status "
             r"gravado: RuntimeError: gravação",
-        ),
+        ) as avisos,
     ):
         resultado = dataframeit(
             pd.DataFrame({"texto": ["a", "b", "c"]}),
@@ -578,6 +578,7 @@ def test_falha_ao_gravar_o_snapshot_nao_regrava_a_linha_ja_registrada(tmp_path):
             checkpoint_path=tmp_path / "c.csv",
         )
 
+    assert avisos[0].filename == __file__
     assert resultado["campo1"].tolist() == ["a", "b", "c"]
     assert "_dataframeit_status" not in resultado.columns
     assert sorted(rotulos) == [1, 2, 3]
