@@ -1,6 +1,7 @@
 """Testes para inferência de provider em dataframeit.errors."""
 
 import linecache
+import warnings
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -194,6 +195,25 @@ def test_aviso_do_retry_aponta_a_chamada_do_usuario(erro, aviso):
     (registro,) = [a for a in avisos if aviso in str(a.message)]
     assert registro.filename == __file__
     assert "dataframeit([" in linecache.getline(registro.filename, registro.lineno)
+
+
+def test_defaults_publicos_de_backoff_controlam_esperas():
+    """Os defaults da API, e não só os de retry_with_backoff, decidem as pausas."""
+    modelo = MagicMock()
+    modelo.invoke.side_effect = TimeoutError("provider indisponível")
+    esperas = []
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.build_structured_llm", return_value=modelo),
+        patch("dataframeit.errors.time.sleep", side_effect=esperas.append),
+        patch("dataframeit.errors.random.uniform", return_value=0),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        dataframeit(["a"], _Modelo, "{texto}", max_retries=7)
+
+    assert modelo.invoke.call_count == 7
+    assert esperas == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
 
 
 # O resumo de um erro de validação pode trazer texto da resposta, como a
