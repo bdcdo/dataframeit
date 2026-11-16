@@ -220,7 +220,7 @@ def _infer_provider_info(provider: str | None) -> dict[str, Any]:
     Returns:
         Dict com package, install, env_var e name inferidos.
     """
-    if not provider:
+    if not bool(provider):
         return {"package": None, "install": None, "env_var": "API_KEY", "name": "LLM"}
 
     if provider in _PROVIDER_OVERRIDES:
@@ -297,7 +297,7 @@ def _get_missing_package_message(
 ) -> str:
     """Gera mensagem amigável para pacote não instalado."""
     alternative = ""
-    if alternative_install:
+    if bool(alternative_install):
         alternative = f"""║                                                                              ║
 ║  Ou, para instalar todas as dependências recomendadas:                       ║
 ║                                                                              ║
@@ -368,7 +368,7 @@ def validate_provider_dependencies(provider: str | None) -> None:
         ) from err
 
     # Validar provider específico (inferir dinamicamente)
-    if provider:
+    if bool(provider):
         package = provider_data["package"]
         install = provider_data["install"]
         name = provider_data["name"]
@@ -410,7 +410,7 @@ def validate_search_dependencies(search_provider: str = "tavily") -> None:
             )
         ) from err
 
-    if not os.environ.get(provider.env_var):
+    if not bool(os.environ.get(provider.env_var)):
         raise ValueError(_get_missing_search_api_key_message(provider))
 
 
@@ -486,7 +486,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
     # apontam o nome e a chave dele.
     search_name = error.provider if isinstance(error, SearchToolError) else None
     provider_data = (
-        _search_provider_info(search_name) if search_name else _infer_provider_info(provider)
+        _search_provider_info(search_name) if bool(search_name) else _infer_provider_info(provider)
     )
     provider_name = provider_data["name"]
     env_var = provider_data["env_var"]
@@ -540,7 +540,7 @@ def get_friendly_error_message(  # noqa: C901, PLR0911 (uma saída por categoria
         caixas da busca pelo nome do serviço no texto, e o status deles pode ser
         de outra requisição.
         """
-        if search_name:
+        if bool(search_name):
             return is_category(patterns, codes)
         return any(pattern in error_str for pattern in patterns)
 

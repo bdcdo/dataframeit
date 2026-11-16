@@ -208,16 +208,16 @@ def _build_field_prompt(
     prompt_replace = field_config.get("prompt")
     prompt_append = field_config.get("prompt_append")
 
-    if prompt_replace:
+    if bool(prompt_replace):
         # Substitui o prompt do usuário, que é quem levava o {texto}
         return _with_text_placeholder(prompt_replace)
 
     # Base: prompt original + instrução do campo
     base_prompt = f"{user_prompt}\n\nResponda APENAS o campo: {field_name}"
-    if field_description:
+    if bool(field_description):
         base_prompt += f" ({field_description})"
 
-    if prompt_append:
+    if bool(prompt_append):
         # Adiciona texto customizado
         base_prompt += f"\n\n{prompt_append}"
 
@@ -336,7 +336,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
         Tupla (enriched_items, traces).
     """
     enriched_items = []
-    traces = [] if save_trace else None
+    traces = [] if bool(save_trace) else None
 
     for item_idx, item in enumerate(list_items or []):
         # A resposta do agente passa por model_dump, e cada item de List[Model]
@@ -347,7 +347,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
             continue
         item_dict = item.copy()
 
-        item_traces = {} if save_trace else None
+        item_traces = {} if bool(save_trace) else None
 
         # Construir contexto do item para a busca
         item_context = _build_item_context(item_dict, inner_model)
@@ -391,7 +391,7 @@ def _enrich_list_items_with_search(  # noqa: PLR0913, PLR0917 (laço por item e 
 
         enriched_items.append(item_dict)
 
-        if traces is not None and item_traces:
+        if traces is not None and bool(item_traces):
             traces.append(item_traces)
 
     return enriched_items, traces
@@ -579,7 +579,7 @@ def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, 
         response = {"data": data, "usage": {**usage_total, "search_provider": provider.name}}
 
         # Extrair trace se habilitado
-        if save_trace:
+        if bool(save_trace):
             response["trace"] = _extract_trace(
                 result, config.model, duration, save_trace, provider, tool_name
             )
@@ -620,7 +620,7 @@ def _run_nested_searches(
         search_context mapeia path -> resultado da busca.
     """
     search_context = {}
-    traces = {} if save_trace else None
+    traces = {} if bool(save_trace) else None
 
     for path, field_name, field_info, parent_model, _ in nested_fields:
         # Extrair configurações do campo
@@ -744,7 +744,7 @@ class _FieldExtractor:
         self, text: str, only_fields: set[str] | None = None, known: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         _clear_failed_usage()
-        row = _Row(text, only_fields, known or {}, traces={} if self.save_trace else None)
+        row = _Row(text, only_fields, known or {}, traces={} if bool(self.save_trace) else None)
         try:
             self._search_nested_fields(row)
             for unit in self.units:
@@ -764,7 +764,7 @@ class _FieldExtractor:
             "data": data,
             "usage": {**row.usage, "search_provider": _search_config(self.config).provider},
         }
-        if self.save_trace:
+        if bool(self.save_trace):
             response["traces"] = row.traces
         return response
 
@@ -973,7 +973,7 @@ class _FieldExtractor:
                 for name in active
             },
         )
-        if group.prompt:
+        if bool(group.prompt):
             # {query} é sinônimo de {texto} no prompt de grupo
             prompt = _with_text_placeholder(group.prompt.replace("{query}", "{texto}"))
         else:

@@ -239,6 +239,9 @@ missing-override-decorator = "error"
 # Nome usado depois de um bloco que pode não tê-lo definido (`try`/`except`,
 # `with` que suprime exceção): o NameError só apareceria no caminho raro.
 possibly-unresolved-reference = "error"
+# Obriga a distinguir None de valores vazios, zero ou False; bool(x) marca os
+# pontos em que a equivalência é parte do contrato.
+truthiness-test-of-none-union = "error"
 
 [tool.vulture]
 paths = ["src"]

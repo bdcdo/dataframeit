@@ -276,7 +276,7 @@ def _admits_int(annotation: object) -> bool:
 def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     """Os campos com exclude=True, que não saem no model_dump e que a execução não grava."""
     return frozenset(
-        field_name for field_name, field in model.model_fields.items() if field.exclude
+        field_name for field_name, field in model.model_fields.items() if field.exclude is True
     )
 
 

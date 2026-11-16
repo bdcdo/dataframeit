@@ -31,7 +31,7 @@ class ComEvidencia(BaseModel):
 
     @model_validator(mode="after")
     def exigir_trecho(self):
-        if self.aplicou and not self.trecho:
+        if self.aplicou and not bool(self.trecho):
             msg = "Aplicar exige trecho."
             raise ValueError(msg)
         return self

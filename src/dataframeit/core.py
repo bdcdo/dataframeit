@@ -369,7 +369,7 @@ def _missing_text_detail(
     *, row_already_processed: bool, reprocess_columns: Sequence[str] | None
 ) -> str:
     """Detalhe da linha sem texto; sob reprocess_columns, a linha mantém os valores."""
-    if row_already_processed and reprocess_columns:
+    if row_already_processed and bool(reprocess_columns):
         return _MISSING_TEXT_DETAIL + _KEPT_VALUES_NOTE
     return _MISSING_TEXT_DETAIL
 
@@ -439,7 +439,7 @@ def _invoke_row(  # noqa: PLR0913 (a linha e o que a validação da retomada sab
     e o NaN de `nan_columns` vai como NaN. A validação já trocou por None o
     NaN que a coluna não distingue do nulo, e o que resta nela é valor.
     """
-    if reprocess_on_row and backend.invoke_partial:
+    if bool(reprocess_on_row) and backend.invoke_partial is not None:
         known = {
             col: None if _is_absent(row[col], nan_is_value=col in nan_columns) else row[col]
             for col in expected_columns
@@ -1242,7 +1242,7 @@ def _validate_field_configs(
         return
 
     _, dependencies = get_field_execution_order(questions, _model_field_configs(questions))
-    if search_config.groups:
+    if bool(search_config.groups):
         get_group_execution_units(questions, search_config.groups, dependencies)
 
 
@@ -1736,7 +1736,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
 
     # Validar e normalizar save_trace
     trace_mode = None
-    if save_trace:
+    if bool(save_trace):
         if not use_search:
             msg = "save_trace requer use_search=True"
             raise ValueError(msg)
@@ -1817,7 +1817,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         raise ValueError(msg)
 
     # Validar e processar search_groups
-    if search_groups:
+    if bool(search_groups):
         validated_groups = _validate_search_groups(
             search_groups,
             questions,
@@ -1922,7 +1922,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     existing_cols = [col for col in value_columns if col in df_pandas.columns]
     # Sem a coluna de status, toda linha é nova, como com resume=True, e o
     # valor que a execução sobrescreveria já foi recusado em _raise_if_overwritten.
-    if existing_cols and not resume and not reprocess_columns and input_has_status:
+    if existing_cols and not resume and not bool(reprocess_columns) and input_has_status:
         _warn_at_user(
             f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
@@ -1970,7 +1970,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
     if (
         resume
-        and not reprocess_columns
+        and not bool(reprocess_columns)
         and status_col in df_pandas.columns
         and df_pandas[status_col].notna().all()
     ):
@@ -2127,7 +2127,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 on_row_done=on_row_done,
             )
 
-    if token_stats.get("abort"):
+    if bool(token_stats.get("abort")):
         pending = int(df_pandas[status_col].isna().sum())
         kept = int(df_pandas["_error_details"].eq(_INTERRUPTED_REPROCESS_DETAIL).sum())
         summary = f"{pending} linha(s) ficaram sem status"
@@ -2173,7 +2173,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             _stats_logger.info("%s", summary_text)
 
     # Independe de track_tokens: o número final de workers é a dica de configuração.
-    if token_stats.get("workers_reduced"):
+    if bool(token_stats.get("workers_reduced")):
         warnings.warn(
             f"Workers reduzidos por rate limit: de {token_stats['initial_workers']} para "
             f"{token_stats['final_workers']}. Considere usar "
@@ -2204,9 +2204,9 @@ def _setup_columns(  # noqa: PLR0913 (uma família de colunas por recurso ligado
 
     # Colunas de trace
     trace_cols = []
-    if trace_mode:
-        if search_config and search_config.per_field and pydantic_model:
-            if search_config.groups:
+    if bool(trace_mode):
+        if search_config is not None and search_config.per_field and pydantic_model is not None:
+            if bool(search_config.groups):
                 # Com grupos: trace por grupo + trace por campo isolado
                 grouped_fields = set()
                 for group_config in search_config.groups.values():
@@ -2322,7 +2322,7 @@ def _format_token_stats(
     if token_stats["search_count"] > 0:
         lines += [
             "-" * 60,
-            f"METRICAS DE BUSCA ({search_provider.upper() if search_provider else 'TAVILY'})",
+            f"METRICAS DE BUSCA ({search_provider.upper() if bool(search_provider) else 'TAVILY'})",
             "-" * 60,
             f"Total de buscas: {token_stats['search_count']}",
             f"Creditos usados: {token_stats['search_credits']}",
@@ -3023,7 +3023,7 @@ def _array_form(value: np.ndarray | pd.Index | ExtensionArray, descent: _Descent
         cells = _column_cells(value.to_series(), descent)
     elif not isinstance(value, np.ndarray):
         cells = _column_cells(pd.Series(value), descent)
-    elif value.dtype.names or _extended(value.dtype):
+    elif bool(value.dtype.names) or _extended(value.dtype):
         cells = _stable(value.tolist(), descent)
     elif value.dtype.hasobject:
         cells = _column_cells(pd.Series(np.asarray(value).ravel()), descent)
@@ -3437,7 +3437,7 @@ def _default_may_be_none(field: FieldInfo) -> bool:
     como ausente, e a validação da linha chamaria a fábrica, que levantaria
     na retomada.
     """
-    if field.default_factory_takes_validated_data:
+    if field.default_factory_takes_validated_data is True:
         return True
     try:
         return field.get_default(call_default_factory=True) is None
@@ -3801,7 +3801,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
 
     written = {}
     for col in expected_columns:
-        if col in extracted and (not only_reprocessed or col in only_reprocessed):
+        if col in extracted and (not bool(only_reprocessed) or col in only_reprocessed):
             _set_cell(df, idx, col, extracted[col])
             written[col] = extracted[col]
 
@@ -3817,7 +3817,7 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     _add_usage_stats(token_stats, usage or {})
 
     # Armazenar traces: um por campo ou grupo nos modos por campo, ou um só
-    if trace_mode:
+    if bool(trace_mode):
         if search_config and search_config.per_field:
             # Com trace_mode, a linha passou pelo agente campo a campo, que sempre devolve os traces.
             _set_field_traces(df, idx, result["traces"])
@@ -3882,7 +3882,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
         error_details = f"[Falhou após {config.max_retries} tentativa(s)] {error_msg}"
     else:
         error_details = f"[Erro não-recuperável] {error_msg}"
-    if row_already_processed and reprocess_columns:
+    if row_already_processed and bool(reprocess_columns):
         error_details += _KEPT_VALUES_NOTE
 
     friendly_msg = get_friendly_error_message(error, config.provider)
@@ -3954,7 +3954,7 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
             token_stats=token_stats,
         )
     except Exception:  # noqa: BLE001 (ver a docstring)
-        kept = _KEPT_VALUES_NOTE if row_already_processed and reprocess_columns else ""
+        kept = _KEPT_VALUES_NOTE if row_already_processed and bool(reprocess_columns) else ""
         _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
 
 
@@ -3988,7 +3988,7 @@ def _progress_suffix(
     df: pd.DataFrame, reprocess_columns: Sequence[str] | None, processed_count: int
 ) -> str:
     """Final do rótulo: colunas reprocessadas ou ponto de retomada."""
-    if reprocess_columns:
+    if bool(reprocess_columns):
         return f" (reprocessando: {', '.join(reprocess_columns)})"
     if processed_count > 0:
         return f" (resumindo de {processed_count}/{len(df)})"
@@ -4130,7 +4130,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     def save_on_ctrl_c() -> None:
         """Grava as linhas registradas e as marcas do Ctrl-C que a última gravação não levou."""
         if checkpoint and (
-            rows_processed_this_run > rows_saved or token_stats.get("abort") or marked
+            rows_processed_this_run > rows_saved or bool(token_stats.get("abort")) or marked
         ):
             _try_save_checkpoint(df, checkpoint)
 
@@ -4176,7 +4176,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
 
         # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
         # fora e as marcas de uma interrupção, que não contam como linha processada.
-        if checkpoint and (rows_processed_this_run > rows_saved or token_stats.get("abort")):
+        if checkpoint and (rows_processed_this_run > rows_saved or bool(token_stats.get("abort"))):
             _try_save_checkpoint(df, checkpoint)
 
     return token_stats
