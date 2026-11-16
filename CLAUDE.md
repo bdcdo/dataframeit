@@ -102,7 +102,7 @@ uv run --extra dev --extra all --extra search-all --extra polars --extra excel -
 
 ## Lint e typecheck
 
-O job `quality` do `tests.yml` roda estes comandos. O pre-commit roda os mesmos, menos o `zizmor`, quando o commit toca `src/`, `tests/` ou `example/`, e roda também a suíte sem os testes lentos (hook `pytest-rapido`, menos de um minuto), que dispara ainda com `docs/` e os READMEs, cujos exemplos os testes rodam:
+O job `quality` do `tests.yml` roda estes comandos. O pre-commit roda os mesmos, menos o `zizmor`, quando o commit toca `src/`, `tests/` ou `example/`, e roda também a suíte sem os testes lentos (hook `pytest-rapido`, menos de um minuto), que dispara ainda com `docs/`, os READMEs, `pyproject.toml` e `.github/workflows/docs.yml`, lidos pelos testes:
 
 ```bash
 EXTRAS="--extra dev --extra all --extra search-all --extra polars --extra excel --extra codex"
