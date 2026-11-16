@@ -795,8 +795,7 @@ def _to_polars(values: pd.Series, annotation: object) -> PolarsSeries:
             [
                 json.dumps(
                     value,
-                    # O None, que o teste de mutação põe no lugar do False, também é falso.
-                    ensure_ascii=False,  # pragma: no mutate
+                    ensure_ascii=False,
                     default=_json_default,
                 )
                 if isinstance(value, dict)

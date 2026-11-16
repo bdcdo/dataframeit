@@ -2358,8 +2358,7 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     """
     models = [questions]
     for model in models:  # a lista cresce com os modelos aninhados achados
-        # O Pydantic só testa a verdade de `raise_errors`; None daria o mesmo.
-        model.model_rebuild(raise_errors=False)  # pragma: no mutate
+        model.model_rebuild(raise_errors=False)
         for field_info in model.model_fields.values():
             for nested in get_nested_pydantic_models(field_info.annotation):
                 if nested not in models:
@@ -2890,15 +2889,13 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
         column = column.cat.codes
     hashable = (column.dtype.kind in _HASHED_KINDS and not _extended(column.dtype)) or infer_dtype(
         column,
-        # O teste de mutação troca o False por None, que o pandas também lê como falso.
-        skipna=False,  # pragma: no mutate
+        skipna=False,
     ) == "string"
     if not hashable:
         return _stable(column.tolist(), descent)
     cells = hash_pandas_object(
         column,
-        # O teste de mutação troca o False por None, que o pandas também lê como falso.
-        index=False,  # pragma: no mutate
+        index=False,
     ).to_numpy()
     return hashlib.sha256(cells.tobytes()).hexdigest()
 
@@ -3318,10 +3315,9 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     def to_json(value: object) -> object:
         value = _array_as_list(value)
         if _is_structure_class(type(value)):
-            # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
             return json.dumps(
                 value,
-                ensure_ascii=False,  # pragma: no mutate
+                ensure_ascii=False,
                 default=_json_default,
             )
         return enum_as_value(value)
@@ -3396,10 +3392,9 @@ def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
     porque a marca é do openpyxl, que o checkpoint .xlsx já exige.
     """
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        # O to_excel trata None como False em index, e o teste de mutação faz a troca à toa.
         df.to_excel(
             writer,
-            index=False,  # pragma: no mutate
+            index=False,
         )
         for row in next(iter(writer.sheets.values())).iter_rows():
             for cell in row:
@@ -3454,6 +3449,13 @@ class _SnapshotWriter:
     menor contêm; o atrasado é descartado sem perda. A trava própria impede
     duas gravações simultâneas no mesmo arquivo temporário.
     """
+
+    # Declarados na classe: sem isso, o typecheck do teste de mutação infere o
+    # tipo de cada atributo também pelas atribuições dos `__init__` mutados,
+    # como `self._lock = None`, e acusa o erro no código que não foi mutado.
+    checkpoint: _Checkpoint
+    last_saved: int
+    _lock: threading.Lock
 
     def __init__(self, checkpoint: _Checkpoint) -> None:
         self.checkpoint = checkpoint
@@ -3582,10 +3584,9 @@ def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]
 
 def _trace_text(trace: object) -> str:
     """O rastro em JSON, com o texto não ASCII como está."""
-    # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
     return json.dumps(
         trace,
-        ensure_ascii=False,  # pragma: no mutate
+        ensure_ascii=False,
     )
 
 

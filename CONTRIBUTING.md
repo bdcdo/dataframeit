@@ -38,7 +38,7 @@ uv run --extra dev pre-commit run --all-files  # todos os hooks nos arquivos que
 
 ### Teste de mutação
 
-O [mutmut](https://mutmut.readthedocs.io/) altera o código dos módulos listados em `only_mutate`, no `[tool.mutmut]` do `pyproject.toml`, e confere se algum teste falha com cada alteração. O workflow `mutation.yml` o roda toda segunda-feira e sob demanda, fora do CI do PR, porque leva minutos por módulo, e reprova quando algum mutante sobrevive. O sobrevivente que muda o resultado vira teste; o que não muda, como a troca de `strict=False` por `strict=None`, ganha um `# pragma: no mutate` na linha, com o motivo num comentário.
+O [mutmut](https://mutmut.readthedocs.io/) altera o código dos módulos listados em `only_mutate`, no `[tool.mutmut]` do `pyproject.toml`, e confere se algum teste falha com cada alteração. O workflow `mutation.yml` o roda toda segunda-feira e sob demanda, fora do CI do PR, porque leva minutos por módulo, e reprova quando algum mutante sobrevive. Antes dos testes, o `ty` confere os mutantes (`type_check_command`) e conta como detectado o que quebra um tipo, como o `None` no lugar do `False` num argumento `bool`. O sobrevivente que muda o resultado vira teste; o que não muda, como a troca de `strict=False` do `zip` pelo default, que é o mesmo, ganha um `# pragma: no mutate` na linha, com o motivo num comentário.
 
 ```bash
 uv run --extra dev --extra all --extra search-all --extra polars --extra excel --extra codex --with mutmut==3.8.1 mutmut run

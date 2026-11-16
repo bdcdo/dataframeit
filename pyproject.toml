@@ -317,4 +317,8 @@ only_mutate = [
     "src/dataframeit/utils.py",
 ]
 process_isolation = "forkserver"
+# O ty acusa antes dos testes o mutante que quebra um tipo, como o None no lugar
+# do False num argumento bool, e o mutmut o conta como detectado. O ty não acha
+# o mutmut que o `uv run --with` instala, e o import do trampolim fica sem tipo.
+type_check_command = ["ty", "check", "--output-format", "gitlab", "--ignore", "unresolved-import"]
 also_copy = ["example/", "docs/", "README.md", "README.pt-BR.md", "README.es.md", ".github/"]
