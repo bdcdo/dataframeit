@@ -389,7 +389,7 @@ def test_linha_nova_entra_assim_que_uma_termina_sem_esperar_a_fatia(monkeypatch)
     assert saida["campo1"].tolist() == ["a", "b", "c"]
 
 
-def test_erro_do_executor_depois_do_registro_aponta_o_proprio_aviso(tmp_path, monkeypatch):
+def test_erro_do_executor_depois_do_registro_aponta_a_chamada(tmp_path, monkeypatch):
     salvar = core._SnapshotWriter.save
 
     def save_que_falha_uma_vez(self, frame, label, **kwargs):
@@ -410,5 +410,5 @@ def test_erro_do_executor_depois_do_registro_aponta_o_proprio_aviso(tmp_path, mo
         )
 
     (aviso,) = [a for a in avisos if "Erro inesperado no executor" in str(a.message)]
-    assert aviso.filename == core.__file__
-    assert linecache.getline(aviso.filename, aviso.lineno).strip() == "warnings.warn("
+    assert aviso.filename == __file__
+    assert "dataframeit(" in linecache.getline(aviso.filename, aviso.lineno)

@@ -1,9 +1,11 @@
 """O que cada linha grava, a contagem do checkpoint e o resumo, nos dois modos."""
 
+import linecache
 import logging
 import re
 import threading
 import time
+import warnings
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from typing import Any
@@ -566,16 +568,32 @@ def test_rate_limit_reduz_os_workers_pela_metade(monkeypatch, capsys):
     ]
     # O aviso aponta a chamada de dataframeit, e não o interior da lib.
     assert final[0].filename == __file__
+    reducoes = [a for a in avisos if "Reduzindo workers" in str(a.message)]
+    assert len(reducoes) == 1
+    assert reducoes[0].filename == __file__
+    assert "dataframeit(" in linecache.getline(reducoes[0].filename, reducoes[0].lineno)
     assert capsys.readouterr().out == ""
     assert saida["_error_details"].iloc[0].endswith("ProviderOverloadedError: 429")
 
 
-def test_erro_sem_texto_legivel_nao_conta_como_rate_limit():
+@pytest.mark.parametrize("parallel_requests", [1, 2])
+def test_erro_sem_texto_legivel_nao_conta_como_rate_limit(parallel_requests):
     with pytest.warns(UserWarning, match="Falha ao processar linha 0") as avisos:
-        saida = _roda(["a", "b"], _llm({"a": _ErroIlegivel()}), parallel_requests=2)
+        saida = _roda(["a", "b"], _llm({"a": _ErroIlegivel()}), parallel_requests=parallel_requests)
 
     assert saida["_dataframeit_status"].tolist() == ["error", "processed"]
     assert not [a for a in avisos if "workers" in str(a.message).lower()]
+    assert avisos[0].filename == __file__
+    assert "dataframeit(" in linecache.getline(avisos[0].filename, avisos[0].lineno)
+
+
+def test_aviso_da_thread_respeita_filtro_de_modulo():
+    with warnings.catch_warnings(record=True) as filtrados:
+        warnings.simplefilter("always")
+        warnings.filterwarnings("ignore", message=r"Falha ao processar linha 0", module=__name__)
+        _roda(["a"], _llm({"a": ValueError("falhou")}), parallel_requests=2)
+
+    assert not [aviso for aviso in filtrados if "Falha ao processar linha 0" in str(aviso.message)]
 
 
 # Modo sequencial

@@ -295,6 +295,40 @@ class RowResult:
     elapsed_seconds: float
 
 
+_row_warning_site = threading.local()
+
+
+def _user_warning_site() -> tuple[str, int, str, dict[str, Any]] | None:
+    """Local, módulo e registro de avisos da chamada pública, para as threads."""
+    frame = inspect.currentframe()
+    while frame is not None:
+        if frame.f_code.co_name == "dataframeit" and frame.f_globals.get("__name__") == __name__:
+            # Uma chamada Python da função pública sempre tem frame chamador.
+            caller = cast("Any", frame.f_back)
+            return (
+                caller.f_code.co_filename,
+                caller.f_lineno,
+                cast("str", caller.f_globals.get("__name__", "__main__")),
+                cast("dict[str, Any]", caller.f_globals.setdefault("__warningregistry__", {})),
+            )
+        frame = frame.f_back
+    return None
+
+
+def _warn_at_user(message: str) -> None:
+    """Emite aviso na chamada pública, também quando a linha roda em outra thread."""
+    if _user_warning_site() is not None:
+        warnings.warn(message, stacklevel=_user_stacklevel())
+        return
+    site = getattr(_row_warning_site, "value", None)
+    if site is not None:
+        warnings.warn_explicit(
+            message, UserWarning, site[0], site[1], module=site[2], registry=site[3]
+        )
+    else:
+        warnings.warn(message, stacklevel=2)
+
+
 def _recorded_error(df: pd.DataFrame, idx: Hashable) -> str | None:
     """Texto gravado em `_error_details` da linha, ou None com a célula vazia."""
     value = _get_cell(df, idx, "_error_details")
@@ -309,9 +343,7 @@ def _notify_row_done(on_row_done: Callable[[RowResult], None] | None, result: Ro
         on_row_done(result)
     except Exception as e:  # noqa: BLE001 (o callback é do usuário; a falha dele não para a execução)
         msg = f"on_row_done falhou na linha {result.index}: {_error_text(e)}"
-        # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
-        # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
-        warnings.warn(msg, stacklevel=1)  # pragma: no mutate
+        _warn_at_user(msg)
 
 
 # Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
@@ -1890,9 +1922,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # Sem a coluna de status, toda linha é nova, como com resume=True, e o
     # valor que a execução sobrescreveria já foi recusado em _raise_if_overwritten.
     if existing_cols and not resume and not reprocess_columns and input_has_status:
-        warnings.warn(
-            f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as.",
-            stacklevel=1,
+        _warn_at_user(
+            f"Colunas {existing_cols} já existem. Use resume=True para continuar ou renomeie-as."
         )
         return from_pandas(df_pandas, conversion_info, status_col)
 
@@ -3850,9 +3881,7 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
 
     friendly_msg = get_friendly_error_message(error, config.provider)
     msg = f"Falha ao processar linha {idx}.\n{friendly_msg}"
-    # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
-    # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
-    warnings.warn(msg, stacklevel=1)  # pragma: no mutate
+    _warn_at_user(msg)
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
 
@@ -3928,9 +3957,7 @@ def _record_unrecorded_error(
 ) -> None:
     """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
     error_msg = _error_text(error)
-    # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
-    # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
-    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)  # pragma: no mutate
+    _warn_at_user(f"Falha ao processar linha {idx}.")
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
 
@@ -4326,6 +4353,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     if not rows_to_process:
         return token_stats
 
+    warning_site = _user_warning_site()
+
     def _finish(  # noqa: PLR0913 (o que a linha gravou, repassado ao RowResult)
         row_data: _RowData,
         started: float,
@@ -4451,13 +4480,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     if current_workers > 1:
                         old_workers = current_workers
                         current_workers = max(1, current_workers // 2)
-                        warnings.warn(
+                        _warn_at_user(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            # Na thread do executor não há chamada do usuário na pilha, e
-                            # o stacklevel=1, o padrão, aponta o aviso para esta linha. O
-                            # teste de mutação o tira ou o troca por 2, o que só o aponta
-                            # para outra linha do pacote.
-                            stacklevel=1,  # pragma: no mutate
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo
@@ -4482,6 +4506,14 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         _finish(row_data, started, snapshot, success=True, error=error, values=values)
         if config.rate_limit_delay > 0:
             time.sleep(config.rate_limit_delay)
+
+    def process_with_warning_site(row_data: _RowData) -> None:
+        """Leva o local da chamada pública à thread que processa a linha."""
+        _row_warning_site.value = warning_site
+        try:
+            process_single_row(row_data)
+        finally:
+            del _row_warning_site.value
 
     def mark_uncounted_rows() -> None:
         """Marca no Ctrl-C as linhas que nenhuma thread registrou.
@@ -4535,7 +4567,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 # despachar interrompe a execução e a deixa sem status, para
                 # a retomada. Como 'error', o resume=True a preservaria.
                 try:
-                    in_flight[executor.submit(process_single_row, row)] = (row, time.monotonic())
+                    in_flight[executor.submit(process_with_warning_site, row)] = (
+                        row,
+                        time.monotonic(),
+                    )
                 except Exception as e:  # noqa: BLE001 (ver o comentário acima)
                     with lock:
                         token_stats.setdefault("abort", _error_text(e))
@@ -4565,12 +4600,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                     # ficaria sem status e sumiria da saída.
                     _position, idx, _row = row
                     if idx in counted:
-                        warnings.warn(
+                        _warn_at_user(
                             f"Erro inesperado no executor depois de registrar a linha "
                             f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                            # O padrão é 1, e tirar o argumento, como faz o teste de
-                            # mutação, não muda nada.
-                            stacklevel=1,  # pragma: no mutate
                         )
                     else:
                         with lock:

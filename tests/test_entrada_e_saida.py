@@ -1723,9 +1723,11 @@ def test_resume_false_sem_coluna_de_status_processa_a_coluna_vazia_do_modelo():
 def test_resume_false_com_coluna_de_status_e_colunas_do_modelo_avisa_e_devolve():
     df = pd.DataFrame({"texto": ["a"], "x": [None], "_dataframeit_status": ["error"]})
 
-    with pytest.warns(UserWarning, match=r"Colunas \['x'\] já existem"):
+    with pytest.warns(UserWarning, match=r"Colunas \['x'\] já existem") as avisos:
         resultado, call_langchain = _rodar(df, resume=False)
 
+    assert avisos[0].filename == __file__
+    assert "dataframeit(" in linecache.getline(avisos[0].filename, avisos[0].lineno)
     call_langchain.assert_not_called()
     assert resultado["_dataframeit_status"].tolist() == ["error"]
 

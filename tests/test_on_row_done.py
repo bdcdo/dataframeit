@@ -168,13 +168,16 @@ def test_excecao_no_callback_vira_aviso_e_a_execucao_segue(paralelo):
             msg = "boom"
             raise RuntimeError(msg)
 
-    with pytest.warns(UserWarning, match=r"on_row_done falhou na linha 0: RuntimeError: boom"):
+    with pytest.warns(
+        UserWarning, match=r"on_row_done falhou na linha 0: RuntimeError: boom"
+    ) as avisos:
         saida = _roda(
             pd.DataFrame({"texto": ["a", "c", "d"]}),
             parallel_requests=paralelo,
             on_row_done=callback_que_falha,
         )
 
+    assert avisos[0].filename == __file__
     assert sorted(entregues) == [0, 1, 2]
     assert saida["campo1"].tolist() == ["a", "c", "d"]
     assert "_dataframeit_status" not in saida.columns
