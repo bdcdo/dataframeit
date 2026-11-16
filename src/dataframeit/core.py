@@ -90,6 +90,7 @@ from .utils import (
     ConversionInfo,
     _admits_any,
     _admits_none,
+    _any_from_text,
     _column_rank,
     _dropped_by_model_serializer,
     _excluded_fields,
@@ -618,14 +619,20 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
     # linha pendente, e segue contando como ausente.
-    # O campo `Any` também recebe o NaN que o modelo devolveu, e na coluna de
-    # objetos da saída pandas ele fica ao lado do None.
+    # O campo `Any` também recebe o NaN que o modelo devolveu, mas a coluna de
+    # objetos dele chega também de um arquivo relido sem o modelo, com NaN em
+    # toda célula vazia. Nele o NaN só é valor quando a coluna guarda algum
+    # None, como o da linha pendente da saída interrompida, que o leitor de
+    # arquivo não produz.
     nan_columns = {
         field_name
         for field_name, field in pydantic_model.model_fields.items()
         if field_name in df.columns
         and df[field_name].dtype == object
-        and (_keeps_nan(field.annotation) or _admits_any(field.annotation))
+        and (
+            _keeps_nan(field.annotation)
+            or (_admits_any(field.annotation) and any(value is None for value in df[field_name]))
+        )
     }
     # O isin lê o pd.NA, status ausente da coluna `string` de convert_dtypes.
     processed_positions = np.flatnonzero(df[status_col].isin(["processed"])).tolist()
@@ -1883,12 +1890,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         checkpoint = dataclasses.replace(
             checkpoint,
             meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
-            structures=frozenset(complex_fields)
-            | {
+            structures=frozenset(complex_fields),
+            any_fields=frozenset(
                 field_name
                 for field_name, field in questions.model_fields.items()
                 if _admits_any(field.annotation)
-            },
+            ),
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
             with _silent_slice_write(df_pandas):
@@ -3381,7 +3388,8 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         # parquet, a célula nula é o None que a execução gravou, e nos objetos
         # o NaN contaria como valor. Na coluna de objetos de um campo `Any`,
         # o NaN é o ausente do leitor: nenhum formato guarda o NaN de `Any`, e
-        # a validação da retomada o contaria como valor.
+        # ao lado do None da linha pendente a validação da retomada o contaria
+        # como valor.
         # O np.empty de objetos começa com None em toda célula.
         if target is None:
             values = np.empty(len(df), dtype=object)
@@ -3491,7 +3499,48 @@ def _array_as_list(value: object) -> object:
     return value
 
 
-def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None) -> pd.DataFrame:
+def _enum_as_value(value: object) -> object:
+    return value.value if isinstance(value, Enum) else value
+
+
+def _structure_as_json(value: object) -> object:
+    value = _array_as_list(value)
+    if _is_structure_class(type(value)):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            default=_json_default,
+        )
+    return _enum_as_value(value)
+
+
+def _cell_converter(
+    values: Iterable[object], *, structures: bool, any_text: bool
+) -> Callable[[object], object]:
+    """A conversão de cada célula de uma coluna de objeto para o checkpoint (`_structures_as_json`)."""
+    convert = _structure_as_json if structures else _enum_as_value
+    if any_text:
+        as_json = convert
+
+        def convert(value: object) -> object:
+            if isinstance(value, str) and _any_from_text(value) is not value:
+                return json.dumps(value, ensure_ascii=False)
+            return as_json(value)
+
+    if any(isinstance(value, Decimal) and value.is_qnan() for value in values):
+        inner = convert
+
+        def convert(value: object) -> object:
+            return str(value) if isinstance(value, Decimal) else inner(value)
+
+    return convert
+
+
+def _structures_as_json(
+    df: pd.DataFrame,
+    columns: Collection[str] | None = None,
+    any_columns: Collection[str] = (),
+) -> pd.DataFrame:
     """Cópia com as coleções de `_is_structure_class` e os arrays do numpy serializados como JSON.
 
     CSV e XLSX gravariam o repr Python ("['a', 'b']"), que json.loads não lê
@@ -3506,40 +3555,30 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 
     Com `columns`, só essas colunas são serializadas; sem, todas as de objeto.
 
+    As de `any_columns`, as dos campos `Any` do modelo, são sempre
+    serializadas, e nelas o texto que `read_df` leria como outro valor
+    (`_any_from_text`), como "[1, 2]", vai como texto JSON entre aspas: o campo
+    aceita o texto e a estrutura, e a célula precisa dizer qual dos dois o
+    modelo devolveu.
+
     Na coluna com um Decimal NaN, todo Decimal vai como texto. O pandas conta o
     Decimal NaN como ausente, e o CSV e o XLSX o gravariam como a célula vazia
     da linha pendente; o decimal128 do parquet não tem NaN, e a coluna que
-    juntasse Decimal e o texto "NaN" seria recusada. `read_df` devolve o
-    Decimal NaN ao campo que admite Decimal (`_restore_decimal_nan`), e a
-    validação da retomada devolve os demais ao tipo do campo.
+    juntasse Decimal e o texto "NaN" seria recusada. A validação da retomada
+    devolve o texto ao tipo do campo.
 
     O Enum vai pelo valor em toda coluna de objeto, como dentro do JSON: o CSV
     e o XLSX gravariam o texto dele ("Cor.AZUL"), que a validação recusa, e o
     parquet recusa a coluna inteira.
     """
-
-    def enum_as_value(value: object) -> object:
-        return value.value if isinstance(value, Enum) else value
-
-    def to_json(value: object) -> object:
-        value = _array_as_list(value)
-        if _is_structure_class(type(value)):
-            return json.dumps(
-                value,
-                ensure_ascii=False,
-                default=_json_default,
-            )
-        return enum_as_value(value)
-
-    def decimal_as_text(value: object, convert: Callable[[object], object]) -> object:
-        return str(value) if isinstance(value, Decimal) else convert(value)
-
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
-            convert = to_json if columns is None or col in columns else enum_as_value
-            if any(isinstance(value, Decimal) and value.is_qnan() for value in out[col]):
-                convert = partial(decimal_as_text, convert=convert)
+            convert = _cell_converter(
+                out[col],
+                structures=columns is None or col in columns or col in any_columns,
+                any_text=col in any_columns,
+            )
             converted = out[col].map(convert)
             # Series.map infere o tipo do resultado, e uma coluna com int ao
             # lado de None ou de float vira float64, que arredonda o int acima
@@ -3561,6 +3600,7 @@ def _save_checkpoint(
     path: Path,
     meta: dict[str, Any] | None = None,
     structures: Collection[str] | None = None,
+    any_fields: Collection[str] = (),
 ) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão.
 
@@ -3568,8 +3608,8 @@ def _save_checkpoint(
     arquivo que acabou de ser escrito: se o processo morre entre as duas
     gravações, o hash não bate e a retomada recomeça em vez de aceitar o par.
 
-    `structures` são os campos de estrutura do modelo e os campos `Any`, que
-    recebem estrutura de qualquer forma. O parquet serializa só
+    `structures` são os campos de estrutura do modelo, e `any_fields`, os
+    campos `Any`, que recebem estrutura e texto. O parquet serializa só
     eles, que a retomada devolve aos tipos declarados, e grava as demais
     colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
     coluna de objeto, porque gravariam o repr de qualquer estrutura.
@@ -3578,14 +3618,14 @@ def _save_checkpoint(
     tmp = path.with_name(path.name + ".tmp")
     if ext == ".csv":
         # O to_csv trata None como False em index, e o teste de mutação faz a troca à toa.
-        _structures_as_json(df).to_csv(
+        _structures_as_json(df, any_columns=any_fields).to_csv(
             tmp,
             index=False,  # pragma: no mutate
         )
     elif ext == ".xlsx":
-        _to_excel_as_text(_structures_as_json(df), tmp)
+        _to_excel_as_text(_structures_as_json(df, any_columns=any_fields), tmp)
     elif ext == ".parquet":
-        _structures_as_json(df, structures).to_parquet(tmp, index=False)
+        _structures_as_json(df, structures, any_fields).to_parquet(tmp, index=False)
     else:
         msg = (
             f"Extensão {ext} não suportada para checkpoint. "
@@ -3626,7 +3666,9 @@ def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
     A próxima gravação tenta de novo, com o estado completo.
     """
     try:
-        _save_checkpoint(df, checkpoint.path, checkpoint.meta, checkpoint.structures)
+        _save_checkpoint(
+            df, checkpoint.path, checkpoint.meta, checkpoint.structures, checkpoint.any_fields
+        )
     except Exception as error:  # noqa: BLE001 (ver a docstring)
         warnings.warn(
             f"Falha ao gravar o checkpoint em {checkpoint.path}: {type(error).__name__}: {error}. "
@@ -3650,9 +3692,12 @@ class _Checkpoint:
     # Assinatura da execução e hash dos textos, gravados ao lado do checkpoint
     # a cada gravação (ver _write_checkpoint_signature).
     meta: dict[str, Any] | None = dataclasses.field(default=None, compare=False)
-    # Campos de estrutura e campos `Any` do modelo, que o parquet grava como
-    # JSON (ver _save_checkpoint); sem eles, toda coluna de objeto.
+    # Campos de estrutura do modelo, que o parquet grava como JSON
+    # (ver _save_checkpoint); sem eles, toda coluna de objeto.
     structures: frozenset[str] | None = dataclasses.field(default=None, compare=False)
+    # Campos `Any` do modelo, cujo texto e cuja estrutura a gravação separa
+    # (ver _structures_as_json).
+    any_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
 
 
 class _SnapshotWriter:

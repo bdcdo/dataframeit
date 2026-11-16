@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from dataframeit import ProviderAbortError, dataframeit, read_df
 from dataframeit.core import _save_checkpoint, _structures_as_json
-from dataframeit.utils import _admits_any, _admits_decimal
+from dataframeit.utils import _admits_any, _admits_decimal, _any_from_text
 
 _TEXTOS = {"texto": ["a", "b", "c"]}
 _DECIMAL_COM_NAN = Annotated[Decimal, Field(allow_inf_nan=True)]
@@ -133,6 +133,23 @@ def test_retomada_da_saida_pandas_mantem_o_none_ao_lado_do_nan_de_any():
     assert terceiro == "x"
 
 
+def test_retomada_de_coluna_de_any_sem_none_conta_o_nan_como_ausente():
+    # Como a do arquivo relido sem o modelo, que traz NaN em toda célula vazia.
+    modelo = create_model("ModeloDoCaso", campo=(Optional[Any], ...))
+    relido = pd.DataFrame(
+        {
+            **_TEXTOS,
+            "campo": pd.Series([1.5, float("nan"), "x"], dtype=object),
+            "_dataframeit_status": "processed",
+        }
+    )
+
+    retomada, chamadas = _rodar(relido, modelo, [], resume=True)
+
+    assert chamadas == 0
+    assert retomada["campo"].tolist() == [1.5, None, "x"]
+
+
 # =============================================================================
 # Estrutura de `Any` relida de checkpoint
 # =============================================================================
@@ -205,13 +222,78 @@ def test_parquet_grava_a_estrutura_de_any_como_json(tmp_path):
     assert pd.isna(gravado[2])
 
 
+_TEXTOS_AMBIGUOS = ["[1, 2]", " [1] ", "{'a': 1}", '"sim"', '"a" e "b"', "{}", '"', "[x"]
+
+
+@pytest.mark.parametrize("ext", [".parquet", ".csv", ".xlsx"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_retomada_do_checkpoint_devolve_o_texto_de_any_que_parece_json(tmp_path, entrada, ext):
+    _exige_formato(ext)
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+    opcoes = {"checkpoint_path": str(tmp_path / f"ck{ext}"), "batch_size": 1}
+    textos = {"texto": [f"t{i}" for i in range(len(_TEXTOS_AMBIGUOS) + 1)]}
+    pl = pytest.importorskip("polars") if entrada == "polars" else None
+
+    def df():
+        return pl.DataFrame(textos) if pl else pd.DataFrame(textos)
+
+    _rodar(df(), modelo, [*_TEXTOS_AMBIGUOS, ProviderAbortError("limite")], **opcoes)
+    saida, chamadas = _rodar(df(), modelo, ["fim"], resume=True, **opcoes)
+
+    assert chamadas == 1
+    assert list(saida["campo"]) == [*_TEXTOS_AMBIGUOS, "fim"]
+
+
+@pytest.mark.parametrize(
+    ("texto", "valor"),
+    [
+        ('{"a": 1}', {"a": 1}),
+        ("[1, 2]", [1, 2]),
+        ('"[1, 2]"', "[1, 2]"),
+        ('"\\"sim\\""', '"sim"'),
+        ("texto", "texto"),
+        ('"a" e "b"', '"a" e "b"'),
+        ('"', '"'),
+        ('"\\u00e9"', "é"),
+    ],
+)
+def test_any_from_text(texto, valor):
+    assert _any_from_text(texto) == valor
+
+
+@pytest.mark.parametrize("texto", ["texto", '"a" e "b"', '"', "[x"])
+def test_any_from_text_devolve_o_proprio_texto_que_nao_e_json(texto):
+    assert _any_from_text(texto) is texto
+
+
+def test_checkpoint_grava_entre_aspas_o_texto_de_any_que_se_leria_como_outro_valor():
+    df = pd.DataFrame(
+        {
+            "campo": pd.Series(["[1]", '"sim"', "ação", [1], None, 2], dtype=object),
+            "outra": pd.Series(["[1]", '"sim"', "ação", [1], None, 2], dtype=object),
+        }
+    )
+
+    gravado = _structures_as_json(df, any_columns=["campo"])
+
+    assert gravado["campo"].tolist() == ['"[1]"', '"\\"sim\\""', "ação", "[1]", None, 2]
+    assert gravado["outra"].tolist() == ["[1]", '"sim"', "ação", "[1]", None, 2]
+
+
+def test_parquet_grava_em_json_a_coluna_de_any_fora_das_estruturas():
+    df = pd.DataFrame({"campo": pd.Series([{"a": 1}], dtype=object)})
+
+    assert _structures_as_json(df, [], ["campo"])["campo"].tolist() == ['{"a": 1}']
+    assert _structures_as_json(df, [])["campo"].tolist() == [{"a": 1}]
+
+
 def test_read_df_com_modelo_devolve_a_estrutura_de_any(tmp_path):
     modelo = create_model("ModeloDoCaso", campo=(Any, ...), outro=(Any, ...), numero=(Any, ...))
     caminho = tmp_path / "saida.csv"
     pd.DataFrame(
         {
-            "campo": ['{"a": 1}', None, "[1, 2]"],
-            "outro": ["x", None, "y"],
+            "campo": ['{"a": 1}', None, '"[1, 2]"'],
+            "outro": ["x", None, "y z"],
             "numero": [1.5, None, 2.5],
         }
     ).to_csv(caminho, index=False)
@@ -219,38 +301,11 @@ def test_read_df_com_modelo_devolve_a_estrutura_de_any(tmp_path):
     lido = read_df(caminho, modelo)
 
     assert lido["campo"].dtype == object
-    assert lido["campo"].tolist() == [{"a": 1}, None, [1, 2]]
-    # O número fica como o leitor o deu; o texto sem JSON, com a célula vazia ausente.
-    pd.testing.assert_series_equal(lido["numero"], pd.read_csv(caminho)["numero"])
-    assert lido["outro"].dropna().tolist() == ["x", "y"]
-    assert lido["outro"].isna().tolist() == [False, True, False]
-
-
-def test_read_df_com_modelo_devolve_none_na_celula_vazia_da_coluna_de_objetos_de_any(tmp_path):
-    pytest.importorskip("openpyxl")
-    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
-    caminho = tmp_path / "saida.xlsx"
-    pd.DataFrame({"campo": pd.Series([1.5, None, "x"], dtype=object)}).to_excel(
-        caminho, index=False
+    assert lido["campo"].tolist() == [{"a": 1}, None, "[1, 2]"]
+    # A coluna sem JSON fica como o leitor a deu.
+    pd.testing.assert_frame_equal(
+        lido[["outro", "numero"]], pd.read_csv(caminho)[["outro", "numero"]]
     )
-
-    lido = read_df(caminho, modelo)
-
-    assert lido["campo"].dtype == object
-    assert lido["campo"].tolist() == [1.5, None, "x"]
-
-
-def test_retomada_do_arquivo_relido_devolve_none_na_celula_vazia_de_any(tmp_path):
-    pytest.importorskip("openpyxl")
-    caminho = tmp_path / "saida.xlsx"
-    interrompida, _ = _rodar(pd.DataFrame(_TEXTOS), Optional[Any], [1.5, None, "x"])
-    interrompida.assign(_dataframeit_status="processed").to_excel(caminho, index=False)
-    modelo = create_model("ModeloDoCaso", campo=(Optional[Any], ...))
-
-    retomada, chamadas = _rodar(read_df(caminho, modelo), modelo, [], resume=True)
-
-    assert chamadas == 0
-    assert retomada["campo"].tolist() == [1.5, None, "x"]
 
 
 def test_read_df_sem_normalizar_deixa_o_json_de_any_em_texto(tmp_path):
@@ -323,19 +378,32 @@ def test_retomada_do_checkpoint_devolve_none_ao_lado_do_decimal_nan(tmp_path, ex
     _confere_decimais(valores, [None, Decimal("-NaN12"), Decimal(2)])
 
 
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_devolve_o_texto_nan_do_campo_decimal_ou_texto(tmp_path, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Union[Decimal, str], ["abc", "NaN"], "z"
+    )
+
+    assert valores == ["abc", "NaN", "z"]
+
+
 def test_checkpoint_grava_como_texto_os_decimais_da_coluna_com_nan():
     df = pd.DataFrame(
         {
-            "com_nan": pd.Series([Decimal("1.50"), Decimal("NaN"), None], dtype=object),
+            "com_nan": pd.Series([Decimal("1.50"), Decimal("NaN"), 2], dtype=object),
             "sem_nan": pd.Series([Decimal("1.50"), Decimal(2), None], dtype=object),
+            "sinalizador": pd.Series([Decimal("sNaN"), None], dtype=object).reindex(range(3)),
         }
     )
 
     gravado = _structures_as_json(df, columns=())
 
-    assert gravado["com_nan"].tolist()[:2] == ["1.50", "NaN"]
-    assert pd.isna(gravado["com_nan"].tolist()[2])
+    assert gravado["com_nan"].tolist() == ["1.50", "NaN", 2]
     assert gravado["sem_nan"].tolist() == [Decimal("1.50"), Decimal(2), None]
+    assert str(gravado["sinalizador"].tolist()[0]) == "sNaN"
+    assert isinstance(gravado["sinalizador"].tolist()[0], Decimal)
 
 
 def test_csv_grava_o_decimal_nan_como_texto_e_a_linha_pendente_vazia(tmp_path):
@@ -357,20 +425,15 @@ def _csv(tmp_path: Path, celulas: list[str]) -> Path:
     return caminho
 
 
-def test_read_df_devolve_o_decimal_nan_e_none_na_celula_vazia(tmp_path):
+def test_read_df_devolve_o_texto_do_decimal_nan_e_none_na_celula_vazia(tmp_path):
     lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,", "d,-NaN"]), _ModeloDecimal)
 
     assert lido["campo"].dtype == object
-    primeiro, nan, vazio, negativo = lido["campo"].tolist()
-    assert primeiro == 1.5
-    assert isinstance(nan, Decimal)
-    assert str(nan) == "NaN"
-    assert vazio is None
-    assert str(negativo) == "-NaN"
+    assert lido["campo"].tolist() == [1.5, "NaN", None, "-NaN"]
 
 
 @pytest.mark.parametrize("celula", ["nan", "NA", "NaN ", "xNaN", "NaNx", "sNaN"])
-def test_read_df_so_toma_por_decimal_nan_o_texto_que_o_checkpoint_grava(tmp_path, celula):
+def test_read_df_so_rele_como_decimal_nan_o_texto_que_o_checkpoint_grava(tmp_path, celula):
     caminho = _csv(tmp_path, ["a,1.5", f"b,{celula}"])
 
     lido = read_df(caminho, _ModeloDecimal)

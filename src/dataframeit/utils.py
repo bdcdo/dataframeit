@@ -1269,7 +1269,7 @@ def read_df(
     if model is not None:
         _reread_text_columns(df, file, ext, model, kwargs)
         _reread_int_columns(df, file, ext, model, kwargs)
-        _restore_decimal_nan(df, file, ext, model, kwargs)
+        _reread_decimal_nan(df, file, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -1409,20 +1409,22 @@ def _reread_int_columns(
 _DECIMAL_NAN_TEXT = re.compile(r"-?NaN\d*")
 
 
-def _restore_decimal_nan(
+def _reread_decimal_nan(
     df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
 ) -> None:
-    """Devolve o `Decimal` NaN aos campos do modelo que admitem `Decimal`, in-place.
+    """Relê do CSV e do XLSX o texto do `Decimal` NaN nos campos que admitem `Decimal`, in-place.
 
-    O checkpoint grava o Decimal NaN como o texto "NaN", porque o pandas o conta
-    como ausente e o gravaria como a célula vazia da linha pendente, e o
-    decimal128 do parquet não tem NaN. O leitor do CSV e do XLSX devolve esse
-    texto ausente, e a coluna é relida como texto cru para achá-lo; o parquet
-    devolve o próprio texto. A coluna em que ele aparece passa a object, com o
-    Decimal NaN, None na célula ausente e as demais como lidas. Argumento de
-    leitura extra desliga a releitura do CSV e do XLSX, como em
-    `_reread_text_columns`.
+    O checkpoint grava o Decimal NaN como o texto "NaN" (`_structures_as_json`),
+    que o leitor devolve ausente, como a célula vazia da linha pendente. A
+    coluna em que ele aparece passa a object, com o texto gravado, None na
+    célula ausente e as demais como lidas. A validação da retomada devolve o
+    Decimal NaN ao campo que o aceita, e o campo que também admite texto fica
+    com o texto. O parquet já devolve o texto. Argumento de leitura extra
+    desliga a releitura, como em `_reread_text_columns`.
     """
+    reader = _TEXT_READERS.get(ext)
+    if reader is None or kwargs:
+        return
     columns = [
         f
         for f, info in model.model_fields.items()
@@ -1430,30 +1432,21 @@ def _restore_decimal_nan(
     ]
     if not columns:
         return
-    if ext == ".parquet":
-        raw = df
-    else:
-        reader = _TEXT_READERS.get(ext)
-        if reader is None or kwargs:
-            return
-        # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
-        raw = reader(
-            path,
-            usecols=columns,  # pragma: no mutate
-            dtype=str,
-            na_filter=False,
-        )
+    # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
+    raw = reader(
+        path,
+        usecols=columns,  # pragma: no mutate
+        dtype=str,
+        na_filter=False,
+    )
     for col in columns:
-        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
-        # têm o mesmo tamanho.
-        is_nan = [
-            isinstance(text, str) and _DECIMAL_NAN_TEXT.fullmatch(text) is not None
-            for text in raw[col]
-        ]
+        is_nan = [_DECIMAL_NAN_TEXT.fullmatch(text) is not None for text in raw[col]]
         if not any(is_nan):
             continue
+        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
+        # têm o mesmo tamanho.
         values = [
-            Decimal(text) if found else None if absent else read
+            text if found else None if absent else read
             for text, found, absent, read in zip(
                 raw[col], is_nan, df[col].isna(), df[col], strict=True
             )
@@ -1461,16 +1454,30 @@ def _restore_decimal_nan(
         df[col] = pd.Series(values, index=df.index, dtype=object)
 
 
-def _normalize_any_columns(df: pd.DataFrame, model: type[BaseModel]) -> None:
-    """Devolve a estrutura ao texto JSON das colunas de campo `Any` do modelo, in-place.
+def _any_from_text(text: str) -> object:
+    """O valor que o checkpoint gravou num campo `Any` como o texto `text`.
 
-    O checkpoint grava em JSON a lista, o dict e a tupla que o modelo devolveu
-    num campo `Any` (`_admits_any`), como os dos campos de estrutura. A coluna
-    em que algum texto volta estrutura passa a object. Na coluna de objetos, a
-    célula ausente volta None: nenhum formato guarda o NaN de um campo `Any`,
-    e o NaN que o leitor pôs nela contaria como valor na retomada, que o
-    distingue do None nessa coluna. A coluna de outro tipo sem JSON fica como
-    lida.
+    O checkpoint grava em JSON a lista, o dict e a tupla de um campo `Any`, e o
+    texto que se leria como uma dessas estruturas, ou como texto JSON entre
+    aspas, ele grava como texto JSON (`_structures_as_json`): assim todo texto
+    volta o mesmo, e só a estrutura volta estrutura. O texto que não é nenhum
+    dos dois volta ele mesmo.
+    """
+    if text.startswith('"'):
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            return text
+        return decoded if isinstance(decoded, str) else text
+    return normalize_value(text)
+
+
+def _normalize_any_columns(df: pd.DataFrame, model: type[BaseModel]) -> None:
+    """Devolve às colunas de campo `Any` do modelo o que o checkpoint gravou em JSON, in-place.
+
+    A coluna em que algum texto volta outro valor (`_any_from_text`) passa a
+    object, com None na célula ausente; a coluna sem esses textos fica como
+    lida, com o tipo que o leitor deu.
     """
     for col, info in model.model_fields.items():
         if (
@@ -1479,16 +1486,18 @@ def _normalize_any_columns(df: pd.DataFrame, model: type[BaseModel]) -> None:
             or not is_string_dtype(df[col].dtype)
         ):
             continue
-        values = [normalize_value(value) for value in df[col]]
-        absent = df[col].isna()
-        unchanged = all(new is read for new, read in zip(values, df[col], strict=True))
-        if unchanged and not (df[col].dtype == object and absent.any()):
-            continue
-        df[col] = pd.Series(
-            [None if missing else value for value, missing in zip(values, absent, strict=True)],
-            index=df.index,
-            dtype=object,
-        )
+        # Uma lista só: a coluna `str` do pandas 3 cria outro objeto a cada leitura.
+        cells = list(df[col])
+        values = [
+            None if missing else _any_from_text(cell) if isinstance(cell, str) else cell
+            for cell, missing in zip(cells, df[col].isna(), strict=True)
+        ]
+        # O texto que volta ele mesmo é o próprio objeto lido.
+        if any(
+            isinstance(cell, str) and new is not cell
+            for new, cell in zip(values, cells, strict=True)
+        ):
+            df[col] = pd.Series(values, index=df.index, dtype=object)
 
 
 def _normalize_all_json_columns(df: pd.DataFrame) -> None:
