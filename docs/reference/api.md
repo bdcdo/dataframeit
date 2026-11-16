@@ -203,7 +203,9 @@ resultado = dataframeit(
 Lê arquivos em diversos formatos para DataFrame e devolve listas, dicts e modelos aninhados gravados como JSON (ou como repr Python) às estruturas originais. É a forma de recarregar um checkpoint ou uma saída salva para retomar com `resume=True`.
 
 ```python
-def read_df(path: str | os.PathLike[str], model=None, normalize: bool = True, **kwargs) -> pd.DataFrame
+def read_df(
+    path: str | os.PathLike[str], model=None, normalize: bool = True, **kwargs
+) -> pd.DataFrame | pd.Series | dict[int | str, pd.DataFrame] | TextFileReader | JsonReader
 ```
 
 ### Parâmetros
@@ -214,6 +216,8 @@ def read_df(path: str | os.PathLike[str], model=None, normalize: bool = True, **
 | `model` | type[BaseModel] | Modelo Pydantic. Com ele, só os campos de estrutura são normalizados, e em `.csv`, `.xlsx` e `.xls` os campos de texto são lidos como texto cru: `"2023"` não vira número e `"N/A"` não vira ausência. Qualquer argumento de leitura extra, dos `**kwargs`, desliga essa leitura, e o texto fica como o pandas o devolve. |
 | `normalize` | bool | Se `False`, não converte nenhuma coluna |
 | `**kwargs` | | Argumentos passados para pandas. Com o que faz o leitor devolver outra coisa que um DataFrame, como `chunksize`, `iterator` ou `sheet_name=None` ou lista, a função devolve o objeto do pandas, como `TextFileReader`, `JsonReader`, dict de abas ou a `Series` de `typ="series"`, sem normalizar nem reler nenhuma coluna, mesmo com `model` e `normalize=True` |
+
+A anotação de retorno acompanha esses argumentos. Com `chunksize` inteiro, `iterator=True`, `sheet_name=None` ou lista, ou `typ="series"`, o checador de tipos vê o leitor de pedaços (`TextFileReader` ou `JsonReader`), o dict de abas ou a `Series`; com um argumento de tipo mais largo, como `chunksize: int | None`, vê a união de todos; nas demais chamadas, `pd.DataFrame`.
 
 CSV e XLSX gravam `""` e ausência do mesmo jeito, e `read_df` devolve ausente a célula vazia. A retomada pelo `checkpoint_path`, cuja assinatura garante que o modelo é o mesmo, devolve `""` ao campo de texto que não admite `None` nem tem `None` por padrão. Passado como entrada, o arquivo relido não traz essa garantia, e a retomada acusa o campo obrigatório para reprocessar. No campo que admite `None`, a célula vazia volta `None`, mesmo quando o padrão dele é outro valor; para guardar essa diferença, use checkpoint `.parquet`.
 

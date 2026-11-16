@@ -649,6 +649,20 @@ def test_read_df_aceita_caminho_como_path(tmp_path, modelo, como):
     pd.testing.assert_frame_equal(df, read_df(str(caminho), modelo))
 
 
+def test_read_df_com_typ_series_devolve_a_serie_do_pandas(tmp_path):
+    """O `typ="series"` do JSON sai como o pandas o devolve, inteiro ou em pedaços."""
+    arquivo = tmp_path / "serie.json"
+    linhas = tmp_path / "linhas.json"
+    pd.Series({"a": 1, "b": 2}).to_json(arquivo)
+    pd.DataFrame({"nome": ["a", "b"]}).to_json(linhas, orient="records", lines=True)
+
+    serie = read_df(arquivo, typ="series")
+
+    pd.testing.assert_series_equal(serie, pd.read_json(arquivo, typ="series"))
+    with read_df(linhas, typ="series", lines=True, chunksize=1) as pedacos:
+        assert [type(pedaco) for pedaco in pedacos] == [pd.Series, pd.Series]
+
+
 def test_numero_em_coluna_de_objeto_nao_quebra_a_deteccao_de_json():
     """Só texto é testado como JSON: o número na amostra não tem `strip`."""
     sem_json = pd.DataFrame({"misto": pd.Series([1, "x"], dtype=object)})

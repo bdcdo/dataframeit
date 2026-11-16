@@ -246,6 +246,9 @@ truthiness-test-of-none-union = "error"
 [tool.vulture]
 paths = ["src"]
 min_confidence = 80
+# Argumentos que só os overloads de read_df declaram, para ligar o valor ao tipo
+# devolvido: a implementação os recebe em **kwargs e os repassa ao pandas.
+ignore_names = ["chunksize", "iterator", "sheet_name", "typ"]
 
 [tool.deptry]
 known_first_party = ["dataframeit"]

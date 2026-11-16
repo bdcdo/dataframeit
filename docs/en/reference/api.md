@@ -203,7 +203,9 @@ result = dataframeit(
 Reads files in various formats to a DataFrame and turns lists, dicts and nested models saved as JSON (or as Python repr) back into their original structures. Use it to reload a checkpoint or a saved result before resuming with `resume=True`.
 
 ```python
-def read_df(path: str | os.PathLike[str], model=None, normalize: bool = True, **kwargs) -> pd.DataFrame
+def read_df(
+    path: str | os.PathLike[str], model=None, normalize: bool = True, **kwargs
+) -> pd.DataFrame | pd.Series | dict[int | str, pd.DataFrame] | TextFileReader | JsonReader
 ```
 
 ### Parameters
@@ -214,6 +216,8 @@ def read_df(path: str | os.PathLike[str], model=None, normalize: bool = True, **
 | `model` | type[BaseModel] | Pydantic model. With it, only structured fields are normalized, and in `.csv`, `.xlsx` and `.xls` text fields are read as raw text: `"2023"` does not become a number and `"N/A"` does not become missing. Any extra read argument, from `**kwargs`, turns this off, and text is left as pandas returns it. |
 | `normalize` | bool | If `False`, no column is converted |
 | `**kwargs` | | Arguments passed to pandas. With one that makes the reader return something other than a DataFrame, such as `chunksize`, `iterator` or `sheet_name=None` or a list, the function returns the pandas object, such as a `TextFileReader`, a `JsonReader`, a dict of sheets or the `Series` from `typ="series"`, without normalizing or rereading any column, even with `model` and `normalize=True` |
+
+The return annotation follows these arguments. With an integer `chunksize`, `iterator=True`, `sheet_name=None` or a list, or `typ="series"`, a type checker sees the chunk reader (`TextFileReader` or `JsonReader`), the dict of sheets or the `Series`; with an argument of a wider type, such as `chunksize: int | None`, it sees the union of them all; in every other call, `pd.DataFrame`.
 
 CSV and XLSX store `""` and missing values the same way, and `read_df` returns the empty cell as missing. Resuming through `checkpoint_path`, whose signature guarantees that the model is the same, gives `""` back to a text field that neither accepts `None` nor has it as default. Passed as input, the file read back carries no such guarantee, and resuming flags the required field for reprocessing. In a field that accepts `None`, the empty cell comes back as `None`, even when its default is another value; use a `.parquet` checkpoint to keep that difference.
 

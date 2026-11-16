@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin, overload
 
 import pandas as pd
 from pandas.api.types import is_integer_dtype, is_string_dtype
@@ -38,8 +38,17 @@ if TYPE_CHECKING:
     import os
     from collections.abc import Callable, Collection, Generator, Hashable, Mapping
 
+    from pandas.api.typing import JsonReader
+    from pandas.io.parsers import TextFileReader
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
+
+    # Tudo o que `read_df` pode devolver: o DataFrame e o que o leitor do pandas
+    # devolve no lugar dele. O parâmetro do JsonReader fica Any, porque é um no
+    # pandas e outro no pandas-stubs.
+    _ReadResult = (
+        pd.DataFrame | pd.Series | dict[int | str, pd.DataFrame] | TextFileReader | JsonReader[Any]
+    )
 
 # Import opcional de Polars
 try:
@@ -1093,12 +1102,85 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
                 df[col] = df[col].apply(normalize_value)
 
 
+# Os overloads ligam o argumento de leitura que muda o que o pandas devolve ao
+# tipo devolvido. O de `typ="series"` e o do DataFrame declaram os outros
+# argumentos só com os valores que mantêm esse tipo, para que o argumento de
+# tipo mais largo, como `chunksize: int | None`, não case com eles: esse cai no
+# último, que devolve a união de tudo.
+@overload
+def read_df(
+    path: str | os.PathLike[str],
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    *,
+    chunksize: int,
+    **kwargs: Any,
+) -> TextFileReader | JsonReader[Any]: ...
+
+
+@overload
+def read_df(
+    path: str | os.PathLike[str],
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    *,
+    iterator: Literal[True],
+    **kwargs: Any,
+) -> TextFileReader: ...
+
+
+@overload
+def read_df(
+    path: str | os.PathLike[str],
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    *,
+    sheet_name: list[Any] | None,
+    **kwargs: Any,
+) -> dict[int | str, pd.DataFrame]: ...
+
+
+@overload
+def read_df(
+    path: str | os.PathLike[str],
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    *,
+    typ: Literal["series"],
+    chunksize: None = None,
+    **kwargs: Any,
+) -> pd.Series: ...
+
+
+@overload
+def read_df(
+    path: str | os.PathLike[str],
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    *,
+    chunksize: None = None,
+    iterator: Literal[False] = False,
+    sheet_name: int | str = 0,
+    typ: Literal["frame"] = "frame",
+    **kwargs: Any,
+) -> pd.DataFrame: ...
+
+
+@overload
 def read_df(
     path: str | os.PathLike[str],
     model: type[BaseModel] | None = None,
     normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
     **kwargs: Any,
-) -> pd.DataFrame:
+) -> _ReadResult: ...
+
+
+def read_df(
+    path: str | os.PathLike[str],
+    model: type[BaseModel] | None = None,
+    normalize: bool = True,  # noqa: FBT001, FBT002 (posicional na API pública)
+    **kwargs: Any,
+) -> _ReadResult:
     """Carrega um DataFrame de arquivo e normaliza estruturas Python automaticamente.
 
     Esta função é útil para carregar dados que foram previamente processados
@@ -1131,7 +1213,10 @@ def read_df(
 
     Returns:
         DataFrame com estruturas Python normalizadas, ou o objeto do leitor do
-        pandas quando ele não devolve DataFrame (ver **kwargs).
+        pandas quando ele não devolve DataFrame (ver **kwargs). A anotação
+        acompanha o argumento: leitor de pedaços com chunksize ou
+        iterator=True, dict de abas com sheet_name=None ou lista, e Series
+        com typ="series".
 
     Raises:
         ValueError: Se o formato do arquivo não for suportado.
@@ -1331,16 +1416,19 @@ def _normalize_all_json_columns(df: pd.DataFrame) -> None:
 
 
 def _unwrapped(annotation: object) -> object:
-    """Um nível da anotação sem o `Annotated`, que só acrescenta metadados ao tipo.
+    """Um nível da anotação sem o `Annotated`, o NewType e o apelido `type`.
 
     É o ponto único em que os helpers de modelo aninhado abaixo desembrulham
     cada nível da anotação antes de olhar a origem e os argumentos: todos
     passam por `_value_types`, que o chama. O Pydantic tira o `Annotated` só do
     nível de cima da anotação do campo; dentro de Optional, de união ou de
-    lista ele fica, e os metadados dele nunca são percorridos como tipo.
+    lista ele fica, e os metadados dele nunca são percorridos como tipo. O
+    NewType e o apelido `type` valem o tipo a que se referem (`_resolved`), em
+    volta do `Annotated` e dentro dele.
     """
-    if get_origin(annotation) is typing.Annotated:
-        return get_args(annotation)[0]
+    annotation = _resolved(annotation)
+    while get_origin(annotation) is typing.Annotated:
+        annotation = _resolved(get_args(annotation)[0])
     return annotation
 
 
@@ -1444,6 +1532,18 @@ def list_layers(annotation: object, target: type) -> int | None:
     ou, quando o item pode ser mais de um modelo, uma vez para a linha.
     Devolve None quando `target` não aparece.
     """
+    return _layers(annotation, target, ())
+
+
+def _layers(annotation: object, target: type, seen: tuple[object, ...]) -> int | None:
+    """As camadas de `list_layers`, sem voltar a uma anotação em que a descida já está.
+
+    O apelido `type` recursivo, como `type Arvore = list[Arvore] | Item`, chega
+    de novo a uma das anotações de `seen`, que não é percorrida outra vez.
+    """
+    if annotation in seen:
+        return None
+    seen = (*seen, annotation)
     depths = []
     for value_type in _value_types(annotation):
         if value_type is target:
@@ -1452,7 +1552,7 @@ def list_layers(annotation: object, target: type) -> int | None:
         item_types = _item_types(value_type)
         layer = 1 if item_types else 0
         for inner in item_types or get_args(value_type):
-            depth = list_layers(inner, target)
+            depth = _layers(inner, target, seen)
             if depth is not None:
                 depths.append(depth + layer)
     return max(depths, default=None)
@@ -1611,14 +1711,27 @@ def get_nested_pydantic_models(field_type: object) -> list[type[BaseModel]]:
         >>> get_nested_pydantic_models(str)
         []
     """
+    return list(dict.fromkeys(_nested_models(field_type, ())))
+
+
+def _nested_models(annotation: object, seen: tuple[object, ...]) -> list[type[BaseModel]]:
+    """Os modelos da anotação, na ordem em que aparecem e com repetição.
+
+    `seen` são as anotações em que a descida já está: o apelido `type`
+    recursivo, como `type Json = dict[str, Json] | list[Json] | str`, chega de
+    novo a uma delas, que não é percorrida outra vez.
+    """
+    if annotation in seen:
+        return []
+    seen = (*seen, annotation)
     models = []
-    for value_type in _value_types(field_type):
+    for value_type in _value_types(annotation):
         if _is_pydantic_model(value_type):
             models.append(value_type)
         else:
             for arg in get_args(value_type):
-                models.extend(get_nested_pydantic_models(arg))
-    return list(dict.fromkeys(models))
+                models.extend(_nested_models(arg, seen))
+    return models
 
 
 def _user_stacklevel() -> int:  # pragma: no mutate block

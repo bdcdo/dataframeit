@@ -1,0 +1,207 @@
+"""Submodelo declarado por NewType ou apelido `type` conta como o modelo a que se refere.
+
+Os helpers que percorrem os modelos aninhados (`get_nested_pydantic_models`,
+`is_list_of_pydantic_model`, `list_layers`, `models_outside_lists` e
+`submodels`) resolvem os dois a cada nível, e a validação da configuração por
+campo vê o submodelo como o vê na anotação direta.
+"""
+
+import sys
+from typing import Annotated, Any, NewType, Optional, TypeVar
+
+import pytest
+from pydantic import BaseModel, Field, create_model
+from typing_extensions import TypeAliasType
+
+from dataframeit.agent import _get_list_fields_with_nested_search
+from dataframeit.conditional import _collect_configured_fields, _walk_fields
+from dataframeit.core import _has_unstable_extra, _validate_field_configs
+from dataframeit.llm import SearchConfig
+from dataframeit.utils import (
+    get_nested_pydantic_models,
+    is_list_of_pydantic_model,
+    list_layers,
+    models_outside_lists,
+    submodels,
+)
+
+
+class _Item(BaseModel):
+    valor: str = Field(json_schema_extra={"prompt": "busque o valor"})
+
+
+# O conjunto não é JSON, e a anotação de `json_schema_extra` não o aceita.
+_EXTRA_COM_CONJUNTO: Any = {"rotulos": {"a", "b"}}
+
+
+class _ItemComConjunto(BaseModel):
+    valor: str = Field(json_schema_extra=_EXTRA_COM_CONJUNTO)
+
+
+class _ItemDependente(BaseModel):
+    valor: str = Field(json_schema_extra={"depends_on": ["texto"]})
+
+
+_T = TypeVar("_T")
+
+_NovoItem = NewType("_NovoItem", _Item)
+_NovaLista = NewType("_NovaLista", list[_Item])
+_ApelidoDeItem = TypeAliasType("_ApelidoDeItem", _Item)
+_ApelidoDeLista = TypeAliasType("_ApelidoDeLista", list[_Item])
+_ListaGenerica = TypeAliasType("_ListaGenerica", list[_T], type_params=(_T,))
+_ApelidoAnotado = TypeAliasType("_ApelidoAnotado", Annotated[list[_Item], "itens"])
+
+# Por `Any`, o checador de tipos não toma por declaração estática o NewType, o
+# apelido e as anotações que os testes montam para cada modelo.
+_newtype: Any = NewType
+_apelido: Any = TypeAliasType
+
+
+def _lista(item: Any) -> Any:
+    return list[item]
+
+
+def _anotado(tipo: Any) -> Any:
+    return Annotated[tipo, "x"]
+
+
+def _opcional(tipo: Any) -> Any:
+    return Optional[tipo]
+
+
+# Cada forma de declarar `list[X]`: a direta, que já valia, e as que passam
+# pelo NewType ou pelo apelido, na lista ou no item.
+_FORMAS_DE_LISTA = {
+    "direta": _lista,
+    "newtype-da-lista": lambda item: _newtype("Lista", _lista(item)),
+    "apelido-da-lista": lambda item: _apelido("Lista", _lista(item)),
+    "apelido-generico": lambda item: _ListaGenerica[item],
+    "lista-de-newtype": lambda item: _lista(_newtype("Novo", item)),
+    "lista-de-apelido": lambda item: _lista(_apelido("Apelido", item)),
+    "annotated-de-apelido": lambda item: _anotado(_apelido("Lista", _lista(item))),
+    "optional-de-newtype": lambda item: _opcional(_newtype("Lista", _lista(item))),
+}
+if sys.version_info >= (3, 12):
+
+    def _apelido_da_linguagem(item):
+        escopo = {"item": item}
+        exec("type Lista = list[item]", escopo)  # noqa: S102 (sintaxe que o 3.11 não compila)
+        return escopo["Lista"]
+
+    _FORMAS_DE_LISTA["type-da-linguagem"] = _apelido_da_linguagem
+
+_forma_de_lista = pytest.mark.parametrize(
+    "forma", _FORMAS_DE_LISTA.values(), ids=_FORMAS_DE_LISTA.keys()
+)
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "e_lista", "modelos", "camadas"),
+    [
+        (_NovaLista, (True, _Item), [_Item], 1),
+        (_ApelidoDeLista, (True, _Item), [_Item], 1),
+        (_ListaGenerica[_Item], (True, _Item), [_Item], 1),
+        (_ApelidoAnotado, (True, _Item), [_Item], 1),
+        (Annotated[_NovaLista, "x"], (True, _Item), [_Item], 1),
+        (Annotated[_ApelidoAnotado, "x"], (True, _Item), [_Item], 1),
+        (_NovoItem, (False, None), [_Item], 0),
+        (_ApelidoDeItem, (False, None), [_Item], 0),
+        (list[_NovoItem], (True, _Item), [_Item], 1),
+        (list[_ApelidoDeItem], (True, _Item), [_Item], 1),
+        (list[_ApelidoDeLista], (False, None), [_Item], 2),
+        (Optional[_ApelidoDeLista], (True, _Item), [_Item], 1),
+        (_newtype("_NovoTexto", str), (False, None), [], None),
+    ],
+)
+def test_helpers_resolvem_newtype_e_apelido_em_cada_nivel(anotacao, e_lista, modelos, camadas):
+    assert is_list_of_pydantic_model(anotacao) == e_lista
+    assert get_nested_pydantic_models(anotacao) == modelos
+    assert list_layers(anotacao, _Item) == camadas
+
+
+def test_modelo_fora_da_lista_e_achado_por_newtype_e_apelido():
+    assert models_outside_lists(_NovoItem) == [_Item]
+    assert models_outside_lists(_ApelidoDeItem) == [_Item]
+    assert models_outside_lists(_ApelidoDeLista) == []
+
+
+def test_caminho_segue_o_submodelo_por_newtype_e_apelido():
+    assert submodels(_NovoItem) == [_Item]
+    assert submodels(Optional[_ApelidoDeItem]) == [_Item]
+    assert submodels(_ApelidoDeLista) == []
+
+
+@_forma_de_lista
+def test_prompt_no_item_exige_a_busca_por_campo(forma):
+    modelo = create_model("Modelo", itens=(forma(_Item), ...))
+
+    assert [path for path, *_ in _collect_configured_fields(modelo)] == ["itens.valor"]
+    with pytest.raises(ValueError, match=r"requerem use_search=True e search_per_field=True"):
+        _validate_field_configs(modelo, None, use_search=False, search_per_field=False)
+
+
+@_forma_de_lista
+def test_item_da_lista_recebe_a_busca(forma):
+    modelo = create_model("Modelo", itens=(forma(_Item), ...))
+
+    campos = _get_list_fields_with_nested_search(modelo)
+
+    assert list(campos) == ["itens"]
+    assert campos["itens"]["inner_model"] is _Item
+    assert [path for path, *_ in campos["itens"]["search_fields"]] == ["valor"]
+
+
+@_forma_de_lista
+def test_depends_on_no_item_e_recusado(forma):
+    modelo = create_model("Modelo", texto=(str, ...), itens=(forma(_ItemDependente), ...))
+
+    assert [path for path, *_ in _walk_fields(modelo)] == ["texto", "itens", "itens.valor"]
+    with pytest.raises(ValueError, match=r"'itens\.valor'.*só são aplicados a campos de primeiro"):
+        _validate_field_configs(
+            modelo,
+            SearchConfig(enabled=True, per_field=True),
+            use_search=True,
+            search_per_field=True,
+        )
+
+
+@_forma_de_lista
+def test_busca_em_lista_dentro_de_lista_e_recusada(forma):
+    modelo = create_model("Modelo", itens=(_lista(forma(_Item)), ...))
+
+    with pytest.raises(ValueError, match=r"'itens\.valor'.*lista que está dentro de outra lista"):
+        _validate_field_configs(
+            modelo,
+            SearchConfig(enabled=True, per_field=True),
+            use_search=True,
+            search_per_field=True,
+        )
+
+
+@_forma_de_lista
+def test_conjunto_no_extra_do_item_leva_a_assinatura_a_forma_canonica(forma):
+    modelo = create_model("Modelo", itens=(forma(_ItemComConjunto), ...))
+
+    assert _has_unstable_extra(modelo)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="o apelido recursivo exige `type X = ...`")
+def test_apelido_recursivo_nao_e_percorrido_sem_fim():
+    escopo = {"_Item": _Item}
+    exec(  # noqa: S102 (sintaxe que o 3.11 não compila)
+        "type Json = dict[str, Json] | list[Json] | str | int | None\n"
+        "type Arvore = list[Arvore] | _Item\n"
+        "type Galho[T] = list[Galho[T]] | T",
+        escopo,
+    )
+    galho = escopo["Galho"][_Item]
+    modelo = create_model("Modelo", dados=(escopo["Json"], None), arvore=(escopo["Arvore"], ...))
+
+    assert get_nested_pydantic_models(escopo["Json"]) == []
+    assert list_layers(escopo["Json"], _Item) is None
+    assert get_nested_pydantic_models(escopo["Arvore"]) == [_Item]
+    # A árvore tem lista dentro de lista, e a busca no item dela é recusada.
+    assert list_layers(escopo["Arvore"], _Item) == 2
+    assert get_nested_pydantic_models(galho) == [_Item]
+    assert list_layers(galho, _Item) == 2
+    assert [path for path, *_ in _collect_configured_fields(modelo)] == ["arvore.valor"]
