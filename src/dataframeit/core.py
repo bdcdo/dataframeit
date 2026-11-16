@@ -447,6 +447,11 @@ def _invoke_row(  # noqa: PLR0913 (a linha e o que a validação da retomada sab
     vai como None, pela mesma regra da validação da retomada (`_is_absent`),
     e o NaN de `nan_columns` vai como NaN. A validação já trocou por None o
     NaN que a coluna não distingue do nulo, e o que resta nela é valor.
+
+    O campo `Iterable` ou `Generator` volta do model_dump como iterador, e a
+    célula o guardaria no lugar dos itens. A falha vem do modelo e se repete
+    a cada resposta com esse campo preenchido, e por isso interrompe a
+    execução, com o uso da resposta já paga na exceção.
     """
     if bool(reprocess_on_row) and backend.invoke_partial is not None:
         known = {
@@ -454,8 +459,32 @@ def _invoke_row(  # noqa: PLR0913 (a linha e o que a validação da retomada sab
             for col in expected_columns
             if col not in reprocess_on_row and col in row.index
         }
-        return backend.invoke_partial(text, set(reprocess_on_row), known)
-    return backend.invoke(text)
+        result = backend.invoke_partial(text, set(reprocess_on_row), known)
+    else:
+        result = backend.invoke(text)
+    data = result["data"]
+    lazy = [col for col in expected_columns if col in data and _holds_iterator(data[col])]
+    if lazy:
+        msg = (
+            f"A resposta trouxe um iterador no lugar dos itens em {lazy}. O pydantic valida "
+            "e serializa a anotação Iterable ou Generator como iterador, e a célula guardaria "
+            "o iterador. Repetir a linha não resolve: declare list[...] nesse campo, ou no "
+            "campo de dentro dele que tem a anotação"
+        )
+        error = ProviderAbortError(msg)
+        error.row_usage = result.get("usage")  # ty: ignore[unresolved-attribute]
+        raise error
+    return result
+
+
+def _holds_iterator(value: object) -> bool:
+    """Se o valor é um iterador ou o guarda numa coleção de `_is_structure_class`."""
+    if isinstance(value, collections.abc.Iterator):
+        return True
+    if not _is_structure_class(type(value)):
+        return False
+    items = value.values() if isinstance(value, collections.abc.Mapping) else value
+    return any(_holds_iterator(item) for item in items)  # ty: ignore[not-iterable]
 
 
 def _is_absent(value: object, *, nan_is_value: bool) -> bool:
