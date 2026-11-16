@@ -4018,7 +4018,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     def process_row(idx: Hashable, row: pd.Series) -> tuple[bool, dict[str, Any]]:
         """Registra o desfecho da linha e devolve se a chamada deu certo e os campos gravados."""
         # Verificar se linha já foi processada
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
+        row_already_processed = row[status_col] == "processed"
 
         success = False
         values: dict[str, Any] = {}
@@ -4365,7 +4365,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
 
         started = time.monotonic()
         _position, idx, row = row_data
-        row_already_processed = pd.notna(row[status_col]) and row[status_col] == "processed"
+        row_already_processed = row[status_col] == "processed"
         if _is_missing_text(row[text_column]):
             with lock:
                 _record_missing_text(

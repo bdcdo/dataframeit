@@ -1202,7 +1202,8 @@ def test_coluna_do_usuario_com_userstring_vai_ao_checkpoint(tmp_path, formato, v
 
 
 @pytest.mark.parametrize("reprocess_columns", [None, ["campo"]], ids=["retomada", "reprocesso"])
-def test_retomada_com_status_pd_na_de_convert_dtypes(reprocess_columns):
+@pytest.mark.parametrize("parallel_requests", [1, 2], ids=["sequencial", "paralelo"])
+def test_retomada_com_status_pd_na_de_convert_dtypes(reprocess_columns, parallel_requests):
     """O status pd.NA da coluna `string` conta como linha sem status."""
     chamadas, llm = _llm_contador()
     df = pd.DataFrame(
@@ -1225,9 +1226,10 @@ def test_retomada_com_status_pd_na_de_convert_dtypes(reprocess_columns):
             text_column="texto",
             resume=True,
             reprocess_columns=reprocess_columns,
+            parallel_requests=parallel_requests,
         )
 
-    assert chamadas == (["b"] if reprocess_columns is None else ["a", "b"])
+    assert sorted(chamadas) == (["b"] if reprocess_columns is None else ["a", "b"])
     assert saida["campo"].tolist() == ["v-a", "v-b"]
 
 
