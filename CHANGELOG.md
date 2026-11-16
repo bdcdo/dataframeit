@@ -9,6 +9,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Adicionado
 
+- Uma regressão pela API pública confere as pausas de retry produzidas pelos defaults de `base_delay` e `max_delay`, que os testes anteriores só cobriam na função interna.
 - Teste de mutação de `errors.py` e `utils.py` com o `mutmut`, configurado no `pyproject.toml` e rodado pelo workflow `mutation.yml` toda segunda-feira e sob demanda, fora do CI do PR. Os mutantes que sobreviviam e mudavam o resultado viraram testes: cada padrão de texto que decide uma caixa de erro, o texto das mensagens de pacote ausente, os defaults de `retry_with_backoff` e os casos de `parse_json` sem bloco JSON. Os que não mudam o resultado ganharam `# pragma: no mutate` com o motivo (#212).
 
 - O teste de mutação cobre também `conditional.py` e `core.py`, menos a própria `dataframeit()`, que o mutmut chamaria por um trampolim em que `_user_stacklevel` não acha o quadro dela. Os 467 sobreviventes de `core.py` e os 16 de `conditional.py` viraram testes, reescrita do trecho que não decidia nada ou `# pragma: no mutate` com o motivo.
