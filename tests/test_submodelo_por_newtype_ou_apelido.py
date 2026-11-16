@@ -464,6 +464,25 @@ def test_uniao_que_o_escopo_do_modelo_reduz_a_um_membro_nao_e_recusada():
     list(_collect_configured_fields(modelo))
 
 
+def test_tipo_nomeado_no_metadado_do_annotated_nao_e_lido():
+    class Modelo(BaseModel):
+        valores: list[Annotated[int, _NewTypeEmTexto]]
+
+    def declara():
+        class _Item(BaseModel):
+            outro: int
+
+        class Local(BaseModel):
+            valores: list[Annotated[int, _NewTypeEmTexto]]
+
+        return Local, _Item
+
+    local, _ = declara()
+
+    assert local.model_validate({"valores": [1]}).valores == [1]
+    assert list(_collect_configured_fields(local)) == list(_collect_configured_fields(Modelo))
+
+
 def test_referencia_em_texto_ao_nome_do_proprio_modelo_dono_e_recusada():
     def declara():
         class Modelo(BaseModel):

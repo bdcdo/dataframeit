@@ -672,14 +672,18 @@ def _expanded(
 ) -> object:
     """A anotação com os tipos nomeados resolvidos em todo nível, para comparar duas resoluções.
 
-    Cada nível com argumentos vira a tupla dos argumentos expandidos; o valor
-    do `Literal` e o metadado do `Annotated` entram como estão, iguais nas duas
-    resoluções. O apelido recursivo, que volta a um nível já aberto, para ali.
+    Cada nível com argumentos vira a tupla dos argumentos expandidos. Do
+    `Annotated` só entra o tipo: o metadado não é anotação, e o tipo nomeado
+    que estiver ali não é lido pelo pydantic nem pela configuração por campo.
+    O valor do `Literal` entra como está, igual nas duas resoluções. O apelido
+    recursivo, que volta a um nível já aberto, para ali.
     """
     resolved = _resolved(annotation, localns)
     args = get_args(resolved)
     if not args or resolved in seen:
         return resolved
+    if get_origin(resolved) is typing.Annotated:
+        args = args[:1]
     return tuple(_expanded(arg, localns, (*seen, resolved)) for arg in args)
 
 
