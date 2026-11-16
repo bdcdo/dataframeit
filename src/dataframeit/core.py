@@ -4433,8 +4433,14 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # como na interrupção por ProviderAbortError, e as marcas também vão ao
     # arquivo. O Ctrl-C que corta a gravação final a refaz. A falha de gravação
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
-    with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
-        rows = tqdm(df.iterrows(), total=len(df), desc=desc)
+    # A barra fecha na saída do bloco, depois das marcas e da gravação do
+    # Ctrl-C, que uma falha ao fechá-la não impede. No tqdm mínimo aceito, o
+    # `for` interrompido não a fecha, e ela ficaria aberta até o coletor de
+    # lixo fechá-la, no meio de outra execução.
+    with (
+        tqdm(df.iterrows(), total=len(df), desc=desc) as rows,
+        _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c),
+    ):
         for idx, row in itertools.compress(rows, to_process):
             started = time.monotonic()
             success, values = process_row(idx, row)
