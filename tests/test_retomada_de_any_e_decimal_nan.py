@@ -1,11 +1,12 @@
 """Retomada do campo `Any`, do `Decimal` e do NaN: o valor que o modelo devolveu volta como foi."""
 
+import datetime as dt
 import math
 import warnings
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 from unittest.mock import patch
 
 import pandas as pd
@@ -21,7 +22,7 @@ from dataframeit.utils import (
     _any_from_text,
     _holds_cell_to_restore,
     _inside_quotes,
-    _mixes_text_and_number,
+    _mixes_text_and_scalar,
     _quoted_nan_text,
     _quoted_scalar_text,
     _reads_as_other,
@@ -1152,6 +1153,22 @@ def test_retomada_da_saida_completa_avisa_que_o_nan_de_any_volta_none():
     assert retomada["campo"].tolist() == [1.5, None, "x"]
 
 
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_checkpoint_relido_por_read_df_e_passado_como_entrada_avisa_do_nan_de_any(tmp_path, ext):
+    """`read_df` devolve o NaN, mas a entrada sem None na coluna não o separa da célula vazia."""
+    _exige_formato(ext)
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+    caminho = tmp_path / f"ck{ext}"
+    _rodar(pd.DataFrame(_TEXTOS), modelo, [1.5, _NAN, 2.5], checkpoint_path=caminho, batch_size=1)
+    relido = read_df(caminho, modelo)
+    _confere_floats(relido["campo"].tolist(), [1.5, _NAN, 2.5])
+
+    with pytest.warns(UserWarning, match=_AVISO_DO_NAN_DE_ANY + r".*volta None"):
+        retomada = _retomar(relido, modelo)
+
+    assert retomada["campo"].tolist() == [1.5, None, 2.5]
+
+
 def test_retomada_nao_avisa_do_nan_de_any_na_coluna_com_none():
     modelo = create_model("ModeloDoCaso", campo=(Any, ...))
     interrompida, _ = _rodar(
@@ -1808,15 +1825,22 @@ def test_retomada_do_parquet_devolve_none_no_nan_ao_lado_de_bool_ou_texto(
         (str, False),
         (Optional[str], False),
         (Union[int, float], False),
-        (Union[str, Decimal], False),
-        (Union[str, float, Decimal], False),
+        (Union[str, Decimal], True),
+        (Union[str, float, Decimal], True),
+        (Union[dt.date, str], True),
+        (Optional[Union[dt.datetime, dt.time, str]], True),
+        (Union[Literal[1, 2], str], True),
+        # Só aceita texto, e a retomada o relê como campo de texto.
+        (Union[Literal["a"], str], False),  # noqa: PYI051 (a união redundante é o caso)
+        (Union[str, dt.timedelta], False),
+        (Union[str, list[int]], False),
         (Union[str, Any], False),
         (float, False),
         (list[Union[str, int]], False),
     ],
 )
-def test_mixes_text_and_number(anotacao, esperado):
-    assert _mixes_text_and_number(anotacao) is esperado
+def test_mixes_text_and_scalar(anotacao, esperado):
+    assert _mixes_text_and_scalar(anotacao) is esperado
 
 
 @pytest.mark.parametrize(
@@ -1884,6 +1908,81 @@ def test_retomada_do_checkpoint_separa_o_texto_do_numero_na_uniao(
     esperados = [*respostas, "fim"]
     assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
     assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+_RESPOSTAS_DE_TEXTO_E_OUTRO_TIPO = [
+    (Union[dt.date, str], ["N/A", "x", "", "123", "null"]),
+    (Optional[Union[dt.date, str]], ["N/A", None, "x"]),
+    (Union[Decimal, str], ["N/A", "123", "x", "1.50"]),
+    (Union[_DECIMAL_COM_NAN, str], ["NaN", "x", "sNaN", "N/A"]),
+    (Union[Literal[1, 2], str], ["N/A", 1, "1", "x", 2]),
+    (Union[Literal[True, False], str], [True, "True", "x", False, "false"]),
+]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+@pytest.mark.parametrize(("anotacao", "respostas"), _RESPOSTAS_DE_TEXTO_E_OUTRO_TIPO)
+def test_retomada_do_checkpoint_devolve_o_texto_da_uniao_com_data_decimal_ou_literal(
+    tmp_path, ext, anotacao, respostas
+):
+    """O texto que o leitor trocaria por ausência ou número volta o mesmo texto."""
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", anotacao, respostas, "fim")
+
+    esperados = [*respostas, "fim"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
+    assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "valor", "relido"),
+    [
+        (Union[dt.date, str], dt.date(2024, 1, 2), "2024-01-02"),
+        (Union[Decimal, str], Decimal("1.50"), "1.50"),
+        (Union[_DECIMAL_COM_NAN, str], Decimal("NaN"), "NaN"),
+        (Union[_DECIMAL_COM_NAN, str], Decimal("-sNaN"), "-sNaN"),
+    ],
+)
+def test_retomada_do_csv_devolve_em_texto_a_data_e_o_decimal_ao_lado_de_um_texto(
+    tmp_path, anotacao, valor, relido
+):
+    """O CSV grava os dois como texto, e a união aceita o texto: a célula não diz o tipo."""
+    valores = _retomar_do_checkpoint(tmp_path / "ck.csv", "pandas", anotacao, [valor, "x"], "fim")
+
+    assert valores == [relido, "x", "fim"]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+@pytest.mark.parametrize("interrompida", [False, True])
+def test_retomada_devolve_o_none_do_campo_que_e_estrutura_e_any(tmp_path, ext, interrompida):
+    """A coluna só de número e None não volta com NaN no lugar do None."""
+    _exige_formato(ext)
+    anotacao = Union[list[int], Any]
+    caminho = tmp_path / f"ck{ext}"
+
+    if interrompida:
+        valores = _retomar_do_checkpoint(caminho, "pandas", anotacao, [None, 1.5], 2.5)
+    else:
+        opcoes = {"checkpoint_path": str(caminho), "batch_size": 1}
+        _rodar(_entrada("pandas", 3), anotacao, [None, 1.5, 2.5], **opcoes)
+        saida, chamadas = _rodar(_entrada("pandas", 3), anotacao, [], **opcoes)
+        assert chamadas == 0
+        valores = list(saida["campo"])
+
+    assert valores == [None, 1.5, 2.5]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".parquet"])
+def test_retomada_devolve_nan_no_none_do_campo_que_e_estrutura_e_float(tmp_path, ext):
+    """Sem `Any`, a coluna só de número volta float64, que não separa o None do NaN."""
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Optional[Union[list[int], float]], [1.5, _NAN, None], 3.5
+    )
+
+    _confere_floats(valores, [1.5, _NAN, _NAN, 3.5])
 
 
 @pytest.mark.parametrize("ext", [".csv", ".xlsx"])
@@ -1957,8 +2056,11 @@ def test_read_df_deixa_como_lida_a_coluna_da_uniao_sem_numero_que_ela_admita(tmp
     pd.testing.assert_frame_equal(read_df(caminho, _MODELO_INT_OU_TEXTO), pd.read_csv(caminho))
 
 
-def test_read_df_devolve_o_texto_nan_entre_aspas_da_uniao_com_outro_tipo_sem_ausente(tmp_path):
-    modelo = create_model("ModeloDoCaso", campo=(Union[float, str, Decimal], ...))
+@pytest.mark.parametrize("outro", [Decimal, dt.timedelta])
+def test_read_df_devolve_o_texto_nan_entre_aspas_da_uniao_com_outro_tipo_sem_ausente(
+    tmp_path, outro
+):
+    modelo = create_model("ModeloDoCaso", campo=(Union[float, str, outro], ...))
 
     lido = read_df(_csv(tmp_path, ["a,x", 'b,"""NaN"""']), modelo)
 
@@ -1972,13 +2074,16 @@ def test_read_df_deixa_float64_a_coluna_de_numeros_da_uniao_com_celula_vazia(tmp
 
 
 @pytest.mark.parametrize("ext", [".csv", ".xlsx"])
-def test_retomada_do_checkpoint_separa_o_nan_do_texto_nan_na_uniao_com_outro_tipo(tmp_path, ext):
-    """A união de float e texto com outro tipo só põe entre aspas o texto "NaN"."""
+@pytest.mark.parametrize("outro", [Decimal, dt.timedelta])
+def test_retomada_do_checkpoint_separa_o_nan_do_texto_nan_na_uniao_com_outro_tipo(
+    tmp_path, ext, outro
+):
+    """A união de float e texto com a duração, fora das de aspas, só as põe no texto "NaN"."""
     _exige_formato(ext)
     respostas = ["abc", "NaN", _NAN, '"NaN"']
 
     valores = _retomar_do_checkpoint(
-        tmp_path / f"ck{ext}", "pandas", Union[float, str, Decimal], respostas, "z"
+        tmp_path / f"ck{ext}", "pandas", Union[float, str, outro], respostas, "z"
     )
 
     esperados = [*respostas, "z"]

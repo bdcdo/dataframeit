@@ -102,7 +102,7 @@ from .utils import (
     _is_structure_class,
     _json_default,
     _keeps_nan,
-    _mixes_text_and_number,
+    _mixes_text_and_scalar,
     _quoted_nan_text,
     _quoted_scalar_text,
     _reads_as_other,
@@ -1955,6 +1955,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         df_pandas, status_col, text_column=text_column, expected_columns=expected_columns
     )
     complex_fields = get_complex_fields(questions)
+    # Campos `Any`, cuja coluna de objetos a normalização das estruturas mantém.
+    any_fields = frozenset(
+        field_name
+        for field_name, field in questions.model_fields.items()
+        if _admits_any(field.annotation)
+    )
     # Campos cujo NaN é valor, separado do nulo (`_keeps_nan`).
     nan_columns = frozenset(
         field_name
@@ -1985,11 +1991,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             checkpoint,
             meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
             structures=frozenset(complex_fields),
-            any_fields=frozenset(
-                field_name
-                for field_name, field in questions.model_fields.items()
-                if _admits_any(field.annotation)
-            ),
+            any_fields=any_fields,
             nan_fields=nan_columns,
             decimal_fields=frozenset(
                 field_name
@@ -1999,7 +2001,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             scalar_fields=frozenset(
                 field_name
                 for field_name, field in questions.model_fields.items()
-                if _mixes_text_and_number(field.annotation)
+                if _mixes_text_and_scalar(field.annotation)
             ),
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
@@ -2121,7 +2123,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         _as_object_columns(df_pandas, expected_columns, nan_columns)
         _apply_processed_values(df_pandas, processed_values)
         if complex_fields:
-            normalize_complex_columns(df_pandas, complex_fields)
+            normalize_complex_columns(df_pandas, complex_fields, any_fields)
         return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
     # Os resultados são gravados por rótulo (df.at); com rótulo repetido, o
@@ -2206,7 +2208,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         # Normalizar colunas complexas (listas, dicts, tuples) que podem ter sido
         # serializadas como strings JSON ao salvar/carregar de arquivos.
         if complex_fields and resume:
-            normalize_complex_columns(df_pandas, complex_fields)
+            normalize_complex_columns(df_pandas, complex_fields, any_fields)
 
         # De novo depois da normalização, cujo apply volta a inferir float; sem
         # isso, gravar lista ou texto falharia depois da chamada paga. A coluna
@@ -3726,7 +3728,7 @@ def _structures_as_json(  # noqa: PLR0913, PLR0917 (uma família de colunas por 
     como o texto "NaN": o CSV e o XLSX o gravariam como a célula vazia da
     linha pendente. O texto "NaN" que o modelo devolveu num campo desses que
     também admite texto vai com um par de aspas (`_quoted_nan_text`). Nas
-    `scalar_columns`, as da união de texto e número (`_mixes_text_and_number`),
+    `scalar_columns`, as da união de texto com outro tipo (`_mixes_text_and_scalar`),
     vai com um par de aspas todo texto que o leitor devolveria como número,
     bool ou ausência (`_quoted_scalar_text`). `read_df` com o modelo relê
     todos (`_raw_restorer`).
@@ -3850,7 +3852,7 @@ def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação 
     `nan_fields` são os campos cujo NaN é valor (`_keeps_nan`), gravado à
     parte da célula vazia, como o dos `any_fields`; `decimal_fields`, os
     campos só de `Decimal`, que o CSV e o XLSX gravam como texto; e
-    `scalar_fields`, as uniões de texto e número, cujo texto o CSV e o XLSX
+    `scalar_fields`, as uniões de texto com outro tipo sem estrutura, cujo texto o CSV e o XLSX
     gravam entre aspas quando o leitor o trocaria.
     """
     ext = path.suffix.lower()
@@ -3953,7 +3955,7 @@ class _Checkpoint:
     nan_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
     # Campos só de `Decimal`, que o CSV e o XLSX gravam como texto.
     decimal_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
-    # Uniões de texto e número, cujo texto o CSV e o XLSX gravam entre aspas
+    # Uniões de texto com outro tipo sem estrutura, cujo texto o CSV e o XLSX gravam entre aspas
     # quando o leitor o trocaria (`_quoted_scalar_text`).
     scalar_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
 
