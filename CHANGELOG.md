@@ -18,8 +18,6 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Alterado
 
 - A página de campos condicionais diz que o campo pulado pela `condition` é gravado como `None` mesmo quando o `exclude_if` dele tiraria o `None` do `model_dump` (#375).
-- O teste de mutação roda o `ty` como `type_check_command` do mutmut, que conta como detectado o mutante que quebra um tipo, como o `None` no lugar do `False` num argumento `bool`. Os `# pragma: no mutate` que só cobriam essa troca saíram, e os atributos do `_SnapshotWriter` têm o tipo declarado na classe.
-- Os testes que rodam código num processo filho repassam o stderr dele ao do teste, que o pytest mostra quando o teste falha, também numa asserção posterior sobre a saída.
 - O teste de mutação roda o `ty` como `type_check_command` do mutmut, que conta como detectado o mutante que quebra um tipo, como o `None` no lugar do `False` num argumento `bool`. Os `# pragma: no mutate` que só cobriam essa troca saíram, e os atributos do `_SnapshotWriter` têm o tipo declarado na classe (#376).
 - Os testes que rodam código num processo filho repassam o stderr dele ao do teste, que o pytest mostra quando o teste falha, também numa asserção posterior sobre a saída (#376).
 - O teto do job do `mutation.yml` sobe de 120 para 180 minutos: com `conditional.py` e `core.py`, a rodada leva cerca de 92 minutos no runner do GitHub.
