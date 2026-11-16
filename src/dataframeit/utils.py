@@ -1635,5 +1635,15 @@ def _user_stacklevel() -> int:  # pragma: no mutate block
             and frame.f_globals.get("__name__") == f"{__package__}.core"
         ):
             return level + 1
+        if (
+            frame.f_code.co_name == "x_dataframeit__mutmut_orig"
+            and frame.f_globals.get("__name__") == f"{__package__}.core"
+        ):
+            while frame.f_back is not None and frame.f_back.f_code.co_name in {
+                "trampoline",
+                "_trampoline_wrapper",
+            }:
+                frame, level = frame.f_back, level + 1
+            return level + 1
         frame, level = frame.f_back, level + 1
     return 1

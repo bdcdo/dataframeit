@@ -303,9 +303,15 @@ def _user_warning_site() -> tuple[str, int, str, dict[str, Any]] | None:
     """Local, módulo e registro de avisos da chamada pública, para as threads."""
     frame = inspect.currentframe()
     while frame is not None:
-        if frame.f_code.co_name == "dataframeit" and frame.f_globals.get("__name__") == __name__:
+        if (
+            frame.f_code.co_name in {"dataframeit", "x_dataframeit__mutmut_orig"}
+            and frame.f_globals.get("__name__") == __name__
+        ):
             # Uma chamada Python da função pública sempre tem frame chamador.
             caller = cast("Any", frame.f_back)
+            if frame.f_code.co_name == "x_dataframeit__mutmut_orig":
+                while caller.f_code.co_name in {"trampoline", "_trampoline_wrapper"}:
+                    caller = caller.f_back
             return (
                 caller.f_code.co_filename,
                 caller.f_lineno,
@@ -1488,9 +1494,8 @@ def dataframeit(
 ) -> PolarsDataFrame: ...
 
 
-# Fora do teste de mutação: o mutmut renomearia a função e a chamaria por um
-# trampolim, e _user_stacklevel, que aponta os avisos para quem chamou
-# `dataframeit`, não acharia o quadro dela.
+# Fora do teste de mutação: o corpo ainda excede o tempo do job; os avisos já
+# reconhecem a função renomeada e o trampolim do mutmut.
 def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)
     data: pd.DataFrame | pd.Series | PolarsDataFrame | PolarsSeries | list[Any] | dict[Any, Any],
     questions: type[BaseModel] | None = None,
