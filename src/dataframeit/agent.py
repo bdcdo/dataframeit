@@ -792,10 +792,10 @@ class _FieldExtractor:
             for name in self.pydantic_model.model_fields
             if name not in skipped and name not in hidden
         }
-        dumped = (
-            _skipping_model(self.pydantic_model, skipped, hidden)
-            .model_validate(values, strict=False, by_alias=False, by_name=True)
-            .model_dump(by_alias=False)
+        dumped = dump_response(
+            _skipping_model(self.pydantic_model, skipped, hidden).model_validate(
+                values, strict=False, by_alias=False, by_name=True
+            )
         )
         return values, dumped
 
