@@ -1,5 +1,6 @@
 """Assinatura do checkpoint igual em qualquer processo, com condição callable e conjunto."""
 
+import dataclasses
 import functools
 import json
 import operator
@@ -7,7 +8,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections import UserList, deque
+from collections import UserDict, UserList, deque
 from enum import Enum
 from typing import Any, Literal
 
@@ -1616,11 +1617,21 @@ def test_deque_so_com_json_mantem_o_json_schema():
 _ARRAYS_E_VALORES = """
 import datetime as dt
 import warnings
+from dataclasses import dataclass
 from decimal import Decimal
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
+
+
+@dataclass(frozen=True)
+class Grupo:
+    bairros: object
+
+
+class Faixa(BaseModel):
+    bairros: frozenset[str]
 
 
 class Regra:
@@ -1818,6 +1829,34 @@ PARES = {
         lambda: com_config((frozenset(BAIRROS), 1)),
         lambda: com_config((frozenset(BAIRROS | {"bras"}), 1)),
     ),
+    "conjunto-em-chave-dataclass-no-estado": (
+        lambda: Regra({Grupo(frozenset(BAIRROS)): "vip"}),
+        lambda: Regra({Grupo(frozenset(BAIRROS | {"bras"})): "vip"}),
+    ),
+    "conjunto-em-dataclass-no-estado": (
+        lambda: Regra([Grupo(frozenset(BAIRROS))]),
+        lambda: Regra([Grupo(frozenset(BAIRROS | {"bras"}))]),
+    ),
+    "conjunto-em-chave-dataclass-no-campo": (
+        lambda: com_chave_no_campo(Grupo(frozenset(BAIRROS))),
+        lambda: com_chave_no_campo(Grupo(frozenset(BAIRROS | {"bras"}))),
+    ),
+    "conjunto-em-dataclass-no-campo": (
+        lambda: com_extra(Grupo(frozenset(BAIRROS))),
+        lambda: com_extra(Grupo(frozenset(BAIRROS | {"bras"}))),
+    ),
+    "conjunto-em-lista-de-dataclass-no-campo": (
+        lambda: com_extra(Grupo([frozenset(BAIRROS)])),
+        lambda: com_extra(Grupo([frozenset(BAIRROS | {"bras"})])),
+    ),
+    "conjunto-em-modelo-no-campo": (
+        lambda: com_extra(Faixa(bairros=frozenset(BAIRROS))),
+        lambda: com_extra(Faixa(bairros=frozenset(BAIRROS | {"bras"}))),
+    ),
+    "conjunto-em-chave-dataclass-no-model-config": (
+        lambda: com_config(Grupo(frozenset(BAIRROS))),
+        lambda: com_config(Grupo(frozenset(BAIRROS | {"bras"}))),
+    ),
     # O model_json_schema() levanta ao ordenar as chaves str e int.
     "chaves-str-e-int-no-model-config": (
         lambda: com_config(1, rotulo="vip"),
@@ -1890,6 +1929,82 @@ def test_chave_entra_pelo_str_sem_endereco_e_conjunto_em_ordem():
     }
     assert core._stable({frozenset({"b", "a"}): 1}, core._Descent()) == {"['a', 'b']": 1}
     assert core._stable({(("c", frozenset({"b", "a"})), 1): 1}) == {"[['c', ['a', 'b']], 1]": 1}
+
+
+@dataclasses.dataclass(eq=False)
+class _Grupo:
+    bairros: object
+    outro: object = None
+
+
+class _Faixa(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    bairros: frozenset[str]
+
+
+@pytest.mark.parametrize(
+    ("registro", "forma"),
+    [
+        (_Grupo(("a", frozenset({"c", "b"}))), {"bairros": ["a", ["b", "c"]], "outro": None}),
+        (_Grupo([frozenset({"c", "b"})]), {"bairros": [["b", "c"]], "outro": None}),
+        (_Grupo({"k": frozenset({"c", "b"})}), {"bairros": {"k": ["b", "c"]}, "outro": None}),
+        (_Faixa(bairros=frozenset({"c", "b"})), {"bairros": ["b", "c"]}),
+        (_Grupo(deque([frozenset({"c", "b"})])), {"bairros": [["b", "c"]], "outro": None}),
+        (_Grupo(UserDict(k=frozenset({"c", "b"}))), {"bairros": {"k": ["b", "c"]}, "outro": None}),
+    ],
+    ids=["tupla", "lista", "dict", "modelo", "deque", "userdict"],
+)
+def test_registro_que_guarda_conjunto_de_texto_entra_pelos_atributos(registro, forma):
+    """Em qualquer nível dos campos, como chave e como valor, com e sem descida."""
+    nome = type(registro).__name__
+    estado: Any = core._stable({"x": registro}, core._Descent())
+    estado = estado["x"]["state"]
+
+    assert {k: v for k, v in estado.items() if not k.startswith("__pydantic")} == forma
+    chave: Any = core._stable({registro: 1}, core._Descent())
+    assert list(chave) == [str({"record": nome, "state": estado})]
+    # Sem descida, como nos model_kwargs.
+    assert core._stable({registro: 1}) == chave
+
+
+@pytest.mark.parametrize(
+    "registro",
+    [_Grupo(("a", 1)), _Grupo(frozenset({2, 1})), _Faixa(bairros=frozenset())],
+    ids=["sem-conjunto", "conjunto-de-inteiros", "modelo-sem-texto"],
+)
+def test_registro_que_o_repr_escreve_igual_em_todo_processo_fica_pelo_repr(registro):
+    """Como no checkpoint já gravado com ele; o conjunto de inteiros itera na mesma ordem."""
+    assert core._stable({"x": registro}, core._Descent()) == {"x": registro}
+    assert core._stable({registro: 1}, core._Descent()) == {str(registro): 1}
+    # Também dentro da chave tupla, que entra pelo `str` dela.
+    assert core._stable({(registro, 2): 1}, core._Descent()) == {str((registro, 2)): 1}
+    assert core._stable({"x": _Grupo}, core._Descent()) == {"x": "_Grupo"}
+
+
+def test_chave_com_conjunto_de_inteiros_mantem_o_json_schema():
+    """O conjunto só de inteiros, que itera na mesma ordem em todo processo, não leva à forma canônica."""
+    assert not core._outside_json({frozenset({2, 1}): "x", _Grupo(frozenset({1})): "y"})
+    assert core._outside_json({_Grupo(frozenset({"a"})): "y"})
+    assert core._outside_json({(frozenset({"a"}), 1): "y"})
+
+
+def test_registro_que_volta_a_si_mesmo_nao_recursa_sem_fim():
+    sem_conjunto = _Grupo(None)
+    sem_conjunto.outro = sem_conjunto
+    ciclo = _Grupo(frozenset({"b", "a"}))
+    ciclo.outro = ciclo
+
+    assert not core._holds_unordered_set(sem_conjunto)
+    assert core._outside_json(ciclo)
+    assert core._stable({"x": ciclo}, core._Descent()) == {
+        "x": {
+            "record": "_Grupo",
+            "state": {
+                "bairros": ["a", "b"],
+                "outro": {"record": "_Grupo", "state": {"cycle": "_Grupo"}},
+            },
+        }
+    }
 
 
 # Modelo cujo JSON Schema falha sem função nem conjunto de texto no
@@ -1993,3 +2108,78 @@ def test_subclasse_chamavel_do_pandas_assina_pelos_dados_e_nao_pelo_cache_nem_pe
     com_limite.limite = 5
 
     assert assinatura(usado) == antes == assinatura(em_partes) != assinatura(com_limite)
+
+
+def test_atributo_do_usuario_com_nome_de_interno_do_index_conta_no_dataframe():
+    """O DataFrame só perde os atributos do DataFrame vazio, e não os do Index, como o `_id`."""
+
+    def com_id(valor):
+        quadro = _Quadro({"n": [1]})
+        quadro._id = valor
+        return _assinatura(_so_a_condicao(quadro))
+
+    assert com_id("regra-1") != com_id("regra-2")
+
+
+def test_internos_do_pandas_saem_tambem_das_classes_do_modulo_raiz():
+    """No pandas 3, o Index e o RangeIndex se declaram no módulo `pandas`, sem submódulo."""
+    assert "_range" in core._pandas_internals(pd.RangeIndex)
+    assert "_cache" in core._pandas_internals(pd.Index)
+
+
+class _Indice(pd.Index):
+    def __call__(self, d):
+        return d.get("n") in self
+
+
+def _usa_o_indice(indice):
+    _ = indice.is_unique, indice.inferred_type
+    indice.get_loc(2)
+
+
+def _indice(*valores):
+    return _Indice._simple_new(pd.Index(list(valores))._values)
+
+
+@pytest.mark.parametrize(
+    "condicao",
+    [_indice, lambda *valores: pd.Index(list(valores)).get_loc],
+    ids=["subclasse-chamavel", "metodo-ligado"],
+)
+def test_index_assina_pelos_dados_e_nao_pelo_cache(condicao):
+    def assinatura(valor):
+        return _assinatura(_so_a_condicao(valor))
+
+    usado = condicao(1, 2, 3)
+    antes = assinatura(usado)
+    _usa_o_indice(getattr(usado, "__self__", usado))
+
+    assert assinatura(usado) == antes != assinatura(condicao(1, 9, 3))
+
+
+def test_array_arrow_chamavel_assina_pelos_dados_e_nao_pelos_blocos_nem_pelo_cache():
+    pa = pytest.importorskip("pyarrow")
+
+    class ArrayArrow(pd.arrays.ArrowExtensionArray):
+        limite: int | None = None
+
+        def __call__(self, d):
+            return d.get("n") in set(self)
+
+    def assinatura(array):
+        return _assinatura(_so_a_condicao(array))
+
+    def em_blocos(*blocos):
+        return ArrayArrow(pa.chunked_array(blocos))
+
+    usado = em_blocos(["a", "b", "c"])
+    antes = assinatura(usado)
+    usado.unique()
+    usado.isna()
+    com_limite = em_blocos(["a", "b", "c"])
+    com_limite.limite = 5
+    meio = ["a"] * 50
+
+    assert assinatura(usado) == antes == assinatura(em_blocos(["a", "b"], ["c"]))
+    assert antes != assinatura(com_limite)
+    assert assinatura(em_blocos([*meio, "x", *meio])) != assinatura(em_blocos([*meio, "y", *meio]))
