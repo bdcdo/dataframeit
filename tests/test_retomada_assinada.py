@@ -39,6 +39,7 @@ from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
     _dropped_by_model_serializer,
     _run_signature,
+    _same_at,
     _same_json,
     _save_checkpoint,
     _validate_processed_rows,
@@ -1104,6 +1105,75 @@ def test_campo_recusado_tambem_sem_strict_e_o_unico_acusado():
     )
 
     assert incompativeis == ["n"]
+
+
+class SubComMarca(BaseModel):
+    """Submodelo cujo validador muda o nome a cada passada."""
+
+    model_config = ConfigDict(strict=True)
+    dia: dt.date
+    n: int = 0
+    nome: str
+
+    @field_validator("nome")
+    @classmethod
+    def marca(cls, valor):
+        return valor + "!"
+
+
+class EstritoComSubmodelo(BaseModel):
+    model_config = ConfigDict(strict=True)
+    sub: SubComMarca
+    itens: list[SubComMarca] = []
+
+
+def _valida_sub(sub, itens="[]"):
+    df = pd.DataFrame({"sub": [sub], "itens": [itens], "_dataframeit_status": ["processed"]})
+    return _validate_processed_rows(
+        df, "_dataframeit_status", EstritoComSubmodelo, {"sub", "itens"}
+    )
+
+
+def test_strict_compara_so_o_caminho_do_erro_e_nao_o_que_o_validador_muda():
+    """A data em texto do submodelo é aceita, e o nome, que o validador muda de novo, fica como relido."""
+    sub = '{"dia": "2024-01-02", "n": 1, "nome": "x!"}'
+    itens = '[{"dia": "2024-01-03", "n": 0, "nome": "y!"}]'
+
+    incompativeis, valores = _valida_sub(sub, itens)
+
+    assert incompativeis == []
+    assert valores[(0, "sub")] == {"dia": dt.date(2024, 1, 2), "n": 1, "nome": "x!"}
+    assert valores[(0, "itens")] == [{"dia": dt.date(2024, 1, 3), "n": 0, "nome": "y!"}]
+
+
+def test_strict_continua_acusando_o_valor_recusado_pelo_conteudo_no_submodelo():
+    incompativeis, _ = _valida_sub('{"dia": "2024-01-02", "n": "3", "nome": "x!"}')
+
+    assert incompativeis == ["sub"]
+
+
+@pytest.mark.parametrize(
+    ("validado", "relido", "caminho", "igual"),
+    [
+        ({"a": dt.date(2024, 1, 2), "b": 2}, {"a": "2024-01-02", "b": 1}, ("a",), True),
+        ({"a": 1}, {"a": 1.0}, ("a",), False),
+        (dt.date(2024, 1, 2), "2024-01-02", (), True),
+        ((dt.date(2024, 1, 2), 2), ["2024-01-02", 1], (0,), True),
+        ([dt.date(2024, 1, 2), 2], ["2024-01-02", 1], (1,), False),
+        # O passo que um lado não tem encerra a descida, e o nível inteiro se compara.
+        ({"a": 1, "b": 2}, {"a": 1, "b": 3}, ("Sub", "a"), False),
+        ({"a": 1}, {"a": 1}, ("Sub", "a"), True),
+        # A chave que só um lado tem também encerra a descida.
+        ({"a": 1}, {}, ("a",), False),
+        ({}, {"a": 1}, ("a",), False),
+        ([1, 2], [1, 3], ("list[int]", 0), False),
+        ([1, 2], [1, 3], (2,), False),
+        ([1, 2], [1, 2], (2,), True),
+        (dt.date(2024, 1, 2), "2024-01-02", ("date",), True),
+    ],
+)
+def test_comparacao_pelo_caminho_do_erro(validado, relido, caminho, igual):
+    assert _same_at(validado, relido, caminho) is igual
 
 
 class EstritoVariado(BaseModel):

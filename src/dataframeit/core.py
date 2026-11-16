@@ -731,8 +731,10 @@ def _validate_row(
     datetime à meia-noite. O modelo com strict=True recusa essas formas.
     Quando a validação configurada recusa a linha, ela é refeita sem strict,
     e cada campo recusado só é aceito se o valor validado diz o mesmo que o
-    relido (_same_value): o "3" num campo int strict continua recusado,
-    porque o conteúdo do checkpoint não é o que o modelo aceita.
+    relido no caminho de cada erro (_same_at): o "3" num campo int strict
+    continua recusado, porque o conteúdo do checkpoint não é o que o modelo
+    aceita. O resto do campo não é comparado: o validador de um submodelo que
+    muda o valor a cada passada não recusa a linha pela data ao lado.
 
     A execução grava a resposta pelo nome dos campos, também dentro do
     submodelo, e a linha se valida só pelo nome: o alias igual ao nome de
@@ -744,6 +746,7 @@ def _validate_row(
         ), set()
     except ValidationError as error:
         rejected = rejected_fields(error)
+        locations = [detail["loc"] for detail in error.errors()]
     try:
         validated_data = model.model_validate(
             projected, strict=False, by_alias=False, by_name=True
@@ -751,16 +754,56 @@ def _validate_row(
     except ValidationError as error:
         return None, rejected_fields(error)
     # O campo que o dump não traz, como o de exclude_if, fica sem o valor para
-    # comparar e continua recusado.
+    # comparar e continua recusado. O campo acusado pelo erro do modelo inteiro,
+    # sem caminho próprio, se compara inteiro.
     changed = {
         field_name
         for field_name in rejected & projected.keys()
         if field_name not in validated_data
-        or not _same_value(validated_data[field_name], projected[field_name])
+        or not all(
+            _same_at(validated_data[field_name], projected[field_name], path)
+            for path in _error_paths(locations, field_name)
+        )
     }
     if changed:
         return None, changed
     return validated_data, set()
+
+
+def _error_paths(
+    locations: list[tuple[int | str, ...]], field_name: str
+) -> list[tuple[int | str, ...]]:
+    """O caminho dentro do campo de cada erro dele; sem erro próprio, o campo inteiro."""
+    return [loc[1:] for loc in locations if loc[:1] == (field_name,)] or [()]
+
+
+def _same_at(validated: object, value: object, path: tuple[int | str, ...]) -> bool:
+    """Se o valor validado diz o mesmo que o relido no caminho de um erro de validação.
+
+    Desce pelo caminho enquanto os dois lados têm o passo: a chave do dict, ou
+    o índice da lista ou da tupla. O passo que um lado não tem, como o nome do
+    membro que o erro de uma união traz, encerra a descida, e o valor inteiro
+    daquele nível é comparado. O campo se compara por `_same_value`, e o que
+    está abaixo dele, que o checkpoint grava em JSON, pelo texto JSON
+    (`_same_json`), como em `_validated_where_same`.
+    """
+    same = _same_value
+    for step in path:
+        if isinstance(validated, dict) and isinstance(value, dict):
+            if step not in validated or step not in value:
+                break
+            validated, value = validated[step], value[step]
+        elif (
+            isinstance(validated, (list, tuple))
+            and isinstance(value, (list, tuple))
+            and isinstance(step, int)
+            and step < min(len(validated), len(value))
+        ):
+            validated, value = validated[step], value[step]
+        else:
+            break
+        same = _same_json
+    return same(validated, value)
 
 
 # A partir dele, o float não distingue dois inteiros vizinhos.
