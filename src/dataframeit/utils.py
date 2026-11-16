@@ -530,7 +530,7 @@ def _json_default(value: object) -> object:
     return str(value)
 
 
-def _resolved(annotation: object) -> object:
+def _resolved(annotation: object, localns: Mapping[str, object] | None = None) -> object:
     """A anotação sem NewType, apelido `type` e TypeVar, pelo tipo a que eles se referem.
 
     É o ponto único em que os helpers deste módulo que inspecionam anotação
@@ -545,43 +545,44 @@ def _resolved(annotation: object) -> object:
     `type Opcional[T] = T | None`, tem o apelido como origem, e o `__value__`
     dele traz os parâmetros por substituir (ver `_alias_applied`). O TypeVar
     que fica sem argumento, como o do modelo genérico sem parâmetro, vale o
-    tipo com que o pydantic o valida (`_typevar_validated_as`).
+    tipo com que o pydantic o valida (`_typevar_validated_as`). A referência
+    em texto no tipo de qualquer dos três, como o `bound="Item"` do TypeVar,
+    é trocada pelo tipo, procurado em `localns` e no módulo em que o tipo
+    nomeado foi declarado (`_evaluated`).
     """
     while True:
         if isinstance(annotation, typing.TypeVar):
-            annotation = _typevar_validated_as(annotation)
+            annotation = _named_type(_typevar_validated_as(annotation), annotation, localns)
         elif isinstance(annotation, typing.NewType):
-            annotation = annotation.__supertype__
+            annotation = _named_type(annotation.__supertype__, annotation, localns)
         elif type(annotation).__name__ == "TypeAliasType":
-            annotation = _alias_value(annotation)
+            annotation = _alias_value(annotation, localns)
         elif type(get_origin(annotation)).__name__ == "TypeAliasType":
-            annotation = _alias_applied(get_origin(annotation), get_args(annotation))
+            annotation = _alias_applied(get_origin(annotation), get_args(annotation), localns)
         else:
             return annotation
 
 
-def _alias_value(alias: object) -> Any:  # noqa: ANN401 (anotação de tipo arbitrária)
+def _alias_value(alias: object, localns: Mapping[str, object] | None = None) -> Any:  # noqa: ANN401 (anotação de tipo arbitrária)
     """O `__value__` do apelido `type` com as referências em texto trocadas pelos tipos.
 
     O valor guarda como texto a referência adiantada, como o `"Item"` de
     `TypeAliasType("Itens", list["Item"])`, e o valor inteiro escrito entre
     aspas. O nome é procurado no módulo em que o apelido foi declarado, entre
-    os parâmetros dele e no próprio nome dele, o do apelido recursivo. O
-    apelido não guarda o escopo da função em que foi declarado, e o nome que só
-    existe ali não é achado: o erro diz qual é, porque o submodelo atrás dele
-    ficaria fora da configuração por campo sem aviso.
+    os parâmetros dele e no próprio nome dele, o do apelido recursivo; com
+    `localns`, antes do módulo, também nesses nomes. O apelido não guarda o
+    escopo da função em que foi declarado, e o nome que só existe ali não é
+    achado: o erro diz qual é, porque o submodelo atrás dele ficaria fora da
+    configuração por campo sem aviso.
     """
-    value = alias.__value__  # ty: ignore[unresolved-attribute]
-    name = alias.__name__  # ty: ignore[unresolved-attribute]
-    module = sys.modules.get(alias.__module__)
     own = {param.__name__: param for param in alias.__type_params__}  # ty: ignore[unresolved-attribute]
+    name = alias.__name__  # ty: ignore[unresolved-attribute]
     try:
-        return typing.get_type_hints(
-            types.SimpleNamespace(__annotations__={name: value}),
-            globalns=vars(module) if module is not None else {},
-            localns={**own, name: alias},
-            include_extras=True,
-        )[name]
+        return _evaluated(
+            alias.__value__,  # ty: ignore[unresolved-attribute]
+            alias,
+            {**(localns or {}), **own, name: alias},
+        )
     except NameError as error:
         msg = (
             f"O apelido de tipo '{name}' se refere a um nome por texto que não foi "
@@ -589,6 +590,131 @@ def _alias_value(alias: object) -> Any:  # noqa: ANN401 (anotação de tipo arbi
             "depois da classe e sem aspas, ou declare os dois no nível do módulo."
         )
         raise TypeError(msg) from error
+
+
+def _named_type(value: object, named: object, localns: Mapping[str, object] | None) -> object:
+    """O tipo `value` do NewType ou do TypeVar `named`, com a referência em texto trocada.
+
+    O nome é procurado como o do apelido (`_evaluated`). A referência que não
+    se resolve fica como está, e o tipo atrás dela não é visto: o pydantic a
+    procura no escopo do modelo, que o NewType e o TypeVar declarados em outro
+    módulo não conhecem, e o parâmetro de `class Caixa[T: "Item"]` nem diz em
+    que módulo foi declarado. A que volta ao próprio `named` também fica.
+    """
+    try:
+        evaluated = _evaluated(value, named, localns)
+    except Exception:  # noqa: BLE001 (o texto é do usuário: nome que falta, atributo, sintaxe)
+        return value
+    return value if evaluated is named else evaluated
+
+
+def _evaluated(value: object, named: object, localns: Mapping[str, object] | None = None) -> Any:  # noqa: ANN401 (anotação de tipo arbitrária)
+    """O tipo `value`, de `named`, com as referências em texto trocadas pelos tipos.
+
+    `named` é o apelido `type`, o NewType ou o TypeVar que guarda `value`, e o
+    nome em texto é procurado em `localns` e no módulo em que `named` foi
+    declarado. Levanta o NameError do nome que não é achado.
+    """
+    name = named.__name__  # ty: ignore[unresolved-attribute]
+    # O TypeVar criado fora de um módulo, como no `exec`, tem None no lugar do nome.
+    module = sys.modules.get(named.__module__)
+    return typing.get_type_hints(
+        types.SimpleNamespace(__annotations__={name: value}),
+        globalns=vars(module) if module is not None else {},
+        localns=dict(localns or {}),
+        include_extras=True,
+    )[name]
+
+
+def _refuse_shadowed_name(annotation: object, owner: type[BaseModel]) -> None:
+    """Recusa a referência em texto que o modelo dono resolve para outra classe.
+
+    Vale para o texto dentro de um apelido `type`, de um NewType ou de um
+    TypeVar, em qualquer nível da anotação. O pydantic procura o nome primeiro
+    no próprio modelo e no escopo em que ele foi declarado, e `_resolved`, que
+    não recebe o modelo, só no módulo do tipo nomeado. Com uma classe de mesmo
+    nome dentro da função e outra no módulo, o modelo valida com a de dentro, e
+    a configuração por campo leria a do módulo, sem aviso.
+
+    O modelo declarado no nível do módulo não tem esse escopo e passa direto. A
+    referência que o módulo não resolve fica de fora (`_shadowed`): a do
+    apelido já é recusada onde ele é lido (`_alias_value`), e a do NewType e do
+    TypeVar fica como está (`_named_type`).
+    """
+    parent = owner.__pydantic_parent_namespace__
+    if parent is None:
+        return
+    local = {
+        name: value() if type(value).__name__.endswith("WeakRef") else value
+        for name, value in parent.items()
+    }
+    # O teste de mutação troca o modelo por None, que o texto também resolve
+    # para outra coisa que a classe do módulo, e a recusa sai igual.
+    local[owner.__name__] = owner  # pragma: no mutate
+    try:
+        by_module = _expanded(annotation, None)
+        by_owner = _expanded(annotation, local)
+    except TypeError:
+        return
+    if _shadowed(by_owner, by_module):
+        msg = (
+            f"A anotação {annotation!r} do modelo '{owner.__name__}' usa um apelido de tipo, "
+            "um NewType ou um TypeVar com referência em texto a um nome que é uma classe no "
+            "escopo em que o modelo foi declarado e outra no módulo do tipo nomeado: o "
+            "modelo valida com a primeira, e a configuração por campo leria a segunda. "
+            "Declare o tipo sem aspas, ou dê nomes diferentes às duas classes."
+        )
+        raise TypeError(msg)
+
+
+def _expanded(
+    annotation: object, localns: Mapping[str, object] | None, seen: tuple[object, ...] = ()
+) -> object:
+    """A anotação com os tipos nomeados resolvidos em todo nível, para comparar duas resoluções.
+
+    Cada nível com argumentos vira a tupla dos argumentos expandidos. Do
+    `Annotated` só entra o tipo: o metadado não é anotação, e o tipo nomeado
+    que estiver ali não é lido pelo pydantic nem pela configuração por campo.
+    O valor do `Literal` entra como está, igual nas duas resoluções. O apelido
+    recursivo, que volta a um nível já aberto, para ali.
+    """
+    resolved = _resolved(annotation, localns)
+    args = get_args(resolved)
+    if not args or resolved in seen:
+        return resolved
+    if get_origin(resolved) is typing.Annotated:
+        args = args[:1]
+    return tuple(_expanded(arg, localns, (*seen, resolved)) for arg in args)
+
+
+def _shadowed(by_owner: object, by_module: object) -> bool:
+    """Se as duas expansões (`_expanded`) dão classes diferentes em algum ramo.
+
+    O ramo que o módulo deixa em texto fica de fora: ali a configuração por
+    campo não lê classe nenhuma. Os demais se comparam um a um, e a referência
+    sem resolver num deles não esconde a classe trocada em outro. Quando as
+    duas expansões não têm a mesma forma, como a união que o escopo do modelo
+    reduz a um membro só, os ramos não se casam, e o texto em qualquer ponto do
+    lado do módulo deixa a anotação de fora.
+    """
+    if (
+        isinstance(by_owner, tuple)
+        and isinstance(by_module, tuple)
+        and len(by_owner) == len(by_module)
+    ):
+        # As duas tuplas têm o mesmo tamanho, e o strict do zip nunca levanta.
+        return any(
+            _shadowed(*pair)
+            for pair in zip(by_owner, by_module, strict=True)  # pragma: no mutate
+        )
+    return by_owner != by_module and not _holds_text(by_module)
+
+
+def _holds_text(expanded: object) -> bool:
+    """Se a anotação expandida (`_expanded`) ainda guarda uma referência em texto."""
+    if isinstance(expanded, tuple):
+        return any(_holds_text(part) for part in expanded)
+    return isinstance(expanded, (str, typing.ForwardRef))
 
 
 def _typevar_validated_as(typevar: typing.TypeVar) -> object:
@@ -608,7 +734,9 @@ def _typevar_validated_as(typevar: typing.TypeVar) -> object:
     return typing.Any
 
 
-def _alias_applied(alias: object, args: tuple[Any, ...]) -> object:
+def _alias_applied(
+    alias: object, args: tuple[Any, ...], localns: Mapping[str, object] | None = None
+) -> object:
     """O `__value__` do apelido genérico com cada parâmetro trocado pelo argumento.
 
     Cada parâmetro de `__type_params__` vale o argumento na mesma posição. A
@@ -618,7 +746,7 @@ def _alias_applied(alias: object, args: tuple[Any, ...]) -> object:
     que é o próprio parâmetro não tem `__parameters__` e é trocado direto; o
     que não usa parâmetro nenhum fica como está.
     """
-    value = _alias_value(alias)
+    value = _alias_value(alias, localns)
     # O teste de mutação troca o strict=False por None ou pelo default, que também
     # são falsos, e o () do getattr por None, que o `not` trata igual.
     by_param = dict(zip(alias.__type_params__, args, strict=False))  # ty: ignore[unresolved-attribute]  # pragma: no mutate
@@ -2012,6 +2140,7 @@ def resolve_forward_refs(  # noqa: PLR0911 (uma saída por forma de anotação)
 
     origin = get_origin(annotation)
     args = get_args(annotation)
+    _refuse_shadowed_name(annotation, owner)
     # Em Literal os argumentos são valores, e uma string ali nunca é referência.
     if origin is None or origin is typing.Literal or not args:
         return annotation

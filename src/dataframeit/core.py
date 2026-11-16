@@ -25,13 +25,14 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from types import CodeType, MethodType
+from types import CodeType, MethodType, UnionType
 from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
     NotRequired,
     TypedDict,
+    Union,
     cast,
     get_args,
     get_origin,
@@ -2658,13 +2659,24 @@ class _Descent:
     como veio, e a descida serve só à guarda de ciclo dos contêineres.
     """
 
+    # Declarados na classe, como em `_SnapshotWriter`: sem isso, o typecheck do
+    # teste de mutação infere o tipo de `leaves` também pelo `self.leaves = None`
+    # do `__init__` mutado, e acusa o `if descent.leaves` de `_stable`, que não
+    # foi mutado.
+    leaves: bool
+    depth: dict[int, int]
+    lowest: list[int]
+    forms: dict[int, tuple[object, object]]
+    containers: set[int]
+    aliases: list[object]
+
     def __init__(self, *, leaves: bool = True) -> None:
         self.leaves = leaves
-        self.depth: dict[int, int] = {}
-        self.lowest: list[int] = []
-        self.forms: dict[int, tuple[object, object]] = {}
-        self.containers: set[int] = set()
-        self.aliases: list[object] = []
+        self.depth = {}
+        self.lowest = []
+        self.forms = {}
+        self.containers = set()
+        self.aliases = []
 
     def reach(self, depth: int) -> None:
         """Registra, no objeto aberto mais fundo, um marcador que aponta para `depth`."""
@@ -2683,11 +2695,15 @@ def _schema_leaf(value: object, descent: _Descent) -> object:
     resolved = _resolved(value)
     if resolved is not value:
         return _named_type_leaf(value, resolved, descent)
-    if get_origin(value) is not None:
-        return {
-            "origin": _schema_leaf(get_origin(value), descent),
-            "args": _stable(get_args(value), descent),
-        }
+    origin = get_origin(value)
+    if origin is Union:
+        # `X | Y` e `Union[X, Y]` são a mesma união, e antes do 3.14 têm origens
+        # diferentes: as duas grafias assinam pela de `X | Y`, que é uma classe e
+        # entra pelo nome. A de `Union` entraria pelo código de uma função
+        # interna do `typing`, que muda com a versão do Python.
+        origin = UnionType
+    if origin is not None:
+        return {"origin": _schema_leaf(origin, descent), "args": _stable(get_args(value), descent)}
     if isinstance(value, type) and issubclass(value, BaseModel):
         # Os campos dele já entram pelo caminho; aqui, o que o JSON Schema tiraria
         # da classe: o título, a descrição e o model_config.

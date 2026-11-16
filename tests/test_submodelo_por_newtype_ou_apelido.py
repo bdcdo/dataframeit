@@ -7,7 +7,17 @@ campo vê o submodelo como o vê na anotação direta.
 """
 
 import sys
-from typing import Annotated, Any, List, NewType, Optional, TypeVar  # noqa: UP035 (o `List["X"]` guarda um ForwardRef)
+from typing import (  # noqa: UP035 (o `List["X"]` guarda um ForwardRef)
+    Annotated,
+    Any,
+    ForwardRef,
+    List,
+    Literal,
+    NewType,
+    Optional,
+    TypeVar,
+    Union,
+)
 
 import pytest
 from pydantic import BaseModel, Field, create_model
@@ -64,6 +74,8 @@ _AnotadoComTexto = TypeAliasType("_AnotadoComTexto", Annotated[list["_Item"], "_
 # apelido e as anotações que os testes montam para cada modelo.
 _newtype: Any = NewType
 _apelido: Any = TypeAliasType
+_typevar: Any = TypeVar
+_uniao: Any = Union
 
 
 def _lista(item: Any) -> Any:
@@ -280,3 +292,268 @@ def test_type_da_linguagem_com_referencia_em_texto_e_resolvido_pelo_modulo():
     exec('type Itens = list["_Item"]', escopo)  # noqa: S102 (sintaxe que o 3.11 não compila)
 
     assert is_list_of_pydantic_model(escopo["Itens"]) == (True, _Item)
+
+
+# Referência em texto no limite do TypeVar e no tipo do NewType
+
+_TypeVarComLimiteEmTexto = TypeVar("_TypeVarComLimiteEmTexto", bound="_Item")
+_TypeVarComRestricoesEmTexto = _typevar("_TypeVarComRestricoesEmTexto", "_Item", "int")
+_NewTypeEmTexto: Any = NewType("_NewTypeEmTexto", "_Item")  # ty: ignore[invalid-newtype]
+_NewTypeDeListaEmTexto = NewType("_NewTypeDeListaEmTexto", list["_Item"])
+
+
+def test_referencia_em_texto_do_typevar_e_do_newtype_e_trocada_pelo_tipo():
+    assert _resolved(_TypeVarComLimiteEmTexto) is _Item
+    assert _resolved(_TypeVarComRestricoesEmTexto) == _Item | int
+    assert _resolved(_NewTypeEmTexto) is _Item
+    assert _resolved(_NewTypeDeListaEmTexto) == list[_Item]
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [_TypeVarComLimiteEmTexto, _NewTypeEmTexto, list[_NewTypeEmTexto], _NewTypeDeListaEmTexto],
+    ids=["typevar", "newtype", "lista-de-newtype", "newtype-de-lista"],
+)
+def test_submodelo_por_referencia_em_texto_no_typevar_ou_no_newtype_entra_na_configuracao(
+    anotacao,
+):
+    modelo = create_model("Modelo", campo=(anotacao, ...))
+
+    assert get_nested_pydantic_models(anotacao) == [_Item]
+    assert [path for path, *_ in _collect_configured_fields(modelo)] == ["campo.valor"]
+    with pytest.raises(ValueError, match=r"requerem use_search=True e search_per_field=True"):
+        _validate_field_configs(modelo, None, use_search=False, search_per_field=False)
+
+
+@pytest.mark.parametrize(
+    "declara",
+    [
+        lambda: _typevar("Limite", bound="NaoExiste"),
+        lambda: _newtype("Novo", "list[NaoExiste]"),
+        lambda: _newtype("Novo", "typing.NaoExiste"),
+        lambda: _newtype("Novo", "list["),
+        lambda: _newtype("Novo", "Novo"),
+    ],
+    ids=["typevar", "newtype", "atributo", "sintaxe", "o-proprio-nome"],
+)
+def test_referencia_em_texto_do_typevar_ou_do_newtype_que_nao_se_resolve_fica_como_esta(declara):
+    nomeado = declara()
+    escopo = {"Novo": nomeado}
+
+    resolvido = _resolved(nomeado, escopo)
+
+    assert isinstance(resolvido, (str, ForwardRef))
+    assert get_nested_pydantic_models(nomeado) == []
+    modelo = create_model("Modelo", campo=(str, ...))
+    _validate_field_configs(modelo, None, use_search=False, search_per_field=False)
+
+
+def test_typevar_sem_modulo_resolve_sem_ele():
+    sem_modulo = _typevar("sem_modulo", bound=int)
+    sem_modulo.__module__ = None
+
+    assert _resolved(sem_modulo) is int
+
+
+# Apelido com referência em texto e classe de mesmo nome dentro da função e no módulo
+
+
+def _modelo_com_item_local(anotacao: Any):
+    """Modelo declarado ao lado de um `_Item` local, com o campo `itens` na anotação dada."""
+
+    class _Item(BaseModel):
+        outro: int
+
+    class Modelo(BaseModel):
+        itens: anotacao
+
+    return Modelo, _Item
+
+
+def test_pydantic_resolve_a_referencia_em_texto_do_apelido_pela_classe_local():
+    modelo, local = _modelo_com_item_local(_apelido("Itens", list["_Item"]))
+
+    assert type(modelo.model_validate({"itens": [{"outro": 1}]}).itens[0]) is local
+
+
+_RECUSA_DO_NOME_HOMONIMO = (
+    r"do modelo 'Modelo' usa um apelido de tipo, um NewType ou um TypeVar com referência em "
+    r"texto a um nome que é uma classe no escopo em que o modelo foi declarado e outra no "
+    r"módulo do tipo nomeado: o modelo valida com a primeira, e a configuração por campo leria "
+    r"a segunda\. Declare o tipo sem aspas, ou dê nomes diferentes às duas classes\.$"
+)
+
+_GenericoComItem: Any = _apelido("Generico", "list[_T] | _Item", type_params=(_T,))
+_OpcionalDeGenerico: Any = Optional[_GenericoComItem[int]]
+_ApelidoDeApelido = TypeAliasType("_ApelidoDeApelido", Optional[_ApelidoComTexto])
+_NewTypeDeApelido = _newtype("_NewTypeDeApelido", _ApelidoComTexto)
+_ApelidoDoModeloDono = TypeAliasType("_ApelidoDoModeloDono", list["Modelo"])
+_ArvoreEmTexto = TypeAliasType("_ArvoreEmTexto", "list[_ArvoreEmTexto] | _Item")
+
+
+class Modelo(BaseModel):
+    """Homônimo, no módulo, do modelo que os testes declaram dentro da função."""
+
+    valor: str = Field(json_schema_extra={"prompt": "busque o valor"})
+
+
+@pytest.mark.parametrize(
+    "anotacao",
+    [
+        _apelido("Itens", list["_Item"]),
+        _apelido("Itens", "list[_Item]"),
+        _OpcionalDeGenerico,
+        _ApelidoDeApelido,
+        _NewTypeDeApelido,
+        _NewTypeDeListaEmTexto,
+        _TypeVarComLimiteEmTexto,
+        list[_NewTypeEmTexto],
+    ],
+    ids=[
+        "apelido-no-item",
+        "apelido-inteiro",
+        "apelido-generico",
+        "apelido-de-apelido",
+        "newtype-de-apelido",
+        "newtype",
+        "typevar",
+        "lista-de-newtype",
+    ],
+)
+def test_referencia_em_texto_a_classe_local_homonima_da_do_modulo_e_recusada(anotacao):
+    modelo, _ = _modelo_com_item_local(anotacao)
+
+    with pytest.raises(TypeError, match=_RECUSA_DO_NOME_HOMONIMO):
+        _validate_field_configs(modelo, None, use_search=False, search_per_field=False)
+    with pytest.raises(TypeError, match=r"^A anotação .* do modelo 'Modelo' usa um apelido"):
+        list(_collect_configured_fields(modelo))
+
+
+_NewTypeSoLocal: Any = _newtype("_NewTypeSoLocal", "SoLocal")
+_TuplaComRamoSemResolver = TypeAliasType(
+    "_TuplaComRamoSemResolver", tuple["_Item", _NewTypeSoLocal]
+)
+
+
+def test_ramo_que_o_modulo_nao_resolve_nao_esconde_a_classe_homonima_de_outro_ramo():
+    class SoLocal(BaseModel):
+        outro: int
+
+    modelo, _ = _modelo_com_item_local(_TuplaComRamoSemResolver)
+
+    assert SoLocal.__name__ == "SoLocal"
+    with pytest.raises(TypeError, match=_RECUSA_DO_NOME_HOMONIMO):
+        list(_collect_configured_fields(modelo))
+
+
+_UniaoComNomeSoLocal: Any = _newtype("_UniaoComNomeSoLocal", _uniao[ForwardRef("SoLocal"), _Item])
+
+
+def test_uniao_que_o_escopo_do_modelo_reduz_a_um_membro_nao_e_recusada():
+    def declara():
+        SoLocal = _Item  # noqa: N806 (o nome que o texto da união procura)
+
+        class Modelo(BaseModel):
+            campo: _UniaoComNomeSoLocal
+
+        return Modelo, SoLocal
+
+    modelo, _ = declara()
+
+    assert type(modelo.model_validate({"campo": {"valor": "a"}}).campo) is _Item
+    list(_collect_configured_fields(modelo))
+
+
+def test_tipo_nomeado_no_metadado_do_annotated_nao_e_lido():
+    class Modelo(BaseModel):
+        valores: list[Annotated[int, _NewTypeEmTexto]]
+
+    def declara():
+        class _Item(BaseModel):
+            outro: int
+
+        class Local(BaseModel):
+            valores: list[Annotated[int, _NewTypeEmTexto]]
+
+        return Local, _Item
+
+    local, _ = declara()
+
+    assert local.model_validate({"valores": [1]}).valores == [1]
+    assert list(_collect_configured_fields(local)) == list(_collect_configured_fields(Modelo))
+
+
+def test_referencia_em_texto_ao_nome_do_proprio_modelo_dono_e_recusada():
+    def declara():
+        class Modelo(BaseModel):
+            outro: int = 0
+            filhos: _ApelidoDoModeloDono = []
+
+        return Modelo
+
+    with pytest.raises(TypeError, match=_RECUSA_DO_NOME_HOMONIMO):
+        list(_collect_configured_fields(declara()))
+
+
+def test_newtype_com_referencia_em_texto_a_nome_que_so_existe_na_funcao_segue_aceito():
+    class SoLocal(BaseModel):
+        valor: str = Field(json_schema_extra={"prompt": "busque o valor"})
+
+    lista: Any = _newtype("Lista", "list[SoLocal]")
+
+    class Modelo(BaseModel):
+        itens: lista
+
+    # O módulo não acha o nome, e o submodelo fica fora da configuração, como antes.
+    assert list(_collect_configured_fields(Modelo)) == []
+    assert type(Modelo.model_validate({"itens": [{"valor": "a"}]}).itens[0]) is SoLocal
+
+
+def test_apelido_com_nome_que_so_existe_na_funcao_segue_recusado_pelo_erro_do_apelido():
+    class SoLocal(BaseModel):
+        valor: str
+
+    apelido: Any = _apelido("Itens", list["SoLocal"])
+
+    class Modelo(BaseModel):
+        itens: apelido
+
+    with pytest.raises(TypeError, match=r"apelido de tipo 'Itens'.*não foi encontrado no módulo"):
+        list(_collect_configured_fields(Modelo))
+
+
+def test_anotacao_com_literal_e_annotated_ao_lado_do_tipo_nomeado_segue_aceita():
+    def declara():
+        sem_relacao = 1
+
+        class Modelo(BaseModel):
+            campo: Annotated[_ApelidoComTexto, "_Item"]
+            outro: Literal["_Item"]
+            arvore: _ArvoreEmTexto
+
+        return Modelo, sem_relacao
+
+    modelo, _ = declara()
+
+    assert [path for path, *_ in _collect_configured_fields(modelo)] == [
+        "campo.valor",
+        "arvore.valor",
+    ]
+
+
+def test_apelido_sem_classe_homonima_no_escopo_do_modelo_segue_aceito():
+    def declara():
+        sem_relacao = 1
+        apelido: Any = _apelido("Itens", list["_Item"])
+
+        class Modelo(BaseModel):
+            itens: apelido
+
+        return Modelo, sem_relacao
+
+    modelo, _ = declara()
+
+    assert [path for path, *_ in _collect_configured_fields(modelo)] == ["itens.valor"]
+    # O modelo do módulo, sem escopo de função, também.
+    do_modulo = create_model("Modelo", itens=(_ApelidoComTexto, ...))
+    assert [path for path, *_ in _collect_configured_fields(do_modulo)] == ["itens.valor"]
