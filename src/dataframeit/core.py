@@ -3159,7 +3159,9 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         reprocessed_columns,
         nan_columns,
         text_column=text_column,
-        status_col=status_col,
+        # Com `pending`, a checagem não lê o status_col, que só entra na mensagem
+        # da entrada sem coluna de status; o teste de mutação o troca à toa.
+        status_col=status_col,  # pragma: no mutate
         pending=~concluded,
     )
     by_name = {str(column): column for column in df.columns}
