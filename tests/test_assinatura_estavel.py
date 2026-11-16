@@ -1985,9 +1985,12 @@ def test_chave_com_conjunto_de_inteiros_mantem_o_json_schema():
 
 
 def test_registro_que_volta_a_si_mesmo_nao_recursa_sem_fim():
+    sem_conjunto = _Grupo(None)
+    sem_conjunto.outro = sem_conjunto
     ciclo = _Grupo(frozenset({"b", "a"}))
     ciclo.outro = ciclo
 
+    assert not core._holds_unordered_set(sem_conjunto)
     assert core._outside_json(ciclo)
     assert core._stable({"x": ciclo}, core._Descent()) == {
         "x": {
