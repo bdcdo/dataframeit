@@ -556,8 +556,11 @@ def test_xlsx_grava_como_texto_o_decimal_do_campo_so_de_decimal(tmp_path):
 
     _save_checkpoint(df, caminho, decimal_fields={"campo"})
 
-    celula = openpyxl.load_workbook(caminho).active["A2"]
-    assert (celula.data_type, celula.value) == ("s", "1.10")
+    # Pelo arquivo aberto aqui: o openpyxl antigo não fecha o que ele mesmo abre.
+    with caminho.open("rb") as arquivo:
+        celula = openpyxl.load_workbook(arquivo).active["A2"]
+        gravado = (celula.data_type, celula.value)
+    assert gravado == ("s", "1.10")
 
 
 def test_parquet_grava_o_decimal_sem_nan_como_decimal(tmp_path):
