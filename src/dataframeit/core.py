@@ -7,6 +7,7 @@ import dataclasses
 import datetime as dt
 import hashlib
 import importlib.util
+import inspect
 import itertools
 import json
 import logging
@@ -2420,6 +2421,10 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
     # da classe do usuário.
     if callable(value) or isinstance(value, _TABLES):
         return True
+    # O Pydantic escreve a dataclass e o modelo pelos campos, com o conjunto de
+    # um campo na ordem de iteração.
+    if _is_record(value):
+        return _holds_unordered_set(value)
     if not _is_structure_class(type(value)):
         return False
     if isinstance(value, collections.abc.Set):
@@ -2431,7 +2436,9 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
     if id(value) in path:
         return True
     if isinstance(value, collections.abc.Mapping):
-        items: Iterable[object] = value.values()
+        # A chave vai ao JSON Schema do campo pelo `str`, que escreve o conjunto
+        # dentro dela na ordem de iteração.
+        items: Iterable[object] = [*value.keys(), *value.values()]
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
         # O cast não age em tempo de execução, e o teste de mutação troca o tipo à toa.
         items = cast("Sequence[object]", value)  # pragma: no mutate
@@ -2568,7 +2575,61 @@ def _callable_leaf(value: object, descent: _Descent) -> object:
             "callable": _callable_leaf(call, descent),
             "state": _instance_state(value, descent),
         }
+    return _record_form(value, descent)
+
+
+def _is_record(value: object) -> bool:
+    """Se o valor é instância de dataclass ou de modelo Pydantic, que o Pydantic escreve pelos campos."""
+    return isinstance(value, BaseModel) or (
+        dataclasses.is_dataclass(value) and not isinstance(value, type)
+    )
+
+
+def _record_fields(value: object) -> list[object]:
+    """Os valores dos campos da dataclass ou do modelo Pydantic."""
+    names = (
+        type(value).model_fields
+        if isinstance(value, BaseModel)
+        else [field.name for field in dataclasses.fields(cast("Any", value))]
+    )
+    return [_attribute_or_none(value, name) for name in names]
+
+
+def _record_form(value: object, descent: _Descent) -> object:
+    """A dataclass ou o modelo cujo repr muda de um processo a outro, pelos atributos; o resto, como veio.
+
+    O repr escreve o conjunto que um campo guarda na ordem de iteração, que muda
+    com a semente de hash do processo (`_holds_unordered_set`). O registro sem
+    esse conjunto fica pelo repr, como o checkpoint já gravado com ele.
+    """
+    if _is_record(value) and _holds_unordered_set(value):
+        return {"record": type(value).__qualname__, "state": _instance_state(value, descent)}
     return value
+
+
+def _holds_unordered_set(value: object, path: frozenset[int] = frozenset()) -> bool:
+    """Se o valor tem um conjunto que não é só de inteiros, em qualquer nível.
+
+    Desce pela tupla, pela lista, pelas chaves e pelos valores do dict e pelos
+    campos do registro (`_is_record`). O hash do inteiro é o próprio valor, e o
+    conjunto só de inteiros itera na mesma ordem em todo processo. `path` traz
+    o `id` do que está aberto acima do valor: o que volta a ele não é
+    percorrido de novo.
+    """
+    if isinstance(value, (set, frozenset)):
+        return not all(isinstance(item, int) for item in value)
+    if id(value) in path:
+        return False
+    if isinstance(value, (tuple, list)):
+        items: Iterable[object] = value
+    elif isinstance(value, dict):
+        items = [*value.keys(), *value.values()]
+    elif _is_record(value):
+        items = _record_fields(value)
+    else:
+        return False
+    inner = path | {id(value)}
+    return any(_holds_unordered_set(item, inner) for item in items)
 
 
 def _python_call(value: object) -> object | None:
@@ -2616,8 +2677,9 @@ def _instance_state(value: object, descent: _Descent) -> object:
     # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
     own = _attribute_or_none(value, "__dict__")
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
-    if isinstance(value, (pd.DataFrame, pd.Series)):
-        state = {name: item for name, item in state.items() if name not in _TABLE_INTERNALS}
+    if isinstance(value, _PANDAS_OBJECTS):
+        internals = _pandas_internals(type(value))
+        state = {name: item for name, item in state.items() if name not in internals}
     form = _stable(state, descent)
     held = _held_value(value, descent)
     if held is not None:
@@ -2658,11 +2720,12 @@ _VALUE_TYPES = _BUILTIN_VALUE_TYPES + _DATE_VALUE_TYPES
 def _held_value(value: object, descent: _Descent) -> object:
     """O que a instância guarda fora dos atributos, na forma canônica; None no resto.
 
-    A subclasse de DataFrame, Series ou ndarray entra pelos dados inteiros
-    (`_data_form`), que o pandas guarda no `_mgr`, cujo repr só os resume, e o
+    A tabela e o array do pandas e do numpy, inclusive o Index e o array do
+    pandas, entram pelos dados inteiros (`_data_form`), que o pandas guarda no
+    `_mgr` ou no array Arrow, cujo repr só os resume e mostra os blocos, e o
     numpy, no buffer; a subclasse de tipo embutido, pelo valor dele.
     """
-    if isinstance(value, (pd.DataFrame, pd.Series, np.ndarray)):
+    if isinstance(value, _TABLES):
         return _data_form(value, descent)
     # O `_stable` devolve o None como veio.
     return _stable(_builtin_value(value), descent)
@@ -2759,12 +2822,34 @@ def _code_form(code: CodeType) -> list[object]:
 _ARRAYS = (np.ndarray, pd.Index, ExtensionArray)
 _TABLES = (pd.DataFrame, pd.Series, *_ARRAYS)
 
+_PANDAS_OBJECTS = (pd.DataFrame, pd.Series, pd.Index, ExtensionArray)
+
 # Atributos que o próprio pandas guarda na instância do DataFrame e da Series:
 # os dados, que entram por `_data_form`, e o que muda com o uso ou com o arranjo
 # dos blocos, como o `_item_cache` do pandas 2 e o repr do `_mgr`.
 _TABLE_INTERNALS = frozenset(
     name for plain in (pd.DataFrame(), pd.Series(dtype=object)) for name in vars(plain)
 )
+_INDEX_INTERNALS = frozenset(vars(pd.Index([])))
+
+
+def _pandas_internals(cls: type) -> frozenset[str]:
+    """Atributos que o pandas guarda na instância da classe dele ou de uma subclasse.
+
+    No DataFrame e na Series, os do DataFrame e da Series vazios. No Index e no
+    array do pandas, os do Index vazio, os que as classes do pandas na MRO
+    declaram, como o `_pa_array` do array Arrow, cujo repr mostra o arranjo
+    dos blocos, e o `_cache` que o `cache_readonly` cria no primeiro uso.
+    """
+    if issubclass(cls, (pd.DataFrame, pd.Series)):
+        return _TABLE_INTERNALS
+    declared = (
+        name
+        for base in cls.__mro__
+        if base.__module__.partition(".")[0] == "pandas"
+        for name in inspect.get_annotations(base)
+    )
+    return _INDEX_INTERNALS | {"_cache", *declared}
 
 
 def _stable(value: object, descent: _Descent | None = None) -> object:
@@ -2797,7 +2882,7 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     if descent.leaves and (not is_container or _python_call(value) is not None):
         return _schema_leaf(value, descent)
     if not is_container:
-        return value
+        return _record_form(value, descent)
     key = id(value)
     if key in descent.containers:
         return {"cycle": type(value).__name__}
@@ -2819,20 +2904,25 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
 def _key_form(name: object, descent: _Descent) -> str:
     """Chave de Mapping pelo `str`, sem o endereço de memória que ele leve.
 
-    O conjunto, sozinho ou dentro de uma tupla, entra pela lista ordenada, e não
-    pela ordem de iteração, que muda com a semente de hash do processo. A tupla
-    sem conjunto entra pelo `str` dela.
+    O conjunto, sozinho ou dentro de uma tupla, de uma dataclass ou de um
+    modelo, entra pela lista ordenada, e não pela ordem de iteração, que muda
+    com a semente de hash do processo (ver `_record_form`). A tupla sem conjunto
+    entra pelo `str` dela.
     """
-    if _holds_set(name):
+    if _key_needs_form(name):
         name = _stable(name, descent)
     return _without_address(str(name))
 
 
-def _holds_set(name: object) -> bool:
-    """Se a chave é um conjunto ou uma tupla que contém um, em qualquer nível."""
-    if isinstance(name, (set, frozenset)):
+def _key_needs_form(name: object) -> bool:
+    """Se a chave passa pela forma canônica: o conjunto, o registro, e a tupla que contém um deles.
+
+    O registro (`_is_record`) vai a `_record_form`, que decide se ele entra
+    pelos atributos.
+    """
+    if isinstance(name, (set, frozenset)) or _is_record(name):
         return True
-    return isinstance(name, tuple) and any(_holds_set(item) for item in name)
+    return isinstance(name, tuple) and any(_key_needs_form(item) for item in name)
 
 
 def _data_form(
