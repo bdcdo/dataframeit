@@ -213,6 +213,59 @@ class ModeloComCondicaoAninhada(BaseModel):
 
 class TestValidacaoAntesDeProcessar:
     @pytest.mark.parametrize(
+        ("extra", "trecho"),
+        [
+            ({"prompt": "Use {texto}", "prompt_replace": "Ignore {texto}"}, "prompt_replace"),
+            ({"prompt": "   "}, "prompt"),
+            ({"prompt_replace": "\t "}, "prompt_replace"),
+        ],
+    )
+    def test_prompt_ambiguo_ou_so_espacos_e_recusado_antes_da_linha(self, extra, trecho):
+        class Modelo(BaseModel):
+            campo: Optional[str] = Field(None, json_schema_extra=extra)
+
+        with pytest.raises(ValueError, match=trecho):
+            _executar(Modelo, use_search=True, search_per_field=True)
+
+    def test_prompt_de_grupo_so_espacos_e_recusado_antes_da_linha(self):
+        class Modelo(BaseModel):
+            campo: Optional[str] = None
+
+        with pytest.raises(ValueError, match="prompt"):
+            _executar(
+                Modelo,
+                use_search=True,
+                search_per_field=True,
+                search_groups={"g": {"fields": ["campo"], "prompt": "  "}},
+            )
+
+    def test_prompt_vazio_usa_prompt_replace_no_campo(self):
+        class Modelo(BaseModel):
+            campo: str = Field(json_schema_extra={"prompt": "", "prompt_replace": "Use {texto}"})
+
+        prompts: list[str] = []
+        provider, busca = _patches_de_execucao()
+        with (
+            provider,
+            busca,
+            patch(
+                "dataframeit.agent.call_agent",
+                side_effect=_call_agent_que_gera_schema({"campo": "ok"}, [], prompts),
+            ),
+        ):
+            saida = dataframeit(
+                pd.DataFrame({"texto": ["x"]}),
+                Modelo,
+                "Base {texto}",
+                use_search=True,
+                search_per_field=True,
+                track_tokens=False,
+            )
+
+        assert prompts == ["Use {texto}"]
+        assert saida["campo"].tolist() == ["ok"]
+
+    @pytest.mark.parametrize(
         "opcoes",
         [
             {},
