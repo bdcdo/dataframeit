@@ -17,6 +17,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- A página de campos condicionais diz que o campo pulado pela `condition` é gravado como `None` mesmo quando o `exclude_if` dele tiraria o `None` do `model_dump`.
 - O teto do job do `mutation.yml` sobe de 120 para 180 minutos: com `conditional.py` e `core.py`, a rodada leva cerca de 92 minutos no runner do GitHub.
 - Os avisos de `core.py` apontam a chamada de `dataframeit()` por `_user_stacklevel()`, e não por um `stacklevel` fixo. O aviso de redução de workers por rate limit, que sai da thread do executor, passa a apontar a linha do aviso, e não o `concurrent.futures`.
 - O aviso de coluna Object da saída polars aponta a chamada de `dataframeit()` por `_user_stacklevel()`, como os demais avisos, e não por um `stacklevel` fixo. O `_retry_info` de `retry_with_backoff` guarda só `retries`, o único campo que o `core` lê, e a caixa de autenticação por credenciais de SDK lê a dica do provider sem texto padrão, que nenhum provider usava. (#212).

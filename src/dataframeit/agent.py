@@ -961,8 +961,8 @@ def field_extractor(
     Ela devolve 'data' (os campos que o model_dump do modelo traz, na ordem
     do modelo), 'usage' (soma das chamadas, com 'search_provider') e, com
     save_trace, 'traces', um por grupo, campo, caminho aninhado e lista
-    enriquecida ('{campo}_items'). O campo que o @model_serializer tira só
-    com alguns valores vem como os outros.
+    enriquecida ('{campo}_items'). O campo pulado pela condição vem None,
+    mesmo quando o exclude_if dele tiraria o None do dump.
 
     Raises:
         ValueError: Se há dependências inválidas ou circulares, inclusive entre

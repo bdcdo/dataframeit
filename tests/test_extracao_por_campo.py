@@ -1,11 +1,12 @@
 """Contrato da extração por campo e por grupo com busca, com o agente simulado."""
 
 import logging
+from types import SimpleNamespace
 from typing import Annotated, Optional
 from unittest.mock import patch
 
 import pytest
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from typing_extensions import override
 
 from dataframeit import field_condition
@@ -611,3 +612,42 @@ def test_lista_de_modelo_ou_texto_guarda_o_texto_sem_buscar_item():
 
     assert agente.nomes == ["Pedido_itens"]
     assert resultado["data"]["itens"] == "nenhum"
+
+
+class ItemComAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    nome: str = Field(alias="Nome")
+    url: Optional[str] = Field(None, alias="Url", json_schema_extra={"prompt": "Busque a url"})
+
+
+class PedidoComAlias(BaseModel):
+    itens: list[ItemComAlias] = []
+
+
+def test_busca_por_item_grava_o_campo_pelo_nome_com_serialize_by_alias():
+    """O item da lista e a busca dele chegam pelo nome dos campos, e não pelo alias do dump.
+
+    O agente simulado devolve a instância do modelo da chamada, e o dump é o do
+    call_agent de verdade.
+    """
+    # O LLM responde pelo alias, que é a chave do schema da ferramenta.
+    respostas = {"itens": [{"Nome": "A"}], "Url": "https://a.org"}
+
+    class AgenteFalso:
+        def __init__(self, modelo):
+            self.modelo = modelo
+
+        def invoke(self, _payload, config=None):
+            chaves = [campo.alias or nome for nome, campo in self.modelo.model_fields.items()]
+            dados = {chave: respostas[chave] for chave in chaves}
+            return {"structured_response": self.modelo.model_validate(dados), "messages": []}
+
+    provedor = SimpleNamespace(name="tavily", calculate_credits=lambda *a, **k: 0)
+
+    def montar(modelo, _config):
+        return SimpleNamespace(agent=AgenteFalso(modelo), provider=provedor, tool_name="busca_web")
+
+    with patch("dataframeit.agent.build_search_agent", side_effect=montar):
+        resultado = _extrair(PedidoComAlias, _config())
+
+    assert resultado["data"] == {"itens": [{"nome": "A", "url": "https://a.org"}]}
