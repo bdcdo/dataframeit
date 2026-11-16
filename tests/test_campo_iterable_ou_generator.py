@@ -7,6 +7,7 @@ segue para a linha seguinte.
 """
 
 from collections.abc import Generator, Iterable
+from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -169,3 +170,38 @@ def test_agente_de_busca_interrompe_na_primeira_resposta():
 
     assert agente.invoke.call_count == 1
     assert saida["_dataframeit_status"].isna().all()
+
+
+def test_busca_por_campo_com_field_serializer_chega_a_saida():
+    """O modelo de cada chamada por campo não leva o serializador; o dump final, sim."""
+
+    class AgenteDoCampo:
+        def __init__(self, modelo):
+            self.modelo = modelo
+
+        def invoke(self, entrada, config=None):
+            resposta = self.modelo.model_validate({"campo": ["x", "y"]})
+            return {"structured_response": resposta, "messages": []}
+
+    def monta(modelo, config):
+        provider = MagicMock()
+        provider.name = "tavily"
+        provider.calculate_credits.return_value = 0
+        return SimpleNamespace(agent=AgenteDoCampo(modelo), provider=provider, tool_name="busca")
+
+    with (
+        patch("dataframeit.agent.build_search_agent", side_effect=monta),
+        patch("dataframeit.llm._create_langchain_llm", return_value=object()),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+    ):
+        saida = dataframeit(
+            pd.DataFrame({"texto": ["a"]}),
+            IterableComSerializador,
+            "{texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+        )
+
+    assert saida["campo"].tolist() == [["x", "y"]]
