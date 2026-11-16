@@ -2,6 +2,7 @@
 
 import linecache
 import math
+import re
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from typing_extensions import override
 
 from dataframeit import ProviderOverloadedError, ProviderUsageLimitError, core, dataframeit
 from dataframeit.llm import LLMConfig, SearchConfig
@@ -19,6 +21,13 @@ from dataframeit.llm import LLMConfig, SearchConfig
 
 class Modelo(BaseModel):
     campo1: str
+
+
+class _ErroIlegivel(Exception):
+    @override
+    def __str__(self):
+        msg = "sem texto"
+        raise RuntimeError(msg)
 
 
 def _roda(df, llm, **kwargs):
@@ -453,10 +462,6 @@ def _caso(sai, mensagem, *, linha=None, callback=None, gravacao=False):
         ),
         pytest.param(_caso(SystemExit, "3", callback=SystemExit(3)), id="saida_no_callback"),
         pytest.param(
-            _caso(UserWarning, "Falha ao processar linha 1", linha=ValueError("resposta ruim")),
-            id="falha_de_linha",
-        ),
-        pytest.param(
             _caso(
                 UserWarning,
                 r"Falha ao gravar o checkpoint|Erro inesperado no executor",
@@ -471,9 +476,9 @@ def test_excecao_que_sai_do_laco_grava_antes_as_linhas_processadas(
 ):
     """A linha t0 termina, e uma exceção sai do laço depois dela.
 
-    Com o aviso tratado como erro, o do callback que levanta, o da falha de
-    linha e o da gravação periódica que falha saem de `dataframeit()` como
-    exceção, assim como o SystemExit do callback.
+    Com o aviso tratado como erro, o do callback que levanta e o da gravação
+    periódica que falha saem de `dataframeit()` como exceção, assim como o
+    SystemExit do callback.
     A exceção continua saindo, mas a linha já processada chega antes ao
     checkpoint, e a retomada não a chama de novo.
     """
@@ -533,12 +538,72 @@ def test_excecao_que_sai_do_laco_grava_antes_as_linhas_processadas(
 
 
 @pytest.mark.usefixtures("aviso_como_erro")
-def test_aviso_de_rate_limit_tratado_como_erro_grava_a_linha_processada(tmp_path):
+@pytest.mark.parametrize("paralelo", [1, 2])
+@pytest.mark.parametrize(
+    ("erro", "detalhe"),
+    [
+        (ValueError("resposta ruim"), "[Falhou após 3 tentativa(s)] ValueError: resposta ruim"),
+        (_ErroIlegivel(), "[Falha ao registrar o erro] _ErroIlegivel: _ErroIlegivel()"),
+    ],
+    ids=["normal", "reserva"],
+)
+def test_aviso_da_falha_de_linha_tratado_como_erro_sai_com_a_linha_registrada(
+    tmp_path, paralelo, erro, detalhe
+):
+    """A linha t1 falha, e o aviso da falha dela sai de `dataframeit()` como exceção.
+
+    A linha chega ao checkpoint como 'error', com o erro dela, depois de ir ao
+    callback, e a retomada não a chama de novo.
+    """
+    t0_entregue = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto != "t0":
+            assert t0_entregue.wait(5)
+        if texto == "t1":
+            raise erro
+        return _resposta(texto)
+
+    entregues = []
+
+    def on_row_done(linha):
+        entregues.append(linha.index)
+        t0_entregue.set()
+
+    textos = ["t0", "t1", "t2", "t3"]
+    ckpt = tmp_path / "ckpt.csv"
+    opcoes = {"parallel_requests": paralelo, "batch_size": 10, "checkpoint_path": ckpt}
+
+    with pytest.raises(UserWarning, match="Falha ao processar linha 1"):
+        _roda(pd.DataFrame({"texto": textos}), llm, on_row_done=on_row_done, **opcoes)
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado.loc[:1, "_dataframeit_status"].tolist() == ["processed", "error"]
+    assert gravado.loc[1, "_error_details"] == detalhe
+    assert 1 in entregues
+    pendentes = gravado.loc[gravado["_dataframeit_status"].isna(), "texto"].tolist()
+
+    pagas = []
+
+    def llm_da_retomada(texto, *args, **kwargs):
+        pagas.append(texto)
+        return _resposta(texto)
+
+    saida = _roda(pd.DataFrame({"texto": textos}), llm_da_retomada, **opcoes)
+
+    assert sorted(pagas) == pendentes
+    assert saida["_dataframeit_status"].tolist() == ["processed", "error", "processed", "processed"]
+
+
+@pytest.mark.parametrize(
+    "filtro", ["Rate limit detectado", None], ids=["so_o_do_rate_limit", "todos"]
+)
+def test_aviso_de_rate_limit_tratado_como_erro_mantem_o_erro_da_linha(tmp_path, filtro):
     """No paralelo, a linha t1 recebe um 429 depois de t0 terminar.
 
-    O aviso de redução de workers levanta na thread da linha, que por isso
-    escapa do registro; o aviso da falha dela sai de `dataframeit()` com o do
-    rate limit por contexto, e t0 já está no checkpoint.
+    O aviso de redução de workers sai de `dataframeit()` como exceção, com o
+    429 já gravado na linha e entregue ao callback, e o checkpoint leva as duas
+    linhas.
     """
     t0_entregue = threading.Event()
 
@@ -549,20 +614,33 @@ def test_aviso_de_rate_limit_tratado_como_erro_grava_a_linha_processada(tmp_path
         msg = "429"
         raise ProviderOverloadedError(msg)
 
+    entregues = []
+
+    def on_row_done(linha):
+        entregues.append((linha.index, linha.error))
+        t0_entregue.set()
+
     ckpt = tmp_path / "ckpt.csv"
+    detalhe = "[Falhou após 3 tentativa(s)] ProviderOverloadedError: 429"
+    aviso = "Rate limit detectado! Reduzindo workers de 2 para 1."
 
-    with pytest.raises(UserWarning, match="Falha ao processar linha 1") as erro:
-        _roda(
-            pd.DataFrame({"texto": ["t0", "t1"]}),
-            llm,
-            on_row_done=lambda _linha: t0_entregue.set(),
-            parallel_requests=2,
-            batch_size=10,
-            checkpoint_path=ckpt,
-        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings("error", message=filtro or "")
+        with pytest.raises(UserWarning, match=f"^{re.escape(aviso)}$"):
+            _roda(
+                pd.DataFrame({"texto": ["t0", "t1"]}),
+                llm,
+                on_row_done=on_row_done,
+                parallel_requests=2,
+                batch_size=10,
+                checkpoint_path=ckpt,
+            )
 
-    assert "Rate limit detectado" in str(erro.value.__context__)
-    assert pd.read_csv(ckpt)["_dataframeit_status"].tolist()[0] == "processed"
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].tolist() == ["processed", "error"]
+    assert gravado.loc[1, "_error_details"] == detalhe
+    assert entregues == [(0, None), (1, detalhe)]
 
 
 @pytest.mark.usefixtures("aviso_como_erro")

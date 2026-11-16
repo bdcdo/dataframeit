@@ -92,17 +92,16 @@ def test_custo_do_erro_entra_no_resumo_so_quando_informado(custo, esperado):
     estatisticas = core._empty_token_stats()
     df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
 
-    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
-        core._record_error(
-            df,
-            0,
-            erro,
-            status_col="s",
-            config=_config(),
-            row_already_processed=False,
-            reprocess_columns=None,
-            token_stats=estatisticas,
-        )
+    core._record_error(
+        df,
+        0,
+        erro,
+        status_col="s",
+        config=_config(),
+        row_already_processed=False,
+        reprocess_columns=None,
+        token_stats=estatisticas,
+    )
 
     assert estatisticas["cost_usd"] == esperado
 
@@ -128,17 +127,16 @@ def test_uso_das_chamadas_feitas_pela_linha_em_erro_entra_no_resumo(classe):
     estatisticas = core._empty_token_stats()
     df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
 
-    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
-        core._record_error_safely(
-            df,
-            0,
-            erro,
-            status_col="s",
-            config=_config(),
-            row_already_processed=False,
-            reprocess_columns=None,
-            token_stats=estatisticas,
-        )
+    core._record_error_safely(
+        df,
+        0,
+        erro,
+        status_col="s",
+        config=_config(),
+        row_already_processed=False,
+        reprocess_columns=None,
+        token_stats=estatisticas,
+    )
 
     assert estatisticas == {
         **core._empty_token_stats(),
@@ -161,43 +159,35 @@ def test_nota_de_valores_mantidos_so_na_linha_processada_sob_reprocessamento(
     erro = ValueError("falhou") if registro == "normal" else _ErroIlegivel()
     df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
 
-    with pytest.warns(UserWarning, match="Falha ao processar linha 0"):
-        core._record_error_safely(
-            df,
-            0,
-            erro,
-            status_col="s",
-            config=_config(),
-            row_already_processed=ja_processada,
-            reprocess_columns=reprocessar,
-            token_stats=core._empty_token_stats(),
-        )
+    aviso = core._record_error_safely(
+        df,
+        0,
+        erro,
+        status_col="s",
+        config=_config(),
+        row_already_processed=ja_processada,
+        reprocess_columns=reprocessar,
+        token_stats=core._empty_token_stats(),
+    )
 
+    assert aviso.startswith("Falha ao processar linha 0.")
+    assert (aviso == "Falha ao processar linha 0.") == (registro == "reserva")
     assert df.loc[0, "s"] == "error"
     assert not df.loc[0, "_error_details"].endswith(core._KEPT_VALUES_NOTE)
 
 
-def test_erro_da_linha_avisa_com_a_mensagem_amigavel_do_provider(capsys):
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_erro_da_linha_avisa_com_a_mensagem_amigavel_do_provider(capsys, paralelo):
     erro = Exception("401 Unauthorized: invalid api key")
     esperada = get_friendly_error_message(erro, "openai")
     assert esperada != get_friendly_error_message(erro, None)
-    df = pd.DataFrame({"s": [None], "_error_details": [None]}, dtype=object)
 
     with pytest.warns(UserWarning, match="Falha ao processar linha 0") as avisos:
-        core._record_error(
-            df,
-            0,
-            erro,
-            status_col="s",
-            config=_config("openai"),
-            row_already_processed=False,
-            reprocess_columns=None,
-            token_stats=core._empty_token_stats(),
-        )
+        saida = _roda(["a"], _llm({"a": erro}), provider="openai", parallel_requests=paralelo)
 
-    assert str(avisos[0].message) == f"Falha ao processar linha 0.\n{esperada}"
+    assert [str(aviso.message) for aviso in avisos] == [f"Falha ao processar linha 0.\n{esperada}"]
     assert capsys.readouterr().out == ""
-    assert df.loc[0, "_error_details"].endswith("Exception: 401 Unauthorized: invalid api key")
+    assert saida.loc[0, "_error_details"].endswith("Exception: 401 Unauthorized: invalid api key")
 
 
 # _SnapshotWriter
@@ -542,15 +532,24 @@ def test_falha_da_barra_vira_um_aviso_e_nao_troca_o_resultado_nem_a_interrupcao(
 def test_aviso_da_barra_tratado_como_erro_sai_depois_das_marcas_e_da_gravacao(
     monkeypatch, tmp_path, paralelo, fim, ponto
 ):
-    """O aviso da falha levanta, e só na saída: a barra é o último bloco a fechar."""
+    """O aviso da falha levanta, e só na saída: a barra é o último bloco a fechar.
+
+    O Ctrl-C que já vinha saindo continua sendo o que sai, com o aviso da barra
+    como nota.
+    """
     erro, segunda = fim
+    sai = UserWarning
+    if isinstance(erro, KeyboardInterrupt):
+        # Um Ctrl-C novo: o dos parâmetros é o mesmo objeto em todos os casos,
+        # e a nota ficaria nele.
+        sai, erro = KeyboardInterrupt, KeyboardInterrupt()
     _barras, llm = _barra_que_falha(monkeypatch, ponto)
     ckpt = tmp_path / "c.csv"
 
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message="Falha na barra de progresso")
         warnings.filterwarnings("ignore", message="Execução interrompida")
-        with pytest.raises(UserWarning) as excinfo:
+        with pytest.raises(sai) as excinfo:
             _roda(
                 _linha_pendente_e_linha_com_erro(),
                 llm(erro),
@@ -560,10 +559,13 @@ def test_aviso_da_barra_tratado_como_erro_sai_depois_das_marcas_e_da_gravacao(
                 checkpoint_path=ckpt,
             )
 
-    assert str(excinfo.value) == _AVISO_DA_BARRA
-    assert isinstance(excinfo.value.__context__, KeyboardInterrupt) == isinstance(
-        erro, KeyboardInterrupt
-    )
+    if sai is KeyboardInterrupt:
+        assert excinfo.value.__notes__ == [
+            f"Na saída por esta exceção: UserWarning: {_AVISO_DA_BARRA}"
+        ]
+    else:
+        assert str(excinfo.value) == _AVISO_DA_BARRA
+        assert excinfo.value.__context__ is None
     _confere_gravado(ckpt, segunda)
 
 
