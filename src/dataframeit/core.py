@@ -2659,7 +2659,7 @@ class _Descent:
     """
 
     def __init__(self, *, leaves: bool = True) -> None:
-        self.leaves = leaves
+        self.leaves: bool = leaves
         self.depth: dict[int, int] = {}
         self.lowest: list[int] = []
         self.forms: dict[int, tuple[object, object]] = {}
