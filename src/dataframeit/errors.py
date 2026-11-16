@@ -933,6 +933,13 @@ _HTTP_ERROR_MAX = 599
 _OVERLOADED_STATUSES = (429, 529)
 
 
+def _http_error_status_or_none(value: object) -> int | None:
+    """Aceita somente um status HTTP de erro entre 400 e 599."""
+    if isinstance(value, int) and _HTTP_ERROR_MIN <= value <= _HTTP_ERROR_MAX:
+        return value
+    return None
+
+
 def _is_recoverable_http_status(status: int) -> bool:
     """Diz se o status HTTP indica falha que vale repetir: 5xx e os 4xx transitórios.
 
@@ -956,8 +963,9 @@ def _own_http_status(error: BaseException) -> int | None:
     candidates.append(getattr(getattr(error, "response", None), "status_code", None))
     for value in candidates:
         # A faixa descarta códigos que não são status HTTP de erro, inclusive bool.
-        if isinstance(value, int) and _HTTP_ERROR_MIN <= value <= _HTTP_ERROR_MAX:
-            return value
+        status = _http_error_status_or_none(value)
+        if status is not None:
+            return status
     return None
 
 

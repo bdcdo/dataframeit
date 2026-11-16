@@ -19,6 +19,7 @@ from .errors import (
     ProviderOverloadedError,
     ProviderRejectedOutputError,
     ProviderTransientError,
+    _http_error_status_or_none,
     _is_recoverable_http_status,
     retry_with_backoff,
     validation_error_summary,
@@ -152,7 +153,7 @@ def _raise_for_result_error(result: object) -> None:
 
     subtype = getattr(result, "subtype", None)
     status = getattr(result, "api_error_status", None)
-    status_code = _api_error_status(status)
+    status_code = _http_error_status_or_none(_api_error_status(status))
     detail = getattr(result, "errors", None) or getattr(result, "result", None) or ""
     message = f"Claude Code SDK retornou erro ({subtype}, status {status}): {detail}".strip()
 

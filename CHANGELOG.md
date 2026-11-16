@@ -49,6 +49,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Os backends `claude_code` e `codex` tratam status fora de 400 a 599 como ausente, como o LangChain, e repetem a falha de execução sem classificar pelo número inválido (#309).
 - A assinatura de uma condição dataclass com conjunto em campo `init=False` lê o default que ficou só na classe. Mudar esse valor passa a recusar a retomada do checkpoint; instâncias equivalentes assinam igual. Dataclasses sem conjunto mantêm a assinatura anterior.
 - Os avisos de falha de linha, redução de workers, falha em `on_row_done`, erro do executor e colunas já existentes apontam a chamada de `dataframeit()`, inclusive quando a linha roda numa thread.
 - Com `strict=True`, a retomada compara só o caminho de cada erro da validação estrita: a data relida como texto num submodelo é aceita mesmo quando um validador dele muda outro campo a cada passada; antes, a linha era acusada para reprocessar (#378).
