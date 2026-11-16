@@ -3,8 +3,8 @@
 from decimal import Decimal
 from enum import Enum
 from functools import partial
-from types import MethodType
-from typing import Any, Literal, NewType, TypeVar
+from types import MethodType, UnionType
+from typing import Any, Literal, NewType, Optional, TypeVar, Union
 
 import pandas as pd
 import pytest
@@ -326,6 +326,40 @@ def _com_conjunto(anotacao):
 )
 def test_mudar_o_tipo_atras_do_nome_muda_a_assinatura(declara):
     assert _assinatura(_com_conjunto(declara(str))) != _assinatura(_com_conjunto(declara(int)))
+
+
+_Opcional = TypeAliasType("_Opcional", Union[_T, None], type_params=(_T,))
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "outra_grafia"),
+    [
+        (int | None, Optional[int]),
+        (int | str, Union[int, str]),
+        (_Opcional[int], int | None),
+        (list[int | None], list[Optional[int]]),
+    ],
+    ids=["opcional", "uniao", "apelido-generico", "no-item"],
+)
+def test_as_duas_grafias_da_uniao_assinam_igual(anotacao, outra_grafia):
+    forma = _schema_form(_com_conjunto(anotacao))
+
+    assert forma == _schema_form(_com_conjunto(outra_grafia))
+    assert _assinatura(_com_conjunto(anotacao)) == _assinatura(_com_conjunto(outra_grafia))
+
+
+def test_uniao_entra_na_forma_canonica_pelo_nome_da_classe_da_uniao():
+    forma = _schema_leaf(Optional[int], _Descent())
+
+    assert forma == _schema_leaf(int | None, _Descent())
+    assert forma == {"origin": UnionType.__name__, "args": ["int", "NoneType"]}
+    # A origem que não é união segue pela folha dela.
+    assert _schema_leaf(list[int], _Descent()) == {"origin": "list", "args": ["int"]}
+
+
+def test_mudar_um_membro_da_uniao_muda_a_assinatura():
+    assert _assinatura(_com_conjunto(int | None)) != _assinatura(_com_conjunto(str | None))
+    assert _assinatura(_com_conjunto(int | None)) != _assinatura(_com_conjunto(int))
 
 
 @pytest.mark.parametrize(
