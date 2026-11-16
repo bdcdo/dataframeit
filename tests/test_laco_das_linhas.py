@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit import ProviderUsageLimitError, core, dataframeit
+from dataframeit import ProviderOverloadedError, ProviderUsageLimitError, core, dataframeit
 from dataframeit.llm import LLMConfig, SearchConfig
 
 
@@ -420,13 +420,12 @@ def test_erro_do_executor_depois_do_registro_aponta_a_chamada(tmp_path, monkeypa
 # =============================================================================
 
 
-class _LimiteDeRequisicoes(Exception):
-    status_code = 429
-
-
 @pytest.fixture
 def aviso_como_erro():
-    """Todo aviso vira exceção, como com `python -W error`."""
+    """Todo aviso vira exceção, como com `python -W error`.
+
+    A suíte já roda assim; o filtro aqui deixa a condição no próprio teste.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         yield
@@ -547,7 +546,8 @@ def test_aviso_de_rate_limit_tratado_como_erro_grava_a_linha_processada(tmp_path
         if texto == "t0":
             return _resposta(texto)
         assert t0_entregue.wait(5)
-        raise _LimiteDeRequisicoes
+        msg = "429"
+        raise ProviderOverloadedError(msg)
 
     ckpt = tmp_path / "ckpt.csv"
 
@@ -589,9 +589,9 @@ def test_falha_da_gravacao_na_saida_por_excecao_nao_troca_a_excecao(
             raise SystemExit(3)
 
     monkeypatch.setattr(core, "_save_checkpoint", gravacao_que_falha)
-    esperada = (SystemExit, "3") if sai_do_callback else (UserWarning, "disco cheio 1")
+    excecao, mensagem = (SystemExit, "3") if sai_do_callback else (UserWarning, "disco cheio 1")
 
-    with pytest.raises(esperada[0], match=esperada[1]) as erro:
+    with pytest.raises(excecao, match=mensagem) as erro:
         _roda(
             pd.DataFrame({"texto": ["t0"]}),
             _resposta,
@@ -604,7 +604,7 @@ def test_falha_da_gravacao_na_saida_por_excecao_nao_troca_a_excecao(
     (nota,) = erro.value.__notes__
     assert "Falha ao gravar o checkpoint" in nota
     assert f"disco cheio {len(gravacoes)}" in nota
-    assert len(gravacoes) == 1 if sai_do_callback else 2
+    assert len(gravacoes) == (1 if sai_do_callback else 2)
 
 
 @pytest.mark.usefixtures("aviso_como_erro")
