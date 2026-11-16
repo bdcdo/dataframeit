@@ -356,12 +356,13 @@ def test_handler_de_reserva_e_instalado_uma_vez():
 
 
 class _Barra:
-    """Registra o rótulo, o total e os avanços da barra de progresso."""
+    """Registra o rótulo, o total, os avanços e o fechamento da barra de progresso."""
 
     criadas: list[Any]
 
     def __init__(self, iterable=None, total=None, desc=None):
         self.iterable, self.total, self.desc, self.n = iterable, total, desc, 0
+        self.fechada = False
         _Barra.criadas.append(self)
 
     def __iter__(self):
@@ -373,6 +374,7 @@ class _Barra:
         return self
 
     def __exit__(self, *exc):
+        self.fechada = True
         return False
 
     def update(self, passos):
@@ -400,6 +402,24 @@ def test_barra_do_paralelo_mostra_total_e_reprocessamento(monkeypatch):
     [barra] = barras
     assert barra.desc == "Processando [pandas+langchain] [2 workers] (reprocessando: campo1)"
     assert (barra.total, barra.n) == (3, 3)
+
+
+@pytest.mark.parametrize(
+    ("erro", "esperado"),
+    [
+        (ProviderAbortError("sem crédito"), pytest.warns(UserWarning, match="sem crédito")),
+        (KeyboardInterrupt(), pytest.raises(KeyboardInterrupt)),
+    ],
+    ids=["erro_que_interrompe", "ctrl_c"],
+)
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_barra_fecha_quando_a_execucao_e_interrompida(monkeypatch, paralelo, erro, esperado):
+    barras = _barra(monkeypatch)
+
+    with esperado:
+        _roda(["a", "b", "c"], _llm({"b": erro}), parallel_requests=paralelo, track_tokens=False)
+
+    assert [barra.fechada for barra in barras] == [True]
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
