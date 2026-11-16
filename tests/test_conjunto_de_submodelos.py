@@ -1335,7 +1335,7 @@ def test_fields_holding_any(modelo, esperado):
 def test_dump_so_refaz_o_campo_com_any():
     """O campo sem `Any` sai como o model_dump o devolveu, sem ser percorrido."""
     modelo = create_model("ListaEQualquer", lista=(list[int], ...), campo=(Any, ...))
-    resposta = modelo(lista=[1], campo=[2])
+    resposta = modelo.model_validate({"lista": [1], "campo": [2]})
 
     with patch("dataframeit.errors._models_dumped", side_effect=lambda valor, _: valor) as refeitos:
         saida = dump_response(resposta)
