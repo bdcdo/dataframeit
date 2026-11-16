@@ -11,21 +11,26 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import json
 import os
 import random
 import re
 import time
 import unicodedata
 import warnings
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
+from typing import TYPE_CHECKING, Any, get_origin
+
+from pydantic import BaseModel
 
 from .search import SearchToolError, get_provider
-from .utils import _user_stacklevel
+from .utils import _json_default, _members, _user_stacklevel, get_nested_pydantic_models
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterator
 
-    from pydantic import BaseModel, ValidationError
+    from pydantic import ValidationError
 
     from .search import SearchProvider
 
@@ -103,23 +108,162 @@ def dump_response(response: BaseModel) -> dict[str, Any]:
 
     O dump de um conjunto monta outro conjunto com o dump de cada item, e o
     item que vira dict, como o submodelo, não é hashable; a chave de dict
-    que vira dict também não. O model_dump cai com TypeError depois de a
-    resposta ser paga, a cada resposta com um item desses, e por isso a
-    falha interrompe a execução em vez de gastar as tentativas de cada linha.
+    que vira dict também não, e o model_dump cai com TypeError. O campo cujo
+    valor é um conjunto com submodelos sai como lista, com o dump de cada item
+    (`_dump_with_model_sets`), e o campo declarado como conjunto de submodelos
+    sai lista com qualquer valor, também vazio (`_declared_sets_as_lists`): é
+    como o checkpoint grava todo conjunto, e a validação da retomada, que
+    passa a linha relida por esta mesma função, devolve a mesma lista.
+
+    O que sobra, como a chave de dict que é submodelo e o conjunto de
+    submodelos dentro de outro campo, cai depois de a resposta ser paga, a
+    cada resposta com um item desses, e por isso a falha interrompe a
+    execução em vez de gastar as tentativas de cada linha.
     """
     try:
-        return response.model_dump(by_alias=False)
-    except TypeError as error:
-        # O texto é o do Python para o valor que não entra em conjunto nem vira chave.
-        if "unhashable type" not in str(error):
+        data = response.model_dump(by_alias=False)
+    except _DUMP_ERRORS as error:
+        if not _is_unhashable(error):
             raise
-        msg = (
-            f"O model_dump da resposta caiu com TypeError: {error}. O modelo "
-            f"{type(response).__name__} tem um set, um frozenset ou uma chave de dict cujos "
-            "itens viram dict no dump, como os de submodelos, e o dict não é hashable. "
-            "Repetir a linha não resolve: declare o conjunto como list ou tuple"
+        data = _dump_with_model_sets(response, error)
+    # O @model_serializer do modelo pode devolver outra coisa que um dict.
+    return _declared_sets_as_lists(type(response), data) if isinstance(data, dict) else data
+
+
+# O model_dump levanta o TypeError do Python, ou o PydanticSerializationError,
+# que é um ValueError, em que o pydantic o embrulha quando ele sai de dentro de
+# um @model_serializer(mode="wrap"). O texto do erro separa o caso
+# (`_is_unhashable`).
+_DUMP_ERRORS = (TypeError, ValueError)
+
+
+def _is_unhashable(error: Exception) -> bool:
+    """Se o erro do dump é o do Python para o valor que não entra em conjunto nem vira chave."""
+    return "unhashable type" in str(error)
+
+
+def _dump_with_model_sets(response: BaseModel, error: Exception) -> dict[str, Any]:
+    """O model_dump com os conjuntos de submodelos que o derrubam como lista.
+
+    O campo cujo valor é um conjunto com submodelos e cujo dump, sozinho, cai
+    por um valor que não é hashable sai com o dump de cada item, na ordem de
+    `_as_sorted_list`. O que tem serializador próprio ou fica fora do dump não
+    cai sozinho, e sai pelo model_dump como os demais campos. Sem campo assim,
+    ou com outro valor que não é hashable no resto, levanta ProviderAbortError
+    com `error`, o TypeError do dump inteiro.
+    """
+    fields = type(response).model_fields
+    model_sets = {}
+    for name in fields:
+        value = getattr(response, name)
+        if isinstance(value, (set, frozenset)) and any(
+            isinstance(item, BaseModel) for item in value
+        ):
+            try:
+                response.model_dump(by_alias=False, include={name})
+            except _DUMP_ERRORS as field_error:
+                if not _is_unhashable(field_error):
+                    raise
+                model_sets[name] = value
+    if model_sets:
+        try:
+            data = response.model_dump(by_alias=False, exclude=set(model_sets))
+        except _DUMP_ERRORS as rest_error:
+            if not _is_unhashable(rest_error):
+                raise
+            error = rest_error
+        else:
+            for name, items in model_sets.items():
+                data[name] = _as_sorted_list(
+                    dump_response(item) if isinstance(item, BaseModel) else item for item in items
+                )
+            # Na ordem do modelo, como o model_dump; o que não é campo dele, no fim.
+            return {
+                **{name: data[name] for name in fields if name in data},
+                **{name: value for name, value in data.items() if name not in fields},
+            }
+    raise ProviderAbortError(_unhashable_dump_message(response, error)) from error
+
+
+def _declared_sets_as_lists(model: type[BaseModel], data: dict[str, Any]) -> dict[str, Any]:
+    """`data` com o conjunto de cada campo declarado como conjunto de submodelos em lista.
+
+    O conjunto vazio e o que só tem itens que não são submodelo não derrubam o
+    dump, e sairiam conjunto ao lado das listas das outras linhas, na mesma
+    coluna. A anotação só é lida para o campo cujo valor é um conjunto, e o
+    campo com serializador próprio fica como o serializador o deu.
+    """
+    for name, value in data.items():
+        if (
+            isinstance(value, (set, frozenset))
+            and name in model.model_fields
+            and _declares_model_set(model.model_fields[name].annotation)
+            and not _has_own_serializer(model, name)
+        ):
+            data[name] = _as_sorted_list(value)
+    return data
+
+
+def _has_own_serializer(model: type[BaseModel], name: str) -> bool:
+    """Se o campo tem `@field_serializer`, pelo nome ou pelo `"*"` de todos os campos.
+
+    O conjunto que o serializador do usuário devolve é o que ele escolheu gravar.
+    """
+    return any(
+        name in serializer.info.fields or "*" in serializer.info.fields
+        for serializer in model.__pydantic_decorators__.field_serializers.values()
+    )
+
+
+def _declares_model_set(annotation: object) -> bool:
+    """Se a anotação, ou um membro da união, é um conjunto com submodelo entre os itens."""
+    return any(
+        isinstance(origin := get_origin(member), type)
+        and issubclass(origin, AbstractSet)
+        and bool(get_nested_pydantic_models(member))
+        for member in _members(annotation)
+    )
+
+
+def _as_sorted_list(items: Iterable[object]) -> list[object]:
+    """Os itens em lista, na ordem do texto JSON de cada um.
+
+    A ordem em que um conjunto é percorrido muda de um processo para outro, e
+    a retomada só reconhece a lista relida quando as duas saem na mesma ordem.
+    É a ordem em que o checkpoint grava todo conjunto (`_json_default`). O item
+    que o JSON não escreve, como o dict com chave de tupla, deixa a lista na
+    ordem em que veio.
+    """
+    listed = list(items)
+    try:
+        return sorted(listed, key=lambda item: json.dumps(item, default=_json_default))
+    except TypeError:
+        return listed
+
+
+def _unhashable_dump_message(response: BaseModel, error: Exception) -> str:
+    """O motivo e a saída do model_dump que caiu com um valor que não é hashable."""
+    model = type(response)
+    reason = (
+        f"O model_dump da resposta caiu com TypeError: {error}. O modelo {model.__name__} tem "
+        "um set, um frozenset ou uma chave de dict cujos itens viram dict no dump, como os de "
+        "submodelos, e o dict não é hashable. Repetir a linha não resolve: "
+    )
+    keyed = [
+        name
+        for name in model.model_fields
+        if isinstance(value := getattr(response, name), Mapping)
+        and any(isinstance(key, BaseModel) for key in value)
+    ]
+    if keyed:
+        return (
+            f"{reason}nos campos {keyed}, a chave do dict é um submodelo; declare a chave como "
+            "texto ou número, ou o campo como lista de pares"
         )
-        raise ProviderAbortError(msg) from error
+    return (
+        f"{reason}declare como list ou tuple o conjunto que fica dentro de outro campo, e "
+        "como texto ou número a chave de dict"
+    )
 
 
 # Teto de erros de validação listados por resposta recusada, na mensagem da

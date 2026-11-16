@@ -24,7 +24,7 @@ from uuid import UUID
 
 import pandas as pd
 import pytest
-from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel
+from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, RootModel, field_validator
 from pydantic.errors import PydanticInvalidForJsonSchema
 from typing_extensions import override
 
@@ -1389,7 +1389,7 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 1
 
-    def test_conjunto_de_submodelos_interrompe_sem_nova_tentativa(self, codex_sdk, tmp_path):
+    def test_conjunto_de_submodelos_volta_como_lista(self, codex_sdk, tmp_path):
         class Cidade(BaseModel):
             model_config = ConfigDict(frozen=True)
             nome: str
@@ -1398,12 +1398,39 @@ class TestCodexInvocation:
             campo: set[Cidade]
 
         backend, client, _, _ = initialized_backend(
-            tmp_path, codex_sdk, make_result(codex_sdk, response='{"campo": [{"nome": "SP"}]}')
+            tmp_path,
+            codex_sdk,
+            make_result(codex_sdk, response='{"campo": [{"nome": "SP"}, {"nome": "RJ"}]}'),
         )
         backend = dataclasses.replace(
             backend,
             config=dataclasses.replace(backend.config, max_retries=3),
             _pydantic_model=ConjuntoDeModelo,
+        )
+
+        assert backend.invoke("texto")["data"] == {"campo": [{"nome": "RJ"}, {"nome": "SP"}]}
+        assert client.thread_start.call_count == 1
+
+    def test_chave_de_dict_que_e_submodelo_interrompe_sem_nova_tentativa(self, codex_sdk, tmp_path):
+        class Cidade(BaseModel):
+            model_config = ConfigDict(frozen=True)
+            nome: str
+
+        class ChaveDeModelo(BaseModel):
+            campo: dict[Cidade, int]
+
+            @field_validator("campo", mode="before")
+            @classmethod
+            def _chave_em_modelo(cls, valor):
+                return {Cidade(nome=nome): numero for nome, numero in valor.items()}
+
+        backend, client, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response='{"campo": {"SP": 1}}')
+        )
+        backend = dataclasses.replace(
+            backend,
+            config=dataclasses.replace(backend.config, max_retries=3),
+            _pydantic_model=ChaveDeModelo,
         )
 
         with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):

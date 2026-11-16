@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dataframeit import dataframeit
 from dataframeit.claude_code import _build_json_system_prompt, call_claude_code
@@ -1040,16 +1040,42 @@ class _ConjuntoDeModelo(BaseModel):
     campo: set[_Cidade]
 
 
-def test_conjunto_de_submodelos_interrompe_sem_nova_tentativa(sdk_falso):
+def test_conjunto_de_submodelos_volta_como_lista(sdk_falso):
     sdk_falso["mensagens_do_sdk"] = [
-        _AssistantMessageFalso([_TextBlockFalso('{"campo": [{"nome": "SP"}]}')]),
+        _AssistantMessageFalso([_TextBlockFalso('{"campo": [{"nome": "SP"}, {"nome": "RJ"}]}')]),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    resultado = call_claude_code(
+        "texto da linha",
+        _ConjuntoDeModelo,
+        "Analise: {texto}",
+        replace(_config_claude_code(), max_retries=3),
+    )
+
+    assert resultado["data"] == {"campo": [{"nome": "RJ"}, {"nome": "SP"}]}
+    assert len(sdk_falso["opcoes"]) == 1
+
+
+class _ChaveDeModelo(BaseModel):
+    campo: dict[_Cidade, int]
+
+    @field_validator("campo", mode="before")
+    @classmethod
+    def _chave_em_modelo(cls, valor):
+        return {_Cidade(nome=nome): numero for nome, numero in valor.items()}
+
+
+def test_chave_de_dict_que_e_submodelo_interrompe_sem_nova_tentativa(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = [
+        _AssistantMessageFalso([_TextBlockFalso('{"campo": {"SP": 1}}')]),
         _ResultMessageFalso(usage=None),
     ]
 
     with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
         call_claude_code(
             "texto da linha",
-            _ConjuntoDeModelo,
+            _ChaveDeModelo,
             "Analise: {texto}",
             replace(_config_claude_code(), max_retries=3),
         )

@@ -63,6 +63,7 @@ from .conditional import (
 from .errors import (
     ProviderAbortError,
     ProviderUsageLimitError,
+    dump_response,
     get_friendly_error_message,
     is_rate_limit_error,
     is_recoverable_error,
@@ -530,12 +531,11 @@ def _executed_form(pydantic_model: type[BaseModel]) -> Callable[[str, object], o
         if field_name not in field_models:
             field_models[field_name] = _field_model(pydantic_model, field_name)
         try:
-            validated = (
-                field_models[field_name]
-                .model_validate({field_name: value}, strict=False, by_alias=False, by_name=True)
-                .model_dump(by_alias=False)
-                .get(field_name)
-            )
+            validated = dump_response(
+                field_models[field_name].model_validate(
+                    {field_name: value}, strict=False, by_alias=False, by_name=True
+                )
+            ).get(field_name)
         except ValidationError:
             return value
         return _validated_where_same(validated, value)
@@ -867,16 +867,14 @@ def _validate_row(
     outro campo não lê o valor dele.
     """
     try:
-        return model.model_validate(projected, by_alias=False, by_name=True).model_dump(
-            by_alias=False
-        ), set()
+        return dump_response(model.model_validate(projected, by_alias=False, by_name=True)), set()
     except ValidationError as error:
         rejected = rejected_fields(error)
         locations = [detail["loc"] for detail in error.errors()]
     try:
-        validated_data = model.model_validate(
-            projected, strict=False, by_alias=False, by_name=True
-        ).model_dump(by_alias=False)
+        validated_data = dump_response(
+            model.model_validate(projected, strict=False, by_alias=False, by_name=True)
+        )
     except ValidationError as error:
         return None, rejected_fields(error)
     # O campo que o dump não traz, como o de exclude_if, fica sem o valor para
