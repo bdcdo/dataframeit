@@ -238,10 +238,13 @@ def test_conjunto_de_submodelos_dentro_de_outro_campo_interrompe_com_a_saida_del
         dump_response(resposta)
 
     mensagem = str(erro.value)
-    assert mensagem.startswith(
-        "O model_dump da resposta caiu com TypeError: unhashable type: 'dict'. O modelo "
-        "ConjuntoAninhado tem um set, um frozenset ou uma chave de dict cujos itens viram dict "
-        "no dump, como os de submodelos, e o dict não é hashable. Repetir a linha não resolve: "
+    # O texto do TypeError muda com a versão do Python; o "unhashable type" fica.
+    assert mensagem.startswith("O model_dump da resposta caiu com TypeError: ")
+    assert "unhashable type: 'dict'" in mensagem
+    assert (
+        ". O modelo ConjuntoAninhado tem um set, um frozenset ou uma chave de dict cujos itens "
+        "viram dict no dump, como os de submodelos, e o dict não é hashable. Repetir a linha "
+        "não resolve: " in mensagem
     )
     assert mensagem.endswith(
         "declare como list ou tuple o conjunto que fica dentro de outro campo, e como texto ou "
