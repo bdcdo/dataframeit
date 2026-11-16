@@ -1107,6 +1107,8 @@ def retry_with_backoff(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
+    *,
+    on_failure: Callable[[Exception], None] | None = None,
 ) -> dict[str, Any]:
     """Executa função com retry e backoff exponencial.
 
@@ -1115,6 +1117,7 @@ def retry_with_backoff(
         max_retries: Número máximo de tentativas; o core já recusou valor < 1.
         base_delay: Delay base em segundos.
         max_delay: Delay máximo em segundos.
+        on_failure: Anexa contexto à exceção terminal, depois da última tentativa.
 
     Returns:
         O dicionário devolvido por func, com as novas tentativas em '_retry_info'.
@@ -1127,47 +1130,52 @@ def retry_with_backoff(
     retry_info = {"retries": 0}
 
     attempt = 0
-    while True:
-        try:
-            result = func()
-            # Dentro do try: uma falha ao anotar o resultado também ganha nova tentativa.
-            result["_retry_info"] = retry_info
-            return result  # noqa: TRY300 (o else mudaria quais falhas são re-tentadas)
-        except ProviderAbortError:
-            # Parada deliberada: o aviso "Execução interrompida" a explica.
-            raise
-        except Exception as e:
-            usage_limit = _usage_limit_error(e)
-            if usage_limit is not None:
-                raise usage_limit from e
-            error_name = type(e).__name__
+    try:
+        while True:
+            try:
+                result = func()
+                # Dentro do try: uma falha ao anotar o resultado também ganha nova tentativa.
+                result["_retry_info"] = retry_info
+                return result  # noqa: TRY300 (o else mudaria quais falhas são re-tentadas)
+            except ProviderAbortError:
+                # Parada deliberada: o aviso "Execução interrompida" a explica.
+                raise
+            except Exception as e:
+                usage_limit = _usage_limit_error(e)
+                if usage_limit is not None:
+                    raise usage_limit from e
+                error_name = type(e).__name__
 
-            # Verificar se é erro não-recuperável
-            if not is_recoverable_error(e):
+                # Verificar se é erro não-recuperável
+                if not is_recoverable_error(e):
+                    warnings.warn(
+                        f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
+                        stacklevel=_user_stacklevel(),
+                    )
+                    raise
+
+                # Última tentativa - não fazer mais retry
+                if attempt >= max_retries - 1:
+                    raise
+
+                # Calcular delay com backoff exponencial
+                delay = min(base_delay * (2 ** min(attempt, _MAX_BACKOFF_EXPONENT)), max_delay)
+                jitter = random.uniform(0, 0.1) * delay  # noqa: S311 (jitter de espera, sem uso criptográfico)
+                total_delay = delay + jitter
+
+                retry_info["retries"] = attempt + 1
+
+                # Warning informativo sobre o retry
                 warnings.warn(
-                    f"Erro não-recuperável detectado ({error_name}). Não será feito retry.",
+                    f"Tentativa {attempt + 1}/{max_retries} falhou ({error_name}). "
+                    f"Aguardando {total_delay:.1f}s antes de tentar novamente...",
                     stacklevel=_user_stacklevel(),
                 )
-                raise
 
-            # Última tentativa - não fazer mais retry
-            if attempt >= max_retries - 1:
-                raise
+                time.sleep(total_delay)
 
-            # Calcular delay com backoff exponencial
-            delay = min(base_delay * (2 ** min(attempt, _MAX_BACKOFF_EXPONENT)), max_delay)
-            jitter = random.uniform(0, 0.1) * delay  # noqa: S311 (jitter de espera, sem uso criptográfico)
-            total_delay = delay + jitter
-
-            retry_info["retries"] = attempt + 1
-
-            # Warning informativo sobre o retry
-            warnings.warn(
-                f"Tentativa {attempt + 1}/{max_retries} falhou ({error_name}). "
-                f"Aguardando {total_delay:.1f}s antes de tentar novamente...",
-                stacklevel=_user_stacklevel(),
-            )
-
-            time.sleep(total_delay)
-
-        attempt += 1
+            attempt += 1
+    except Exception as error:
+        if on_failure is not None:
+            on_failure(error)
+        raise

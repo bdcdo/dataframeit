@@ -75,6 +75,7 @@ from .llm import (
     SearchConfig,
     SearchGroupConfig,
     _BuildOnce,
+    _take_failed_usage,
     build_structured_llm,
     call_langchain,
     with_shared_chat_model,
@@ -3844,8 +3845,13 @@ def _add_failed_usage(token_stats: TokenStats, error: BaseException) -> None:
     em `row_usage` (LangChain sem busca e modo por campo), atributos que o
     backend põe na exceção.
     """
-    _add_usage_stats(token_stats, getattr(error, "row_usage", None) or {})
-    token_stats["cost_usd"] += getattr(error, "cost_usd", None) or 0
+    failed = _take_failed_usage(error)
+    if failed is not None:
+        _add_usage_stats(token_stats, failed.usage)
+        token_stats["cost_usd"] += failed.cost_usd
+    else:
+        _add_usage_stats(token_stats, getattr(error, "row_usage", None) or {})
+        token_stats["cost_usd"] += getattr(error, "cost_usd", None) or 0
 
 
 def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução inteira)

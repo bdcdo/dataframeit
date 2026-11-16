@@ -290,7 +290,8 @@ def test_agente_devolve_o_campo_pelo_nome_com_serialize_by_alias(monkeypatch):
 def test_agente_recebe_o_teto_de_buscas(monkeypatch):
 
     capturado, _ = _chamar_agente(monkeypatch, _config(max_search_calls=4))
-    assert capturado["config"] == {"recursion_limit": 3 * 4 + 20}
+    assert capturado["config"]["recursion_limit"] == 3 * 4 + 20
+    assert len(capturado["config"]["callbacks"]) == 1
 
     limites = [m for m in capturado["middleware"] if isinstance(m, ToolCallLimitMiddleware)]
     assert len(limites) == 1

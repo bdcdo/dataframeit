@@ -4,6 +4,7 @@ import json
 import linecache
 import logging
 import math
+import threading
 import typing
 import warnings
 from datetime import UTC, date, datetime, time, timedelta, timezone
@@ -30,6 +31,7 @@ from typing_extensions import TypeAliasType
 
 from dataframeit import ProviderAbortError, ProviderError, core, dataframeit
 from dataframeit.core import _empty_token_stats, _format_token_stats
+from dataframeit.llm import _set_failed_usage
 
 
 class Modelo(BaseModel):
@@ -897,6 +899,38 @@ def test_uso_das_chamadas_feitas_entra_no_resumo_com_a_linha_que_falha(  # noqa:
     assert f"Total de tokens: {15 * chamadas}\n" in saida
     assert f"Total de buscas: {chamadas}\n" in saida
     assert f"Creditos usados: {2 * chamadas}\n" in saida
+
+
+def test_uso_de_falhas_paralelas_com_a_mesma_excecao_fica_na_linha_certa(caplog):
+    erro_compartilhado = RuntimeError("provider falhou")
+    juntas = threading.Barrier(2)
+
+    def falhar(texto, *_args, **_kwargs):
+        tokens = 10 if texto == "a" else 20
+        _set_failed_usage(erro_compartilhado, {"input_tokens": tokens, "total_tokens": tokens})
+        juntas.wait(timeout=5)
+        raise erro_compartilhado
+
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=falhar),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        caplog.at_level(logging.INFO, logger="dataframeit.stats"),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        resultado = dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=Modelo,
+            prompt="{texto}",
+            use_search=True,
+            search_per_field=True,
+            max_retries=1,
+            parallel_requests=2,
+        )
+
+    assert resultado["_dataframeit_status"].tolist() == ["error", "error"]
+    assert "Total de tokens: 30\n" in caplog.text
 
 
 class ModeloQueValidaODefault(BaseModel):

@@ -9,6 +9,9 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 from langchain_core.exceptions import OutputParserException
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 from pydantic import BaseModel, ValidationError, model_validator
 
 from dataframeit import dataframeit
@@ -530,6 +533,64 @@ class TestUsoDaLinhaQueFalha:
             "total_tokens": 32,
             "reasoning_tokens": 0,
         }
+
+    @pytest.mark.parametrize("tokens", [(8, 3), None])
+    def test_parser_que_levanta_antes_de_devolver_a_resposta_preserva_uso(self, tokens):
+        llm, structured = _llm_falso([])
+
+        def recusar(_messages, *, config):
+            capture = config["callbacks"][0]
+            raw = _raw("texto", tokens) if tokens is not None else SimpleNamespace(content="texto")
+            capture.on_llm_end(SimpleNamespace(generations=[[SimpleNamespace(message=raw)]]))
+            msg = "sem tool call"
+            raise OutputParserException(msg, llm_output="texto")
+
+        structured.invoke.side_effect = recusar
+        with llm, pytest.raises(ProviderRejectedOutputError) as erro:
+            call_langchain("TEXTO", ComEvidencia, "Leia: {texto}", _config(max_retries=1))
+
+        usage = erro.value.row_usage  # ty: ignore[unresolved-attribute]
+        assert usage.get("input_tokens", 0) == (tokens[0] if tokens is not None else 0)
+        assert usage.get("total_tokens", 0) == (sum(tokens) if tokens is not None else 0)
+
+    def test_validation_error_sem_resposta_http_usa_callback(self):
+        llm, structured = _llm_falso([])
+
+        def recusar(_messages, *, config):
+            config["callbacks"][0].on_llm_end(
+                SimpleNamespace(generations=[[SimpleNamespace(message=_raw("texto", (6, 2)))]])
+            )
+            ComEvidencia.model_validate_json(INVALIDO)
+
+        structured.invoke.side_effect = recusar
+        with llm, pytest.raises(ProviderRejectedOutputError) as erro:
+            call_langchain("TEXTO", ComEvidencia, "Leia: {texto}", _config(max_retries=1))
+
+        assert erro.value.row_usage["total_tokens"] == 8  # ty: ignore[unresolved-attribute]
+
+    def test_runnable_que_levanta_depois_da_resposta_preserva_uso(self):
+        model = FakeMessagesListChatModel(
+            responses=[
+                AIMessage(
+                    content="texto",
+                    usage_metadata={"input_tokens": 7, "output_tokens": 4, "total_tokens": 11},
+                )
+            ]
+        )
+
+        def recusar(_message):
+            msg = "validador falhou"
+            raise TypeError(msg)
+
+        with (
+            patch(
+                "dataframeit.llm.build_structured_llm", return_value=model | RunnableLambda(recusar)
+            ),
+            pytest.raises(TypeError, match="validador falhou") as erro,
+        ):
+            call_langchain("TEXTO", ComEvidencia, "Leia: {texto}", _config(max_retries=1))
+
+        assert erro.value.row_usage["total_tokens"] == 11  # ty: ignore[unresolved-attribute]
 
     @pytest.mark.parametrize("paralelo", [1, 2])
     @pytest.mark.parametrize(
