@@ -21,6 +21,7 @@ from .errors import (
     ProviderTransientError,
     _http_error_status_or_none,
     _is_recoverable_http_status,
+    dump_response,
     retry_with_backoff,
     validation_error_summary,
 )
@@ -311,7 +312,7 @@ def call_claude_code(
             raise ProviderRejectedOutputError(msg) from err
 
         usage = {**usage_total, "cost_usd": spent} if spent else dict(usage_total) or None
-        return {"data": validated.model_dump(by_alias=False), "usage": usage}
+        return {"data": dump_response(validated), "usage": usage}
 
     def _on_failure(error: Exception) -> None:
         error.row_usage = usage_total  # ty: ignore[unresolved-attribute]

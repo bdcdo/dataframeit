@@ -1,21 +1,23 @@
-"""Campo `set` ou `frozenset` de submodelos é recusado antes da primeira chamada.
+"""Campo `set` ou `frozenset` de submodelos interrompe a execução na primeira resposta.
 
 O `model_dump` monta o conjunto com o dump de cada item, e o dict do
-submodelo não é hashable: sem a recusa, toda linha pagaria as tentativas
-para cair com `TypeError: unhashable type: 'dict'`.
+submodelo não é hashable: a resposta paga cai com
+`TypeError: unhashable type: 'dict'`. A falha vem do modelo e se repete em
+toda linha, e por isso não ganha nova tentativa nem segue para a linha
+seguinte.
 """
 
-import dataclasses
 from enum import Enum
-from typing import Optional
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel, ConfigDict, field_serializer, model_serializer
+from pydantic import BaseModel, ConfigDict, field_serializer
+from typing_extensions import override
 
 from dataframeit import dataframeit
-from dataframeit.core import _validate_sets_of_submodels
+from dataframeit.errors import ProviderAbortError, dump_response
 
 
 class Tag(Enum):
@@ -25,20 +27,6 @@ class Tag(Enum):
 class Cidade(BaseModel):
     model_config = ConfigDict(frozen=True)
     nome: str
-
-
-@dataclasses.dataclass(frozen=True)
-class Ponto:
-    x: int
-
-
-class CidadeQueViraTexto(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    nome: str
-
-    @model_serializer
-    def _como_texto(self) -> str:
-        return self.nome
 
 
 class ConjuntoDeEnum(BaseModel):
@@ -61,51 +49,17 @@ class ConjuntoComSerializador(BaseModel):
         return sorted(valor, key=lambda cidade: cidade.nome)
 
 
-class ConjuntoOpcional(BaseModel):
-    campo: Optional[set[Cidade]] = None
+class ChaveDeModelo(BaseModel):
+    campo: dict[Cidade, int]
 
 
-class ConjuntoDeTupla(BaseModel):
-    campo: set[tuple[Cidade, int]]
+class DumpQueCai(BaseModel):
+    campo: str
 
-
-class ConjuntoDeDataclass(BaseModel):
-    campo: frozenset[Ponto]
-
-
-class ConjuntoDeModeloQueViraTexto(BaseModel):
-    campo: set[CidadeQueViraTexto]
-
-
-class ListaDeConjuntos(BaseModel):
-    itens: list[ConjuntoDeModelo]
-
-
-class ModeloComSerializador(BaseModel):
-    campo: set[Cidade]
-
-    @model_serializer
-    def _em_lista(self) -> dict[str, list[str]]:
-        return {"campo": sorted(cidade.nome for cidade in self.campo)}
-
-
-class No(BaseModel):
-    """Modelo recursivo: o schema dele chega por `definition-ref`, mais de uma vez."""
-
-    model_config = ConfigDict(frozen=True)
-    nome: str
-    pai: Optional["No"] = None
-    padrinho: Optional["No"] = None
-
-
-class ArvoreSemConjunto(BaseModel):
-    raiz: No
-    tags: set[Tag] = set()
-
-
-class ConjuntoDeNos(BaseModel):
-    raiz: No
-    nos: set[No]
+    @override
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        msg = f"model_dump do usuário caiu com {self.campo}"
+        raise TypeError(msg)
 
 
 class ChatFalso:
@@ -126,15 +80,14 @@ class ChatFalso:
         }
 
 
-def _executa(modelo, resposta):
+def _executa(modelo, resposta, textos=("a",)):
     chat = ChatFalso(modelo, resposta)
     with (
         patch("dataframeit.llm.chat_model", return_value=chat),
         patch("dataframeit.core.validate_provider_dependencies"),
-        patch("time.sleep"),
     ):
         saida = dataframeit(
-            pd.DataFrame({"texto": ["a"]}),
+            pd.DataFrame({"texto": list(textos)}),
             questions=modelo,
             prompt="{texto}",
             provider="openai",
@@ -143,95 +96,91 @@ def _executa(modelo, resposta):
     return chat, saida
 
 
-@pytest.mark.parametrize(
-    ("modelo", "tipo"),
-    [(ConjuntoDeModelo, "set"), (ConjuntoCongeladoDeModelo, "frozenset")],
-)
-def test_conjunto_de_submodelos_e_recusado_sem_pagar_chamada(modelo, tipo):
-    chat = ChatFalso(modelo, [{"nome": "SP"}])
-    with (
-        patch("dataframeit.llm.chat_model", return_value=chat),
-        patch("dataframeit.core.validate_provider_dependencies"),
-        pytest.raises(ValueError, match=rf"Campo 'campo' é um {tipo} de submodelos") as recusa,
-    ):
-        dataframeit(
-            pd.DataFrame({"texto": ["a"]}),
-            questions=modelo,
-            prompt="{texto}",
-            provider="openai",
-            track_tokens=False,
-        )
-    assert chat.invocacoes == 0
-    assert "list ou tuple" in str(recusa.value)
-    assert "@field_serializer" in str(recusa.value)
+@pytest.mark.parametrize("modelo", [ConjuntoDeModelo, ConjuntoCongeladoDeModelo])
+def test_conjunto_de_submodelos_interrompe_na_primeira_resposta(modelo):
+    with pytest.warns(UserWarning, match="Execução interrompida") as avisos:
+        chat, saida = _executa(modelo, [{"nome": "SP"}], textos=("a", "b", "c"))
+
+    assert chat.invocacoes == 1
+    assert saida["_dataframeit_status"].isna().all()
+    [aviso] = [str(aviso.message) for aviso in avisos]
+    assert "unhashable type: 'dict'" in aviso
+    assert f"O modelo {modelo.__name__} tem um set, um frozenset ou uma chave de dict" in aviso
+    assert "declare o conjunto como list ou tuple" in aviso
 
 
-def test_conjunto_de_enum_continua_chegando_a_saida():
+def test_conjunto_de_enum_chega_a_saida():
     chat, saida = _executa(ConjuntoDeEnum, ["pf"])
+
     assert saida["campo"].tolist() == [{Tag.PF}]
     assert chat.invocacoes == 1
 
 
 def test_conjunto_de_submodelos_com_field_serializer_chega_a_saida():
     chat, saida = _executa(ConjuntoComSerializador, [{"nome": "SP"}, {"nome": "RJ"}])
+
     assert saida["campo"].tolist() == [[{"nome": "RJ"}, {"nome": "SP"}]]
     assert chat.invocacoes == 1
 
 
-@pytest.mark.parametrize(
-    ("modelo", "campo", "tipo"),
-    [
-        (ConjuntoOpcional, "campo", "set"),
-        (ConjuntoDeTupla, "campo", "set"),
-        (ConjuntoDeDataclass, "campo", "frozenset"),
-        (ListaDeConjuntos, "itens.campo", "set"),
-        (ConjuntoDeNos, "nos", "set"),
-    ],
-)
-def test_recusa_aponta_o_campo_do_conjunto(modelo, campo, tipo):
-    with pytest.raises(ValueError, match=rf"^Campo '{campo}' é um {tipo} de submodelos"):
-        _validate_sets_of_submodels(modelo)
+def test_resposta_sem_item_no_conjunto_chega_a_saida():
+    chat, saida = _executa(ConjuntoDeModelo, [])
+
+    assert saida["campo"].tolist() == [set()]
+    assert chat.invocacoes == 1
 
 
-@pytest.mark.parametrize(
-    "modelo",
-    [
-        ConjuntoDeEnum,
-        ConjuntoComSerializador,
-        ConjuntoDeModeloQueViraTexto,
-        ModeloComSerializador,
-        ArvoreSemConjunto,
-        No,
-    ],
-)
-def test_modelo_cujo_dump_monta_o_conjunto_e_aceito(modelo):
-    _validate_sets_of_submodels(modelo)
+def test_dump_response_devolve_o_dump_pelo_nome_dos_campos():
+    resposta = ConjuntoDeEnum(campo={Tag.PF})
+
+    assert dump_response(resposta) == {"campo": {Tag.PF}}
 
 
-@pytest.mark.parametrize(
-    ("modelo", "valores"),
-    [
-        (ConjuntoDeModelo, {"campo": [{"nome": "SP"}]}),
-        (ConjuntoCongeladoDeModelo, {"campo": [{"nome": "SP"}]}),
-        (ConjuntoOpcional, {"campo": [{"nome": "SP"}]}),
-        (ConjuntoDeTupla, {"campo": [({"nome": "SP"}, 1)]}),
-        (ConjuntoDeDataclass, {"campo": [{"x": 1}]}),
-        (ListaDeConjuntos, {"itens": [{"campo": [{"nome": "SP"}]}]}),
-        (ConjuntoDeNos, {"raiz": {"nome": "a"}, "nos": [{"nome": "b"}]}),
-    ],
-)
-def test_modelo_recusado_e_o_que_o_model_dump_nao_monta(modelo, valores):
-    """A recusa segue o pydantic: cada modelo recusado cai no dump de uma resposta válida."""
-    with pytest.raises(TypeError, match="unhashable type: 'dict'"):
-        modelo.model_validate(valores).model_dump(by_alias=False)
+def test_dump_response_guarda_o_type_error_como_causa():
+    resposta = ConjuntoDeModelo.model_validate({"campo": [{"nome": "SP"}]})
+
+    with pytest.raises(ProviderAbortError, match="Repetir a linha não resolve") as erro:
+        dump_response(resposta)
+
+    assert isinstance(erro.value.__cause__, TypeError)
 
 
-@pytest.mark.parametrize(
-    ("modelo", "valores", "dump"),
-    [
-        (ConjuntoDeModeloQueViraTexto, {"campo": [{"nome": "SP"}]}, {"campo": {"SP"}}),
-        (ModeloComSerializador, {"campo": [{"nome": "SP"}]}, {"campo": ["SP"]}),
-    ],
-)
-def test_modelo_aceito_com_serializador_proprio_passa_pelo_model_dump(modelo, valores, dump):
-    assert modelo.model_validate(valores).model_dump(by_alias=False) == dump
+def test_chave_de_dict_que_e_submodelo_interrompe_como_o_conjunto():
+    resposta = ChaveDeModelo(campo={Cidade(nome="SP"): 1})
+
+    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+        dump_response(resposta)
+
+
+def test_type_error_de_outra_origem_segue_como_veio():
+    with pytest.raises(TypeError, match="model_dump do usuário caiu com x"):
+        dump_response(DumpQueCai(campo="x"))
+
+
+def test_agente_de_busca_interrompe_na_primeira_resposta():
+    agente = MagicMock()
+    agente.invoke.return_value = {
+        "structured_response": ConjuntoDeModelo.model_validate({"campo": [{"nome": "SP"}]}),
+        "messages": [],
+    }
+    provider = MagicMock()
+    provider.calculate_credits.return_value = 0
+
+    with (
+        patch("dataframeit.llm._create_langchain_llm", return_value=object()),
+        patch("langchain.agents.create_agent", return_value=agente),
+        patch("dataframeit.agent.get_provider", return_value=provider),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        pytest.warns(UserWarning, match="Execução interrompida.*unhashable type: 'dict'"),
+    ):
+        saida = dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            ConjuntoDeModelo,
+            "Responda {texto}",
+            use_search=True,
+            track_tokens=False,
+        )
+
+    assert agente.invoke.call_count == 1
+    assert saida["_dataframeit_status"].isna().all()

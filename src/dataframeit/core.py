@@ -119,7 +119,6 @@ if TYPE_CHECKING:
         Generator,
         Hashable,
         Iterable,
-        Iterator,
         Sequence,
     )
 
@@ -1178,84 +1177,6 @@ def _is_positive_int(value: object) -> bool:
     return isinstance(value, numbers.Integral) and not isinstance(value, bool) and int(value) >= 1
 
 
-# Os schemas do pydantic-core cujo valor o model_dump devolve como dict.
-_DICT_DUMPED_SCHEMAS = frozenset({"model", "dataclass"})
-_NOT_SERIALIZED_KEYS = frozenset({"definitions", "default", "metadata"})
-
-
-def _schema_definitions(
-    node: object, found: dict[str, dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    """Os schemas do pydantic-core com `ref`, por onde o `definition-ref` os alcança."""
-    if isinstance(node, dict):
-        if isinstance(node.get("type"), str) and "ref" in node:
-            found[node["ref"]] = node
-        node = list(node.values())
-    if isinstance(node, (list, tuple)):
-        for item in node:
-            _schema_definitions(item, found)
-    return found
-
-
-def _serialized_schemas(
-    node: object,
-    definitions: dict[str, dict[str, Any]],
-    seen: set[str],
-    path: tuple[str, ...] = (),
-) -> Iterator[tuple[tuple[str, ...], dict[str, Any]]]:
-    """Cada schema que o model_dump serializa a partir de `node`, com o caminho do campo.
-
-    O schema com serializador próprio (`@field_serializer`,
-    `@model_serializer`, `PlainSerializer`) fica de fora com o que está
-    dentro dele: o dump devolve o que o serializador devolver, e não o que o
-    tipo diz.
-    """
-    if isinstance(node, (list, tuple)):
-        children = [(path, item) for item in node]
-    elif not isinstance(node, dict):
-        return
-    elif not isinstance(node.get("type"), str):
-        # O dict de campos de um modelo, e não um schema: a chave é o nome do campo.
-        children = [((*path, str(name)), field_schema) for name, field_schema in node.items()]
-    elif "serialization" in node:
-        return
-    elif node["type"] == "definition-ref":
-        if node["schema_ref"] in seen:
-            return
-        seen.add(node["schema_ref"])
-        children = [(path, definitions[node["schema_ref"]])]
-    else:
-        yield path, node
-        # `definitions` só é serializado por onde um `definition-ref` chega, e o
-        # valor padrão e os metadados não são schema.
-        children = [(path, node[key]) for key in node.keys() - _NOT_SERIALIZED_KEYS]
-    for child_path, child in children:
-        yield from _serialized_schemas(child, definitions, seen, child_path)
-
-
-def _validate_sets_of_submodels(questions: type[BaseModel]) -> None:
-    """Recusa o modelo com `set` ou `frozenset` de submodelos antes de processar linhas.
-
-    O model_dump monta o conjunto com o dump de cada item, e o dict do
-    submodelo não é hashable: toda resposta com um item cairia com TypeError
-    depois de paga, em cada tentativa.
-    """
-    schema = questions.__pydantic_core_schema__
-    definitions = _schema_definitions(schema, {})
-    for path, node in _serialized_schemas(schema, definitions, set()):
-        if node["type"] in {"set", "frozenset"} and any(
-            item["type"] in _DICT_DUMPED_SCHEMAS
-            for _, item in _serialized_schemas(node.get("items_schema"), definitions, set())
-        ):
-            msg = (
-                f"Campo '{'.'.join(path)}' é um {node['type']} de submodelos, que o model_dump "
-                "do Pydantic não monta: cada item vira um dict, que não entra em conjunto. "
-                "Declare o campo como list ou tuple, ou converta o conjunto com um "
-                "@field_serializer"
-            )
-            raise ValueError(msg)
-
-
 def _validate_field_configs(
     questions: type[BaseModel],
     search_config: SearchConfig | None,
@@ -2128,7 +2049,6 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         use_search=use_search,
         search_per_field=search_per_field,
     )
-    _validate_sets_of_submodels(questions)
 
     # Só execuções com trabalho pendente validam dependências e rate limits.
     if use_search:

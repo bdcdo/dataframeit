@@ -21,6 +21,7 @@ from dataframeit import dataframeit
 from dataframeit.claude_code import _build_json_system_prompt, call_claude_code
 from dataframeit.core import _empty_token_stats, _format_token_stats
 from dataframeit.errors import (
+    ProviderAbortError,
     ProviderError,
     ProviderOverloadedError,
     ProviderRejectedOutputError,
@@ -1028,3 +1029,29 @@ def test_resposta_devolve_o_campo_pelo_nome_com_serialize_by_alias(sdk_falso):
     )
 
     assert resultado["data"] == {"sentimento": "neutro"}
+
+
+class _Cidade(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    nome: str
+
+
+class _ConjuntoDeModelo(BaseModel):
+    campo: set[_Cidade]
+
+
+def test_conjunto_de_submodelos_interrompe_sem_nova_tentativa(sdk_falso):
+    sdk_falso["mensagens_do_sdk"] = [
+        _AssistantMessageFalso([_TextBlockFalso('{"campo": [{"nome": "SP"}]}')]),
+        _ResultMessageFalso(usage=None),
+    ]
+
+    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+        call_claude_code(
+            "texto da linha",
+            _ConjuntoDeModelo,
+            "Analise: {texto}",
+            replace(_config_claude_code(), max_retries=3),
+        )
+
+    assert len(sdk_falso["opcoes"]) == 1

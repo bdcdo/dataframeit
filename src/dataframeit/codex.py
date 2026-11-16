@@ -33,6 +33,7 @@ from .errors import (
     ProviderUsageLimitError,
     _http_error_status_or_none,
     _is_recoverable_http_status,
+    dump_response,
     retry_with_backoff,
     validation_error_summary,
 )
@@ -891,7 +892,7 @@ class CodexBackend:
             msg = f"Resposta do Codex não corresponde ao schema: {validation_error_summary(err)}"
             raise ProviderOutputError(msg) from err
 
-        return {"data": validated.model_dump(by_alias=False), "usage": dict(usage_total) or None}
+        return {"data": dump_response(validated), "usage": dict(usage_total) or None}
 
 
 def _interrupt_quietly(turn: TurnHandle) -> None:
