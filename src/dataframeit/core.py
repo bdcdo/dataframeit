@@ -99,6 +99,7 @@ from .utils import (
     _is_structure_class,
     _json_default,
     _keeps_nan,
+    _quoted_nan_text,
     _reads_as_other,
     _resolved,
     _silent_slice_write,
@@ -3647,6 +3648,8 @@ def _cell_for_checkpoint(  # noqa: PLR0913 (uma opção por forma de gravar a c�
         return str(value)
     if nan_text and isinstance(value, float) and math.isnan(value):
         return _FLOAT_NAN_TEXT
+    if nan_text and isinstance(value, str):
+        return _quoted_nan_text(value)
     if (
         any_text
         and isinstance(value, str)
@@ -3690,8 +3693,10 @@ def _structures_as_json(  # noqa: PLR0913 (uma família de colunas por forma de 
     Com `text_file`, o Decimal das `decimal_columns`, as dos campos só de
     `Decimal`, vai como texto, que o XLSX gravaria como double, e o NaN das
     `nan_columns`, as dos campos que admitem `float`, vai como o texto "NaN":
-    o CSV e o XLSX o gravariam como a célula vazia da linha pendente. `read_df`
-    com o modelo relê os dois (`_raw_restorer`).
+    o CSV e o XLSX o gravariam como a célula vazia da linha pendente. O texto
+    "NaN" que o modelo devolveu num campo desses que também admite texto vai
+    com um par de aspas (`_quoted_nan_text`). `read_df` com o modelo relê os
+    três (`_raw_restorer`).
 
     Em qualquer formato, na coluna com um Decimal NaN todo Decimal vai como
     texto. O pandas conta o Decimal NaN como ausente; o

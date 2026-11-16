@@ -19,6 +19,7 @@ from dataframeit.utils import (
     _admits_any,
     _admits_decimal,
     _any_from_text,
+    _quoted_nan_text,
     _reads_as_other,
     _scalar_or_read,
 )
@@ -727,14 +728,38 @@ def test_retomada_do_checkpoint_sem_nan_devolve_none_no_float_opcional(tmp_path,
 
 
 @pytest.mark.parametrize("ext", [".csv", ".xlsx"])
-def test_retomada_do_checkpoint_devolve_o_texto_nan_do_campo_float_ou_texto(tmp_path, ext):
+@pytest.mark.parametrize(
+    "respostas",
+    [["abc", "NaN", _NAN, '"NaN"', '""NaN""'], ["NaN", "x"], ['"NaN"', "x"], [_NAN, "x"]],
+    ids=["tudo", "so-o-texto", "so-o-texto-com-aspas", "so-o-nan"],
+)
+def test_retomada_do_checkpoint_separa_o_nan_do_texto_nan_no_campo_float_ou_texto(
+    tmp_path, ext, respostas
+):
     _exige_formato(ext)
 
     valores = _retomar_do_checkpoint(
-        tmp_path / f"ck{ext}", "pandas", Union[float, str], ["abc", "NaN"], "z"
+        tmp_path / f"ck{ext}", "pandas", Union[float, str], respostas, "z"
     )
 
-    assert valores == ["abc", "NaN", "z"]
+    esperados = [*respostas, "z"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
+    assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+@pytest.mark.parametrize(
+    ("texto", "gravado"),
+    [
+        ("NaN", '"NaN"'),
+        ('"NaN"', '""NaN""'),
+        ("nan", "nan"),
+        ('"NaN', '"NaN'),
+        ("NaN ", "NaN "),
+        ('"x"', '"x"'),
+    ],
+)
+def test_quoted_nan_text(texto, gravado):
+    assert _quoted_nan_text(texto) == gravado
 
 
 def test_csv_grava_o_nan_de_float_como_texto_e_a_linha_pendente_vazia(tmp_path):
@@ -819,12 +844,22 @@ def test_read_df_com_argumento_de_leitura_nao_rele_o_nan_de_float(tmp_path):
     assert lido["campo"].dtype == "float64"
 
 
-def test_read_df_devolve_o_texto_nan_no_campo_float_ou_texto(tmp_path):
+def test_read_df_separa_o_nan_do_texto_nan_no_campo_float_ou_texto(tmp_path):
     modelo = create_model("ModeloDoCaso", campo=(Union[float, str], ...))
 
-    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,"]), modelo)
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,", 'd,"""NaN"""']), modelo)
 
-    assert lido["campo"].tolist() == [1.5, "NaN", None]
+    primeiro, nan, vazio, texto = lido["campo"].tolist()
+    assert (primeiro, vazio, texto) == ("1.5", None, "NaN")
+    assert isinstance(nan, float)
+    assert math.isnan(nan)
+
+
+def test_read_df_deixa_como_lida_a_coluna_de_float_ou_texto_sem_nan(tmp_path):
+    modelo = create_model("ModeloDoCaso", campo=(Union[float, str], ...))
+    caminho = _csv(tmp_path, ["a,1.5", "b,x"])
+
+    pd.testing.assert_frame_equal(read_df(caminho, modelo), pd.read_csv(caminho))
 
 
 def test_read_df_rele_do_parquet_o_nan_de_float_e_o_int_exato(tmp_path):

@@ -1407,12 +1407,11 @@ def _raw_restorer(  # noqa: PLR0911 (uma saída por tipo de campo)
     # O leitor devolve ausente o texto do NaN, e a coluna sem célula ausente
     # não o tem: só o campo só de Decimal é relido assim mesmo, pelos dígitos.
     if _keeps_nan(annotation):
-        if not read.isna().any():
+        # O campo que também admite texto pode guardar só o texto "NaN" entre
+        # aspas (`_quoted_nan_text`), que o leitor não devolve ausente.
+        if not read.isna().any() and str not in _members(annotation):
             return None
-        # No campo que também admite texto, o "NaN" pode ser o texto que o
-        # modelo devolveu, e é a validação que decide, como no Decimal.
-        marked = _FLOAT_NAN_TEXT if str in _members(annotation) else math.nan
-        return functools.partial(_float_nan_as_written, marked=marked)
+        return _float_nan_as_written
     if _admits_decimal(annotation):
         every_cell = _accepts_only_decimal(annotation)
         if not every_cell and not read.isna().any():
@@ -1485,6 +1484,8 @@ def _int_as_written(raw: pd.Series, read: pd.Series) -> pd.Series | None:
 _DECIMAL_NAN_TEXT = re.compile(r"-?s?NaN\d*")
 # O texto com que o checkpoint CSV e XLSX grava o NaN de um campo float.
 _FLOAT_NAN_TEXT = "NaN"
+# O texto "NaN" com um ou mais pares de aspas em volta (`_quoted_nan_text`).
+_QUOTED_NAN_TEXT = re.compile(r'("+)NaN\1')
 
 
 def _decimal_as_written(raw: pd.Series, read: pd.Series, *, every_cell: bool) -> pd.Series | None:
@@ -1525,22 +1526,42 @@ def _decimal_or_text(text: str) -> Decimal | str:
         return text
 
 
-def _float_nan_as_written(raw: pd.Series, read: pd.Series, *, marked: object) -> pd.Series | None:
+def _float_nan_as_written(raw: pd.Series, read: pd.Series) -> pd.Series | None:
     """O NaN do campo que admite `float`, que o checkpoint grava como o texto "NaN".
 
     O leitor devolve esse texto ausente, como a célula vazia da linha pendente
-    e da resposta None. A coluna em que ele aparece passa a object, com
-    `marked` na célula do texto, None na ausente e as demais como lidas; sem
-    ele, fica como lida.
+    e da resposta None. No campo que também admite texto, o checkpoint grava
+    com um par de aspas a mais o texto "NaN" que o modelo devolveu
+    (`_quoted_nan_text`), e ele volta sem esse par. A coluna com um dos dois
+    passa a object, com o NaN na célula do texto "NaN", None na ausente e as
+    demais como lidas; sem nenhum, fica como lida.
     """
     is_nan = raw == _FLOAT_NAN_TEXT
-    if not is_nan.any():
+    is_quoted = [_QUOTED_NAN_TEXT.fullmatch(text) is not None for text in raw]
+    if not is_nan.any() and not any(is_quoted):
         return None
-    values = [
-        marked if found else None if absent else value
-        for found, absent, value in zip(is_nan, read.isna(), read, strict=True)
-    ]
+    values: list[object] = []
+    for text, found, quoted, absent, value in zip(
+        raw, is_nan, is_quoted, read.isna(), read, strict=True
+    ):
+        if found:
+            values.append(math.nan)
+        elif quoted:
+            values.append(text[1:-1])
+        else:
+            values.append(None if absent else value)
     return pd.Series(values, index=read.index, dtype=object)
+
+
+def _quoted_nan_text(text: str) -> str:
+    """O texto de um campo que admite `float` como o checkpoint CSV e XLSX o grava.
+
+    O texto "NaN" sem aspas é o NaN do campo. O texto "NaN" que o modelo
+    devolveu num campo que também admite texto vai com um par de aspas, e o que
+    já tem aspas em volta, com um par a mais, para voltar o mesmo
+    (`_float_nan_as_written`). Qualquer outro texto vai como está.
+    """
+    return f'"{text}"' if _QUOTED_NAN_TEXT.fullmatch(f'"{text}"') else text
 
 
 def _any_scalar_as_written(raw: pd.Series, read: pd.Series) -> pd.Series | None:
