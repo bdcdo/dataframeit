@@ -6,6 +6,7 @@ import sys
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pandas as pd
 import pytest
@@ -504,6 +505,109 @@ def test_call_agent_uses_provider_factory(monkeypatch):
 
         # Verifica que a ferramenta foi criada e passada
         assert len(captured_tools) == 1
+
+
+def test_call_agent_sem_resposta_estruturada_conta_uso_na_falha():
+    """A resposta sem dados ainda consumiu tokens e créditos da busca."""
+
+    class AgenteSemResposta:
+        def invoke(self, _payload, config=None):
+            return {
+                "messages": [
+                    SimpleNamespace(
+                        type="ai",
+                        usage_metadata={
+                            "input_tokens": 12,
+                            "output_tokens": 4,
+                            "total_tokens": 16,
+                        },
+                        tool_calls=[{"name": "busca_web", "args": {}, "id": "1"}],
+                    )
+                ]
+            }
+
+    provider = MagicMock()
+    provider.name = "tavily"
+    provider.calculate_credits.return_value = 1
+    config = LLMConfig(
+        model="m",
+        provider="openai",
+        api_key=None,
+        max_retries=1,
+        base_delay=0,
+        max_delay=0,
+        rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, provider="tavily"),
+    )
+    built = SimpleNamespace(agent=AgenteSemResposta(), provider=provider, tool_name="busca_web")
+
+    with (
+        patch("dataframeit.agent.build_search_agent", return_value=built),
+        pytest.raises(ValueError, match="resposta estruturada") as erro,
+    ):
+        call_agent("texto", SampleModel, "Responda {texto}", config)
+
+    assert erro.value.row_usage["input_tokens"] == 12  # ty: ignore[unresolved-attribute]
+    assert erro.value.row_usage["search_count"] == 1  # ty: ignore[unresolved-attribute]
+    assert erro.value.row_usage["search_credits"] == 1  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.parametrize("busca_concluida", [False, True])
+def test_call_agent_preserva_uso_quando_invoke_levanta(busca_concluida):
+    """O agente pode levantar depois de concluir chamadas já cobradas."""
+
+    class AgenteQueFalha:
+        def invoke(self, _payload, config=None):
+            assert config is not None
+            capture = config["callbacks"][0]
+            capture.on_llm_end(
+                SimpleNamespace(
+                    generations=[
+                        [
+                            SimpleNamespace(
+                                message=SimpleNamespace(
+                                    usage_metadata={
+                                        "input_tokens": 9,
+                                        "output_tokens": 2,
+                                        "total_tokens": 11,
+                                    }
+                                )
+                            )
+                        ]
+                    ]
+                )
+            )
+            capture.on_tool_start({"name": "outra_ferramenta"}, "consulta", run_id=UUID(int=2))
+            capture.on_tool_end("resultado", run_id=UUID(int=2))
+            if busca_concluida:
+                capture.on_tool_start({"name": "busca_web"}, "consulta", run_id=UUID(int=1))
+                capture.on_tool_end("resultado", run_id=UUID(int=1))
+            msg = "falha após a busca"
+            raise RuntimeError(msg)
+
+    provider = MagicMock()
+    provider.name = "tavily"
+    provider.calculate_credits.return_value = 1
+    config = LLMConfig(
+        model="m",
+        provider="openai",
+        api_key=None,
+        max_retries=1,
+        base_delay=0,
+        max_delay=0,
+        rate_limit_delay=0,
+        search_config=SearchConfig(enabled=True, provider="tavily"),
+    )
+    built = SimpleNamespace(agent=AgenteQueFalha(), provider=provider, tool_name="busca_web")
+
+    with (
+        patch("dataframeit.agent.build_search_agent", return_value=built),
+        pytest.raises(RuntimeError, match="falha após a busca") as erro,
+    ):
+        call_agent("texto", SampleModel, "Responda {texto}", config)
+
+    assert erro.value.row_usage["total_tokens"] == 11  # ty: ignore[unresolved-attribute]
+    assert erro.value.row_usage.get("search_credits", 0) == int(busca_concluida)  # ty: ignore[unresolved-attribute]
 
 
 def test_call_agent_conta_so_chamadas_da_ferramenta_de_busca(monkeypatch):

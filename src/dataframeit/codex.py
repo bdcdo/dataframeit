@@ -35,7 +35,7 @@ from .errors import (
     retry_with_backoff,
     validation_error_summary,
 )
-from .llm import LLMConfig, Usage, build_prompt
+from .llm import LLMConfig, Usage, _set_failed_usage, build_prompt
 from .utils import _user_stacklevel
 
 if TYPE_CHECKING:
@@ -813,11 +813,17 @@ class CodexBackend:
         # O uso soma todas as tentativas, inclusive as que falharam, estouraram
         # o prazo ou tiveram a resposta recusada, porque todas são cobradas.
         usage_total: Usage = {}
+
+        def _on_failure(error: Exception) -> None:
+            error.row_usage = usage_total  # ty: ignore[unresolved-attribute]
+            _set_failed_usage(error, usage_total)
+
         return retry_with_backoff(
             lambda: self._invoke_once(prompt, usage_total),
             self.config.max_retries,
             self.config.base_delay,
             self.config.max_delay,
+            on_failure=_on_failure,
         )
 
     def _invoke_once(self, prompt: str, usage_total: Usage) -> dict[str, Any]:

@@ -12,7 +12,7 @@ from typing_extensions import override
 from dataframeit import field_condition
 from dataframeit.agent import field_extractor
 from dataframeit.conditional import _walk_fields
-from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig
+from dataframeit.llm import LLMConfig, SearchConfig, SearchGroupConfig, _set_failed_usage
 
 PROMPT = "Analise {texto}"
 
@@ -133,15 +133,18 @@ def test_usage_soma_contador_ausente_como_zero_no_modo_por_grupo():
 class _AgenteQueFalha(_Agente):
     """Levanta `erro` na chamada ao modelo `falha`, depois de registrá-la."""
 
-    def __init__(self, falha, erro):
+    def __init__(self, falha, erro, usage_on_failure=None):
         super().__init__(RESPOSTAS, usage={"input_tokens": 2})
         self.falha = falha
         self.erro = erro
+        self.usage_on_failure = usage_on_failure
 
     @override
     def __call__(self, text, model, prompt, config, save_trace=None):
         resultado = super().__call__(text, model, prompt, config, save_trace)
         if model.__name__ == self.falha:
+            if self.usage_on_failure is not None:
+                _set_failed_usage(self.erro, self.usage_on_failure)
             raise self.erro
         return resultado
 
@@ -159,6 +162,31 @@ def test_erro_da_linha_leva_o_uso_das_chamadas_ja_feitas(falha):
     assert agente.nomes[-1] == falha
     # Todas as chamadas antes da que falhou, inclusive a do campo da lista enriquecida.
     assert erro.value.row_usage["input_tokens"] == 2 * (len(agente.chamadas) - 1)  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.parametrize(
+    "falha", ["NestedSearch_interno_outro", "Completo_interno", "ItemSearch_0_preco"]
+)
+def test_erro_da_chamada_que_falha_soma_ao_uso_anterior(falha):
+    erro_da_chamada = RuntimeError("caiu")
+    agente = _AgenteQueFalha(falha, erro_da_chamada, {"input_tokens": 7})
+
+    with pytest.raises(RuntimeError, match="caiu") as erro:
+        _rodar(agente, Completo, _config())
+
+    assert erro.value.row_usage["input_tokens"] == 2 * (len(agente.chamadas) - 1) + 7  # ty: ignore[unresolved-attribute]
+
+
+def test_excecao_reutilizada_nao_reaproveita_uso_da_linha_anterior():
+    erro_da_chamada = RuntimeError("caiu")
+
+    for uso_da_falha in (7, 0):
+        usage = {"input_tokens": uso_da_falha} if uso_da_falha else None
+        agente = _AgenteQueFalha("Completo_interno", erro_da_chamada, usage)
+        with pytest.raises(RuntimeError, match="caiu") as erro:
+            _rodar(agente, Completo, _config())
+        esperado = 2 * (len(agente.chamadas) - 1) + uso_da_falha
+        assert erro.value.row_usage["input_tokens"] == esperado  # ty: ignore[unresolved-attribute]
 
 
 def _tem_preco(dados):

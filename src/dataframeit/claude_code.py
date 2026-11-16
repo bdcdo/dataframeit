@@ -23,7 +23,14 @@ from .errors import (
     retry_with_backoff,
     validation_error_summary,
 )
-from .llm import LLMConfig, Usage, _parse_usage_metadata, build_prompt
+from .llm import (
+    LLMConfig,
+    Usage,
+    _add_usage,
+    _parse_usage_metadata,
+    _set_failed_usage,
+    build_prompt,
+)
 from .utils import parse_json
 
 if TYPE_CHECKING:
@@ -190,7 +197,7 @@ def _run_coroutine(coro: Coroutine[Any, Any, T]) -> T:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _usage_from_sdk(usage: dict[str, Any] | None, cost_usd: float | None = None) -> Usage | None:
+def _usage_from_sdk(usage: dict[str, Any] | None) -> Usage | None:
     """Converte ``ResultMessage.usage`` para o formato de tokens do core.
 
     O SDK repassa o usage da API da Anthropic, em que ``input_tokens`` exclui
@@ -199,14 +206,14 @@ def _usage_from_sdk(usage: dict[str, Any] | None, cost_usd: float | None = None)
     cache, a mesma convenção do provider LangChain.
     """
     if not usage:
-        return {"cost_usd": cost_usd} if cost_usd else None
+        return None
 
     cache_read = usage.get("cache_read_input_tokens") or 0
     cache_creation = usage.get("cache_creation_input_tokens") or 0
     input_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
     output_tokens = usage.get("output_tokens") or 0
 
-    parsed = _parse_usage_metadata(
+    return _parse_usage_metadata(
         {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -214,9 +221,6 @@ def _usage_from_sdk(usage: dict[str, Any] | None, cost_usd: float | None = None)
             "input_token_details": {"cache_read": cache_read},
         }
     )
-    if cost_usd:
-        parsed["cost_usd"] = cost_usd
-    return parsed
 
 
 def call_claude_code(
@@ -275,11 +279,15 @@ def call_claude_code(
     # Custo de todas as tentativas da linha: uma tentativa re-tentada ou que
     # estourou o orçamento também foi cobrada.
     spent = 0.0
+    usage_total: Usage = {}
 
     def _call() -> dict[str, Any]:
         nonlocal spent
         response_text, result = _run_coroutine(_async_query(prompt, options))
         spent += getattr(result, "total_cost_usd", None) or 0
+        attempt_usage = _usage_from_sdk(getattr(result, "usage", None))
+        if attempt_usage is not None:
+            _add_usage(usage_total, attempt_usage)
         _raise_for_result_error(result)
 
         if not response_text.strip():
@@ -301,13 +309,18 @@ def call_claude_code(
             msg = f"Falha na validação da resposta: {validation_error_summary(err)}"
             raise ProviderRejectedOutputError(msg) from err
 
-        usage = _usage_from_sdk(getattr(result, "usage", None), spent)
+        usage = {**usage_total, "cost_usd": spent} if spent else dict(usage_total) or None
         return {"data": validated.model_dump(by_alias=False), "usage": usage}
 
-    try:
-        return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
-    except Exception as error:
-        # A linha falhou, mas o custo existiu; o core o soma ao resumo.
-        # Atributo dinâmico, lido pelo core com getattr ao somar o custo.
+    def _on_failure(error: Exception) -> None:
+        error.row_usage = usage_total  # ty: ignore[unresolved-attribute]
         error.cost_usd = spent  # ty: ignore[unresolved-attribute]
-        raise
+        _set_failed_usage(error, usage_total, spent)
+
+    return retry_with_backoff(
+        _call,
+        config.max_retries,
+        config.base_delay,
+        config.max_delay,
+        on_failure=_on_failure,
+    )

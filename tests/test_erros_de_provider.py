@@ -7,6 +7,7 @@ import importlib.util
 import pickle
 import tomllib
 import unicodedata
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -234,6 +235,39 @@ def test_cota_esgotada_da_openai_interrompe_sem_nova_tentativa():
 
     assert len(chamadas) == 1
     assert levantado.value.__cause__ is erro
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected", "attempts"),
+    [
+        (lambda: ProviderAbortError("parada"), ProviderAbortError, 1),
+        (_cota_esgotada_da_openai, ProviderUsageLimitError, 1),
+        (lambda: ProviderError("final"), ProviderError, 1),
+        (lambda: ProviderTransientError("transitório"), ProviderTransientError, 2),
+    ],
+)
+def test_gancho_recebe_excecao_terminal_uma_vez(factory, expected, attempts):
+    original = factory()
+    calls = []
+    received = []
+
+    def fail():
+        calls.append(1)
+        raise original
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(expected) as raised:
+            retry_with_backoff(
+                fail,
+                max_retries=2,
+                base_delay=0,
+                max_delay=0,
+                on_failure=received.append,
+            )
+
+    assert len(calls) == attempts
+    assert received == [raised.value]
 
 
 def _embrulhada(causa):

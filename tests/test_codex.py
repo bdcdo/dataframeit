@@ -2106,6 +2106,24 @@ class TestClassificacaoDoTurnoQueFalhou:
             "total_tokens": 390,
         }
 
+    def test_uso_das_tentativas_sem_sucesso_vai_na_excecao(self, codex_sdk, tmp_path):
+        _, _, generated = codex_sdk
+        backend, _, _, turn = initialized_backend(tmp_path, codex_sdk)
+        overloaded = generated.CodexErrorInfo(root=generated.CodexErrorInfoValue.server_overloaded)
+        turn.stream.side_effect = [
+            as_stream(make_result(codex_sdk, response=None, error_info=overloaded)),
+            as_stream(make_result(codex_sdk, response=None, error_info=overloaded)),
+        ]
+
+        with (
+            pytest.warns(UserWarning, match="Tentativa 1/2"),
+            pytest.raises(ProviderTransientError) as erro,
+        ):
+            backend.invoke("texto")
+
+        assert erro.value.row_usage["input_tokens"] == 200  # ty: ignore[unresolved-attribute]
+        assert erro.value.row_usage["total_tokens"] == 260  # ty: ignore[unresolved-attribute]
+
     def test_turno_sem_uso_informado_nao_inventa_tokens(self, codex_sdk, tmp_path):
         _, _, generated = codex_sdk
         backend, _, _, turn = initialized_backend(tmp_path, codex_sdk)

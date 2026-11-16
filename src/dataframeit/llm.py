@@ -7,8 +7,10 @@ import threading
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypedDict, TypeVar, cast
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import OutputParserException
 from pydantic import BaseModel, ValidationError
+from typing_extensions import override
 
 from .errors import (
     MAX_REJECTED_RULES,
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.outputs import LLMResult
     from langchain_core.runnables import Runnable
 
 T = TypeVar("T")
@@ -152,6 +155,32 @@ class Usage(TypedDict, total=False):
     cost_usd: float
 
 
+@dataclass(frozen=True)
+class _FailedCallUsage:
+    error: BaseException
+    usage: Usage
+    cost_usd: float = 0.0
+
+
+_failed_call_usage = threading.local()
+
+
+def _clear_failed_usage() -> None:
+    _failed_call_usage.value = None
+
+
+def _set_failed_usage(error: BaseException, usage: Usage, cost_usd: float = 0.0) -> None:
+    """Guarda o gasto no worker, separado de exceções que um SDK pode reutilizar."""
+    _failed_call_usage.value = _FailedCallUsage(error, cast("Usage", dict(usage)), cost_usd)
+
+
+def _take_failed_usage(error: BaseException) -> _FailedCallUsage | None:
+    """Lê e limpa apenas o gasto da falha atual neste worker."""
+    value = getattr(_failed_call_usage, "value", None)
+    _failed_call_usage.value = None
+    return value if value is not None and value.error is error else None
+
+
 # Contadores de tokens, os que toda chamada ao LLM informa e o resumo soma.
 _TOKEN_KEYS = (
     "input_tokens",
@@ -202,6 +231,23 @@ def _parse_usage_metadata(meta: object) -> Usage:
     }
 
 
+class _ParserUsageCapture(BaseCallbackHandler):
+    """Guarda o uso da resposta quando o parser levanta antes de devolvê-la."""
+
+    def __init__(self) -> None:
+        self.usage: Usage = {}
+        self._lock = threading.Lock()
+
+    @override
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        for generations in response.generations:
+            for generation in generations:
+                metadata = getattr(getattr(generation, "message", None), "usage_metadata", None)
+                if metadata is not None:
+                    with self._lock:
+                        _add_usage(self.usage, _parse_usage_metadata(metadata))
+
+
 def with_shared_chat_model(config: LLMConfig) -> LLMConfig:
     """Cópia da config com um único modelo LangChain para a execução inteira."""
     return replace(
@@ -231,7 +277,7 @@ def build_structured_llm(pydantic_model: type[BaseModel], config: LLMConfig) -> 
     return chat_model(config).with_structured_output(pydantic_model, include_raw=True)
 
 
-def call_langchain(
+def call_langchain(  # noqa: C901 (cada caminho de recusa preserva o uso antes da correção)
     text: str,
     pydantic_model: type[BaseModel],
     user_prompt: str,
@@ -265,24 +311,27 @@ def call_langchain(
     usage_total: Usage = {}
 
     def _call() -> dict[str, Any]:
+        capture = _ParserUsageCapture()
         try:
-            result = model.invoke(_messages(prompt, correction))
+            result = model.invoke(_messages(prompt, correction), config={"callbacks": [capture]})
         except ValidationError as error:
             # O SDK da OpenAI valida a resposta dentro da chamada (json_schema e
             # Responses API) e levanta antes de devolver a mensagem. Só a validação
             # do próprio modelo é resposta recusada: um ValidationError de outro
             # modelo, como a configuração do provider, segue como erro comum.
             if error.title != _model_title(pydantic_model):
+                _add_usage(usage_total, capture.usage)
                 raise
             raw_text, usage = _sdk_rejected_response(error)
-            _add_usage(usage_total, usage)
+            _add_usage(usage_total, usage if usage is not None else capture.usage)
             _request_correction(pydantic_model, None, error, correction, raw_text=raw_text)
         except OutputParserException as error:
             # Resposta sem tool call quando o modelo não aceita tool_choice forçado,
             # ou com thinking na Anthropic: o parser levanta dentro da chamada.
             # Sem llm_output, o texto do erro é aviso interno do LangChain, que não
-            # ajuda o modelo; o pedido fica o genérico de formato. O uso dessa
-            # tentativa não chega até aqui.
+            # ajuda o modelo; o pedido fica o genérico de formato. O callback
+            # recebe o uso mesmo quando o parser não devolve a mensagem.
+            _add_usage(usage_total, capture.usage)
             _request_correction(
                 pydantic_model,
                 None,
@@ -290,6 +339,11 @@ def call_langchain(
                 correction,
                 raw_text=str(error.llm_output or ""),
             )
+        except Exception:
+            # O modelo pode devolver uma resposta cobrada antes de um validador
+            # da cadeia levantar; não há dict `raw` nesse caminho.
+            _add_usage(usage_total, capture.usage)
+            raise
 
         raw_message = result.get("raw")
         if raw_message is not None and getattr(raw_message, "usage_metadata", None):
@@ -303,13 +357,17 @@ def call_langchain(
 
         return {"data": parsed.model_dump(by_alias=False), "usage": dict(usage_total) or None}
 
-    try:
-        return retry_with_backoff(_call, config.max_retries, config.base_delay, config.max_delay)
-    except Exception as error:
-        # A linha falhou, mas as tentativas cuja resposta chegou foram cobradas;
-        # o core soma esse uso ao resumo. Atributo dinâmico, lido com getattr.
+    def _on_failure(error: Exception) -> None:
         error.row_usage = usage_total  # ty: ignore[unresolved-attribute]
-        raise
+        _set_failed_usage(error, usage_total)
+
+    return retry_with_backoff(
+        _call,
+        config.max_retries,
+        config.base_delay,
+        config.max_delay,
+        on_failure=_on_failure,
+    )
 
 
 def _model_title(pydantic_model: type[BaseModel]) -> str:
@@ -317,9 +375,7 @@ def _model_title(pydantic_model: type[BaseModel]) -> str:
     return pydantic_model.model_config.get("title") or pydantic_model.__name__
 
 
-def _add_usage(total: Usage, usage: Usage | None) -> None:
-    if usage is None:
-        return
+def _add_usage(total: Usage, usage: Usage) -> None:
     for key in _TOKEN_KEYS:
         total[key] = total.get(key, 0) + (usage.get(key) or 0)
 

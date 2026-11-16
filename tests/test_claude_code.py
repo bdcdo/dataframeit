@@ -566,7 +566,12 @@ def test_custo_soma_as_tentativas_re_tentadas(sdk_falso):
     sdk_falso["por_chamada"] = [
         [
             _AssistantMessageFalso([_TextBlockFalso("não é json")]),
-            _resultado(is_error=False, subtype="success", total_cost_usd=0.1),
+            _resultado(
+                is_error=False,
+                subtype="success",
+                total_cost_usd=0.1,
+                usage={"input_tokens": 3, "output_tokens": 2},
+            ),
         ],
         _resposta_valida(0.2),
     ]
@@ -574,11 +579,18 @@ def test_custo_soma_as_tentativas_re_tentadas(sdk_falso):
     with pytest.warns(UserWarning, match="Tentativa 1/2 falhou"):
         resultado = _chamar(replace(_config_claude_code(), max_retries=2))
     assert resultado["usage"]["cost_usd"] == pytest.approx(0.3)
+    assert resultado["usage"]["input_tokens"] == 13
+    assert resultado["usage"]["total_tokens"] == 20
 
 
 def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
     sdk_falso["mensagens_do_sdk"] = [
-        _resultado(is_error=True, subtype="error_max_budget_usd", total_cost_usd=0.5),
+        _resultado(
+            is_error=True,
+            subtype="error_max_budget_usd",
+            total_cost_usd=0.5,
+            usage={"input_tokens": 4, "output_tokens": 1},
+        ),
     ]
     with (
         pytest.warns(UserWarning, match="Erro não-recuperável detectado"),
@@ -587,6 +599,7 @@ def test_linha_que_falha_leva_o_custo_na_excecao(sdk_falso):
         _chamar()
     # cost_usd é anexado à exceção pelo provider, fora da classe.
     assert erro.value.cost_usd == pytest.approx(0.5)  # ty: ignore[unresolved-attribute]
+    assert erro.value.row_usage["total_tokens"] == 5  # ty: ignore[unresolved-attribute]
 
 
 @pytest.mark.parametrize("parallel_requests", [1, 2])
