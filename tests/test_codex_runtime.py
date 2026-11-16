@@ -39,6 +39,7 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
     {
         "api_key_model_discovery",
         "auth_elicitation",
+        "bedrock_setup_wizard",
         "browser_annotation_api",
         "browser_use_external",
         "browser_use_full_cdp_access",
@@ -47,6 +48,7 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
         "compaction_image_budget",
         "content_item_kinds",
         "daemon_auto_start",
+        "deferred_tool_world_state",
         "enable_request_compression",
         "fast_mode",
         "guardian_approval",
@@ -63,7 +65,10 @@ _REVIEWED_ENABLED_FEATURES = frozenset(
         # turno por outro caminho.
         "instant_interrupt",
         "item_ids",
+        "mcp_oauth_refresh_coordination",
         "mentions_v2",
+        "plugin_discovery_prefetch",
+        "prediction_preserve_parent_tools",
         "plugin_sharing",
         "realtime_conversation",
         "resize_all_images",
@@ -421,6 +426,26 @@ def test_tool_lists_find_tool_offered_by_runtime(tmp_path, monkeypatch):
     for slug in one_per_shape.values():
         raw = _request_to_model(tmp_path, monkeypatch, slug, overrides=overrides)
         assert "view_image" in _offered_tools(_tool_lists(json.loads(raw), [])), slug
+
+
+def test_request_to_model_sends_each_message_once(tmp_path, monkeypatch):
+    """Nenhuma mensagem do `input` vai repetida ao modelo.
+
+    Com `incremental_tools` ligada e nenhuma ferramenta a oferecer, o runtime
+    manda as instruções base duas vezes aos modelos com `use_responses_lite`.
+    """
+    slug = next(
+        model["slug"] for model in _bundled_models(tmp_path) if model.get("use_responses_lite")
+    )
+    raw = _request_to_model(tmp_path, monkeypatch, slug)
+    messages = [
+        json.dumps(item["content"], sort_keys=True)
+        for item in json.loads(raw)["input"]
+        if item.get("type") == "message"
+    ]
+
+    assert messages
+    assert len(messages) == len(set(messages))
 
 
 def _pipes_fechados(processo):
