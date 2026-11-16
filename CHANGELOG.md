@@ -81,6 +81,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- Com o aviso tratado como erro (`-W error`), a linha que falha é registrada como `'error'`, com o erro dela, antes de o aviso da falha sair de `dataframeit()`, nos dois modos. Antes o aviso saía antes do registro, a linha ia ao checkpoint sem status, e toda retomada a chamava de novo e parava no mesmo ponto enquanto ela falhasse.
+- No modo paralelo, o aviso de redução de workers por rate limit tratado como erro não troca mais o erro gravado na linha: ela guarda o 429, e não `[Falha ao registrar o erro] UserWarning: Rate limit detectado! ...`.
+- A falha da barra de progresso com o aviso dela tratado como erro não sai mais no lugar da exceção que já deixava o laço das linhas, como o Ctrl-C: vai nela como nota, como a falha da gravação do checkpoint na saída.
 - O conjunto (`set` ou `frozenset`) de submodelos dentro de outro submodelo, de uma lista, de uma tupla ou dos valores de um dict sai como lista, com o dict de cada item, como o do campo direto; antes o `model_dump` caía e a execução parava na primeira resposta. O conjunto vazio sai lista vazia nos mesmos lugares, pela anotação do campo. A chave de dict que é ou guarda um submodelo e o conjunto de submodelos dentro de um dataclass ou de outra coleção, como o `deque`, continuam interrompendo a execução (#410).
 - O item de um conjunto de submodelos que é instância de uma subclasse da classe declarada sai só com os campos da classe declarada, como o item de uma lista; antes saía com os campos da subclasse. Com `SerializeAsAny`, sai com os da subclasse, como na lista (#410).
 - No modo por campo (`search_per_field=True`), a resposta cujo `model_dump` da linha inteira cai com `ProviderAbortError`, como a de chave de dict que é submodelo, interrompe a execução, como nos outros modos; antes virava erro da linha, a cada linha (#410).

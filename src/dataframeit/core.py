@@ -4199,12 +4199,13 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
     token_stats: TokenStats,
-) -> None:
-    """Grava a falha da linha e avisa com a mensagem amigável.
+) -> str:
+    """Grava a falha da linha e devolve o aviso dela, com a mensagem amigável.
 
-    O custo informado pelo provider e o uso das chamadas que a linha já fez
-    (`row_usage`, do LangChain sem busca e do modo por campo) entram no resumo
-    mesmo com a linha falhando.
+    Quem chama emite o aviso depois de contar a linha: tratado como erro, ele
+    sai com a linha já registrada. O custo informado pelo provider e o uso das
+    chamadas que a linha já fez (`row_usage`, do LangChain sem busca e do modo
+    por campo) entram no resumo mesmo com a linha falhando.
     """
     # Antes da mensagem: se o texto da exceção levantar, o registro de reserva
     # assume a linha, e o uso já está no resumo.
@@ -4221,10 +4222,9 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
         error_details += _KEPT_VALUES_NOTE
 
     friendly_msg = get_friendly_error_message(error, config.provider)
-    msg = f"Falha ao processar linha {idx}.\n{friendly_msg}"
-    _warn_at_user(msg)
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
+    return f"Falha ao processar linha {idx}.\n{friendly_msg}"
 
 
 def _error_text(error: BaseException) -> str:
@@ -4269,16 +4269,17 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
     row_already_processed: bool,
     reprocess_columns: Sequence[str] | None,
     token_stats: TokenStats,
-) -> None:
+) -> str:
     """Grava a falha da linha por _record_error e, se o registro falhar, pelo mínimo.
 
     Sem isto, uma falha ao montar a mensagem (exceção com `__str__` quebrado,
     por exemplo) deixaria a linha sem status, o que a apaga da saída, ou
     derrubaria a execução inteira no modo sequencial. O mínimo usa só o tipo
-    e o texto da exceção original.
+    e o texto da exceção original. Devolve o aviso da falha, que quem chama
+    emite depois de contar a linha.
     """
     try:
-        _record_error(
+        return _record_error(
             df,
             idx,
             error,
@@ -4290,17 +4291,20 @@ def _record_error_safely(  # noqa: PLR0913 (repassa os parâmetros de _record_er
         )
     except Exception:  # noqa: BLE001 (ver a docstring)
         kept = _KEPT_VALUES_NOTE if row_already_processed and bool(reprocess_columns) else ""
-        _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
+        return _record_unrecorded_error(df, idx, error, status_col=status_col, note=kept)
 
 
 def _record_unrecorded_error(
     df: pd.DataFrame, idx: Hashable, error: BaseException, *, status_col: str, note: str = ""
-) -> None:
-    """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
+) -> str:
+    """Marca como erro a linha cuja falha não pôde ser registrada normalmente.
+
+    Devolve o aviso da falha, que quem chama emite depois de contar a linha.
+    """
     error_msg = _error_text(error)
-    _warn_at_user(f"Falha ao processar linha {idx}.")
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
+    return f"Falha ao processar linha {idx}."
 
 
 def _progress_description(
@@ -4400,13 +4404,17 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
         nan_columns=nan_columns,
     )
 
-    def process_row(idx: Hashable, row: pd.Series) -> tuple[bool, dict[str, Any]]:
-        """Registra o desfecho da linha e devolve se a chamada deu certo e os campos gravados."""
+    def process_row(idx: Hashable, row: pd.Series) -> tuple[bool, dict[str, Any], str | None]:
+        """Registra o desfecho da linha.
+
+        Devolve se a chamada deu certo, os campos gravados e o aviso da falha.
+        """
         # Verificar se linha já foi processada
         row_already_processed = row[status_col] == "processed"
 
         success = False
         values: dict[str, Any] = {}
+        failure: str | None = None
         if _is_missing_text(row[text_column]):
             _record_missing_text(
                 df,
@@ -4444,7 +4452,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                 _add_failed_usage(token_stats, e)
                 mark_unreached(registered)
             except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
-                _record_error_safely(
+                failure = _record_error_safely(
                     df,
                     idx,
                     e,
@@ -4454,7 +4462,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                     reprocess_columns=reprocess_columns,
                     token_stats=token_stats,
                 )
-        return success, values
+        return success, values, failure
 
     def mark_unreached_on_exception() -> None:
         """Marca a linha cuja chamada a exceção cortou e as seguintes."""
@@ -4486,16 +4494,18 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     ):
         for idx, row in itertools.compress(pbar.track(df.iterrows()), to_process):
             started = time.monotonic()
-            success, values = process_row(idx, row)
+            success, values, failure = process_row(idx, row)
             if "abort" in token_stats:
                 break
             registered.add(idx)
 
-            # A linha conta antes do callback: a exceção que sai dele, como um
-            # Ctrl-C, chega com a linha já gravada no DataFrame, e a gravação
-            # da saída a leva.
+            # A linha conta antes do aviso da falha e do callback: a exceção
+            # que sai deles, como o aviso tratado como erro ou um Ctrl-C, chega
+            # com a linha já gravada no DataFrame, e a gravação da saída a leva.
             position = rows_processed_this_run
             rows_processed_this_run += 1
+            if failure is not None:
+                _warn_at_user(failure)
             _notify_row_done(
                 on_row_done,
                 RowResult(
@@ -4533,7 +4543,8 @@ class _ProgressBar:
     linhas seguem sendo processadas e gravadas, e o resultado ou a interrupção
     chegam a quem chamou. A primeira falha vira um aviso na saída do bloco,
     que os dois laços põem por fora das marcas e das gravações: nem o aviso
-    tratado como erro as impede.
+    tratado como erro as impede. Na saída por exceção, o aviso tratado como
+    erro entra nela como nota.
     """
 
     def __init__(self, *, total: int, desc: str) -> None:
@@ -4567,14 +4578,23 @@ class _ProgressBar:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_exc: object) -> None:
+    def __exit__(
+        self, _exc_type: object, leaving: BaseException | None, _traceback: object
+    ) -> None:
         if self._bar is not None:
             with self._tolerating_failure():
                 self._bar.close()
-        if self._failure is not None:
-            _warn_at_user(
-                f"Falha na barra de progresso, que não interrompeu a execução: {self._failure}"
-            )
+        if self._failure is None:
+            return
+        message = f"Falha na barra de progresso, que não interrompeu a execução: {self._failure}"
+        if leaving is None:
+            _warn_at_user(message)
+            return
+        # O aviso tratado como erro não troca a exceção que sai; ver _on_exception.
+        try:
+            _warn_at_user(message)
+        except Exception as failure:  # noqa: BLE001 (ver o comentário acima)
+            leaving.add_note(f"Na saída por esta exceção: {_error_text(failure)}")
 
 
 @contextmanager
@@ -4887,32 +4907,38 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 # Só o `if` abaixo o lê, e o None que o teste de mutação põe no
                 # lugar é também falso.
                 rate_limited = False  # pragma: no mutate
-            if rate_limited:
-                with lock:
-                    if current_workers > 1:
-                        old_workers = current_workers
-                        current_workers = max(1, current_workers // 2)
-                        _warn_at_user(
-                            f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                        )
-                        rate_limit_event.set()
-                        # Limpar evento após um tempo
-                        threading.Timer(5.0, rate_limit_event.clear).start()
-
+            # Os avisos saem depois de a linha ser registrada e contada: tratado
+            # como erro, o aviso levanta na thread com o erro da linha já gravado.
+            row_warnings: list[str] = []
             with lock:
-                _record_error_safely(
-                    df,
-                    idx,
-                    e,
-                    status_col=status_col,
-                    config=config,
-                    row_already_processed=row_already_processed,
-                    reprocess_columns=reprocess_columns,
-                    token_stats=token_stats,
+                if rate_limited and current_workers > 1:
+                    old_workers = current_workers
+                    current_workers = max(1, current_workers // 2)
+                    row_warnings.append(
+                        f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}."
+                    )
+                    rate_limit_event.set()
+                    # Limpar evento após um tempo
+                    threading.Timer(5.0, rate_limit_event.clear).start()
+                row_warnings.append(
+                    _record_error_safely(
+                        df,
+                        idx,
+                        e,
+                        status_col=status_col,
+                        config=config,
+                        row_already_processed=row_already_processed,
+                        reprocess_columns=reprocess_columns,
+                        token_stats=token_stats,
+                    )
                 )
                 error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
-            _finish(row_data, started, snapshot, success=False, error=error, values={})
+            try:
+                for message in row_warnings:
+                    _warn_at_user(message)
+            finally:
+                _finish(row_data, started, snapshot, success=False, error=error, values={})
             return
 
         _finish(row_data, started, snapshot, success=True, error=error, values=values)
@@ -5020,9 +5046,12 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                             )
                         else:
                             with lock:
-                                _record_unrecorded_error(df, idx, e, status_col=status_col)
+                                failure = _record_unrecorded_error(
+                                    df, idx, e, status_col=status_col
+                                )
                                 error = _recorded_error(df, idx)
                                 snapshot = _count_row(idx)
+                            _warn_at_user(failure)
                             _finish(row, started, snapshot, success=False, error=error, values={})
                     pbar.update()
 

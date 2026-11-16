@@ -533,6 +533,40 @@ def test_falha_fora_do_tratamento_da_linha_marca_a_linha_no_paralelo():
     )
 
 
+def test_aviso_da_falha_fora_do_tratamento_da_linha_sai_com_a_linha_registrada(tmp_path):
+    """Com o aviso tratado como erro, a linha que escapou da thread vai ao checkpoint como 'error'."""
+
+    def gravacao_que_falha(*args, **kwargs):
+        msg = "gravação"
+        raise RuntimeError(msg)
+
+    ckpt = tmp_path / "c.csv"
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=AssertionError),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core._record_missing_text", side_effect=gravacao_que_falha),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings("error", message="Falha ao processar linha 0")
+        with pytest.raises(UserWarning, match=r"^Falha ao processar linha 0\.$"):
+            dataframeit(
+                pd.DataFrame({"texto": [None]}),
+                questions=SimpleModel,
+                prompt="{texto}",
+                parallel_requests=2,
+                track_tokens=False,
+                batch_size=10,
+                checkpoint_path=ckpt,
+            )
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado["_dataframeit_status"].tolist() == ["error"]
+    assert gravado["_error_details"].tolist() == [
+        "[Falha ao registrar o erro] RuntimeError: gravação"
+    ]
+
+
 def test_texto_do_erro_sem_str_nem_repr_fica_so_com_o_tipo():
     class _ErroMudo(_ErroIlegivel):
         @override
