@@ -4499,13 +4499,11 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                 break
             registered.add(idx)
 
-            # A linha conta antes do aviso da falha e do callback: a exceção
-            # que sai deles, como o aviso tratado como erro ou um Ctrl-C, chega
+            # A linha conta antes do callback e do aviso da falha: a exceção
+            # que sai deles, como um Ctrl-C ou o aviso tratado como erro, chega
             # com a linha já gravada no DataFrame, e a gravação da saída a leva.
             position = rows_processed_this_run
             rows_processed_this_run += 1
-            if failure is not None:
-                _warn_at_user(failure)
             _notify_row_done(
                 on_row_done,
                 RowResult(
@@ -4517,6 +4515,8 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                     elapsed_seconds=time.monotonic() - started,
                 ),
             )
+            if failure is not None:
+                _warn_at_user(failure)
             if (
                 checkpoint
                 and rows_processed_this_run % checkpoint.batch_size == 0
@@ -4586,15 +4586,20 @@ class _ProgressBar:
                 self._bar.close()
         if self._failure is None:
             return
-        message = f"Falha na barra de progresso, que não interrompeu a execução: {self._failure}"
-        if leaving is None:
-            _warn_at_user(message)
-            return
         # O aviso tratado como erro não troca a exceção que sai; ver _on_exception.
         try:
-            _warn_at_user(message)
-        except Exception as failure:  # noqa: BLE001 (ver o comentário acima)
-            leaving.add_note(f"Na saída por esta exceção: {_error_text(failure)}")
+            _warn_at_user(
+                f"Falha na barra de progresso, que não interrompeu a execução: {self._failure}"
+            )
+        except Exception as failure:
+            if leaving is None:
+                raise
+            _note_on_exit(leaving, failure)
+
+
+def _note_on_exit(leaving: BaseException, failure: Exception) -> None:
+    """Põe na exceção que sai, como nota, a falha que ocorreu na saída por ela."""
+    leaving.add_note(f"Na saída por esta exceção: {_error_text(failure)}")
 
 
 @contextmanager
@@ -4622,7 +4627,7 @@ def _on_exception(
             try:
                 save()
             except Exception as failure:  # noqa: BLE001 (ver a docstring)
-                leaving.add_note(f"Na saída por esta exceção: {_error_text(failure)}")
+                _note_on_exit(leaving, failure)
         raise
 
 
@@ -4733,6 +4738,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
     # O abort e a exceção que sai do laço marcam as demais.
     counted: set[Hashable] = set()
+    # Avisos das linhas que falharam, na ordem em que as threads os guardam
+    # sob `lock`, com a linha já registrada. A thread principal os emite quando
+    # um futuro termina: tratado como erro, o aviso sai de `dataframeit()` como
+    # no modo sequencial, e a saída espera o callback das linhas em andamento.
+    row_warnings: list[str] = []
     # Se as marcas da saída por exceção mudaram o DataFrame, e a gravação deve
     # levá-las. Só essa gravação o lê, depois de a marcação o regravar logo de
     # início, e o teste de mutação troca à toa o valor inicial.
@@ -4907,9 +4917,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 # Só o `if` abaixo o lê, e o None que o teste de mutação põe no
                 # lugar é também falso.
                 rate_limited = False  # pragma: no mutate
-            # Os avisos saem depois de a linha ser registrada e contada: tratado
-            # como erro, o aviso levanta na thread com o erro da linha já gravado.
-            row_warnings: list[str] = []
             with lock:
                 if rate_limited and current_workers > 1:
                     old_workers = current_workers
@@ -4934,11 +4941,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 )
                 error = _recorded_error(df, idx)
                 snapshot = _count_row(idx)
-            try:
-                for message in row_warnings:
-                    _warn_at_user(message)
-            finally:
-                _finish(row_data, started, snapshot, success=False, error=error, values={})
+            _finish(row_data, started, snapshot, success=False, error=error, values={})
             return
 
         _finish(row_data, started, snapshot, success=True, error=error, values=values)
@@ -4991,6 +4994,34 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # ver _ProgressBar.
     pending_rows = iter(rows_to_process)
     in_flight: dict[Future[None], tuple[_RowData, float]] = {}
+
+    def collect(future: Future[None]) -> None:
+        """Fecha a linha cujo futuro terminou e emite os avisos guardados até aqui."""
+        row, started = in_flight.pop(future)
+        _position, idx, _row = row
+        try:
+            future.result()
+        except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
+            # Escapou do tratamento da própria linha; sem isto ela ficaria sem
+            # status e sumiria da saída.
+            if idx in counted:
+                with lock:
+                    row_warnings.append(
+                        f"Erro inesperado no executor depois de registrar a linha "
+                        f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                    )
+            else:
+                with lock:
+                    row_warnings.append(_record_unrecorded_error(df, idx, e, status_col=status_col))
+                    error = _recorded_error(df, idx)
+                    snapshot = _count_row(idx)
+                _finish(row, started, snapshot, success=False, error=error, values={})
+        with lock:
+            messages = row_warnings.copy()
+            row_warnings.clear()
+        for message in messages:
+            _warn_at_user(message)
+
     with _ProgressBar(total=len(rows_to_process), desc=desc) as pbar:
         with (
             _on_exception(mark_uncounted_rows, save_registered_rows),
@@ -5032,27 +5063,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 # vazio e o laço só dá a volta: relê o teto e espera de novo.
                 done, _ = wait(in_flight, timeout=_WAIT_SLICE_SECONDS, return_when=FIRST_COMPLETED)
                 for future in done:
-                    row, started = in_flight.pop(future)
-                    try:
-                        future.result()
-                    except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
-                        # Escapou do tratamento da própria linha; sem isto ela
-                        # ficaria sem status e sumiria da saída.
-                        _position, idx, _row = row
-                        if idx in counted:
-                            _warn_at_user(
-                                f"Erro inesperado no executor depois de registrar a linha "
-                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                            )
-                        else:
-                            with lock:
-                                failure = _record_unrecorded_error(
-                                    df, idx, e, status_col=status_col
-                                )
-                                error = _recorded_error(df, idx)
-                                snapshot = _count_row(idx)
-                            _warn_at_user(failure)
-                            _finish(row, started, snapshot, success=False, error=error, values={})
+                    collect(future)
                     pbar.update()
 
         # A gravação do `with` acima não cobre o que vem depois dele. Uma exceção

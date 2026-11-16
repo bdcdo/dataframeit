@@ -6,7 +6,6 @@ import re
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -553,8 +552,8 @@ def test_aviso_da_falha_de_linha_tratado_como_erro_sai_com_a_linha_registrada(
 ):
     """A linha t1 falha, e o aviso da falha dela sai de `dataframeit()` como exceção.
 
-    A linha chega ao checkpoint como 'error', com o erro dela, e a retomada não
-    a chama de novo.
+    A linha chega ao checkpoint como 'error', com o erro dela, depois de ir ao
+    callback, e a retomada não a chama de novo.
     """
     t0_entregue = threading.Event()
 
@@ -581,8 +580,7 @@ def test_aviso_da_falha_de_linha_tratado_como_erro_sai_com_a_linha_registrada(
     gravado = pd.read_csv(ckpt)
     assert gravado.loc[:1, "_dataframeit_status"].tolist() == ["processed", "error"]
     assert gravado.loc[1, "_error_details"] == detalhe
-    # O callback da linha só roda no paralelo, em que o aviso levanta na thread dela.
-    assert (1 in entregues) == (paralelo == 2)
+    assert 1 in entregues
     pendentes = gravado.loc[gravado["_dataframeit_status"].isna(), "texto"].tolist()
 
     pagas = []
@@ -603,11 +601,9 @@ def test_aviso_da_falha_de_linha_tratado_como_erro_sai_com_a_linha_registrada(
 def test_aviso_de_rate_limit_tratado_como_erro_mantem_o_erro_da_linha(tmp_path, filtro):
     """No paralelo, a linha t1 recebe um 429 depois de t0 terminar.
 
-    O aviso de redução de workers levanta na thread da linha, com o 429 já
-    gravado nela. Com só esse aviso
-    tratado como erro, a execução segue e avisa que a thread levantou depois do
-    registro; com todos, esse aviso sai de `dataframeit()`, e o checkpoint leva
-    as duas linhas.
+    O aviso de redução de workers sai de `dataframeit()` como exceção, com o
+    429 já gravado na linha e entregue ao callback, e o checkpoint leva as duas
+    linhas.
     """
     t0_entregue = threading.Event()
 
@@ -626,16 +622,12 @@ def test_aviso_de_rate_limit_tratado_como_erro_mantem_o_erro_da_linha(tmp_path, 
 
     ckpt = tmp_path / "ckpt.csv"
     detalhe = "[Falhou após 3 tentativa(s)] ProviderOverloadedError: 429"
-    aviso = (
-        "Erro inesperado no executor depois de registrar a linha 1, que mantém o status "
-        "gravado: UserWarning: Rate limit detectado! Reduzindo workers de 2 para 1."
-    )
+    aviso = "Rate limit detectado! Reduzindo workers de 2 para 1."
 
-    sai = pytest.raises(UserWarning, match=re.escape(aviso)) if filtro is None else nullcontext()
-    with warnings.catch_warnings(record=True) as avisos:
-        warnings.simplefilter("always")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         warnings.filterwarnings("error", message=filtro or "")
-        with sai:
+        with pytest.raises(UserWarning, match=f"^{re.escape(aviso)}$"):
             _roda(
                 pd.DataFrame({"texto": ["t0", "t1"]}),
                 llm,
@@ -649,8 +641,6 @@ def test_aviso_de_rate_limit_tratado_como_erro_mantem_o_erro_da_linha(tmp_path, 
     assert gravado["_dataframeit_status"].tolist() == ["processed", "error"]
     assert gravado.loc[1, "_error_details"] == detalhe
     assert entregues == [(0, None), (1, detalhe)]
-    if filtro:
-        assert aviso in [str(a.message) for a in avisos]
 
 
 @pytest.mark.usefixtures("aviso_como_erro")

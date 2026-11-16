@@ -538,9 +538,11 @@ def test_aviso_da_barra_tratado_como_erro_sai_depois_das_marcas_e_da_gravacao(
     como nota.
     """
     erro, segunda = fim
-    sai = KeyboardInterrupt if isinstance(erro, KeyboardInterrupt) else UserWarning
-    # O Ctrl-C é o mesmo objeto em todos os casos e acumula as notas deles.
-    notas_antes = len(getattr(erro, "__notes__", []))
+    sai = UserWarning
+    if isinstance(erro, KeyboardInterrupt):
+        # Um Ctrl-C novo: o dos parâmetros é o mesmo objeto em todos os casos,
+        # e a nota ficaria nele.
+        sai, erro = KeyboardInterrupt, KeyboardInterrupt()
     _barras, llm = _barra_que_falha(monkeypatch, ponto)
     ckpt = tmp_path / "c.csv"
 
@@ -558,7 +560,7 @@ def test_aviso_da_barra_tratado_como_erro_sai_depois_das_marcas_e_da_gravacao(
             )
 
     if sai is KeyboardInterrupt:
-        assert excinfo.value.__notes__[notas_antes:] == [
+        assert excinfo.value.__notes__ == [
             f"Na saída por esta exceção: UserWarning: {_AVISO_DA_BARRA}"
         ]
     else:
