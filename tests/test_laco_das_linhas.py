@@ -3,6 +3,7 @@
 import linecache
 import math
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,7 +13,7 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel
 
-from dataframeit import ProviderUsageLimitError, core, dataframeit
+from dataframeit import ProviderOverloadedError, ProviderUsageLimitError, core, dataframeit
 from dataframeit.llm import LLMConfig, SearchConfig
 
 
@@ -412,3 +413,250 @@ def test_erro_do_executor_depois_do_registro_aponta_a_chamada(tmp_path, monkeypa
     (aviso,) = [a for a in avisos if "Erro inesperado no executor" in str(a.message)]
     assert aviso.filename == __file__
     assert "dataframeit(" in linecache.getline(aviso.filename, aviso.lineno)
+
+
+# =============================================================================
+# Exceção que sai do laço
+# =============================================================================
+
+
+@pytest.fixture
+def aviso_como_erro():
+    """Todo aviso vira exceção, como com `python -W error`.
+
+    A suíte já roda assim; o filtro aqui deixa a condição no próprio teste.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        yield
+
+
+def _caso(sai, mensagem, *, linha=None, callback=None, gravacao=False):
+    """O que levanta dentro do laço (na linha t1, no callback dela ou na 1ª gravação) e o que sai."""
+    return SimpleNamespace(
+        linha=linha, callback=callback, gravacao=gravacao, sai=sai, mensagem=mensagem
+    )
+
+
+@pytest.mark.usefixtures("aviso_como_erro")
+@pytest.mark.parametrize("paralelo", [1, 2])
+@pytest.mark.parametrize(
+    "caso",
+    [
+        pytest.param(
+            _caso(
+                UserWarning,
+                r"on_row_done falhou|Erro inesperado no executor",
+                callback=RuntimeError("callback quebrou"),
+            ),
+            id="callback",
+        ),
+        pytest.param(_caso(SystemExit, "3", callback=SystemExit(3)), id="saida_no_callback"),
+        pytest.param(
+            _caso(UserWarning, "Falha ao processar linha 1", linha=ValueError("resposta ruim")),
+            id="falha_de_linha",
+        ),
+        pytest.param(
+            _caso(
+                UserWarning,
+                r"Falha ao gravar o checkpoint|Erro inesperado no executor",
+                gravacao=True,
+            ),
+            id="gravacao",
+        ),
+    ],
+)
+def test_excecao_que_sai_do_laco_grava_antes_as_linhas_processadas(
+    tmp_path, monkeypatch, paralelo, caso
+):
+    """A linha t0 termina, e uma exceção sai do laço depois dela.
+
+    Com o aviso tratado como erro, o do callback que levanta, o da falha de
+    linha e o da gravação periódica que falha saem de `dataframeit()` como
+    exceção, assim como o SystemExit do callback.
+    A exceção continua saindo, mas a linha já processada chega antes ao
+    checkpoint, e a retomada não a chama de novo.
+    """
+    t0_entregue = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto != "t0":
+            assert t0_entregue.wait(5)
+        if texto == "t1" and caso.linha is not None:
+            raise caso.linha
+        return _resposta(texto)
+
+    def on_row_done(linha):
+        if linha.index == 0:
+            t0_entregue.set()
+        elif caso.callback is not None:
+            raise caso.callback
+
+    grava = core._save_checkpoint
+    gravacoes = []
+
+    def gravacao_que_falha_na_primeira_vez(*args, **kwargs):
+        gravacoes.append(1)
+        if caso.gravacao and len(gravacoes) == 1:
+            msg = "disco cheio"
+            raise OSError(msg)
+        return grava(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_save_checkpoint", gravacao_que_falha_na_primeira_vez)
+    textos = ["t0", "t1", "t2", "t3"]
+    ckpt = tmp_path / "ckpt.csv"
+    opcoes = {
+        "parallel_requests": paralelo,
+        "batch_size": 1 if caso.gravacao else 10,
+        "checkpoint_path": ckpt,
+    }
+
+    with pytest.raises(caso.sai, match=caso.mensagem):
+        _roda(pd.DataFrame({"texto": textos}), llm, on_row_done=on_row_done, **opcoes)
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado["texto"].tolist() == textos
+    assert gravado.loc[0, ["campo1", "_dataframeit_status"]].tolist() == ["t0", "processed"]
+    pendentes = gravado.loc[gravado["_dataframeit_status"].isna(), "texto"].tolist()
+    assert pendentes
+
+    pagas = []
+
+    def llm_da_retomada(texto, *args, **kwargs):
+        pagas.append(texto)
+        return _resposta(texto)
+
+    saida = _roda(pd.DataFrame({"texto": textos}), llm_da_retomada, **opcoes)
+
+    assert sorted(pagas) == pendentes
+    assert saida["campo1"].tolist() == textos
+
+
+@pytest.mark.usefixtures("aviso_como_erro")
+def test_aviso_de_rate_limit_tratado_como_erro_grava_a_linha_processada(tmp_path):
+    """No paralelo, a linha t1 recebe um 429 depois de t0 terminar.
+
+    O aviso de redução de workers levanta na thread da linha, que por isso
+    escapa do registro; o aviso da falha dela sai de `dataframeit()` com o do
+    rate limit por contexto, e t0 já está no checkpoint.
+    """
+    t0_entregue = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto == "t0":
+            return _resposta(texto)
+        assert t0_entregue.wait(5)
+        msg = "429"
+        raise ProviderOverloadedError(msg)
+
+    ckpt = tmp_path / "ckpt.csv"
+
+    with pytest.raises(UserWarning, match="Falha ao processar linha 1") as erro:
+        _roda(
+            pd.DataFrame({"texto": ["t0", "t1"]}),
+            llm,
+            on_row_done=lambda _linha: t0_entregue.set(),
+            parallel_requests=2,
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
+
+    assert "Rate limit detectado" in str(erro.value.__context__)
+    assert pd.read_csv(ckpt)["_dataframeit_status"].tolist()[0] == "processed"
+
+
+@pytest.mark.usefixtures("aviso_como_erro")
+@pytest.mark.parametrize("paralelo", [1, 2])
+@pytest.mark.parametrize("sai_do_callback", [False, True])
+def test_falha_da_gravacao_na_saida_por_excecao_nao_troca_a_excecao(
+    tmp_path, monkeypatch, paralelo, sai_do_callback
+):
+    """Nenhuma gravação dá certo, e o aviso dela é tratado como erro.
+
+    A exceção que saiu do laço, o SystemExit do callback ou o aviso da gravação
+    final, continua sendo a que sai de `dataframeit()`. A gravação refeita na
+    saída falha de novo, e o aviso dela vai na exceção como nota.
+    """
+    gravacoes = []
+
+    def gravacao_que_falha(*args, **kwargs):
+        gravacoes.append(1)
+        msg = f"disco cheio {len(gravacoes)}"
+        raise OSError(msg)
+
+    def on_row_done(linha):
+        if sai_do_callback:
+            raise SystemExit(3)
+
+    monkeypatch.setattr(core, "_save_checkpoint", gravacao_que_falha)
+    excecao, mensagem = (SystemExit, "3") if sai_do_callback else (UserWarning, "disco cheio 1")
+
+    with pytest.raises(excecao, match=mensagem) as erro:
+        _roda(
+            pd.DataFrame({"texto": ["t0"]}),
+            _resposta,
+            on_row_done=on_row_done,
+            parallel_requests=paralelo,
+            batch_size=10,
+            checkpoint_path=tmp_path / "ckpt.csv",
+        )
+
+    (nota,) = erro.value.__notes__
+    assert "Falha ao gravar o checkpoint" in nota
+    assert f"disco cheio {len(gravacoes)}" in nota
+    assert len(gravacoes) == (1 if sai_do_callback else 2)
+
+
+@pytest.mark.usefixtures("aviso_como_erro")
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_excecao_que_sai_do_laco_marca_as_linhas_nao_alcancadas(tmp_path, paralelo):
+    """Reprocessamento de 5 linhas processadas e uma com erro; o callback levanta.
+
+    O aviso do callback sai como exceção na primeira linha entregue. Como no
+    Ctrl-C, a linha processada que não foi alcançada mantém o valor antigo e
+    ganha a marca em `_error_details`, e a linha com erro que ia ser refeita
+    fica sem status, no DataFrame do usuário e no checkpoint. No paralelo, as
+    duas linhas que já estavam com os workers terminam.
+    """
+    df = pd.DataFrame(
+        {
+            "texto": [f"t{i}" for i in range(6)],
+            "campo1": ["antigo"] * 5 + [None],
+            "_dataframeit_status": ["processed"] * 5 + ["error"],
+            "_error_details": [None] * 5 + ["falha"],
+        }
+    )
+    ckpt = tmp_path / "ckpt.csv"
+    pagas = []
+
+    def llm(texto, *args, **kwargs):
+        pagas.append(texto)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": None}
+
+    def on_row_done(linha):
+        msg = "callback quebrou"
+        raise RuntimeError(msg)
+
+    with pytest.raises(UserWarning, match=r"on_row_done falhou|Erro inesperado no executor"):
+        _roda(
+            df,
+            llm,
+            reprocess_columns=["campo1"],
+            parallel_requests=paralelo,
+            batch_size=10,
+            checkpoint_path=ckpt,
+            on_row_done=on_row_done,
+        )
+
+    assert len(pagas) <= paralelo
+    for saida in (df, pd.read_csv(ckpt)):
+        alcancadas = saida["texto"].isin(pagas)
+        com_erro = saida["texto"].eq("t5")
+        antigas = ~alcancadas & ~com_erro
+        assert list(saida.loc[alcancadas, "campo1"]) == [
+            f"r-{texto}" for texto in saida.loc[alcancadas, "texto"]
+        ]
+        assert saida.loc[antigas, "campo1"].eq("antigo").all()
+        assert saida.loc[antigas, "_error_details"].eq(core._INTERRUPTED_REPROCESS_DETAIL).all()
+        assert saida.loc[~com_erro, "_dataframeit_status"].eq("processed").all()
+        assert saida.loc[com_erro, ["_dataframeit_status", "_error_details"]].isna().all(axis=None)
