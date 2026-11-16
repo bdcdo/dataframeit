@@ -89,6 +89,7 @@ from .utils import (
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _accepts_only_decimal,
     _admits_any,
     _admits_none,
     _any_from_text,
@@ -553,15 +554,18 @@ def _condition_holds(condition: object, row_values: dict[str, Any], field_name: 
         return True
 
 
-def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por linha e por campo)
+def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915 (validação por linha e por campo)
     df: pd.DataFrame,
     status_col: str,
     pydantic_model: type[BaseModel],
     complex_fields: set[str],
     *,
     empty_text_fields: Collection[str] = frozenset(),
+    any_nan_columns: Collection[str] = frozenset(),
 ) -> tuple[list[str], dict[tuple[int, str], Any]]:
     """Valida linhas concluídas sem alterar o checkpoint recebido.
+
+    Em `any_nan_columns`, os campos `Any` cujo NaN é valor (`_any_nan_columns`).
 
     Em `empty_text_fields`, os campos cuja célula ausente é o texto vazio que o
     CSV ou o XLSX do checkpoint gravou (ver `_resume_from_checkpoint`), salvo
@@ -654,8 +658,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
     # linha pendente, e segue contando como ausente.
-    any_nan_columns = _any_nan_columns(df, pydantic_model)
-    nan_columns = any_nan_columns | {
+    nan_columns = frozenset(any_nan_columns) | {
         field_name
         for field_name, field in pydantic_model.model_fields.items()
         if field_name in df.columns
@@ -664,14 +667,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     }
     # A coluna de objetos de um campo `Any` sem nenhum None: o NaN de uma linha
     # processada conta como ausente e volta None, e o aviso diz em quais.
-    ambiguous_any = {
-        field_name
-        for field_name, field in pydantic_model.model_fields.items()
-        if field_name in df.columns
-        and df[field_name].dtype == object
-        and _admits_any(field.annotation)
-        and field_name not in any_nan_columns
-    }
+    ambiguous_any = _any_object_columns(df, pydantic_model) - nan_columns
     dropped_nan: set[str] = set()
     # O isin lê o pd.NA, status ausente da coluna `string` de convert_dtypes.
     processed_positions = np.flatnonzero(df[status_col].isin(["processed"])).tolist()
@@ -819,6 +815,17 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     return ordered_incompatible, values_to_fill
 
 
+def _any_object_columns(df: pd.DataFrame, pydantic_model: type[BaseModel]) -> frozenset[str]:
+    """Os campos `Any` do modelo com coluna de objetos na entrada."""
+    return frozenset(
+        field_name
+        for field_name, field in pydantic_model.model_fields.items()
+        if field_name in df.columns
+        and df[field_name].dtype == object
+        and _admits_any(field.annotation)
+    )
+
+
 def _any_nan_columns(df: pd.DataFrame, pydantic_model: type[BaseModel]) -> frozenset[str]:
     """Os campos `Any` cujo NaN é valor: os de coluna de objetos com algum None.
 
@@ -831,11 +838,8 @@ def _any_nan_columns(df: pd.DataFrame, pydantic_model: type[BaseModel]) -> froze
     """
     return frozenset(
         field_name
-        for field_name, field in pydantic_model.model_fields.items()
-        if field_name in df.columns
-        and df[field_name].dtype == object
-        and _admits_any(field.annotation)
-        and any(value is None for value in df[field_name])
+        for field_name in _any_object_columns(df, pydantic_model)
+        if any(value is None for value in df[field_name])
     )
 
 
@@ -937,8 +941,8 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
     O CSV, o XLSX e o parquet mudam o tipo de um escalar sem mudar o
     conteúdo, e a comparação em JSON, que distingue 1 de 1.0, não os
     reconhece: o inteiro volta como float, o Decimal do CSV e do XLSX como
-    texto, ou como float sem o modelo, o bool do XLSX como 1.0 e a data do
-    XLSX como datetime à meia-noite. O Enum é comparado pelo valor, que é
+    float, o bool do XLSX como 1.0 e a data do XLSX como datetime à
+    meia-noite. O Enum é comparado pelo valor, que é
     o que o checkpoint grava.
 
     A igualdade do Python é mais larga do que essas mudanças, e fica restrita
@@ -946,9 +950,7 @@ def _same_value(validated: object, value: object) -> bool:  # noqa: PLR0911 (uma
     float do XLSX; e o float só diz o mesmo que um int abaixo de 2**53, a
     partir do qual a coluna em float pode ter perdido dígitos do inteiro. O
     Decimal diz o mesmo que o float que o representa: Decimal("0.1") é
-    diferente do float 0.1 em Python, e é o float que o arquivo relê. Ele diz
-    o mesmo que o texto do mesmo número, como o "1e+20" que o XLSX relê de uma
-    célula numérica.
+    diferente do float 0.1 em Python, e é o float que o arquivo relê.
     """
     if isinstance(validated, Enum) and not isinstance(value, Enum):
         return _same_value(validated.value, value)
@@ -977,18 +979,16 @@ def _same_decimal(validated: Decimal, value: object) -> bool:
     """Se o Decimal validado diz o mesmo que o escalar relido, que não deu o mesmo JSON.
 
     O NaN só diz o mesmo pelo texto, que o JSON já comparou; a igualdade e o
-    float() do Decimal levantam com o NaN sinalizador.
+    float() do Decimal levantam com o NaN sinalizador, de um lado ou do outro.
     """
     if validated.is_nan():
         return False
     if isinstance(value, float):
         return float(validated) == value
-    if isinstance(value, str):
-        try:
-            return Decimal(value) == validated
-        except InvalidOperation:
-            return False
-    return bool(validated == value)
+    try:
+        return bool(validated == value)
+    except InvalidOperation:
+        return False
 
 
 def _same_json(left: object, right: object) -> bool:
@@ -1988,6 +1988,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 if _admits_any(field.annotation)
             ),
             nan_fields=nan_columns,
+            decimal_fields=frozenset(
+                field_name
+                for field_name, field in questions.model_fields.items()
+                if _accepts_only_decimal(field.annotation)
+            ),
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
             with _silent_slice_write(df_pandas):
@@ -2043,7 +2048,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # O NaN de `Any` que a validação abaixo conta como valor segue valor no
     # laço das linhas, para o reprocessamento campo a campo e para as marcas da
     # interrupção. Tirado antes dela, que grava None nas células ausentes.
-    row_nan_columns = nan_columns | _any_nan_columns(df_pandas, questions)
+    any_nan_columns = _any_nan_columns(df_pandas, questions)
     # Com resume True ou False, a linha 'processed' não vai ao modelo; o campo
     # obrigatório que ela não tem é acusado aqui, em vez de sair vazio.
     incompatible_columns, processed_values = _validate_processed_rows(
@@ -2052,7 +2057,9 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         questions,
         complex_fields,
         empty_text_fields=empty_text_fields,
+        any_nan_columns=any_nan_columns,
     )
+    row_nan_columns = nan_columns | any_nan_columns
     # O campo sem coluna nunca foi perguntado às linhas já processadas, que só
     # o recebem pelo reprocessamento; sem ele, ficam com o padrão ou None.
     has_processed_rows = (
@@ -3626,11 +3633,12 @@ def _structure_as_json(value: object) -> object:
     return _enum_as_value(value)
 
 
-def _cell_for_checkpoint(
+def _cell_for_checkpoint(  # noqa: PLR0913 (uma opção por forma de gravar a célula)
     value: object,
     *,
     structures: bool,
-    escaped: Callable[[str], bool] | None,
+    any_text: bool,
+    text_file: bool,
     decimal_text: bool,
     nan_text: bool,
 ) -> object:
@@ -3639,26 +3647,21 @@ def _cell_for_checkpoint(
         return str(value)
     if nan_text and isinstance(value, float) and math.isnan(value):
         return _FLOAT_NAN_TEXT
-    if escaped is not None and isinstance(value, str) and escaped(value):
+    if (
+        any_text
+        and isinstance(value, str)
+        and (_any_from_text(value) is not value or (text_file and _reads_as_other(value)))
+    ):
         return json.dumps(value, ensure_ascii=False)
     return _structure_as_json(value) if structures else _enum_as_value(value)
 
 
-def _reads_as_structure(text: str) -> bool:
-    """Se `read_df` leria o texto de um campo `Any` como outro valor (`_any_from_text`)."""
-    return _any_from_text(text) is not text
-
-
-def _reads_as_non_text(text: str) -> bool:
-    """Se o texto de um campo `Any` voltaria outro valor do CSV ou do XLSX."""
-    return _reads_as_structure(text) or _reads_as_other(text)
-
-
-def _structures_as_json(
+def _structures_as_json(  # noqa: PLR0913 (uma família de colunas por forma de gravar)
     df: pd.DataFrame,
     columns: Collection[str] | None = None,
     any_columns: Collection[str] = (),
     nan_columns: Collection[str] = (),
+    decimal_columns: Collection[str] = (),
     *,
     text_file: bool = False,
 ) -> pd.DataFrame:
@@ -3684,13 +3687,14 @@ def _structures_as_json(
     também o texto que o leitor desses formatos devolveria como número, bool
     ou ausência (`_reads_as_other`), como "123", "NaN" e "".
 
-    Com `text_file`, todo Decimal vai como texto, que o XLSX gravaria como
-    double, e o NaN das `nan_columns`, as dos campos que admitem `float`, vai
-    como o texto "NaN": o CSV e o XLSX o gravariam como a célula vazia da linha
-    pendente. `read_df` com o modelo relê os dois (`_raw_restorer`).
+    Com `text_file`, o Decimal das `decimal_columns`, as dos campos só de
+    `Decimal`, vai como texto, que o XLSX gravaria como double, e o NaN das
+    `nan_columns`, as dos campos que admitem `float`, vai como o texto "NaN":
+    o CSV e o XLSX o gravariam como a célula vazia da linha pendente. `read_df`
+    com o modelo relê os dois (`_raw_restorer`).
 
-    Sem `text_file`, para o parquet, só na coluna com um Decimal NaN todo
-    Decimal vai como texto. O pandas conta o Decimal NaN como ausente; o
+    Em qualquer formato, na coluna com um Decimal NaN todo Decimal vai como
+    texto. O pandas conta o Decimal NaN como ausente; o
     decimal128 do parquet não tem NaN, e a coluna que juntasse Decimal e o
     texto "NaN" seria recusada. A validação da retomada devolve o texto ao
     tipo do campo.
@@ -3702,14 +3706,12 @@ def _structures_as_json(
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
-            escaped = None
-            if col in any_columns:
-                escaped = _reads_as_non_text if text_file else _reads_as_structure
             convert = partial(
                 _cell_for_checkpoint,
                 structures=columns is None or col in columns or col in any_columns,
-                escaped=escaped,
-                decimal_text=text_file
+                any_text=col in any_columns,
+                text_file=text_file,
+                decimal_text=(text_file and col in decimal_columns)
                 or any(isinstance(value, Decimal) and value.is_nan() for value in out[col]),
                 nan_text=text_file and col in nan_columns,
             )
@@ -3743,6 +3745,8 @@ def _to_parquet_keeping_nan(df: pd.DataFrame, path: Path, nan_columns: Collectio
         for col in df.columns
         if col in nan_columns
         and df[col].dtype == object
+        # O isna, vetorizado, poupa a lista da coluna sem NaN nem None.
+        and df[col].isna().any()
         and _holds_only_float_with_nan(values := df[col].tolist())
     }
     if not keeping:
@@ -3775,6 +3779,7 @@ def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação 
     structures: Collection[str] | None = None,
     any_fields: Collection[str] = (),
     nan_fields: Collection[str] = (),
+    decimal_fields: Collection[str] = (),
 ) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão.
 
@@ -3788,20 +3793,23 @@ def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação 
     colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
     coluna de objeto, porque gravariam o repr de qualquer estrutura.
     `nan_fields` são os campos cujo NaN é valor (`_keeps_nan`), gravado à
-    parte da célula vazia nos três formatos.
+    parte da célula vazia, e `decimal_fields`, os campos só de `Decimal`, que
+    o CSV e o XLSX gravam como texto.
     """
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
-    if ext == ".csv":
-        # O to_csv trata None como False em index, e o teste de mutação faz a troca à toa.
-        _structures_as_json(df, None, any_fields, nan_fields, text_file=True).to_csv(
-            tmp,
-            index=False,  # pragma: no mutate
+    if ext in (".csv", ".xlsx"):
+        frame = _structures_as_json(
+            df, None, any_fields, nan_fields, decimal_fields, text_file=True
         )
-    elif ext == ".xlsx":
-        _to_excel_as_text(
-            _structures_as_json(df, None, any_fields, nan_fields, text_file=True), tmp
-        )
+        if ext == ".csv":
+            # O to_csv trata None como False em index, e o teste de mutação faz a troca à toa.
+            frame.to_csv(
+                tmp,
+                index=False,  # pragma: no mutate
+            )
+        else:
+            _to_excel_as_text(frame, tmp)
     elif ext == ".parquet":
         _to_parquet_keeping_nan(_structures_as_json(df, structures, any_fields), tmp, nan_fields)
     else:
@@ -3851,6 +3859,7 @@ def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
             checkpoint.structures,
             checkpoint.any_fields,
             checkpoint.nan_fields,
+            checkpoint.decimal_fields,
         )
     except Exception as error:  # noqa: BLE001 (ver a docstring)
         warnings.warn(
@@ -3883,6 +3892,8 @@ class _Checkpoint:
     any_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
     # Campos cujo NaN é valor (`_keeps_nan`), gravado à parte da célula vazia.
     nan_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
+    # Campos só de `Decimal`, que o CSV e o XLSX gravam como texto.
+    decimal_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
 
 
 class _SnapshotWriter:
