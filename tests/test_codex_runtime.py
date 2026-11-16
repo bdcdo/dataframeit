@@ -407,6 +407,28 @@ def _request_to_model(
     return raw
 
 
+def _one_model_per_request_shape(tmp_path):
+    """Um modelo do catálogo embutido para cada forma de request.
+
+    Com `use_responses_lite`, as ferramentas vão num item `additional_tools` do
+    `input`; sem, na chave `tools` do topo.
+    """
+    one_per_shape = {}
+    for model in _bundled_models(tmp_path):
+        one_per_shape.setdefault(bool(model.get("use_responses_lite")), model["slug"])
+    # Sem modelo de uma das formas no catálogo embutido, ela fica sem medida.
+    assert set(one_per_shape) == {True, False}
+    return list(one_per_shape.values())
+
+
+def _assert_only_reviewed_tools(raw, slug):
+    assert _offered_tools(_tool_lists(json.loads(raw), [])) == _REVIEWED_MODEL_TOOLS, slug
+    # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
+    # `collaboration` não serve para essa busca, porque aparece no texto das
+    # instruções.
+    assert b"spawn_agent" not in raw, slug
+
+
 def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     """O request de uma linha oferece ao modelo só as ferramentas revisadas.
 
@@ -424,12 +446,7 @@ def test_request_to_model_offers_only_reviewed_tools(tmp_path, monkeypatch):
     slugs = [model["slug"] for model in _bundled_models(tmp_path)]
     assert slugs
     for slug in slugs:
-        raw = _request_to_model(tmp_path, monkeypatch, slug)
-        assert _offered_tools(_tool_lists(json.loads(raw), [])) == _REVIEWED_MODEL_TOOLS, slug
-        # O nome da ferramenta de sub-agente não aparece em parte alguma do corpo.
-        # `collaboration` não serve para essa busca, porque aparece no texto das
-        # instruções.
-        assert b"spawn_agent" not in raw, slug
+        _assert_only_reviewed_tools(_request_to_model(tmp_path, monkeypatch, slug), slug)
 
 
 def test_tool_lists_find_tool_offered_by_runtime(tmp_path, monkeypatch):
@@ -438,15 +455,10 @@ def test_tool_lists_find_tool_offered_by_runtime(tmp_path, monkeypatch):
     Sem este controle, a igualdade com o conjunto revisado, vazio, passaria
     também se o runtime mudasse o lugar onde põe as ferramentas. O controle
     tira o override de `view_image`, que oferece uma ferramenta, e roda um
-    modelo de cada forma de request: com `use_responses_lite`, as ferramentas
-    vão num item `additional_tools` do `input`; sem, na chave `tools` do topo.
+    modelo de cada forma de request.
     """
     overrides = _without_override("features.view_image=false")
-    one_per_shape = {}
-    for model in _bundled_models(tmp_path):
-        one_per_shape.setdefault(bool(model.get("use_responses_lite")), model["slug"])
-    assert one_per_shape
-    for slug in one_per_shape.values():
+    for slug in _one_model_per_request_shape(tmp_path):
         raw = _request_to_model(tmp_path, monkeypatch, slug, overrides=overrides)
         assert "view_image" in _offered_tools(_tool_lists(json.loads(raw), [])), slug
 
@@ -519,6 +531,22 @@ def test_request_ao_provider_openai_nao_repete_o_effort_em_configuration_update(
         "`_CODEX_CONFIG_OVERRIDES`, ponha a flag em `_REVIEWED_ENABLED_FEATURES` e tire "
         "este segundo request."
     )
+
+
+def test_request_ao_provider_openai_oferece_so_ferramentas_revisadas_e_nao_repete_mensagem(
+    tmp_path, monkeypatch
+):
+    """Pelo provider OpenAI embutido, o request também sai sem ferramenta nem repetição.
+
+    É o provider dos turnos de verdade, e os testes das ferramentas e das
+    mensagens repetidas rodam com o `mock`. Cada request pelo embutido leva
+    alguns segundos, porque o runtime tenta o WebSocket antes de cair no HTTP;
+    por isso roda um modelo de cada forma de request, e não o catálogo todo.
+    """
+    for slug in _one_model_per_request_shape(tmp_path):
+        raw = _request_to_model(tmp_path, monkeypatch, slug, openai=True)
+        _assert_only_reviewed_tools(raw, slug)
+        assert _repeated_messages(raw) == 0, slug
 
 
 def _pipes_fechados(processo):
