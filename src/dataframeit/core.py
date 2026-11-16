@@ -31,6 +31,7 @@ from typing import (
     Any,
     Literal,
     NotRequired,
+    Self,
     TypedDict,
     Union,
     cast,
@@ -4433,15 +4434,14 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # como na interrupção por ProviderAbortError, e as marcas também vão ao
     # arquivo. O Ctrl-C que corta a gravação final a refaz. A falha de gravação
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
-    # A barra fecha na saída do bloco, depois das marcas e da gravação do
-    # Ctrl-C, que uma falha ao fechá-la não impede. No tqdm mínimo aceito, o
-    # `for` interrompido não a fecha, e ela ficaria aberta até o coletor de
+    # A barra fecha na saída do bloco, depois das marcas e de toda gravação;
+    # ver _ProgressBar. Sem o fechamento, ela ficaria aberta até o coletor de
     # lixo fechá-la, no meio de outra execução.
     with (
-        tqdm(df.iterrows(), total=len(df), desc=desc) as rows,
+        _ProgressBar(total=len(df), desc=desc) as pbar,
         _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c),
     ):
-        for idx, row in itertools.compress(rows, to_process):
+        for idx, row in itertools.compress(pbar.track(df.iterrows()), to_process):
             started = time.monotonic()
             success, values = process_row(idx, row)
             if "abort" in token_stats:
@@ -4479,6 +4479,58 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
             _try_save_checkpoint(df, checkpoint)
 
     return token_stats
+
+
+class _ProgressBar:
+    """Barra de progresso do laço das linhas, que não interrompe a execução.
+
+    A barra é só apresentação: a falha ao criá-la, avançá-la ou fechá-la, como
+    o BrokenPipeError de um stderr que o leitor fechou, não sai daqui. As
+    linhas seguem sendo processadas e gravadas, e o resultado ou a interrupção
+    chegam a quem chamou. A primeira falha vira um aviso na saída do bloco,
+    que os dois laços põem por fora das marcas e das gravações: nem o aviso
+    tratado como erro as impede.
+    """
+
+    def __init__(self, *, total: int, desc: str) -> None:
+        self._failure: str | None = None
+        self._bar: tqdm | None = None
+        with self._tolerating_failure():
+            self._bar = tqdm(total=total, desc=desc)
+
+    @contextmanager
+    def _tolerating_failure(self) -> Generator[None, None, None]:
+        try:
+            yield
+        except Exception as e:  # noqa: BLE001 (nenhuma falha da barra interrompe a execução)
+            if self._failure is None:
+                self._failure = _error_text(e)
+
+    def update(self) -> None:
+        """Avança a barra em uma linha."""
+        if self._bar is not None:
+            with self._tolerating_failure():
+                self._bar.update(1)
+
+    def track(
+        self, rows: Iterable[tuple[Hashable, pd.Series]]
+    ) -> Generator[tuple[Hashable, pd.Series], None, None]:
+        """Entrega as linhas e avança a barra quando o laço pede a seguinte."""
+        for row in rows:
+            yield row
+            self.update()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._bar is not None:
+            with self._tolerating_failure():
+                self._bar.close()
+        if self._failure is not None:
+            _warn_at_user(
+                f"Falha na barra de progresso, que não interrompeu a execução: {self._failure}"
+            )
 
 
 @contextmanager
@@ -4854,11 +4906,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # de despachar, sem cancelar o que já está em voo, e vale até o fim. Na
     # saída por Ctrl-C, o executor fecha e espera as threads antes de
     # save_registered_rows gravar: os `with` saem na ordem inversa. A barra
-    # fecha na saída do bloco de fora, depois das marcas e de toda gravação,
-    # que uma falha ao fechá-la não impede.
+    # fecha na saída do bloco de fora, depois das marcas e de toda gravação;
+    # ver _ProgressBar.
     pending_rows = iter(rows_to_process)
     in_flight: dict[Future[None], tuple[_RowData, float]] = {}
-    with tqdm(total=len(rows_to_process), desc=desc) as pbar:
+    with _ProgressBar(total=len(rows_to_process), desc=desc) as pbar:
         with (
             _on_ctrl_c(mark_uncounted_rows, save_registered_rows),
             _closing_in_slices(parallel_requests) as executor,
@@ -4917,7 +4969,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                                 error = _recorded_error(df, idx)
                                 snapshot = _count_row(idx)
                             _finish(row, started, snapshot, success=False, error=error, values={})
-                    pbar.update(1)
+                    pbar.update()
 
         # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
         # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
