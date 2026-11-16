@@ -2685,6 +2685,16 @@ def _instance_state(value: object, descent: _Descent) -> object:
     # classe, que pode devolver qualquer coisa; só o dict é o `__dict__`.
     own = _attribute_or_none(value, "__dict__")
     state = {**(own if isinstance(own, dict) else {}), **_slot_values(value)}
+    if (
+        dataclasses.is_dataclass(value)
+        and not isinstance(value, type)
+        and _holds_unordered_set(value)
+    ):
+        # Um campo init=False pode guardar o default só na classe. Na forma
+        # canônica, ele também precisa entrar pelo valor que a instância lê.
+        for field in dataclasses.fields(cast("Any", value)):
+            if field.name not in state:
+                state[field.name] = _attribute_or_none(value, field.name)
     if isinstance(value, _PANDAS_OBJECTS):
         internals = _pandas_internals(type(value))
         state = {name: item for name, item in state.items() if name not in internals}

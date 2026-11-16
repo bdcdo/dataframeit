@@ -11,6 +11,7 @@ import textwrap
 from collections import UserDict, UserList, deque
 from enum import Enum
 from typing import Any, Literal
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_core import PydanticSerializationError
 from typing_extensions import override
 
-from dataframeit import core, field_condition
+from dataframeit import core, dataframeit, field_condition
 from dataframeit.core import _run_signature
 
 
@@ -2005,6 +2006,74 @@ def test_registro_que_volta_a_si_mesmo_nao_recursa_sem_fim():
             },
         }
     }
+
+
+def test_default_de_dataclass_somente_na_classe_muda_assinatura_e_recusa_retomada(
+    tmp_path, monkeypatch
+):
+    @dataclasses.dataclass(eq=False)
+    class Regra:
+        tipos: frozenset[str] = dataclasses.field(init=False, default=frozenset({"vip", "ouro"}))
+
+        def __call__(self, dados):
+            return dados.get("tipo") in self.tipos
+
+    regra = Regra()
+
+    class Pedido(BaseModel):
+        tipo: str
+        desconto: float | None = Field(
+            None, json_schema_extra=field_condition(regra, depends_on="tipo")
+        )
+
+    assinatura = _assinatura(Pedido)
+    assert core._stable(regra, core._Descent()) == core._stable(Regra(), core._Descent())
+    equivalente = Regra()
+    equivalente.tipos = frozenset({"ouro", "vip"})
+    assert core._stable(regra, core._Descent()) == core._stable(equivalente, core._Descent())
+
+    chamadas = []
+
+    def agente(text, model, prompt, config, save_trace=None):
+        campo = next(iter(model.model_fields))
+        chamadas.append(campo)
+        return {"data": {campo: "vip" if campo == "tipo" else 1.0}, "usage": {}}
+
+    checkpoint = tmp_path / "ckpt.csv"
+
+    def roda():
+        return dataframeit(
+            pd.DataFrame({"texto": ["a"]}),
+            Pedido,
+            "{texto}",
+            use_search=True,
+            search_per_field=True,
+            checkpoint_path=checkpoint,
+            batch_size=1,
+        )
+
+    with (
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        patch("dataframeit.agent.call_agent", side_effect=agente),
+    ):
+        primeira = roda()
+        assert chamadas == ["tipo", "desconto"]
+        assert primeira["desconto"].tolist() == [1.0]
+
+        chamadas.clear()
+        igual = roda()
+        assert chamadas == []
+        assert igual["desconto"].tolist() == [1.0]
+
+        monkeypatch.setattr(Regra, "tipos", frozenset({"outro"}))
+        assert _assinatura(Pedido) != assinatura
+        chamadas.clear()
+        with pytest.warns(UserWarning, match="outra configuração"):
+            alterada = roda()
+
+    assert chamadas == ["tipo"]
+    assert alterada["desconto"].isna().all()
 
 
 # Modelo cujo JSON Schema falha sem função nem conjunto de texto no
