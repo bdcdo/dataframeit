@@ -30,6 +30,7 @@ from .conditional import (
     topological_sort,
 )
 from .errors import (
+    ProviderAbortError,
     ProviderOutputError,
     dump_response,
     retry_with_backoff,
@@ -806,13 +807,18 @@ class _FieldExtractor:
         e o validado que o dump da linha tira, como pelo exclude_if do valor
         validado, sai da resposta. A linha recusada levanta
         ProviderOutputError, com o caminho e a regra de cada erro, ou com a
-        exceção que o validador levantou.
+        exceção que o validador levantou; o ProviderAbortError do dump segue
+        como veio.
         """
         try:
             values, dumped = self._validate_row(row)
         except ValidationError as error:
             msg = f"Linha recusada pelo modelo: {validation_error_summary(error)}"
             raise ProviderOutputError(msg) from error
+        except ProviderAbortError:
+            # O dump que cai com a resposta deste modelo cai em toda linha
+            # (`dump_response`), e a execução para, como nos outros modos.
+            raise
         except Exception as error:
             msg = f"Linha recusada pelo modelo: {type(error).__name__}: {error}"
             raise ProviderOutputError(msg) from error
@@ -929,6 +935,10 @@ class _FieldExtractor:
             return
         try:
             _, dumped = self._validate_row(row)
+        except ProviderAbortError:
+            # O dump que cai aqui cai em toda linha: a execução para antes das
+            # chamadas que faltam nesta (`_validated_data`).
+            raise
         except Exception:  # noqa: BLE001 (o validador e o serializador são do usuário)
             return
         for name in inputs:

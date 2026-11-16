@@ -9,6 +9,8 @@ Este módulo contém funções para:
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import importlib
 import importlib.metadata
 import json
@@ -20,17 +22,26 @@ import unicodedata
 import warnings
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from typing import TYPE_CHECKING, Any, get_origin
+from contextlib import suppress
+from functools import partial
+from typing import TYPE_CHECKING, Any, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
 from .search import SearchToolError, get_provider
-from .utils import _json_default, _members, _user_stacklevel, get_nested_pydantic_models
+from .utils import (
+    _is_structure_class,
+    _json_default,
+    _members,
+    _user_stacklevel,
+    get_nested_pydantic_models,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Collection, Iterator, Sequence
 
     from pydantic import ValidationError
+    from pydantic.fields import FieldInfo
 
     from .search import SearchProvider
 
@@ -103,31 +114,45 @@ class ProviderOutputError(ValueError):
     """Resposta definitiva incompatível com o contrato de saída."""
 
 
-def dump_response(response: BaseModel) -> dict[str, Any]:
+def dump_response(response: BaseModel, model: type[BaseModel] | None = None) -> dict[str, Any]:
     """O model_dump da resposta validada, pelo nome dos campos.
 
     O dump de um conjunto monta outro conjunto com o dump de cada item, e o
     item que vira dict, como o submodelo, não é hashable; a chave de dict
-    que vira dict também não, e o model_dump cai com TypeError. O campo cujo
-    valor é um conjunto com submodelos sai como lista, com o dump de cada item
-    (`_dump_with_model_sets`), e o campo declarado como conjunto de submodelos
-    sai lista com qualquer valor, também vazio (`_declared_sets_as_lists`): é
+    que vira dict também não, e o model_dump cai com TypeError. O conjunto
+    com submodelos sai como lista, com o dump de cada item, no campo e dentro
+    de outro submodelo, de uma lista, de uma tupla ou dos valores de um dict
+    (`_dump_with_model_sets`). O campo cuja anotação tem um conjunto de
+    submodelos, nele ou em qualquer nível dentro dele, sai com esses conjuntos
+    em lista com qualquer valor, também vazio (`_declared_sets_as_lists`): é
     como o checkpoint grava todo conjunto, e a validação da retomada, que
     passa a linha relida por esta mesma função, devolve a mesma lista.
 
-    O que sobra, como a chave de dict que é submodelo e o conjunto de
-    submodelos dentro de outro campo, cai depois de a resposta ser paga, a
-    cada resposta com um item desses, e por isso a falha interrompe a
-    execução em vez de gastar as tentativas de cada linha.
+    O que sobra, como a chave de dict que é submodelo, cai depois de a
+    resposta ser paga, a cada resposta com um item desses, e por isso a falha
+    interrompe a execução em vez de gastar as tentativas de cada linha.
+
+    Com `model`, a classe declarada de um item que é instância de uma
+    subclasse dela, o dump é o da classe declarada, como o pydantic faz com o
+    item de uma lista: os campos que só a subclasse tem ficam de fora.
     """
+    declared = model or type(response)
+    dump: Callable[..., Any] = (
+        response.model_dump
+        if model is None
+        else partial(model.__pydantic_serializer__.to_python, response)
+    )
+    written: Collection[str] = ()
     try:
-        data = response.model_dump(by_alias=False)
+        data = dump(by_alias=False)
     except _DUMP_ERRORS as error:
         if not _is_unhashable(error):
             raise
-        data = _dump_with_model_sets(response, error)
+        data, written = _dump_with_model_sets(response, error, declared, dump)
     # O @model_serializer do modelo pode devolver outra coisa que um dict.
-    return _declared_sets_as_lists(type(response), data) if isinstance(data, dict) else data
+    if not isinstance(data, dict):
+        return data
+    return _declared_sets_as_lists(declared, data, response, written)
 
 
 # O model_dump levanta o TypeError do Python, ou o PydanticSerializationError,
@@ -142,77 +167,208 @@ def _is_unhashable(error: Exception) -> bool:
     return "unhashable type" in str(error)
 
 
-def _dump_with_model_sets(response: BaseModel, error: Exception) -> dict[str, Any]:
-    """O model_dump com os conjuntos de submodelos que o derrubam como lista.
+class _NoPlainDump(Exception):  # noqa: N818 (sinal interno, não é erro do usuário)
+    """O valor tem uma forma que `_plain_dump` não sabe escrever sem o model_dump."""
 
-    O campo cujo valor é um conjunto com submodelos e cujo dump, sozinho, cai
-    por um valor que não é hashable sai com o dump de cada item, na ordem de
-    `_as_sorted_list`. O que tem serializador próprio ou fica fora do dump não
-    cai sozinho, e sai pelo model_dump como os demais campos. Sem campo assim,
-    ou com outro valor que não é hashable no resto, levanta ProviderAbortError
-    com `error`, o TypeError do dump inteiro.
+
+def _dump_with_model_sets(
+    response: BaseModel, error: Exception, model: type[BaseModel], dump: Callable[..., Any]
+) -> tuple[dict[str, Any], Collection[str]]:
+    """O model_dump com os conjuntos de submodelos que o derrubam como lista, e os campos trocados.
+
+    O campo cujo dump, sozinho, cai por um valor que não é hashable sai por
+    `_plain_dump`, que desce no valor e troca cada conjunto por lista. O que
+    fica fora do dump, ou tem um serializador próprio que já devolve lista,
+    não cai sozinho, e sai pelo model_dump como os demais campos. Sem campo
+    que caia, com um valor que `_plain_dump` não escreve, como o dict com
+    chave que é submodelo, ou com outro valor que não é hashable no resto,
+    levanta ProviderAbortError com `error`, o TypeError do dump inteiro.
     """
-    fields = type(response).model_fields
-    model_sets = {}
-    for name in fields:
-        value = getattr(response, name)
-        if isinstance(value, (set, frozenset)) and any(
-            isinstance(item, BaseModel) for item in value
-        ):
+    fields = model.model_fields
+    plain = {}
+    try:
+        for name, field in fields.items():
+            value = getattr(response, name)
+            # O texto, o número e os demais valores sem itens não derrubam o dump.
+            if not (isinstance(value, BaseModel) or _is_structure_class(type(value))):
+                continue
             try:
                 # Só importa se o dump cai; o que ele devolve é descartado.
-                response.model_dump(include={name})
+                dump(include={name})
             except _DUMP_ERRORS as field_error:
                 if not _is_unhashable(field_error):
                     raise
-                model_sets[name] = value
-    if model_sets:
+                plain[name] = _plain_dump(value, _declared_models(field))
+    except _NoPlainDump:
+        plain = {}
+    if plain:
         try:
-            data = response.model_dump(by_alias=False, exclude=set(model_sets))
+            data = dump(by_alias=False, exclude=set(plain))
         except _DUMP_ERRORS as rest_error:
             if not _is_unhashable(rest_error):
                 raise
             error = rest_error
         else:
-            for name, items in model_sets.items():
-                data[name] = _as_sorted_list(
-                    dump_response(item) if isinstance(item, BaseModel) else item for item in items
-                )
+            data.update(plain)
             # Na ordem do modelo, como o model_dump; o que não é campo dele, no fim.
-            return {
+            ordered = {
                 **{name: data[name] for name in fields if name in data},
                 **{name: value for name, value in data.items() if name not in fields},
             }
+            return ordered, plain
     raise ProviderAbortError(_unhashable_dump_message(response, error)) from error
 
 
-def _declared_sets_as_lists(model: type[BaseModel], data: dict[str, Any]) -> dict[str, Any]:
-    """`data` com o conjunto de cada campo declarado como conjunto de submodelos em lista.
+def _declared_models(field: FieldInfo) -> list[type[BaseModel]]:
+    """Os submodelos da anotação do campo, pelos quais `_plain_dump` escreve o item de subclasse.
+
+    Com `SerializeAsAny` no campo ou em algum nível da anotação, nenhum: o
+    pydantic escreve o item de subclasse pelos campos dela, e o item sai pelo
+    dump da própria classe.
+    """
+    if _is_serialize_as_any(field.metadata) or _serializes_as_any(field.annotation):
+        return []
+    return get_nested_pydantic_models(field.annotation)
+
+
+def _is_serialize_as_any(metadata: Iterable[object]) -> bool:
+    """Se algum dos metadados é o `SerializeAsAny` do pydantic."""
+    return any(type(item).__name__ == "SerializeAsAny" for item in metadata)
+
+
+def _serializes_as_any(annotation: object) -> bool:
+    """Se a anotação tem `SerializeAsAny` nos metadados de algum nível."""
+    metadata = getattr(annotation, "__metadata__", ())  # pragma: no mutate
+    return _is_serialize_as_any(metadata) or any(
+        _serializes_as_any(arg) for arg in get_args(annotation)
+    )
+
+
+def _plain_dump(value: object, declared: Sequence[type[BaseModel]]) -> object:
+    """O valor de um campo como o model_dump o escreveria, com cada conjunto em lista.
+
+    Desce na lista, na tupla, no conjunto e nos valores do dict, e escreve o
+    submodelo por `dump_response`, que faz o mesmo com os campos dele. O
+    conjunto sai na ordem de `_as_sorted_list`. O submodelo que é instância de
+    uma subclasse de uma das classes `declared`, as da anotação do campo, sai
+    pelo dump da classe declarada. Levantam `_NoPlainDump` o dict com chave
+    que é ou guarda um submodelo, que não tem dump, e a coleção de outra
+    classe e o dataclass, que o model_dump escreve de um jeito que esta função
+    não conhece.
+    """
+    if isinstance(value, BaseModel):
+        base = next((cls for cls in declared if isinstance(value, cls)), None)
+        return dump_response(value, None if type(value) in declared else base)
+    kind = type(value)
+    if kind in (set, frozenset):
+        items = cast("AbstractSet[object]", value)  # pragma: no mutate
+        return _as_sorted_list(_plain_dump(item, declared) for item in items)
+    if kind in (list, tuple):
+        items = cast("Iterable[object]", value)  # pragma: no mutate
+        return kind(_plain_dump(item, declared) for item in items)
+    if kind is dict:
+        pairs = cast("dict[object, object]", value)  # pragma: no mutate
+        if any(_holds_record(key) for key in pairs):
+            raise _NoPlainDump
+        return {key: _plain_dump(item, declared) for key, item in pairs.items()}
+    if _is_structure_class(kind) or dataclasses.is_dataclass(value):
+        raise _NoPlainDump
+    return value
+
+
+def _holds_record(value: object) -> bool:
+    """Se o valor é um submodelo ou um dataclass, ou uma coleção que guarda um deles."""
+    if isinstance(value, BaseModel) or dataclasses.is_dataclass(value):
+        return True
+    if not _is_structure_class(type(value)):
+        return False
+    # A chave é hashable, e a coleção dentro dela não é dict: os itens são os que ela percorre.
+    return any(_holds_record(item) for item in value)  # ty: ignore[not-iterable]
+
+
+def _declared_sets_as_lists(
+    model: type[BaseModel], data: dict[str, Any], response: BaseModel, written: Collection[str]
+) -> dict[str, Any]:
+    """`data` com os conjuntos dos campos que declaram conjunto de submodelos em lista.
 
     O conjunto vazio e o que só tem itens que não são submodelo não derrubam o
     dump, e sairiam conjunto ao lado das listas das outras linhas, na mesma
-    coluna. A anotação só é lida para o campo cujo valor é um conjunto, e o
-    campo com serializador próprio fica como o serializador o deu.
+    coluna. No campo declarado como conjunto de submodelos, o conjunto sai em
+    lista. No que guarda um desses conjuntos mais fundo (`_nested_set_fields`),
+    como o submodelo com um campo assim ou a lista de conjuntos, o valor sai
+    por `_plain_dump`, que troca todo conjunto dele por lista; o que
+    `_plain_dump` não escreve fica como o model_dump o deu. A anotação só é
+    lida para o campo cujo valor é um conjunto, e o campo com serializador
+    próprio fica como o serializador o deu, como todos os do modelo com
+    `@model_serializer`, que monta o dump inteiro. Os campos de `written` já
+    saíram por `_plain_dump` (`_dump_with_model_sets`).
     """
+    nested = _nested_set_fields(model)
     for name, value in data.items():
-        if (
-            isinstance(value, (set, frozenset))
-            and name in model.model_fields
-            and _declares_model_set(model.model_fields[name].annotation)
-            and not _has_own_serializer(model, name)
-        ):
-            data[name] = _as_sorted_list(value)
+        if name not in model.model_fields or _has_own_serializer(model, name):
+            continue
+        field = model.model_fields[name]
+        if isinstance(value, (set, frozenset)):
+            if _declares_model_set(field.annotation):
+                data[name] = _as_sorted_list(value)
+        elif name in written:  # pragma: no mutate (refazer o campo daria o mesmo)
+            continue
+        elif name in nested:
+            with suppress(_NoPlainDump):
+                data[name] = _plain_dump(getattr(response, name), _declared_models(field))
     return data
 
 
-def _has_own_serializer(model: type[BaseModel], name: str) -> bool:
-    """Se o campo tem `@field_serializer`, pelo nome ou pelo `"*"` de todos os campos.
+@functools.cache
+def _nested_set_fields(model: type[BaseModel]) -> frozenset[str]:
+    """Os campos do modelo que guardam um conjunto de submodelos abaixo do primeiro nível.
 
-    O conjunto que o serializador do usuário devolve é o que ele escolheu gravar.
+    Nenhum no modelo com `@model_serializer`, cujo dump não é o dos campos.
+    """
+    if model.__pydantic_decorators__.model_serializers:
+        return frozenset()
+    return frozenset(
+        name
+        for name, field in model.model_fields.items()
+        if _holds_model_set(field.annotation, frozenset())
+    )
+
+
+def _holds_model_set(annotation: object, seen: frozenset[type]) -> bool:
+    """Se a anotação tem um conjunto de submodelos em algum nível, também dentro de um submodelo.
+
+    `seen` são os modelos já abertos no caminho: o que volta a um deles, como
+    o modelo recursivo, não é aberto de novo.
+    """
+    if _declares_model_set(annotation):
+        return True
+    for member in _members(annotation):
+        if isinstance(member, type) and issubclass(member, BaseModel):
+            if member not in seen and any(
+                _holds_model_set(field.annotation, seen | {member})
+                for field in member.model_fields.values()
+            ):
+                return True
+        elif any(_holds_model_set(arg, seen) for arg in get_args(member)):
+            return True
+    return False
+
+
+def _has_own_serializer(model: type[BaseModel], name: str) -> bool:
+    """Se o campo tem serializador próprio.
+
+    É o `@field_serializer`, pelo nome ou pelo `"*"` de todos os campos, ou o
+    `PlainSerializer` ou `WrapSerializer` no `Annotated` do campo inteiro. O
+    que o serializador do usuário devolve é o que ele escolheu gravar.
     """
     return any(
         name in serializer.info.fields or "*" in serializer.info.fields
         for serializer in model.__pydantic_decorators__.field_serializers.values()
+    ) or any(
+        type(item).__name__ in {"PlainSerializer", "WrapSerializer"}
+        # O serializador só do JSON não roda no dump em Python, que é o gravado.
+        and getattr(item, "when_used", "always") in {"always", "unless-none"}  # pragma: no mutate
+        for item in model.model_fields[name].metadata
     )
 
 
@@ -262,8 +418,9 @@ def _unhashable_dump_message(response: BaseModel, error: Exception) -> str:
             "texto ou número, ou o campo como lista de pares"
         )
     return (
-        f"{reason}declare como list ou tuple o conjunto que fica dentro de outro campo, e "
-        "como texto ou número a chave de dict"
+        f"{reason}declare como texto ou número a chave de dict que é ou guarda um submodelo, "
+        "e como list ou tuple o conjunto que fica num dataclass ou numa coleção que não é "
+        "lista, tupla, conjunto nem dict"
     )
 
 
