@@ -13,6 +13,7 @@ A parametrização percorre toda classe de exceção definida em
 """
 
 import inspect
+import threading
 import warnings
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -63,16 +64,19 @@ def _titulo(mensagem):
     return next(linha.strip("║ ") for linha in mensagem.splitlines() if linha.strip("╔═╗ "))
 
 
-def _executar(fabrica, monkeypatch, parallel_requests=2):
-    """Roda duas linhas que falham com o erro da fábrica e lê o que a execução avisou."""
+def _executar(fabrica, monkeypatch, parallel_requests=2, erro_da_linha=None):
+    """Roda duas linhas que falham com o erro da fábrica e lê o que a execução avisou.
+
+    Com `erro_da_linha`, cada linha falha com o erro que ele dá ao texto dela.
+    """
     monkeypatch.setattr(core.time, "sleep", lambda _segundos: None)
     monkeypatch.setattr(core.threading, "Timer", _TimerFalso)
 
-    def tentativa():
-        raise fabrica()
-
     # O retry roda como no call_langchain: os avisos dele entram na leitura.
-    def llm(*_args, **_kwargs):
+    def llm(texto, *_args, **_kwargs):
+        def tentativa():
+            raise erro_da_linha(texto) if erro_da_linha else fabrica()
+
         return errors.retry_with_backoff(tentativa, max_retries=1)
 
     with (
@@ -617,3 +621,38 @@ def test_aviso_de_interrupcao_orienta_a_cota_esgotada(
     assert ".." not in aviso
     # A dica da busca web vem só na mensagem da cota da busca.
     assert "use_search" not in aviso
+
+
+@pytest.mark.parametrize("cota_primeiro", [False, True], ids=["outra-antes", "cota-antes"])
+def test_cota_esgotada_orienta_o_aviso_mesmo_depois_de_outra_parada(cota_primeiro, monkeypatch):
+    """Duas linhas em voo param por motivos diferentes; o aviso traz a cota, em qualquer ordem."""
+    primeira_registrada = threading.Event()
+    registrar = core._add_failed_usage
+
+    def registra_e_avisa(token_stats, erro):
+        registrar(token_stats, erro)
+        primeira_registrada.set()
+
+    monkeypatch.setattr(core, "_add_failed_usage", registra_e_avisa)
+    erros = {"a": ProviderAbortError("o runtime encerrou"), "b": ProviderUsageLimitError("cota")}
+    if cota_primeiro:
+        erros = {"a": erros["b"], "b": erros["a"]}
+
+    # As duas linhas entram no provider antes de a primeira parar.
+    em_voo = threading.Barrier(2, timeout=10)
+
+    def erro_da_linha(texto):
+        em_voo.wait()
+        if texto == "b":
+            assert primeira_registrada.wait(timeout=10)
+        return erros[texto]
+
+    execucao = _executar(None, monkeypatch, erro_da_linha=erro_da_linha)
+
+    _conferir_coerencia(execucao, aborta=True)
+    aviso = next(aviso for aviso in execucao.avisos if aviso.startswith(INTERRUPCAO))
+    assert "cota" in aviso
+    assert "renovação do período" in aviso
+    # A parada que chegou antes da cota também fica no aviso.
+    assert ("o runtime encerrou" in aviso) is not cota_primeiro
+    assert ".." not in aviso

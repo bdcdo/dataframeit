@@ -4169,6 +4169,8 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
     # início, e o teste de mutação troca à toa o valor inicial.
     marked = False  # pragma: no mutate
+    # Se a parada guardada em token_stats["abort"] é a da cota esgotada.
+    quota_abort = False
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -4242,6 +4244,26 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         if snapshot is not None:
             snapshot()
 
+    def record_abort(error: ProviderAbortError) -> None:
+        """Guarda o motivo da parada, soma o uso da linha e para o despacho.
+
+        A cota esgotada passa à frente de outra parada que chegou antes dela,
+        porque a orientação dela (`_abort_reason`) é o que resolve a retomada,
+        e a outra parada vem depois dela no motivo.
+        """
+        nonlocal quota_abort
+        with lock:
+            quota = isinstance(error, ProviderUsageLimitError)
+            reason = _abort_reason(error)
+            if "abort" not in token_stats:
+                token_stats["abort"] = reason
+                quota_abort = quota
+            elif quota and not quota_abort:
+                token_stats["abort"] = f"{reason}. Antes, outra linha parou: {token_stats['abort']}"
+                quota_abort = True
+            _add_failed_usage(token_stats, error)
+        abort_event.set()
+
     def process_single_row(row_data: _RowData) -> None:
         """Processa uma única linha (executada em thread separada)."""
         nonlocal current_workers
@@ -4302,10 +4324,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 snapshot = _count_row(idx)
 
         except ProviderAbortError as e:
-            with lock:
-                token_stats.setdefault("abort", _abort_reason(e))
-                _add_failed_usage(token_stats, e)
-            abort_event.set()
+            record_abort(e)
             return
         except Exception as e:  # noqa: BLE001 (qualquer falha da linha vira status 'error')
             # A classificação lê o texto da exceção; se ele não puder ser montado,
