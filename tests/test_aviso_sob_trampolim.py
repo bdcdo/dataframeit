@@ -21,6 +21,7 @@ def test_aviso_da_linha_aponta_a_chamada_sob_trampolim(parallel_requests):
     # O mutmut mantém o corpo original com este nome e o chama por um
     # _trampoline_wrapper. Recriamos esses quadros sem mutar o código.
     namespace = dict(vars(core))
+    namespace["validate_provider_dependencies"] = lambda provider: None
     original = core.dataframeit
     namespace["x_dataframeit__mutmut_orig"] = types.FunctionType(
         original.__code__.replace(co_name="x_dataframeit__mutmut_orig"),
