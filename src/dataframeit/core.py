@@ -4343,10 +4343,11 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     token_stats = _empty_token_stats()
     rows_processed_this_run = 0
     rows_saved = 0
-    # Linhas registradas nesta execução; o abort e o Ctrl-C marcam as demais.
+    # Linhas registradas nesta execução; o abort e a exceção que sai do laço
+    # marcam as demais.
     registered: set[Hashable] = set()
-    # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
-    # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
+    # Se as marcas da saída por exceção mudaram o DataFrame, e a gravação deve
+    # levá-las. Só essa gravação o lê, depois de a marcação o regravar logo de
     # início, e o teste de mutação troca à toa o valor inicial.
     marked = False  # pragma: no mutate
     mark_unreached = partial(
@@ -4415,32 +4416,33 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                 )
         return success, values
 
-    def mark_unreached_on_ctrl_c() -> None:
-        """Marca a linha cuja chamada o Ctrl-C cortou e as seguintes."""
+    def mark_unreached_on_exception() -> None:
+        """Marca a linha cuja chamada a exceção cortou e as seguintes."""
         nonlocal marked
         # Um segundo Ctrl-C que corte as marcas ainda grava as que entraram.
         marked = True
         marked = mark_unreached(registered)
 
-    def save_on_ctrl_c() -> None:
-        """Grava as linhas registradas e as marcas do Ctrl-C que a última gravação não levou."""
+    def save_on_exception() -> None:
+        """Grava as linhas registradas e as marcas que a última gravação não levou."""
         if checkpoint and (
             rows_processed_this_run > rows_saved or bool(token_stats.get("abort")) or marked
         ):
             _try_save_checkpoint(df, checkpoint)
 
-    # Ctrl-C: grava as linhas registradas desde a última gravação, que a
-    # retomada pagaria de novo, e relança a interrupção. A linha cuja chamada
-    # foi cortada não chegou a ser registrada; ela e as seguintes são marcadas
-    # como na interrupção por ProviderAbortError, e as marcas também vão ao
-    # arquivo. O Ctrl-C que corta a gravação final a refaz. A falha de gravação
-    # vira aviso em _try_save_checkpoint e não troca a interrupção.
+    # Exceção que sai do laço, como o Ctrl-C ou um aviso tratado como erro:
+    # grava as linhas registradas desde a última gravação, que a retomada
+    # pagaria de novo, e relança a exceção. A linha cuja chamada foi cortada não
+    # chegou a ser registrada; ela e as seguintes são marcadas como na
+    # interrupção por ProviderAbortError, e as marcas também vão ao arquivo. O
+    # Ctrl-C que corta a gravação final a refaz. A falha de gravação vira aviso
+    # em _try_save_checkpoint e não troca a interrupção.
     # A barra fecha na saída do bloco, depois das marcas e de toda gravação;
     # ver _ProgressBar. Sem o fechamento, ela ficaria aberta até o coletor de
     # lixo fechá-la, no meio de outra execução.
     with (
         _ProgressBar(total=len(df), desc=desc) as pbar,
-        _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c),
+        _on_exception(mark_unreached_on_exception, save_on_exception),
     ):
         for idx, row in itertools.compress(pbar.track(df.iterrows()), to_process):
             started = time.monotonic()
@@ -4535,16 +4537,19 @@ class _ProgressBar:
 
 
 @contextmanager
-def _on_ctrl_c(
+def _on_exception(
     mark: Callable[[], object], save: Callable[[], object]
 ) -> Generator[None, None, None]:
-    """Chama `mark` e `save` quando um KeyboardInterrupt atravessa o bloco, e o relança.
+    """Chama `mark` e `save` quando uma exceção atravessa o bloco, e a relança.
 
-    `save` roda também quando um segundo Ctrl-C corta `mark`.
+    Vale para toda exceção que sai do laço das linhas: o Ctrl-C, o aviso
+    tratado como erro (`-W error`) e o `SystemExit` de um callback. As linhas
+    já processadas chegam ao checkpoint antes de a exceção sair de
+    `dataframeit()`. `save` roda também quando um segundo Ctrl-C corta `mark`.
     """
     try:
         yield
-    except KeyboardInterrupt:
+    except BaseException:
         try:
             mark()
         finally:
@@ -4657,10 +4662,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     abort_event = threading.Event()
     # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
     # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
-    # O abort e o Ctrl-C marcam as demais.
+    # O abort e a exceção que sai do laço marcam as demais.
     counted: set[Hashable] = set()
-    # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
-    # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
+    # Se as marcas da saída por exceção mudaram o DataFrame, e a gravação deve
+    # levá-las. Só essa gravação o lê, depois de a marcação o regravar logo de
     # início, e o teste de mutação troca à toa o valor inicial.
     marked = False  # pragma: no mutate
     # Se a parada guardada em token_stats["abort"] é a da cota esgotada. A
@@ -4874,7 +4879,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             del _row_warning_site.value
 
     def mark_uncounted_rows() -> None:
-        """Marca no Ctrl-C as linhas que nenhuma thread registrou.
+        """Marca, quando uma exceção sai do laço, as linhas que nenhuma thread registrou.
 
         Como na interrupção por ProviderAbortError, a linha já processada que
         ia ser reprocessada mantém os valores anteriores, com a marca em
@@ -4888,10 +4893,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             marked = mark_unreached(counted)
 
     def save_registered_rows() -> None:
-        """Grava o checkpoint no Ctrl-C.
+        """Grava o checkpoint quando uma exceção sai do laço.
 
         O executor espera as linhas em andamento antes de chegar aqui, e elas
-        chegam registradas. Um segundo Ctrl-C durante essa espera deixa threads
+        chegam registradas. Um Ctrl-C durante essa espera deixa threads
         rodando: a cópia sob `lock` leva só as linhas que terminaram, e as
         demais ficam pendentes para a retomada. Pelo rótulo, o _SnapshotWriter
         não regrava o arquivo sem linha contada desde o último snapshot gravado,
@@ -4905,7 +4910,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # Um executor para a execução inteira. O teto de linhas em voo é
     # current_workers, lido a cada reposição: a redução por rate limit só deixa
     # de despachar, sem cancelar o que já está em voo, e vale até o fim. Na
-    # saída por Ctrl-C, o executor fecha e espera as threads antes de
+    # saída por exceção, o executor fecha e espera as threads antes de
     # save_registered_rows gravar: os `with` saem na ordem inversa. A barra
     # fecha na saída do bloco de fora, depois das marcas e de toda gravação;
     # ver _ProgressBar.
@@ -4913,7 +4918,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     in_flight: dict[Future[None], tuple[_RowData, float]] = {}
     with _ProgressBar(total=len(rows_to_process), desc=desc) as pbar:
         with (
-            _on_ctrl_c(mark_uncounted_rows, save_registered_rows),
+            _on_exception(mark_uncounted_rows, save_registered_rows),
             _closing_in_slices(parallel_requests) as executor,
         ):
             while True:
@@ -4972,16 +4977,16 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                             _finish(row, started, snapshot, success=False, error=error, values={})
                     pbar.update()
 
-        # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
-        # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
-        # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
-        # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
-        # completa antes de gravar.
+        # A gravação do `with` acima não cobre o que vem depois dele. Uma exceção
+        # durante as marcas de uma interrupção ou durante a gravação final, como
+        # o Ctrl-C, grava o checkpoint (ou o regrava) antes de ser relançada, e
+        # a cauda chega ao arquivo, como no modo sequencial. O Ctrl-C que corta
+        # as marcas as completa antes de gravar.
         def save_tail() -> None:
             if writer:
                 _try_save_checkpoint(df, writer.checkpoint)
 
-        with _on_ctrl_c(mark_uncounted_rows, save_tail):
+        with _on_exception(mark_uncounted_rows, save_tail):
             if abort_event.is_set():
                 mark_unreached(counted)
 

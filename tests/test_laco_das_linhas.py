@@ -412,3 +412,170 @@ def test_erro_do_executor_depois_do_registro_aponta_a_chamada(tmp_path, monkeypa
     (aviso,) = [a for a in avisos if "Erro inesperado no executor" in str(a.message)]
     assert aviso.filename == __file__
     assert "dataframeit(" in linecache.getline(aviso.filename, aviso.lineno)
+
+
+# =============================================================================
+# Exceção que sai do laço
+# =============================================================================
+
+
+class _LimiteDeRequisicoes(Exception):
+    status_code = 429
+
+
+def _caso(sai, mensagem, *, linha=None, callback=None, gravacao=False):
+    """O que levanta dentro do laço (na linha t1, no callback dela ou na 1ª gravação) e o que sai."""
+    return SimpleNamespace(
+        linha=linha, callback=callback, gravacao=gravacao, sai=sai, mensagem=mensagem
+    )
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+@pytest.mark.parametrize(
+    "caso",
+    [
+        pytest.param(
+            _caso(
+                UserWarning,
+                r"on_row_done falhou|Erro inesperado no executor",
+                callback=RuntimeError("callback quebrou"),
+            ),
+            id="callback",
+        ),
+        pytest.param(_caso(SystemExit, "3", callback=SystemExit(3)), id="saida_no_callback"),
+        pytest.param(
+            _caso(UserWarning, "Falha ao processar linha 1", linha=ValueError("resposta ruim")),
+            id="falha_de_linha",
+        ),
+        pytest.param(
+            _caso(UserWarning, "Falha ao processar linha 1", linha=_LimiteDeRequisicoes()),
+            id="rate_limit",
+        ),
+        pytest.param(
+            _caso(
+                UserWarning,
+                r"Falha ao gravar o checkpoint|Erro inesperado no executor",
+                gravacao=True,
+            ),
+            id="gravacao",
+        ),
+    ],
+)
+def test_excecao_que_sai_do_laco_grava_antes_as_linhas_processadas(
+    tmp_path, monkeypatch, paralelo, caso
+):
+    """A linha t0 termina, e uma exceção sai do laço depois dela.
+
+    A suíte trata aviso como erro, e por isso o aviso do callback que levanta,
+    o da falha de linha, o do rate limit e o da gravação periódica que falha
+    saem de `dataframeit()` como exceção, assim como o SystemExit do callback.
+    A exceção continua saindo, mas a linha já processada chega antes ao
+    checkpoint, e a retomada não a chama de novo.
+    """
+    t0_entregue = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto != "t0":
+            assert t0_entregue.wait(5)
+        if texto == "t1" and caso.linha is not None:
+            raise caso.linha
+        return _resposta(texto)
+
+    def on_row_done(linha):
+        if linha.index == 0:
+            t0_entregue.set()
+        elif caso.callback is not None:
+            raise caso.callback
+
+    grava = core._save_checkpoint
+    gravacoes = []
+
+    def gravacao_que_falha_na_primeira_vez(*args, **kwargs):
+        gravacoes.append(1)
+        if caso.gravacao and len(gravacoes) == 1:
+            msg = "disco cheio"
+            raise OSError(msg)
+        return grava(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_save_checkpoint", gravacao_que_falha_na_primeira_vez)
+    textos = ["t0", "t1", "t2", "t3"]
+    ckpt = tmp_path / "ckpt.csv"
+    opcoes = {
+        "parallel_requests": paralelo,
+        "batch_size": 1 if caso.gravacao else 10,
+        "checkpoint_path": ckpt,
+    }
+
+    with pytest.raises(caso.sai, match=caso.mensagem):
+        _roda(pd.DataFrame({"texto": textos}), llm, on_row_done=on_row_done, **opcoes)
+
+    gravado = pd.read_csv(ckpt)
+    assert gravado["texto"].tolist() == textos
+    assert gravado.loc[0, ["campo1", "_dataframeit_status"]].tolist() == ["t0", "processed"]
+    pendentes = gravado.loc[gravado["_dataframeit_status"].isna(), "texto"].tolist()
+    assert pendentes
+
+    pagas = []
+
+    def llm_da_retomada(texto, *args, **kwargs):
+        pagas.append(texto)
+        return _resposta(texto)
+
+    saida = _roda(pd.DataFrame({"texto": textos}), llm_da_retomada, **opcoes)
+
+    assert sorted(pagas) == pendentes
+    assert saida["campo1"].tolist() == textos
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_excecao_que_sai_do_laco_marca_as_linhas_nao_alcancadas(tmp_path, paralelo):
+    """Reprocessamento de 5 linhas processadas e uma com erro; o callback levanta.
+
+    O aviso do callback sai como exceção na primeira linha entregue. Como no
+    Ctrl-C, a linha processada que não foi alcançada mantém o valor antigo e
+    ganha a marca em `_error_details`, e a linha com erro que ia ser refeita
+    fica sem status, no DataFrame do usuário e no checkpoint. No paralelo, as
+    duas linhas que já estavam com os workers terminam.
+    """
+    df = pd.DataFrame(
+        {
+            "texto": [f"t{i}" for i in range(6)],
+            "campo1": ["antigo"] * 5 + [None],
+            "_dataframeit_status": ["processed"] * 5 + ["error"],
+            "_error_details": [None] * 5 + ["falha"],
+        }
+    )
+    ckpt = tmp_path / "ckpt.csv"
+    pagas = []
+
+    def llm(texto, *args, **kwargs):
+        pagas.append(texto)
+        return {"data": {"campo1": f"r-{texto}"}, "usage": None}
+
+    def on_row_done(linha):
+        msg = "callback quebrou"
+        raise RuntimeError(msg)
+
+    with pytest.raises(UserWarning, match=r"on_row_done falhou|Erro inesperado no executor"):
+        _roda(
+            df,
+            llm,
+            reprocess_columns=["campo1"],
+            parallel_requests=paralelo,
+            batch_size=10,
+            checkpoint_path=ckpt,
+            on_row_done=on_row_done,
+        )
+
+    assert len(pagas) <= paralelo
+    for saida in (df, pd.read_csv(ckpt)):
+        alcancadas = saida["texto"].isin(pagas)
+        com_erro = saida["texto"].eq("t5")
+        antigas = ~alcancadas & ~com_erro
+        assert list(saida.loc[alcancadas, "campo1"]) == [
+            f"r-{texto}" for texto in saida.loc[alcancadas, "texto"]
+        ]
+        assert saida.loc[antigas, "campo1"].eq("antigo").all()
+        assert saida.loc[antigas, "_error_details"].eq(core._INTERRUPTED_REPROCESS_DETAIL).all()
+        assert saida.loc[~com_erro, "_dataframeit_status"].eq("processed").all()
+        assert saida.loc[com_erro, ["_dataframeit_status", "_error_details"]].isna().all(axis=None)
