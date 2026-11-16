@@ -51,6 +51,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- O modelo com campo `set` ou `frozenset` de submodelos é recusado com `ValueError` antes da primeira chamada, com o nome do campo e a saída (`list`, `tuple` ou `@field_serializer`). Antes, o `model_dump` da resposta caía com `TypeError: unhashable type: 'dict'` em toda linha, depois de pagas as tentativas. O conjunto com serializador próprio, que o dump monta, continua aceito (#284).
+
 - Os backends `claude_code` e `codex` tratam status fora de 400 a 599 como ausente, como o LangChain, e repetem a falha de execução sem classificar pelo número inválido (#309).
 - A retomada da saída pandas interrompida mantém o NaN que um campo `Any` recebeu, em vez de trocá-lo por `None` (#252).
 - O checkpoint grava como texto JSON a lista, o dict e a tupla de um campo `Any`, também no parquet, e a retomada e `read_df` com `model` os devolvem como lista e dict: o parquet não troca mais o inteiro por float nem acrescenta as chaves das outras linhas, e o CSV e o XLSX não devolvem mais o texto JSON ao lado dos dicts das linhas novas. O texto de um campo `Any` que se leria como estrutura é gravado como texto JSON entre aspas e volta o mesmo texto (#252).
