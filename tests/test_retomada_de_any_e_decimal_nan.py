@@ -1394,3 +1394,18 @@ def test_saida_relida_com_read_df_retoma_sem_o_aviso_do_nan_de_any(tmp_path, ext
 
     assert relida["campo"].tolist() == ["abc", None, "x"]
     assert retomada["campo"].tolist() == ["abc", None, "x"]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_devolve_o_texto_do_campo_float_ou_any(tmp_path, ext):
+    _exige_formato(ext)
+    # O NaN desse campo segue a regra do `Any`: relido de checkpoint, conta como ausente.
+    respostas = ["[1, 2]", "NaN", '"NaN"', "x", [1, 2]]
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Union[float, Any], respostas, "z"
+    )
+
+    esperados = [*respostas, "z"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
+    assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]

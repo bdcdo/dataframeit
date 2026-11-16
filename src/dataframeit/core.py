@@ -3648,7 +3648,9 @@ def _cell_for_checkpoint(  # noqa: PLR0913 (uma opção por forma de gravar a c�
         return str(value)
     if nan_text and isinstance(value, float) and math.isnan(value):
         return _FLOAT_NAN_TEXT
-    if nan_text and isinstance(value, str):
+    # No campo que também é `Any`, o escape de `any_text` abaixo já põe o texto
+    # "NaN" entre aspas, e o texto que se leria como estrutura precisa dele.
+    if nan_text and not any_text and isinstance(value, str):
         return _quoted_nan_text(value)
     if (
         any_text
