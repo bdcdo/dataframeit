@@ -16,6 +16,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - Um teste confere as permissões do `docs.yml`, que nenhum check de PR executa: o workflow só concede `contents: read`, o job `deploy` tem exatamente `pages: write` e `id-token: write`, e nenhum outro job escreve. O PR que mexer nelas reprova no job de testes, antes do merge (#268).
 
+- Dois testes do runtime do Codex medem o request com cada flag desligada pelo provider religada: `incremental_tools` ainda repete as instruções base, e `reasoning_effort_override` ainda põe um `configuration_update` no `input`, este medido com o provider OpenAI embutido apontado para um servidor local. O teste falha, dizendo o que conferir, quando uma troca de pin tornar o override desnecessário.
+
 ### Alterado
 
 - O teste do Ctrl-C no reprocessamento parte de 7 linhas processadas, e não de 5: no modo paralelo, as 5 podiam estar todas com os workers quando o sinal chegava, não sobrava linha com o valor antigo e o teste falhava em cerca de 2 a cada mil execuções (#394).
