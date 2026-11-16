@@ -3945,7 +3945,8 @@ class _SnapshotWriter:
         """Grava o snapshot, a menos que um de rótulo maior já tenha sido gravado.
 
         Com `force`, grava também com o rótulo da última gravação, para levar
-        ao arquivo uma mudança que não conta linha, como as marcas do Ctrl-C.
+        ao arquivo uma mudança que não conta linha, como as marcas da saída por
+        exceção.
         """
         with self._lock:
             if label < self.last_saved or (label == self.last_saved and not force):
@@ -3967,8 +3968,8 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
     """Marca as linhas que uma interrupção impediu de processar e diz se alguma mudou.
 
     A linha não alcançada é a que a execução ia processar (`to_process`) e
-    não registrou (`registered`). O abort e o Ctrl-C, no sequencial e no paralelo, marcam por
-    esta mesma definição.
+    não registrou (`registered`). O abort e a exceção que sai do laço, como o
+    Ctrl-C, marcam por esta mesma definição, no sequencial e no paralelo.
 
     A linha já processada que ia ser reprocessada guarda os valores anteriores,
     e o detalhe registra que eles não foram atualizados. Sem reprocess_columns,
@@ -4419,7 +4420,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     def mark_unreached_on_exception() -> None:
         """Marca a linha cuja chamada a exceção cortou e as seguintes."""
         nonlocal marked
-        # Um segundo Ctrl-C que corte as marcas ainda grava as que entraram.
+        # Um Ctrl-C que corte as marcas ainda grava as que entraram.
         marked = True
         marked = mark_unreached(registered)
 
@@ -4435,8 +4436,8 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # pagaria de novo, e relança a exceção. A linha cuja chamada foi cortada não
     # chegou a ser registrada; ela e as seguintes são marcadas como na
     # interrupção por ProviderAbortError, e as marcas também vão ao arquivo. O
-    # Ctrl-C que corta a gravação final a refaz. A falha de gravação vira aviso
-    # em _try_save_checkpoint e não troca a interrupção.
+    # Ctrl-C que corta a gravação final a refaz. A falha dessa gravação não
+    # troca a exceção que sai; ver _on_exception.
     # A barra fecha na saída do bloco, depois das marcas e de toda gravação;
     # ver _ProgressBar. Sem o fechamento, ela ficaria aberta até o coletor de
     # lixo fechá-la, no meio de outra execução.
@@ -4451,8 +4452,9 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
                 break
             registered.add(idx)
 
-            # A linha conta antes do callback: um Ctrl-C dentro dele chega com a
-            # linha já gravada no DataFrame, e a gravação do Ctrl-C a leva.
+            # A linha conta antes do callback: a exceção que sai dele, como um
+            # Ctrl-C, chega com a linha já gravada no DataFrame, e a gravação
+            # da saída a leva.
             position = rows_processed_this_run
             rows_processed_this_run += 1
             _notify_row_done(
@@ -4545,15 +4547,23 @@ def _on_exception(
     Vale para toda exceção que sai do laço das linhas: o Ctrl-C, o aviso
     tratado como erro (`-W error`) e o `SystemExit` de um callback. As linhas
     já processadas chegam ao checkpoint antes de a exceção sair de
-    `dataframeit()`. `save` roda também quando um segundo Ctrl-C corta `mark`.
+    `dataframeit()`. `save` roda também quando um Ctrl-C corta `mark`.
+
+    A falha de `save` não troca a exceção que sai. A de gravação já vira aviso
+    em _try_save_checkpoint; com o aviso tratado como erro, ele sairia no lugar
+    da exceção original, e por isso entra nela como nota. Um Ctrl-C durante
+    `save` sai como chegou.
     """
     try:
         yield
-    except BaseException:
+    except BaseException as leaving:
         try:
             mark()
         finally:
-            save()
+            try:
+                save()
+            except Exception as failure:  # noqa: BLE001 (ver a docstring)
+                leaving.add_note(f"Na saída por esta exceção: {_error_text(failure)}")
         raise
 
 
@@ -4568,7 +4578,7 @@ def _closing_in_slices(max_workers: int) -> Generator[ThreadPoolExecutor, None, 
     cancelada não é paga e fica sem status, para a retomada. Isso cobre o
     Ctrl-C que sai de dentro do `Thread.start()`, com a thread já lançada e
     ainda sem marcar o início; sem o cancelamento, ela começaria depois da
-    gravação do checkpoint e pagaria fora dele a linha da fila. Fora do Ctrl-C,
+    gravação do checkpoint e pagaria fora dele a linha da fila. Sem exceção,
     a saída chega com a fila vazia, porque o laço espera todos os futuros em
     voo.
 
@@ -4888,7 +4898,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         """
         nonlocal marked
         with lock:
-            # Um segundo Ctrl-C que corte as marcas ainda grava as que entraram.
+            # Um Ctrl-C que corte as marcas ainda grava as que entraram.
             marked = True
             marked = mark_unreached(counted)
 

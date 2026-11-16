@@ -3,6 +3,7 @@
 import linecache
 import math
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -423,6 +424,14 @@ class _LimiteDeRequisicoes(Exception):
     status_code = 429
 
 
+@pytest.fixture
+def aviso_como_erro():
+    """Todo aviso vira exceção, como com `python -W error`."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        yield
+
+
 def _caso(sai, mensagem, *, linha=None, callback=None, gravacao=False):
     """O que levanta dentro do laço (na linha t1, no callback dela ou na 1ª gravação) e o que sai."""
     return SimpleNamespace(
@@ -430,6 +439,7 @@ def _caso(sai, mensagem, *, linha=None, callback=None, gravacao=False):
     )
 
 
+@pytest.mark.usefixtures("aviso_como_erro")
 @pytest.mark.parametrize("paralelo", [1, 2])
 @pytest.mark.parametrize(
     "caso",
@@ -448,10 +458,6 @@ def _caso(sai, mensagem, *, linha=None, callback=None, gravacao=False):
             id="falha_de_linha",
         ),
         pytest.param(
-            _caso(UserWarning, "Falha ao processar linha 1", linha=_LimiteDeRequisicoes()),
-            id="rate_limit",
-        ),
-        pytest.param(
             _caso(
                 UserWarning,
                 r"Falha ao gravar o checkpoint|Erro inesperado no executor",
@@ -466,9 +472,9 @@ def test_excecao_que_sai_do_laco_grava_antes_as_linhas_processadas(
 ):
     """A linha t0 termina, e uma exceção sai do laço depois dela.
 
-    A suíte trata aviso como erro, e por isso o aviso do callback que levanta,
-    o da falha de linha, o do rate limit e o da gravação periódica que falha
-    saem de `dataframeit()` como exceção, assim como o SystemExit do callback.
+    Com o aviso tratado como erro, o do callback que levanta, o da falha de
+    linha e o da gravação periódica que falha saem de `dataframeit()` como
+    exceção, assim como o SystemExit do callback.
     A exceção continua saindo, mas a linha já processada chega antes ao
     checkpoint, e a retomada não a chama de novo.
     """
@@ -527,6 +533,81 @@ def test_excecao_que_sai_do_laco_grava_antes_as_linhas_processadas(
     assert saida["campo1"].tolist() == textos
 
 
+@pytest.mark.usefixtures("aviso_como_erro")
+def test_aviso_de_rate_limit_tratado_como_erro_grava_a_linha_processada(tmp_path):
+    """No paralelo, a linha t1 recebe um 429 depois de t0 terminar.
+
+    O aviso de redução de workers levanta na thread da linha, que por isso
+    escapa do registro; o aviso da falha dela sai de `dataframeit()` com o do
+    rate limit por contexto, e t0 já está no checkpoint.
+    """
+    t0_entregue = threading.Event()
+
+    def llm(texto, *args, **kwargs):
+        if texto == "t0":
+            return _resposta(texto)
+        assert t0_entregue.wait(5)
+        raise _LimiteDeRequisicoes
+
+    ckpt = tmp_path / "ckpt.csv"
+
+    with pytest.raises(UserWarning, match="Falha ao processar linha 1") as erro:
+        _roda(
+            pd.DataFrame({"texto": ["t0", "t1"]}),
+            llm,
+            on_row_done=lambda _linha: t0_entregue.set(),
+            parallel_requests=2,
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
+
+    assert "Rate limit detectado" in str(erro.value.__context__)
+    assert pd.read_csv(ckpt)["_dataframeit_status"].tolist()[0] == "processed"
+
+
+@pytest.mark.usefixtures("aviso_como_erro")
+@pytest.mark.parametrize("paralelo", [1, 2])
+@pytest.mark.parametrize("sai_do_callback", [False, True])
+def test_falha_da_gravacao_na_saida_por_excecao_nao_troca_a_excecao(
+    tmp_path, monkeypatch, paralelo, sai_do_callback
+):
+    """Nenhuma gravação dá certo, e o aviso dela é tratado como erro.
+
+    A exceção que saiu do laço, o SystemExit do callback ou o aviso da gravação
+    final, continua sendo a que sai de `dataframeit()`. A gravação refeita na
+    saída falha de novo, e o aviso dela vai na exceção como nota.
+    """
+    gravacoes = []
+
+    def gravacao_que_falha(*args, **kwargs):
+        gravacoes.append(1)
+        msg = f"disco cheio {len(gravacoes)}"
+        raise OSError(msg)
+
+    def on_row_done(linha):
+        if sai_do_callback:
+            raise SystemExit(3)
+
+    monkeypatch.setattr(core, "_save_checkpoint", gravacao_que_falha)
+    esperada = (SystemExit, "3") if sai_do_callback else (UserWarning, "disco cheio 1")
+
+    with pytest.raises(esperada[0], match=esperada[1]) as erro:
+        _roda(
+            pd.DataFrame({"texto": ["t0"]}),
+            _resposta,
+            on_row_done=on_row_done,
+            parallel_requests=paralelo,
+            batch_size=10,
+            checkpoint_path=tmp_path / "ckpt.csv",
+        )
+
+    (nota,) = erro.value.__notes__
+    assert "Falha ao gravar o checkpoint" in nota
+    assert f"disco cheio {len(gravacoes)}" in nota
+    assert len(gravacoes) == 1 if sai_do_callback else 2
+
+
+@pytest.mark.usefixtures("aviso_como_erro")
 @pytest.mark.parametrize("paralelo", [1, 2])
 def test_excecao_que_sai_do_laco_marca_as_linhas_nao_alcancadas(tmp_path, paralelo):
     """Reprocessamento de 5 linhas processadas e uma com erro; o callback levanta.
