@@ -42,7 +42,6 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Corrigido
 
 - Com `strict=True`, a retomada compara só o caminho de cada erro da validação estrita: a data relida como texto num submodelo é aceita mesmo quando um validador dele muda outro campo a cada passada; antes, a linha era acusada para reprocessar (#378).
-- No modo paralelo, o aviso "Execução interrompida" traz a orientação da cota esgotada também quando outra parada, como o encerramento do app-server do `codex`, chegou antes de outra linha, e cita essa parada depois da cota.
 - No modo paralelo, o aviso "Execução interrompida" traz a orientação da cota esgotada também quando outra parada, como o encerramento do app-server do `codex`, chegou antes de outra linha, e cita essa parada depois da cota (#379).
 - Os testes rodados pelo mutmut recebem o handler padrão do SIGINT (`tests/conftest.py`). O forkserver do mutmut o ignora, e os testes de Ctrl-C falhavam ou esperavam até o timeout em todo mutante que os incluía, que contava como morto. Os 62 sobreviventes de `utils.py` que isso escondia viraram testes, reescrita ou pragma.
 - Sem busca web, nos providers do LangChain, o resumo de `track_tokens` soma os tokens que as tentativas recusadas informaram numa linha que acaba com erro, como a que esgota as tentativas, ou que interrompe a execução; antes, esse uso sumia. A linha cuja exceção tem texto ilegível também soma ao resumo o uso e o custo que a exceção traz (#372).
