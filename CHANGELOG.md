@@ -40,6 +40,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - O pre-commit roda também a suíte de testes sem os mais lentos (hook `pytest-rapido`, menos de um minuto); a suíte completa continua no CI. O `CLAUDE.md` traz os comandos de lint, typecheck e pre-commit e as convenções do histórico (#324).
 - O `ruff check` do CI e do pre-commit confere também `example/`, com as regras de correção listadas em `example/ruff.toml` e sem as de estilo de biblioteca. Na célula que configura a chave, os notebooks de exemplo capturam só o `ImportError` de fora do Colab e as exceções que `userdata.get` levanta, e mostram a mensagem; antes, um `except:` com `pass` engolia também o secret ausente e o Ctrl+C (#211).
 
+### Mudanças incompatíveis
+
+- Campo com `prompt` e `prompt_replace` ao mesmo tempo, ou com prompt só de espaços, é recusado antes de chamar o provider; antes a segunda instrução era ignorada ou a primeira substituía o prompt do usuário por texto vazio. `prompt_replace` continua aceito sozinho como alias de `prompt`.
+
 ### Corrigido
 
 - Com `strict=True`, a retomada compara só o caminho de cada erro da validação estrita: a data relida como texto num submodelo é aceita mesmo quando um validador dele muda outro campo a cada passada; antes, a linha era acusada para reprocessar (#378).

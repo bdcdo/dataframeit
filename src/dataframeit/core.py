@@ -1109,12 +1109,18 @@ def _validate_search_overrides(
 
 
 def _validate_prompts(label: str, config: dict[str, Any], keys: tuple[str, ...]) -> None:
-    """Recusa o prompt de campo ou de grupo que não é texto nem None."""
+    """Recusa prompts inválidos ou duas substituições para o mesmo campo."""
     for key in keys:
         value = config.get(key)
         if value is not None and not isinstance(value, str):
             msg = f"{label}: {key} deve ser texto, não {type(value).__name__}"
             raise ValueError(msg)
+        if isinstance(value, str) and value and not value.strip():
+            msg = f"{label}: {key} não pode conter só espaços"
+            raise ValueError(msg)
+    if "prompt_replace" in keys and config.get("prompt") and config.get("prompt_replace"):
+        msg = f"{label}: use apenas prompt ou prompt_replace, não os dois"
+        raise ValueError(msg)
 
 
 def _is_positive_int(value: object) -> bool:

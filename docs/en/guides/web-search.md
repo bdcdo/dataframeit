@@ -131,7 +131,7 @@ You can configure prompts and search parameters specific to each field using Pyd
 
 | Option | Description |
 |--------|-------------|
-| `prompt` or `prompt_replace` | Replaces the base prompt for this field; without `{texto}`, the row text is appended at the end |
+| `prompt` or `prompt_replace` | Replaces the base prompt for this field; only one may contain text, and whitespace alone is rejected. If `prompt` is empty, `prompt_replace` applies. Without `{texto}`, the row text is appended at the end |
 | `prompt_append` | Appends text to the base prompt |
 | `search_depth` | Depth override: `"basic"` or `"advanced"` |
 | `max_results` | Results override (1-20) |
