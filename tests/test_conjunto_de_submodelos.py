@@ -653,3 +653,28 @@ def test_erro_de_serializacao_de_outra_origem_segue_como_veio():
 
     with pytest.raises(PydanticSerializationError, match="serializador do usuário caiu"):
         dump_response(SerializadorQueCai(campo="x"))
+
+
+@pytest.mark.parametrize("campos", ["campo", "*"])
+def test_conjunto_que_o_serializador_do_campo_devolve_fica_conjunto(campos):
+    class SerializaEmConjunto(BaseModel):
+        campo: set[Cidade]
+
+        @field_serializer(campos)
+        def _em_nomes(self, valor: set[Cidade]) -> set[str]:
+            return {cidade.nome for cidade in valor}
+
+    assert dump_response(SerializaEmConjunto(campo={Cidade(nome="SP")})) == {"campo": {"SP"}}
+    assert dump_response(SerializaEmConjunto(campo=set())) == {"campo": set()}
+
+
+def test_serializador_de_outro_campo_nao_tira_a_lista_do_conjunto_vazio():
+    class OutroSerializado(BaseModel):
+        campo: set[Cidade]
+        outro: str
+
+        @field_serializer("outro")
+        def _em_maiusculas(self, valor: str) -> str:
+            return valor.upper()
+
+    assert dump_response(OutroSerializado(campo=set(), outro="x")) == {"campo": [], "outro": "X"}

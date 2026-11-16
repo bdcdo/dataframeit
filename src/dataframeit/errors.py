@@ -190,16 +190,29 @@ def _declared_sets_as_lists(model: type[BaseModel], data: dict[str, Any]) -> dic
 
     O conjunto vazio e o que só tem itens que não são submodelo não derrubam o
     dump, e sairiam conjunto ao lado das listas das outras linhas, na mesma
-    coluna. A anotação só é lida para o campo cujo valor é um conjunto.
+    coluna. A anotação só é lida para o campo cujo valor é um conjunto, e o
+    campo com serializador próprio fica como o serializador o deu.
     """
     for name, value in data.items():
         if (
             isinstance(value, (set, frozenset))
             and name in model.model_fields
             and _declares_model_set(model.model_fields[name].annotation)
+            and not _has_own_serializer(model, name)
         ):
             data[name] = _as_sorted_list(value)
     return data
+
+
+def _has_own_serializer(model: type[BaseModel], name: str) -> bool:
+    """Se o campo tem `@field_serializer`, pelo nome ou pelo `"*"` de todos os campos.
+
+    O conjunto que o serializador do usuário devolve é o que ele escolheu gravar.
+    """
+    return any(
+        name in serializer.info.fields or "*" in serializer.info.fields
+        for serializer in model.__pydantic_decorators__.field_serializers.values()
+    )
 
 
 def _declares_model_set(annotation: object) -> bool:
