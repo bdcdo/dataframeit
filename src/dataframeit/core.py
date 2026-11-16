@@ -4853,87 +4853,90 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # current_workers, lido a cada reposição: a redução por rate limit só deixa
     # de despachar, sem cancelar o que já está em voo, e vale até o fim. Na
     # saída por Ctrl-C, o executor fecha e espera as threads antes de
-    # save_registered_rows gravar: os `with` saem na ordem inversa.
+    # save_registered_rows gravar: os `with` saem na ordem inversa. A barra
+    # fecha na saída do bloco de fora, depois das marcas e de toda gravação,
+    # que uma falha ao fechá-la não impede.
     pending_rows = iter(rows_to_process)
     in_flight: dict[Future[None], tuple[_RowData, float]] = {}
-    with (
-        _on_ctrl_c(mark_uncounted_rows, save_registered_rows),
-        tqdm(total=len(rows_to_process), desc=desc) as pbar,
-        _closing_in_slices(parallel_requests) as executor,
-    ):
-        while True:
-            with lock:
-                limit = current_workers
-            while len(in_flight) < limit and not abort_event.is_set():
-                row = next(pending_rows, None)
-                if row is None:
-                    break
-                # A linha que não foi despachada nunca rodou: falhar ao
-                # despachar interrompe a execução e a deixa sem status, para
-                # a retomada. Como 'error', o resume=True a preservaria.
-                try:
-                    in_flight[executor.submit(process_with_warning_site, row)] = (
-                        row,
-                        time.monotonic(),
-                    )
-                except Exception as e:  # noqa: BLE001 (ver o comentário acima)
-                    with lock:
-                        token_stats.setdefault("abort", _error_text(e))
-                    abort_event.set()
-                    break
 
-            if not in_flight:
-                break
-            # A espera tem prazo por causa do polars, que, ao ser importado,
-            # instala um handler de SIGINT com SA_RESTART. Com ele, o kernel
-            # reinicia a espera sem prazo de um lock em vez de interrompê-la, e
-            # o Ctrl-C só viraria KeyboardInterrupt quando uma linha terminasse.
-            # O que corta a espera é haver prazo, e não a duração da fatia: no
-            # Linux, a espera com prazo de um semáforo não é reiniciada nem com
-            # SA_RESTART (ver signal(7)) e volta com EINTR assim que o sinal
-            # chega, e o interpretador levanta o KeyboardInterrupt na hora. A
-            # fatia curta só limita a demora numa plataforma que reinicie também
-            # a espera com prazo. Sem linha terminada no prazo, `done` volta
-            # vazio e o laço só dá a volta: relê o teto e espera de novo.
-            done, _ = wait(in_flight, timeout=_WAIT_SLICE_SECONDS, return_when=FIRST_COMPLETED)
-            for future in done:
-                row, started = in_flight.pop(future)
-                try:
-                    future.result()
-                except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
-                    # Escapou do tratamento da própria linha; sem isto ela
-                    # ficaria sem status e sumiria da saída.
-                    _position, idx, _row = row
-                    if idx in counted:
-                        _warn_at_user(
-                            f"Erro inesperado no executor depois de registrar a linha "
-                            f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                        )
-                    else:
-                        with lock:
-                            _record_unrecorded_error(df, idx, e, status_col=status_col)
-                            error = _recorded_error(df, idx)
-                            snapshot = _count_row(idx)
-                        _finish(row, started, snapshot, success=False, error=error, values={})
-                pbar.update(1)
-
-    # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
-    # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
-    # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
-    # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
-    # completa antes de gravar.
     def save_tail() -> None:
         if writer:
             _try_save_checkpoint(df, writer.checkpoint)
 
-    with _on_ctrl_c(mark_uncounted_rows, save_tail):
-        if abort_event.is_set():
-            mark_unreached(counted)
+    with tqdm(total=len(rows_to_process), desc=desc) as pbar:
+        with (
+            _on_ctrl_c(mark_uncounted_rows, save_registered_rows),
+            _closing_in_slices(parallel_requests) as executor,
+        ):
+            while True:
+                with lock:
+                    limit = current_workers
+                while len(in_flight) < limit and not abort_event.is_set():
+                    row = next(pending_rows, None)
+                    if row is None:
+                        break
+                    # A linha que não foi despachada nunca rodou: falhar ao
+                    # despachar interrompe a execução e a deixa sem status, para
+                    # a retomada. Como 'error', o resume=True a preservaria.
+                    try:
+                        in_flight[executor.submit(process_with_warning_site, row)] = (
+                            row,
+                            time.monotonic(),
+                        )
+                    except Exception as e:  # noqa: BLE001 (ver o comentário acima)
+                        with lock:
+                            token_stats.setdefault("abort", _error_text(e))
+                        abort_event.set()
+                        break
 
-        # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
-        # fora e as marcas de uma interrupção, que não contam como linha processada.
-        if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
-            _try_save_checkpoint(df, writer.checkpoint)
+                if not in_flight:
+                    break
+                # A espera tem prazo por causa do polars, que, ao ser importado,
+                # instala um handler de SIGINT com SA_RESTART. Com ele, o kernel
+                # reinicia a espera sem prazo de um lock em vez de interrompê-la, e
+                # o Ctrl-C só viraria KeyboardInterrupt quando uma linha terminasse.
+                # O que corta a espera é haver prazo, e não a duração da fatia: no
+                # Linux, a espera com prazo de um semáforo não é reiniciada nem com
+                # SA_RESTART (ver signal(7)) e volta com EINTR assim que o sinal
+                # chega, e o interpretador levanta o KeyboardInterrupt na hora. A
+                # fatia curta só limita a demora numa plataforma que reinicie também
+                # a espera com prazo. Sem linha terminada no prazo, `done` volta
+                # vazio e o laço só dá a volta: relê o teto e espera de novo.
+                done, _ = wait(in_flight, timeout=_WAIT_SLICE_SECONDS, return_when=FIRST_COMPLETED)
+                for future in done:
+                    row, started = in_flight.pop(future)
+                    try:
+                        future.result()
+                    except Exception as e:  # noqa: BLE001 (falha fora da linha não para a execução)
+                        # Escapou do tratamento da própria linha; sem isto ela
+                        # ficaria sem status e sumiria da saída.
+                        _position, idx, _row = row
+                        if idx in counted:
+                            _warn_at_user(
+                                f"Erro inesperado no executor depois de registrar a linha "
+                                f"{idx}, que mantém o status gravado: {_error_text(e)}",
+                            )
+                        else:
+                            with lock:
+                                _record_unrecorded_error(df, idx, e, status_col=status_col)
+                                error = _recorded_error(df, idx)
+                                snapshot = _count_row(idx)
+                            _finish(row, started, snapshot, success=False, error=error, values={})
+                    pbar.update(1)
+
+        # A gravação no Ctrl-C do `with` acima não cobre o que vem depois dele. Um
+        # Ctrl-C durante as marcas de uma interrupção ou durante a gravação final
+        # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
+        # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
+        # completa antes de gravar.
+        with _on_ctrl_c(mark_uncounted_rows, save_tail):
+            if abort_event.is_set():
+                mark_unreached(counted)
+
+            # Save final: a cauda (< batch_size), o que uma gravação que falhou deixou de
+            # fora e as marcas de uma interrupção, que não contam como linha processada.
+            if writer and (checkpoint_counter > writer.last_saved or abort_event.is_set()):
+                _try_save_checkpoint(df, writer.checkpoint)
 
     elapsed = time.time() - start_time
     token_stats["elapsed_seconds"] = elapsed

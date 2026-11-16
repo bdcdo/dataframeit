@@ -381,9 +381,9 @@ class _Barra:
         self.n += passos
 
 
-def _barra(monkeypatch):
+def _barra(monkeypatch, classe=_Barra):
     _Barra.criadas = []
-    monkeypatch.setattr(core, "tqdm", _Barra)
+    monkeypatch.setattr(core, "tqdm", classe)
     return _Barra.criadas
 
 
@@ -420,6 +420,55 @@ def test_barra_fecha_quando_a_execucao_e_interrompida(monkeypatch, paralelo, err
         _roda(["a", "b", "c"], _llm({"b": erro}), parallel_requests=paralelo, track_tokens=False)
 
     assert [barra.fechada for barra in barras] == [True]
+
+
+class _BarraQueNaoFecha(_Barra):
+    @override
+    def __exit__(self, *exc):
+        raise BrokenPipeError
+
+
+@pytest.mark.parametrize(
+    ("erro", "segunda"),
+    [(KeyboardInterrupt(), None), (ProviderAbortError("sem crédito"), None), (None, "processed")],
+    ids=["ctrl_c", "erro_que_interrompe", "fim_normal"],
+)
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_falha_ao_fechar_a_barra_nao_impede_as_marcas_nem_a_gravacao(
+    monkeypatch, tmp_path, paralelo, erro, segunda
+):
+    """A execução termina ou é interrompida na segunda linha, e a barra falha ao fechar.
+
+    A primeira linha, já registrada, e a segunda, que tinha erro e ia ser
+    refeita, chegam ao arquivo antes de a barra fechar; a interrompida vai sem
+    status.
+    """
+    _barra(monkeypatch, _BarraQueNaoFecha)
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "_dataframeit_status": [None, "error"],
+            "_error_details": [None, "x"],
+        }
+    )
+    ckpt = tmp_path / "c.csv"
+
+    with pytest.raises(BrokenPipeError) as excinfo:
+        _roda(
+            df,
+            _llm({"b": erro} if erro else None),
+            resume=False,
+            parallel_requests=paralelo,
+            batch_size=10,
+            checkpoint_path=ckpt,
+        )
+
+    assert isinstance(excinfo.value.__context__, KeyboardInterrupt) == isinstance(
+        erro, KeyboardInterrupt
+    )
+    gravado = pd.read_csv(ckpt).astype(object).where(pd.notna, None)
+    assert gravado["_dataframeit_status"].tolist() == ["processed", segunda]
+    assert gravado["_error_details"].tolist() == [None, None]
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
