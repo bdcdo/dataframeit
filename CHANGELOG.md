@@ -47,12 +47,17 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - O submodelo declarado por `NewType` ou apelido `type`, como `type Itens = list[Item]`, conta como o modelo a que se refere na configuração por campo, inclusive o apelido genérico e o que fica dentro de `Annotated`, `Optional` ou lista. O `prompt` ou a busca num campo dele passa a exigir `use_search=True` e `search_per_field=True` e a ser buscado no item da lista; o `depends_on` e a `condition` dentro dele e a busca em lista dentro de lista são recusados; e o caminho de uma `condition` que o atravessa é conferido contra os campos dele. Antes, a configuração era ignorada sem erro. O conjunto no `json_schema_extra` de um campo dele leva a assinatura do checkpoint à forma canônica, que não muda entre processos, e o checkpoint gravado antes com um modelo assim recomeça do zero, com aviso (#255).
 
+- A referência adiantada em texto dentro do valor de um apelido `type`, como `TypeAliasType("Itens", list["Item"])` ou o valor inteiro entre aspas, é trocada pelo tipo, e o submodelo atrás dela entra na configuração por campo como o da anotação direta. O nome é procurado no módulo em que o apelido foi declarado, entre os parâmetros dele e no próprio nome dele; o que só existe dentro de uma função não é achado, e o modelo com esse apelido é recusado com `TypeError`. Antes, o submodelo era ignorado sem erro (#393).
+
+- Na forma canônica da assinatura do checkpoint, a do modelo com função ou conjunto de texto no `json_schema_extra`, o `NewType`, o apelido `type` e o `TypeVar` entram pelo tipo a que se referem, e não pelo nome: mudar o tipo atrás do `NewType`, do apelido da linguagem ou do `TypeVar` passa a recusar a retomada, que antes era aceita com o tipo novo. O checkpoint gravado antes com um modelo assim não é retomado, e a execução avisa e recomeça (#393).
+
 - Campo com `prompt` e `prompt_replace` ao mesmo tempo, ou com prompt só de espaços, é recusado antes de chamar o provider; antes a segunda instrução era ignorada ou a primeira substituía o prompt do usuário por texto vazio. `prompt_replace` continua aceito sozinho como alias de `prompt`.
 
 ### Corrigido
 
 - A resposta de um modelo com `set` ou `frozenset` de submodelos, cujo `model_dump` cai com `TypeError: unhashable type: 'dict'`, interrompe a execução na primeira ocorrência, com o motivo e a saída (`list` ou `tuple`) no aviso "Execução interrompida", nos quatro backends. Antes, cada linha gastava as tentativas com a resposta já paga e terminava com status de erro (#284).
 
+- A checagem de tipos que o pyarrow converte uns nos outros, feita na saída polars, não entra em recursão sem fim com o apelido `type` recursivo sobre lista ou tupla, como `type Lista = tuple[int, Lista] | None` (#393).
 - Os backends `claude_code` e `codex` tratam status fora de 400 a 599 como ausente, como o LangChain, e repetem a falha de execução sem classificar pelo número inválido (#309).
 - A retomada da saída pandas interrompida mantém o NaN que um campo `Any` recebeu, em vez de trocá-lo por `None` (#252).
 - O checkpoint grava como texto JSON a lista, o dict e a tupla de um campo `Any`, também no parquet, e a retomada e `read_df` com `model` os devolvem como lista e dict: o parquet não troca mais o inteiro por float nem acrescenta as chaves das outras linhas, e o CSV e o XLSX não devolvem mais o texto JSON ao lado dos dicts das linhas novas. O texto de um campo `Any` que se leria como estrutura é gravado como texto JSON entre aspas e volta o mesmo texto (#252).

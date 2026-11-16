@@ -97,6 +97,7 @@ from .utils import (
     _is_structure_class,
     _json_default,
     _keeps_nan,
+    _resolved,
     _silent_slice_write,
     _skipping_model,
     _user_stacklevel,
@@ -2548,7 +2549,8 @@ class _Descent:
     `forms` guarda a forma do objeto cuja subárvore não apontou para ele nem para
     cima dele, ao lado do próprio objeto, para que o `id` não passe a outro
     objeto enquanto a assinatura dura. `containers` traz o `id` dos contêineres
-    abertos desde o objeto aberto mais fundo (ver `_stable`).
+    abertos desde o objeto aberto mais fundo (ver `_stable`). `aliases` traz os
+    apelidos `type` abertos no caminho atual (ver `_named_type_leaf`).
 
     `leaves` diz se a folha passa por `_schema_leaf`. Na forma canônica, sim;
     no `_stable` chamado sem descida, como o dos `model_kwargs`, a folha fica
@@ -2561,6 +2563,7 @@ class _Descent:
         self.lowest: list[int] = []
         self.forms: dict[int, tuple[object, object]] = {}
         self.containers: set[int] = set()
+        self.aliases: list[object] = []
 
     def reach(self, depth: int) -> None:
         """Registra, no objeto aberto mais fundo, um marcador que aponta para `depth`."""
@@ -2571,8 +2574,14 @@ class _Descent:
 def _schema_leaf(value: object, descent: _Descent) -> object:
     """Folha da forma canônica: tipo pelo nome e conteúdo, chamável pelo código.
 
-    O que não é tipo vai a `_callable_leaf`.
+    O NewType, o apelido `type` e o TypeVar entram pelo tipo a que se referem
+    (`_resolved`), como a anotação escrita direto com ele. O apelido recursivo
+    volta a si mesmo, e ali entra por um marcador com o nome
+    (`_named_type_leaf`). O que não é tipo vai a `_callable_leaf`.
     """
+    resolved = _resolved(value)
+    if resolved is not value:
+        return _named_type_leaf(value, resolved, descent)
     if get_origin(value) is not None:
         return {
             "origin": _schema_leaf(get_origin(value), descent),
@@ -2594,6 +2603,16 @@ def _schema_leaf(value: object, descent: _Descent) -> object:
     if isinstance(value, type):
         return value.__name__
     return _callable_leaf(value, descent)
+
+
+def _named_type_leaf(named: object, resolved: object, descent: _Descent) -> object:
+    """A forma de `resolved`, o tipo a que `named` se refere, ou o marcador de `named` já aberto."""
+    if named in descent.aliases:
+        return {"cycle": _stable_repr(named)}
+    descent.aliases.append(named)
+    form = _stable(resolved, descent)
+    descent.aliases.pop()
+    return form
 
 
 def _callable_leaf(value: object, descent: _Descent) -> object:

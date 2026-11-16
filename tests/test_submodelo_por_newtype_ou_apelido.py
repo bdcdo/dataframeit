@@ -7,7 +7,7 @@ campo vê o submodelo como o vê na anotação direta.
 """
 
 import sys
-from typing import Annotated, Any, NewType, Optional, TypeVar
+from typing import Annotated, Any, List, NewType, Optional, TypeVar  # noqa: UP035 (o `List["X"]` guarda um ForwardRef)
 
 import pytest
 from pydantic import BaseModel, Field, create_model
@@ -18,6 +18,7 @@ from dataframeit.conditional import _collect_configured_fields, _walk_fields
 from dataframeit.core import _has_unstable_extra, _validate_field_configs
 from dataframeit.llm import SearchConfig
 from dataframeit.utils import (
+    _resolved,
     get_nested_pydantic_models,
     is_list_of_pydantic_model,
     list_layers,
@@ -50,6 +51,14 @@ _ApelidoDeItem = TypeAliasType("_ApelidoDeItem", _Item)
 _ApelidoDeLista = TypeAliasType("_ApelidoDeLista", list[_Item])
 _ListaGenerica = TypeAliasType("_ListaGenerica", list[_T], type_params=(_T,))
 _ApelidoAnotado = TypeAliasType("_ApelidoAnotado", Annotated[list[_Item], "itens"])
+
+# A referência adiantada em texto dentro do valor do apelido: no item, no valor
+# inteiro, no `ForwardRef` que o `List` de `typing` guarda e ao lado do parâmetro.
+_ApelidoComTexto = TypeAliasType("_ApelidoComTexto", list["_Item"])
+_ApelidoInteiroEmTexto = TypeAliasType("_ApelidoInteiroEmTexto", "list[_Item]")
+_ApelidoComForwardRef = TypeAliasType("_ApelidoComForwardRef", List["_Item"])  # noqa: UP006
+_GenericoEmTexto = TypeAliasType("_GenericoEmTexto", "list[_T] | _Item", type_params=(_T,))
+_AnotadoComTexto = TypeAliasType("_AnotadoComTexto", Annotated[list["_Item"], "_Item"])
 
 # Por `Any`, o checador de tipos não toma por declaração estática o NewType, o
 # apelido e as anotações que os testes montam para cada modelo.
@@ -111,6 +120,11 @@ _forma_de_lista = pytest.mark.parametrize(
         (list[_ApelidoDeLista], (False, None), [_Item], 2),
         (Optional[_ApelidoDeLista], (True, _Item), [_Item], 1),
         (_newtype("_NovoTexto", str), (False, None), [], None),
+        (_ApelidoComTexto, (True, _Item), [_Item], 1),
+        (_ApelidoInteiroEmTexto, (True, _Item), [_Item], 1),
+        (_ApelidoComForwardRef, (True, _Item), [_Item], 1),
+        (_AnotadoComTexto, (True, _Item), [_Item], 1),
+        (Optional[_ApelidoComTexto], (True, _Item), [_Item], 1),
     ],
 )
 def test_helpers_resolvem_newtype_e_apelido_em_cada_nivel(anotacao, e_lista, modelos, camadas):
@@ -205,3 +219,64 @@ def test_apelido_recursivo_nao_e_percorrido_sem_fim():
     assert get_nested_pydantic_models(galho) == [_Item]
     assert list_layers(galho, _Item) == 2
     assert [path for path, *_ in _collect_configured_fields(modelo)] == ["arvore.valor"]
+
+
+def test_prompt_no_item_de_apelido_com_referencia_em_texto_exige_a_busca_por_campo():
+    modelo = create_model("Modelo", itens=(_ApelidoComTexto, ...))
+
+    assert [path for path, *_ in _collect_configured_fields(modelo)] == ["itens.valor"]
+    with pytest.raises(ValueError, match=r"requerem use_search=True e search_per_field=True"):
+        _validate_field_configs(modelo, None, use_search=False, search_per_field=False)
+    campos = _get_list_fields_with_nested_search(modelo)
+    assert campos["itens"]["inner_model"] is _Item
+
+
+def test_referencia_em_texto_do_apelido_e_trocada_pelo_tipo():
+    assert _resolved(_ApelidoComTexto) == list[_Item]
+    assert _resolved(_GenericoEmTexto[int]) == list[int] | _Item
+    # O texto nos metadados do `Annotated` não é referência e fica como está.
+    assert _resolved(_AnotadoComTexto) == Annotated[list[_Item], "_Item"]
+
+
+def test_apelido_declarado_em_funcao_acha_o_proprio_nome_e_o_do_modulo():
+    arvore = _apelido("Arvore", "list[Arvore] | _Item")
+
+    assert get_nested_pydantic_models(arvore) == [_Item]
+    assert list_layers(arvore, _Item) == 2
+
+
+def test_referencia_em_texto_a_nome_de_dentro_da_funcao_e_recusada():
+    class Local(BaseModel):
+        valor: str = Field(json_schema_extra={"prompt": "busque o valor"})
+
+    itens = _apelido("Itens", list["Local"])
+    modelo = create_model("Modelo", itens=(itens, ...))
+
+    with pytest.raises(
+        TypeError,
+        match=rf"apelido de tipo 'Itens'.*não foi encontrado no módulo '{__name__}': "
+        rf"name '{Local.__name__}' is not defined\. Declare o apelido depois da classe e sem aspas",
+    ):
+        get_nested_pydantic_models(itens)
+    with pytest.raises(TypeError, match=r"apelido de tipo 'Itens'"):
+        _validate_field_configs(modelo, None, use_search=False, search_per_field=False)
+
+
+def test_apelido_de_modulo_que_nao_esta_carregado_resolve_sem_o_modulo():
+    escopo = {"__name__": "modulo_que_nao_existe", "apelido": TypeAliasType, "_Item": _Item}
+    exec(  # noqa: S102 (o apelido toma o módulo do `__name__` de onde é criado)
+        "Direto = apelido('Direto', list[_Item])\nEmTexto = apelido('EmTexto', list['_Item'])",
+        escopo,
+    )
+
+    assert get_nested_pydantic_models(escopo["Direto"]) == [_Item]
+    with pytest.raises(TypeError, match=r"'EmTexto'.*módulo 'modulo_que_nao_existe'"):
+        get_nested_pydantic_models(escopo["EmTexto"])
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="sintaxe `type X = ...`")
+def test_type_da_linguagem_com_referencia_em_texto_e_resolvido_pelo_modulo():
+    escopo = {"__name__": __name__}
+    exec('type Itens = list["_Item"]', escopo)  # noqa: S102 (sintaxe que o 3.11 não compila)
+
+    assert is_list_of_pydantic_model(escopo["Itens"]) == (True, _Item)
