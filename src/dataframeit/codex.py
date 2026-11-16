@@ -414,7 +414,7 @@ def _build_schema(pydantic_model: type[BaseModel]) -> dict[str, Any]:
 def _validate_config(config: LLMConfig) -> ReasoningEffort:
     from openai_codex.types import ReasoningEffort  # noqa: PLC0415 (extra codex opcional)
 
-    if config.api_key:
+    if bool(config.api_key):
         msg = "provider='codex' usa a autenticação do Codex; não passe api_key"
         raise ProviderConfigurationError(msg)
 
@@ -467,7 +467,9 @@ def _isolated_runtime() -> Generator[tuple[Path, Path], None, None]:
     from filelock import FileLock, Timeout  # noqa: PLC0415 (extra codex opcional)
 
     configured_home = os.environ.get("CODEX_HOME")
-    source_home = Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
+    source_home = (
+        Path(configured_home).expanduser() if bool(configured_home) else Path.home() / ".codex"
+    )
     source_auth = source_home / "auth.json"
     if not source_auth.is_file():
         msg = (

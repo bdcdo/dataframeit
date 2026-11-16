@@ -205,7 +205,7 @@ def _usage_from_sdk(usage: dict[str, Any] | None) -> Usage | None:
     com o cache incluído e ``cached_input_tokens`` como a parcela lida do
     cache, a mesma convenção do provider LangChain.
     """
-    if not usage:
+    if not bool(usage):
         return None
 
     cache_read = usage.get("cache_read_input_tokens") or 0
@@ -267,7 +267,7 @@ def call_claude_code(
         "max_budget_usd": model_kwargs.get("max_budget_usd", 0.50),
     }
 
-    if config.model:
+    if bool(config.model):
         options_kwargs["model"] = config.model
 
     effort = model_kwargs.get("effort")

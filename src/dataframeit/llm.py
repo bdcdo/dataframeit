@@ -335,7 +335,7 @@ def call_langchain(  # noqa: C901 (cada caminho de recusa preserva o uso antes d
             _request_correction(
                 pydantic_model,
                 None,
-                error if error.llm_output else None,
+                error if bool(error.llm_output) else None,
                 correction,
                 raw_text=str(error.llm_output or ""),
             )
@@ -566,11 +566,11 @@ def _create_langchain_llm(
     # `temperature` com erro 400, e a lista muda a cada lançamento. Quem quer
     # determinismo passa `temperature` em `model_kwargs`, nos modelos que aceitam.
     kwargs: dict[str, Any] = {"model_provider": provider}
-    if api_key:
+    if bool(api_key):
         kwargs["api_key"] = api_key
 
     # Adicionar parâmetros extras do usuário
-    if extra_kwargs:
+    if bool(extra_kwargs):
         kwargs.update(extra_kwargs)
 
     # Com model=None o LangChain devolve um modelo configurável; aqui model só é

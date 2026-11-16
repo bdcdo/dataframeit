@@ -163,7 +163,7 @@ def test_validate_search_dependencies_tavily():
             # Não deve levantar exceção
             validate_search_dependencies("tavily")
     finally:
-        if original:
+        if original is not None:
             os.environ["TAVILY_API_KEY"] = original
         elif "TAVILY_API_KEY" in os.environ:
             del os.environ["TAVILY_API_KEY"]
@@ -181,7 +181,7 @@ def test_validate_search_dependencies_exa():
             # Não deve levantar exceção
             validate_search_dependencies("exa")
     finally:
-        if original:
+        if original is not None:
             os.environ["EXA_API_KEY"] = original
         elif "EXA_API_KEY" in os.environ:
             del os.environ["EXA_API_KEY"]
@@ -222,7 +222,7 @@ def test_validate_search_dependencies_exa_missing_key():
 
             assert "EXA_API_KEY" in str(exc_info.value)
     finally:
-        if original:
+        if original is not None:
             os.environ["EXA_API_KEY"] = original
 
 

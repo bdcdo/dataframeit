@@ -477,7 +477,7 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
             # Um caminho aninhado depende do campo raiz. Quem chama já recusou a
             # dependência inexistente, e todo campo raiz é chave do grafo.
             cycle = dfs(dep.split(".")[0])
-            if cycle:
+            if bool(cycle):
                 return cycle
 
         path.pop()
@@ -489,7 +489,7 @@ def detect_circular_dependencies(dependencies: dict[str, list[str]]) -> list[str
     for field in dependencies:
         if state[field] == _NOT_VISITED:
             cycle = dfs(field)
-            if cycle:
+            if bool(cycle):
                 return cycle
 
     return None
@@ -514,7 +514,7 @@ def topological_sort(dependencies: dict[str, list[str]]) -> list[str]:
     """
     # Detectar ciclos primeiro
     cycle = detect_circular_dependencies(dependencies)
-    if cycle:
+    if bool(cycle):
         msg = f"Dependências circulares detectadas: {' -> '.join(cycle)}"
         raise ValueError(msg)
 
@@ -744,7 +744,7 @@ def get_group_execution_units(
                 unit_dependencies[unit].append(dep_unit)
 
     cycle = detect_circular_dependencies(unit_dependencies)
-    if cycle:
+    if bool(cycle):
         labels = [
             f"grupo '{units[int(key)][1]}'"
             if units[int(key)][0] == "group"

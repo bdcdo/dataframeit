@@ -19,6 +19,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Alterado
 
 - O resumo de tokens e créditos inclui tentativas de busca sem resposta estruturada, recusas de parser e linhas Codex que falham; o uso da chamada que falhou soma ao das chamadas anteriores por campo. O custo já medido do Claude Code continua registrado na falha.
+- O `ty` trata como erro o teste implícito de verdade em valores opcionais. Os 56 pontos existentes distinguem `None` quando necessário e usam `bool(...)` quando vazio, zero ou `False` devem seguir o mesmo caminho. Os testes de provider restauram também uma variável de ambiente que existia com valor vazio.
 - O processamento sequencial e o paralelo comparam diretamente o status normalizado da linha com `processed`, sem repetir a checagem de ausência que a preparação do DataFrame já fez.
 - A página de campos condicionais diz que o campo pulado pela `condition` é gravado como `None` mesmo quando o `exclude_if` dele tiraria o `None` do `model_dump` (#375).
 - O teste de mutação roda o `ty` como `type_check_command` do mutmut, que conta como detectado o mutante que quebra um tipo, como o `None` no lugar do `False` num argumento `bool`. Os `# pragma: no mutate` que só cobriam essa troca saíram, e os atributos do `_SnapshotWriter` têm o tipo declarado na classe (#376).
