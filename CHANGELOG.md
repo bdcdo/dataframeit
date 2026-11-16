@@ -45,6 +45,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Mudanças incompatíveis
 
+- O submodelo declarado por `NewType` ou apelido `type`, como `type Itens = list[Item]`, conta como o modelo a que se refere na configuração por campo, inclusive o apelido genérico e o que fica dentro de `Annotated`, `Optional` ou lista. O `prompt` ou a busca num campo dele passa a exigir `use_search=True` e `search_per_field=True` e a ser buscado no item da lista; o `depends_on` e a `condition` dentro dele e a busca em lista dentro de lista são recusados; e o caminho de uma `condition` que o atravessa é conferido contra os campos dele. Antes, a configuração era ignorada sem erro. O conjunto no `json_schema_extra` de um campo dele leva a assinatura do checkpoint à forma canônica, que não muda entre processos, e o checkpoint gravado antes com um modelo assim recomeça do zero, com aviso (#255).
+
 - Campo com `prompt` e `prompt_replace` ao mesmo tempo, ou com prompt só de espaços, é recusado antes de chamar o provider; antes a segunda instrução era ignorada ou a primeira substituía o prompt do usuário por texto vazio. `prompt_replace` continua aceito sozinho como alias de `prompt`.
 
 ### Corrigido
@@ -116,6 +118,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - A tabela de configurações recomendadas da busca web, em `docs/guides/web-search.md` e na versão em inglês, recomenda faixas que o aviso de rate limit não acusa; antes, as 12 pontas das faixas disparavam o aviso. Um teste roda as pontas das duas tabelas contra o aviso (#273).
 - A assinatura do checkpoint lê pelo conteúdo inteiro a subclasse chamável de `ndarray`, `DataFrame` ou `Series` usada como condição ou no estado de uma, sem os atributos que o pandas guarda na instância, como caches e o arranjo dos blocos, e o conjunto dentro de chave tupla, como `(frozenset({"a", "b"}), 1)`, entra pela lista ordenada: mudar os dados muda a assinatura, e a chave deixa de dar assinatura diferente a cada processo (#336).
 - A mensagem de pacote ausente de um provider do LangChain só sugere `pip install dataframeit[all]` quando o pacote do provider está no extra `all`, lido dos metadados do pacote instalado. Para Mistral, Cohere, Bedrock, Vertex AI e outros providers sem extra próprio, ela sugere só o `langchain-<provider>`, porque o `all` não os instala (#279).
+- A anotação de retorno de `read_df` acompanha o argumento de leitura que faz o pandas devolver outra coisa que um DataFrame: `TextFileReader` ou `JsonReader` com `chunksize` ou `iterator=True`, dict de abas com `sheet_name=None` ou lista, e `Series` com `typ="series"`. Antes, o checador de tipos via `pd.DataFrame` em todas essas chamadas (#255).
 
 ### Removido
 
