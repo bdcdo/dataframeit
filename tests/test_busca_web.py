@@ -518,15 +518,36 @@ class ModeloQueSempreBusca(GenericFakeChatModel):
         return self
 
 
-def _sempre_busca(ferramenta, chamadas=None):
-    """Mensagens infinitas, cada uma chamando a ferramenta; conta as geradas em `chamadas`."""
-    for i in itertools.count():
-        if chamadas is not None:
-            chamadas.append(i)
-        yield AIMessage(
+class _SempreBusca:
+    """Mensagens infinitas, cada uma chamando a ferramenta; conta as geradas em `chamadas`.
+
+    É um iterador de classe, e não um gerador: no modo paralelo, as linhas
+    pedem a próxima mensagem de threads diferentes, e o gerador pedido por
+    duas ao mesmo tempo levanta "generator already executing". O `next` do
+    `itertools.count` é uma chamada só do interpretador.
+    """
+
+    def __init__(self, ferramenta, chamadas=None):
+        self._ferramenta = ferramenta
+        self._chamadas = chamadas
+        self._contador = itertools.count()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        i = next(self._contador)
+        if self._chamadas is not None:
+            self._chamadas.append(i)
+        return AIMessage(
             content="",
             tool_calls=[
-                {"name": ferramenta, "args": {"query": str(i)}, "id": f"c{i}", "type": "tool_call"}
+                {
+                    "name": self._ferramenta,
+                    "args": {"query": str(i)},
+                    "id": f"c{i}",
+                    "type": "tool_call",
+                }
             ],
         )
 
@@ -541,7 +562,7 @@ def test_recursion_limit_interrompe_modelo_que_insiste_em_buscar():
         return "x"
 
     agente = create_agent(
-        model=ModeloQueSempreBusca(messages=_sempre_busca("busca", chamadas)),
+        model=ModeloQueSempreBusca(messages=_SempreBusca("busca", chamadas)),
         tools=[StructuredTool.from_function(busca, name="busca")],
         response_format=ToolStrategy(Resposta),
         middleware=[
@@ -625,7 +646,7 @@ def _rodar_agente_real(monkeypatch, ferramenta, **kwargs):
     """Três linhas com o agente do LangChain de verdade e um modelo que sempre chama a ferramenta."""
     monkeypatch.setattr(
         "dataframeit.llm._create_langchain_llm",
-        lambda *a, **k: ModeloQueSempreBusca(messages=_sempre_busca(ferramenta)),
+        lambda *a, **k: ModeloQueSempreBusca(messages=_SempreBusca(ferramenta)),
     )
     with (
         patch("dataframeit.core.validate_provider_dependencies"),
