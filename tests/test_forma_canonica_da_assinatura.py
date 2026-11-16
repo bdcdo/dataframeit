@@ -4,11 +4,12 @@ from decimal import Decimal
 from enum import Enum
 from functools import partial
 from types import MethodType
-from typing import Literal
+from typing import Any, Literal, NewType, TypeVar
 
 import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
+from typing_extensions import TypeAliasType
 
 from dataframeit.core import (
     _callable_leaf,
@@ -47,6 +48,21 @@ def _assinatura(modelo, search_config=None):
         text_column="texto",
         status_col="_dataframeit_status",
     )
+
+
+# Por `Any`, o checador de tipos não toma por declaração estática o NewType, o
+# apelido e o TypeVar que os testes montam para cada modelo.
+_newtype: Any = NewType
+_apelido: Any = TypeAliasType
+_typevar: Any = TypeVar
+
+
+def _lista(item: Any) -> Any:
+    return list[item]
+
+
+_T = TypeVar("_T")
+_ListaGenerica = TypeAliasType("_ListaGenerica", list[_T], type_params=(_T,))
 
 
 class Cor(Enum):
@@ -285,6 +301,64 @@ def test_caminho_repetido_na_uniao_entra_com_os_campos_dos_dois_ramos():
 
     assert isinstance(forma, dict)
     assert [campo["description"] for campo in forma["fields"]["campo.x"]] == ["de A", "de B"]
+
+
+# NewType, apelido `type` e TypeVar
+
+
+def _com_conjunto(anotacao):
+    """Modelo cuja assinatura sai da forma canônica, com `campo` na anotação dada."""
+    extra: Any = {"rotulos": {"a", "b"}}
+    return create_model(
+        "Modelo", campo=(anotacao, ...), outro=(str, Field(json_schema_extra=extra))
+    )
+
+
+@pytest.mark.parametrize(
+    "declara",
+    [
+        lambda tipo: _newtype("Codigo", tipo),
+        lambda tipo: _apelido("Codigo", tipo),
+        lambda tipo: _ListaGenerica[tipo],
+        lambda tipo: _typevar("Codigo", bound=tipo),
+    ],
+    ids=["newtype", "apelido", "apelido-generico", "typevar"],
+)
+def test_mudar_o_tipo_atras_do_nome_muda_a_assinatura(declara):
+    assert _assinatura(_com_conjunto(declara(str))) != _assinatura(_com_conjunto(declara(int)))
+
+
+@pytest.mark.parametrize(
+    ("por_nome", "direta"),
+    [
+        (_newtype("Codigo", str), str),
+        (_apelido("Itens", list[Cor]), list[Cor]),
+        (_ListaGenerica[Cor], list[Cor]),
+        (_lista(_newtype("Codigo", int)), list[int]),
+    ],
+    ids=["newtype", "apelido", "apelido-generico", "newtype-no-item"],
+)
+def test_anotacao_por_nome_assina_como_a_direta(por_nome, direta):
+    assert _schema_form(_com_conjunto(por_nome)) == _schema_form(_com_conjunto(direta))
+    assert _assinatura(_com_conjunto(por_nome)) == _assinatura(_com_conjunto(direta))
+
+
+def test_apelido_recursivo_entra_por_um_marcador_com_o_nome():
+    json_ = _apelido("Json", "dict[str, list[Json]]")
+
+    assert _schema_leaf(json_, _Descent()) == {
+        "origin": "dict",
+        "args": ["str", {"origin": "list", "args": [{"cycle": "Json"}]}],
+    }
+
+
+def test_apelido_repetido_fora_do_proprio_valor_entra_inteiro_nas_duas_vezes():
+    codigo: Any = _apelido("Codigo", int)
+
+    assert _schema_leaf(dict[codigo, codigo], _Descent()) == {
+        "origin": "dict",
+        "args": ["int", "int"],
+    }
 
 
 def test_configuracao_de_busca_muda_a_assinatura():

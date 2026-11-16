@@ -548,11 +548,42 @@ def _resolved(annotation: object) -> object:
         elif isinstance(annotation, typing.NewType):
             annotation = annotation.__supertype__
         elif type(annotation).__name__ == "TypeAliasType":
-            annotation = annotation.__value__  # ty: ignore[unresolved-attribute]
+            annotation = _alias_value(annotation)
         elif type(get_origin(annotation)).__name__ == "TypeAliasType":
             annotation = _alias_applied(get_origin(annotation), get_args(annotation))
         else:
             return annotation
+
+
+def _alias_value(alias: object) -> Any:  # noqa: ANN401 (anotação de tipo arbitrária)
+    """O `__value__` do apelido `type` com as referências em texto trocadas pelos tipos.
+
+    O valor guarda como texto a referência adiantada, como o `"Item"` de
+    `TypeAliasType("Itens", list["Item"])`, e o valor inteiro escrito entre
+    aspas. O nome é procurado no módulo em que o apelido foi declarado, entre
+    os parâmetros dele e no próprio nome dele, o do apelido recursivo. O
+    apelido não guarda o escopo da função em que foi declarado, e o nome que só
+    existe ali não é achado: o erro diz qual é, porque o submodelo atrás dele
+    ficaria fora da configuração por campo sem aviso.
+    """
+    value = alias.__value__  # ty: ignore[unresolved-attribute]
+    name = alias.__name__  # ty: ignore[unresolved-attribute]
+    module = sys.modules.get(alias.__module__)
+    own = {param.__name__: param for param in alias.__type_params__}  # ty: ignore[unresolved-attribute]
+    try:
+        return typing.get_type_hints(
+            types.SimpleNamespace(__annotations__={name: value}),
+            globalns=vars(module) if module is not None else {},
+            localns={**own, name: alias},
+            include_extras=True,
+        )[name]
+    except NameError as error:
+        msg = (
+            f"O apelido de tipo '{name}' se refere a um nome por texto que não foi "
+            f"encontrado no módulo '{alias.__module__}': {error}. Declare o apelido "
+            "depois da classe e sem aspas, ou declare os dois no nível do módulo."
+        )
+        raise TypeError(msg) from error
 
 
 def _typevar_validated_as(typevar: typing.TypeVar) -> object:
@@ -582,7 +613,7 @@ def _alias_applied(alias: object, args: tuple[Any, ...]) -> object:
     que é o próprio parâmetro não tem `__parameters__` e é trocado direto; o
     que não usa parâmetro nenhum fica como está.
     """
-    value = alias.__value__  # ty: ignore[unresolved-attribute]
+    value = _alias_value(alias)
     # O teste de mutação troca o strict=False por None ou pelo default, que também
     # são falsos, e o () do getattr por None, que o `not` trata igual.
     by_param = dict(zip(alias.__type_params__, args, strict=False))  # ty: ignore[unresolved-attribute]  # pragma: no mutate
@@ -619,7 +650,7 @@ _TEMPORAL = (dt.date, dt.datetime, dt.time, dt.timedelta)
 _CONVERTED_PAIRS = ((float, bool), (bytes, str))
 
 
-def _mixes_converted_types(annotation: object) -> bool:
+def _mixes_converted_types(annotation: object, seen: tuple[object, ...] = ()) -> bool:
     """Se a anotação junta, na união ou na tupla, tipos que o pyarrow converte uns nos outros.
 
     São os de `_TEMPORAL` com qualquer outro tipo e os pares de
@@ -628,10 +659,16 @@ def _mixes_converted_types(annotation: object) -> bool:
     `list[tuple[date, int]]` e para listas aninhadas. O Optional, o Annotated,
     o NewType e o apelido `type` são desembrulhados, na anotação e em cada
     membro. A busca é por identidade, porque o membro pode não ter hash.
+    `seen` são as anotações em que a descida já está: o apelido recursivo,
+    como `type Lista = tuple[int, Lista] | None`, chega de novo a uma delas,
+    que não é percorrida outra vez.
     """
+    if annotation in seen:
+        return False
+    seen = (*seen, annotation)
     annotation = _without_optional(annotation)
     origin, args = get_origin(annotation), get_args(annotation)
-    if origin in (list, tuple) and any(_mixes_converted_types(arg) for arg in args):
+    if origin in (list, tuple) and any(_mixes_converted_types(arg, seen) for arg in args):
         return True
     if origin not in (typing.Union, types.UnionType, tuple):
         return False

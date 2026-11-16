@@ -3,12 +3,12 @@
 import datetime as dt
 import re
 from decimal import Decimal
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
 import pytest
-from typing_extensions import override
+from typing_extensions import TypeAliasType, override
 
 from dataframeit.utils import (
     _AWARE_DATETIME,
@@ -151,6 +151,20 @@ def test_lista_ou_tupla_com_uniao_convertida_mistura_tipos(anotacao):
 @pytest.mark.parametrize("anotacao", [list[int], tuple[str, ...], list[list[dt.date]]])
 def test_lista_ou_tupla_de_um_tipo_so_nao_mistura(anotacao):
     assert _mixes_converted_types(anotacao) is False
+
+
+@pytest.mark.parametrize(
+    ("valor", "mistura"),
+    [
+        ("tuple[int, Lista] | None", False),
+        ("list[Lista] | None", False),
+        ("tuple[dt.date, Lista] | None", True),
+    ],
+)
+def test_apelido_recursivo_e_examinado_sem_voltar_a_ele(valor, mistura):
+    apelido: Any = TypeAliasType
+
+    assert _mixes_converted_types(apelido("Lista", valor)) is mistura
 
 
 # =============================================================================
