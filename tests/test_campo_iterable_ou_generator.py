@@ -138,6 +138,12 @@ def test_uso_da_resposta_que_interrompe_vai_na_excecao():
         _invoke_row(backend, "a", pd.Series({"texto": "a"}), None, ["campo", "ausente"])
 
     assert erro.value.row_usage == uso  # ty: ignore[unresolved-attribute]
+    assert str(erro.value) == (
+        "A resposta trouxe um iterador no lugar dos itens em ['campo']. O pydantic valida "
+        "e serializa a anotação Iterable ou Generator como iterador, e a célula guardaria "
+        "o iterador. Repetir a linha não resolve: declare list[...] nesse campo, ou no "
+        "campo de dentro dele que tem a anotação"
+    )
 
 
 def test_iterable_com_field_serializer_chega_a_saida():

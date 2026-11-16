@@ -160,7 +160,8 @@ def _dump_with_model_sets(response: BaseModel, error: Exception) -> dict[str, An
             isinstance(item, BaseModel) for item in value
         ):
             try:
-                response.model_dump(by_alias=False, include={name})
+                # Só importa se o dump cai; o que ele devolve é descartado.
+                response.model_dump(include={name})
             except _DUMP_ERRORS as field_error:
                 if not _is_unhashable(field_error):
                     raise

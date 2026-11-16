@@ -1475,7 +1475,9 @@ def _reread_as_written(
     de sê-lo quando só algumas colunas são lidas, volta na releitura e desloca
     as seguintes; com index_col, parse_dates ou names, a releitura levanta;
     dtype fixa tipos. A atribuição alinha pelo índice e não acusa a diferença
-    de tamanho.
+    de tamanho. Mesmo sem argumento, o leitor do CSV dá à tabela um índice
+    próprio quando as linhas têm um campo a mais que o cabeçalho, e cada
+    coluna restaurada leva o índice da lida.
     """
     if kwargs:
         return
@@ -1634,7 +1636,9 @@ def _decimal_as_written(raw: pd.Series, read: pd.Series, *, every_cell: bool) ->
     if not every_cell and not any(is_nan):
         return None
     values: list[object] = []
-    for text, found, absent, value in zip(raw, is_nan, read.isna(), read, strict=True):
+    # As colunas têm o mesmo tamanho, e o strict do zip não muda o resultado.
+    cells = zip(raw, is_nan, read.isna(), read, strict=True)  # pragma: no mutate
+    for text, found, absent, value in cells:
         if found:
             values.append(text)
         elif absent:
@@ -1669,9 +1673,9 @@ def _float_nan_as_written(raw: pd.Series, read: pd.Series) -> pd.Series | None:
     if not is_nan.any() and not any(is_quoted):
         return None
     values: list[object] = []
-    for text, found, quoted, absent, value in zip(
-        raw, is_nan, is_quoted, read.isna(), read, strict=True
-    ):
+    # As colunas têm o mesmo tamanho, e o strict do zip não muda o resultado.
+    cells = zip(raw, is_nan, is_quoted, read.isna(), read, strict=True)  # pragma: no mutate
+    for text, found, quoted, absent, value in cells:
         if found:
             values.append(math.nan)
         elif quoted:
@@ -1702,11 +1706,11 @@ def _any_scalar_as_written(raw: pd.Series, read: pd.Series) -> pd.Series | None:
     devolveu. A célula vazia volta None, e as demais ficam como lidas; a
     coluna sem célula trocada fica como lida.
     """
-    values = [
-        None if text == "" else _scalar_or_read(text, value)
-        for text, value in zip(raw, read, strict=True)
-    ]
-    if all(new is value for new, value in zip(values, read, strict=True)):
+    # As colunas têm o mesmo tamanho, e o strict do zip não muda o resultado.
+    cells = zip(raw, read, strict=True)  # pragma: no mutate
+    values = [None if text == "" else _scalar_or_read(text, value) for text, value in cells]
+    restored = zip(values, read, strict=True)  # pragma: no mutate
+    if all(new is value for new, value in restored):
         return None
     return pd.Series(values, index=read.index, dtype=object)
 
@@ -1764,13 +1768,12 @@ def _reread_parquet(df: pd.DataFrame, path: Path, model: type[BaseModel]) -> Non
     for col in floats:
         # O isna da coluna do Arrow só acusa o nulo, e o NaN fica entre os
         # valores: com o nulo trocado por zero, o que resta de NaN é valor.
-        if (
-            is_float_dtype(raw[col])
-            and pd.isna(raw[col].to_numpy(dtype="float64", na_value=0.0)).any()
-        ):
-            df[col] = pd.Series(
-                raw[col].to_numpy(dtype=object, na_value=None), index=df.index, dtype=object
+        if is_float_dtype(raw[col]):
+            without_null = raw[col].to_numpy(
+                na_value=0.0,  # pragma: no mutate (qualquer número serve no lugar do nulo)
             )
+            if pd.isna(without_null).any():
+                df[col] = pd.Series(raw[col].to_numpy(dtype=object, na_value=None), index=df.index)
 
 
 # Os textos que o leitor do pandas devolve ausentes por padrão (o `na_values`
@@ -1854,12 +1857,15 @@ def _normalize_any_columns(df: pd.DataFrame, model: type[BaseModel]) -> None:
             continue
         # Uma lista só: a coluna `str` do pandas 3 cria outro objeto a cada leitura.
         cells = list(df[col])
+        # As listas têm o tamanho da coluna, e o strict do zip não muda o resultado.
+        marked = zip(cells, df[col].isna(), strict=True)  # pragma: no mutate
         values = [
             None if missing else _any_from_text(cell) if isinstance(cell, str) else cell
-            for cell, missing in zip(cells, df[col].isna(), strict=True)
+            for cell, missing in marked
         ]
         # O texto que volta ele mesmo é o próprio objeto lido.
-        if any(new is not cell for new, cell in zip(values, cells, strict=True)):
+        restored = zip(values, cells, strict=True)  # pragma: no mutate
+        if any(new is not cell for new, cell in restored):
             df[col] = pd.Series(values, index=df.index, dtype=object)
 
 
