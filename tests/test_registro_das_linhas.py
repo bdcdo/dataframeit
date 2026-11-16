@@ -7,6 +7,7 @@ import threading
 import time
 import warnings
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -564,6 +565,35 @@ def test_aviso_da_barra_tratado_como_erro_sai_depois_das_marcas_e_da_gravacao(
         erro, KeyboardInterrupt
     )
     _confere_gravado(ckpt, segunda)
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_tqdm_com_a_saida_quebrada_no_meio_da_execucao_nao_troca_o_resultado(monkeypatch, paralelo):
+    """O tqdm de verdade escreve numa saída que passa a levantar BrokenPipeError."""
+
+    class _SaidaQueQuebra:
+        quebrada = False
+
+        def write(self, texto):
+            if self.quebrada:
+                raise BrokenPipeError(32, "Broken pipe")
+            return len(texto)
+
+        def flush(self):
+            pass
+
+    saida = _SaidaQueQuebra()
+    monkeypatch.setattr(core, "tqdm", partial(core.tqdm, file=saida))
+    respostas = _llm()
+
+    def llm(text, *args, **kwargs):
+        saida.quebrada = True
+        return respostas(text)
+
+    with pytest.warns(UserWarning, match=re.escape(_AVISO_DA_BARRA)):
+        resultado = _roda(["a"], llm, parallel_requests=paralelo, track_tokens=False)
+
+    assert resultado["campo1"].tolist() == ["a"]
 
 
 @pytest.mark.parametrize("paralelo", [1, 2])
