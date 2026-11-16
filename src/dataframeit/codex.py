@@ -31,6 +31,7 @@ from .errors import (
     ProviderOverloadedError,
     ProviderTransientError,
     ProviderUsageLimitError,
+    _http_error_status_or_none,
     _is_recoverable_http_status,
     retry_with_backoff,
     validation_error_summary,
@@ -1138,7 +1139,7 @@ def _raise_turn_error(error: TurnError | None) -> NoReturn:
     for variant_type, payload_field in http_variants:
         if not isinstance(root, variant_type):
             continue
-        status = getattr(root, payload_field).http_status_code
+        status = _http_error_status_or_none(getattr(root, payload_field).http_status_code)
         if status == _HTTP_TOO_MANY_REQUESTS:
             error_class = ProviderOverloadedError
         elif status is None or _is_recoverable_http_status(status):

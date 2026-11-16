@@ -662,6 +662,30 @@ def test_codex_repete_os_mesmos_status_que_o_langchain(status):
     assert is_recoverable_error(erro.value) is esperado
 
 
+@pytest.mark.parametrize("status", [-401, 0, 200, 600])
+def test_status_fora_da_faixa_http_e_ausente_nos_backends(status):
+    gerado = pytest.importorskip("openai_codex.generated.v2_all")
+    from dataframeit.codex import _raise_turn_error  # noqa: PLC0415 (extra codex opcional)
+
+    erro_claude = _erro_do_claude_code(status)
+    turno = gerado.TurnError(
+        message="falhou",
+        codexErrorInfo=gerado.CodexErrorInfo(
+            root=gerado.HttpConnectionFailedCodexErrorInfo(
+                httpConnectionFailed=gerado.HttpConnectionFailed.model_construct(
+                    http_status_code=status
+                )
+            )
+        ),
+    )
+    with pytest.raises(ProviderError) as erro_codex:
+        _raise_turn_error(turno)
+
+    for erro in (erro_claude, erro_codex.value):
+        assert type(erro) is ProviderTransientError
+        assert erro.status_code is None
+
+
 # =============================================================================
 # Dependências do provider
 # =============================================================================
