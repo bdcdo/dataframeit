@@ -57,6 +57,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- A resposta com um iterador no lugar dos itens, que o `model_dump` devolve para o campo `Iterable` ou `Generator`, também dentro de submodelo ou de coleção, interrompe a execução na primeira ocorrência, com o campo e a saída (`list[...]`) no aviso "Execução interrompida", nos quatro backends e nos modos de busca. Antes, a célula guardava o iterador, que seguia para o checkpoint e para a retomada. O campo cujo serializador devolve a lista segue aceito (#311).
 - A resposta de um modelo com `set` ou `frozenset` de submodelos, cujo `model_dump` cai com `TypeError: unhashable type: 'dict'`, interrompe a execução na primeira ocorrência, com o motivo e a saída (`list` ou `tuple`) no aviso "Execução interrompida", nos quatro backends. Antes, cada linha gastava as tentativas com a resposta já paga e terminava com status de erro (#284).
 
 - A checagem de tipos que o pyarrow converte uns nos outros, feita na saída polars, não entra em recursão sem fim com o apelido `type` recursivo sobre lista ou tupla, como `type Lista = tuple[int, Lista] | None` (#393).
