@@ -280,6 +280,18 @@ def test_dump_do_conjunto_de_submodelos_sai_na_ordem_do_modelo_e_do_texto_dos_it
     assert (dump["antes"], dump["depois"]) == ("a", [1, 2])
 
 
+class ConjuntoComAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    rotulo: str = Field(alias="apelido")
+    campo: set[Cidade]
+
+
+def test_dump_do_conjunto_de_submodelos_sai_pelo_nome_dos_campos_com_alias():
+    resposta = ConjuntoComAlias(apelido="a", campo={Cidade(nome="SP")})
+
+    assert dump_response(resposta) == {"rotulo": "a", "campo": [{"nome": "SP"}]}
+
+
 def test_dump_do_conjunto_de_submodelos_com_conjunto_dentro_do_item():
     resposta = ConjuntoDeRegioes(
         campo={Regiao(nome="Sudeste", cidades=frozenset({Cidade(nome="SP"), Cidade(nome="RJ")}))}

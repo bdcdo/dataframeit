@@ -3782,7 +3782,8 @@ def _to_parquet_keeping_nan(df: pd.DataFrame, path: Path, nan_columns: Collectio
         table = table.set_column(
             table.schema.get_field_index(col),
             col,
-            pa.array(values, type=pa.float64(), from_pandas=False),
+            # De uma lista de float e None, o Arrow infere o float64 e mantém o NaN.
+            pa.array(values),
         )
     pq.write_table(table, path)
 

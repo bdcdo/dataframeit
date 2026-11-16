@@ -457,6 +457,16 @@ def test_read_df_devolve_o_texto_do_decimal_nan_e_none_na_celula_vazia(tmp_path)
 
     assert lido["campo"].dtype == object
     assert lido["campo"].tolist() == [1.5, "NaN", None, "-NaN"]
+    # Na união, o número fica como o leitor o deu, e não vira Decimal.
+    assert type(lido["campo"][0]) is float
+
+
+def test_read_df_devolve_none_ao_lado_do_decimal_nan_na_coluna_sem_numero(tmp_path):
+    lido = read_df(_csv(tmp_path, ["a,NaN", "b,", "c,sNaN"]), _ModeloDecimal)
+
+    # Só com textos, a coluna sem o dtype seria a `str` do pandas 3, com NaN na célula vazia.
+    assert lido["campo"].dtype == object
+    assert lido["campo"].tolist() == ["NaN", None, "sNaN"]
 
 
 @pytest.mark.parametrize("celula", ["nan", "NA", "NaN ", "xNaN", "NaNx", "ssNaN", "sNaNx"])
@@ -1412,3 +1422,127 @@ def test_retomada_do_checkpoint_devolve_o_texto_do_campo_float_ou_any(tmp_path, 
     esperados = [*respostas, "z"]
     assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
     assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+# =============================================================================
+# Forma do que a gravação e a releitura devolvem
+# =============================================================================
+
+
+def test_checkpoint_grava_com_acento_o_texto_de_any_entre_aspas():
+    df = pd.DataFrame({"campo": pd.Series(['["ação"]', "é"], dtype=object)})
+
+    gravado = _structures_as_json(df, any_columns=["campo"])
+
+    assert gravado["campo"].tolist() == ['"[\\"ação\\"]"', "é"]
+
+
+def test_parquet_com_nan_de_float_nao_grava_o_indice_da_entrada(tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    caminho = tmp_path / "ck.parquet"
+    df = pd.DataFrame({"campo": pd.Series([1.5, _NAN], dtype=object)}, index=[10, 20])
+
+    _save_checkpoint(df, caminho, nan_fields={"campo"})
+
+    assert pq.read_table(caminho).column_names == ["campo"]
+    assert pd.read_parquet(caminho).index.tolist() == [0, 1]
+
+
+def test_read_df_rele_o_nan_de_float_do_parquet_com_indice_proprio(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    caminho = tmp_path / "saida.parquet"
+    tabela = pa.Table.from_pandas(pd.DataFrame({"campo": [0.0, 0.0, 0.0]}, index=[10, 20, 30]))
+    coluna = pa.array([1.5, _NAN, None])
+    pq.write_table(tabela.set_column(0, "campo", coluna), caminho)
+
+    lido = read_df(caminho, _ModeloFloat)
+
+    assert lido.index.tolist() == [10, 20, 30]
+    _confere_floats(lido["campo"].tolist(), [1.5, _NAN, None])
+
+
+def test_read_df_rele_como_objeto_o_nan_de_float_do_parquet_sem_nulo(tmp_path):
+    pytest.importorskip("pyarrow")
+    caminho = tmp_path / "ck.parquet"
+    _save_checkpoint(
+        pd.DataFrame({"campo": pd.Series([1.5, _NAN], dtype=object)}), caminho, nan_fields={"campo"}
+    )
+
+    lido = read_df(caminho, _ModeloFloat)
+
+    assert lido["campo"].dtype == object
+    _confere_floats(lido["campo"].tolist(), [1.5, _NAN])
+
+
+def test_read_df_devolve_o_texto_nan_entre_aspas_da_coluna_de_float_ou_texto_sem_ausente(tmp_path):
+    modelo = create_model("ModeloDoCaso", campo=(Union[float, str], ...))
+
+    lido = read_df(_csv(tmp_path, ["a,x", 'b,"""NaN"""']), modelo)
+
+    assert lido["campo"].tolist() == ["x", "NaN"]
+
+
+def test_read_df_sem_normalizar_devolve_none_na_celula_vazia_do_texto_de_any(tmp_path):
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+
+    lido = read_df(_csv(tmp_path, ["a,x", "b,", "c,y"]), modelo, normalize=False)
+
+    assert lido["campo"].dtype == object
+    assert lido["campo"].tolist() == ["x", None, "y"]
+
+
+@pytest.mark.parametrize("ext", [".xlsx", ".parquet"])
+def test_read_df_devolve_none_na_celula_vazia_do_texto_de_any(tmp_path, ext):
+    _exige_formato(ext)
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+    caminho = tmp_path / f"saida{ext}"
+    saida = pd.DataFrame({"campo": pd.Series(["abc", None, "x"], dtype=object)})
+    _save_checkpoint(saida, caminho, any_fields={"campo"})
+
+    lido = read_df(caminho, modelo)
+
+    assert lido["campo"].dtype == object
+    assert lido["campo"].tolist() == ["abc", None, "x"]
+
+
+def test_read_df_devolve_a_estrutura_de_any_depois_de_um_campo_que_nao_e_any(tmp_path):
+    modelo = create_model("ModeloDoCaso", outra=(str, ...), campo=(Any, ...))
+
+    lido = read_df(_csv(tmp_path, ['a,"[1, 2]"', "b,x"]), modelo)
+
+    assert lido["campo"].tolist() == [[1, 2], "x"]
+
+
+def test_read_df_devolve_a_estrutura_de_any_na_linha_do_indice_lido(tmp_path):
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+
+    lido = read_df(_csv(tmp_path, ['a,"[1, 2]"', "b,x"]), modelo, index_col="outra")
+
+    assert lido.index.tolist() == ["a", "b"]
+    assert lido["campo"].tolist() == [[1, 2], "x"]
+
+
+def test_read_df_rele_as_colunas_do_csv_com_indice_tirado_da_primeira_coluna(tmp_path):
+    """Com um campo a mais que o cabeçalho em cada linha, o leitor faz da primeira coluna o índice."""
+    modelo = create_model(
+        "ModeloDoCaso",
+        inteiro=(Optional[int], ...),
+        decimal=(Decimal, ...),
+        real=(Optional[float], ...),
+        livre=(Any, ...),
+    )
+    caminho = tmp_path / "saida.csv"
+    caminho.write_text(
+        "inteiro,decimal,real,livre,outra\n"
+        "2,9007199254740993,1.10,NaN,5,a\n0,,2.20,1.5,x,b\n1,7,3.30,,y,c\n",
+        encoding="utf-8",
+    )
+
+    lido = read_df(caminho, modelo)
+
+    assert lido.index.tolist() == [2, 0, 1]
+    assert lido["inteiro"].tolist() == [9007199254740993, None, 7]
+    assert [str(valor) for valor in lido["decimal"]] == ["1.10", "2.20", "3.30"]
+    _confere_floats(lido["real"].tolist(), [_NAN, 1.5, None])
+    assert lido["livre"].tolist() == [5, "x", "y"]

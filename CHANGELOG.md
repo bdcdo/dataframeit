@@ -22,6 +22,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Alterado
 
+- Os 60 mutantes que sobreviviam nas funções da retomada do `Any`, do `Decimal` e do NaN (#399) e do conjunto de submodelos (#400) viraram teste, perderam o argumento que não mudava o resultado (`type=` e `from_pandas=` do Arrow, `dtype=` repetido na releitura do parquet, `by_alias` do dump descartado) ou, no `strict=True` do `zip` de colunas do mesmo tamanho, ganharam `# pragma: no mutate` com o motivo (#406).
 - O modelo falso dos testes de busca web entrega as mensagens por um iterador de classe, e não por um gerador: no modo paralelo, duas linhas pediam a próxima mensagem ao mesmo tempo, o gerador levantava `ValueError: generator already executing`, e `test_limite_do_plano_do_tavily_interrompe_a_execucao[2]` falhava em cerca de 2 a cada mil execuções com a máquina sob carga.
 - A página de saída estruturada e a tabela de exceções dizem que o campo `Iterable` ou `Generator` interrompe a execução na primeira resposta em que ele não é `None`, mesmo com a lista vazia e com a chamada já feita, e que no campo opcional as respostas `None` são gravadas antes disso. Um teste fixa o caso opcional dos dois tipos.
 - O teste do Ctrl-C no reprocessamento parte de 7 linhas processadas, e não de 5: no modo paralelo, as 5 podiam estar todas com os workers quando o sinal chegava, não sobrava linha com o valor antigo e o teste falhava em cerca de 2 a cada mil execuções (#394).
