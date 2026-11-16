@@ -92,6 +92,13 @@ _CODEX_CONFIG_OVERRIDES = (
     # termina; desligada, o turno falha e a nova tentativa fica com o
     # `retry_with_backoff` da linha.
     "features.unbounded_connection_retries=false",
+    # Ligada, o request dos modelos com `use_responses_lite` leva as instruções
+    # base duas vezes quando não há ferramenta a oferecer: uma no estado do
+    # mundo e outra no prefixo do request.
+    "features.incremental_tools=false",
+    # Ligada, o `input` ganha um item `configuration_update` com o mesmo effort
+    # que o request já leva em `reasoning`.
+    "features.reasoning_effort_override=false",
 )
 # Campos do catálogo de modelos que põem ferramentas no request, com o valor que
 # as tira. O runtime lê esses campos do catálogo que baixa do servidor, e
