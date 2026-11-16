@@ -15,6 +15,7 @@ from typing_extensions import override
 from .errors import (
     MAX_REJECTED_RULES,
     ProviderRejectedOutputError,
+    dump_response,
     retry_with_backoff,
     validation_error_summary,
 )
@@ -355,7 +356,7 @@ def call_langchain(  # noqa: C901 (cada caminho de recusa preserva o uso antes d
         if parsed is None:
             _request_correction(pydantic_model, raw_message, None, correction)
 
-        return {"data": parsed.model_dump(by_alias=False), "usage": dict(usage_total) or None}
+        return {"data": dump_response(parsed), "usage": dict(usage_total) or None}
 
     def _on_failure(error: Exception) -> None:
         error.row_usage = usage_total  # ty: ignore[unresolved-attribute]

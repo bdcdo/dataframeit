@@ -25,7 +25,7 @@ from .utils import _user_stacklevel
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
 
-    from pydantic import ValidationError
+    from pydantic import BaseModel, ValidationError
 
     from .search import SearchProvider
 
@@ -96,6 +96,30 @@ class ProviderConfigurationError(ValueError):
 
 class ProviderOutputError(ValueError):
     """Resposta definitiva incompatível com o contrato de saída."""
+
+
+def dump_response(response: BaseModel) -> dict[str, Any]:
+    """O model_dump da resposta validada, pelo nome dos campos.
+
+    O dump de um conjunto monta outro conjunto com o dump de cada item, e o
+    item que vira dict, como o submodelo, não é hashable; a chave de dict
+    que vira dict também não. O model_dump cai com TypeError depois de a
+    resposta ser paga, a cada resposta com um item desses, e por isso a
+    falha interrompe a execução em vez de gastar as tentativas de cada linha.
+    """
+    try:
+        return response.model_dump(by_alias=False)
+    except TypeError as error:
+        # O texto é o do Python para o valor que não entra em conjunto nem vira chave.
+        if "unhashable type" not in str(error):
+            raise
+        msg = (
+            f"O model_dump da resposta caiu com TypeError: {error}. O modelo "
+            f"{type(response).__name__} tem um set, um frozenset ou uma chave de dict cujos "
+            "itens viram dict no dump, como os de submodelos, e o dict não é hashable. "
+            "Repetir a linha não resolve: declare o conjunto como list ou tuple"
+        )
+        raise ProviderAbortError(msg) from error
 
 
 # Teto de erros de validação listados por resposta recusada, na mensagem da

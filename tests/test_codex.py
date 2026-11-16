@@ -1389,6 +1389,28 @@ class TestCodexInvocation:
 
         assert client.thread_start.call_count == 1
 
+    def test_conjunto_de_submodelos_interrompe_sem_nova_tentativa(self, codex_sdk, tmp_path):
+        class Cidade(BaseModel):
+            model_config = ConfigDict(frozen=True)
+            nome: str
+
+        class ConjuntoDeModelo(BaseModel):
+            campo: set[Cidade]
+
+        backend, client, _, _ = initialized_backend(
+            tmp_path, codex_sdk, make_result(codex_sdk, response='{"campo": [{"nome": "SP"}]}')
+        )
+        backend = dataclasses.replace(
+            backend,
+            config=dataclasses.replace(backend.config, max_retries=3),
+            _pydantic_model=ConjuntoDeModelo,
+        )
+
+        with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+            backend.invoke("texto")
+
+        assert client.thread_start.call_count == 1
+
     def test_number_in_rejected_response_is_not_a_credential_error(self, codex_sdk, tmp_path):
         response = '{"sentimento": "Súmula 403 do STJ", "confianca": "art. 401"}'
         backend, _, _, _ = initialized_backend(

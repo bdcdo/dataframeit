@@ -51,6 +51,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- A resposta de um modelo com `set` ou `frozenset` de submodelos, cujo `model_dump` cai com `TypeError: unhashable type: 'dict'`, interrompe a execução na primeira ocorrência, com o motivo e a saída (`list` ou `tuple`) no aviso "Execução interrompida", nos quatro backends. Antes, cada linha gastava as tentativas com a resposta já paga e terminava com status de erro (#284).
+
 - Os backends `claude_code` e `codex` tratam status fora de 400 a 599 como ausente, como o LangChain, e repetem a falha de execução sem classificar pelo número inválido (#309).
 - A retomada da saída pandas interrompida mantém o NaN que um campo `Any` recebeu, em vez de trocá-lo por `None` (#252).
 - O checkpoint grava como texto JSON a lista, o dict e a tupla de um campo `Any`, também no parquet, e a retomada e `read_df` com `model` os devolvem como lista e dict: o parquet não troca mais o inteiro por float nem acrescenta as chaves das outras linhas, e o CSV e o XLSX não devolvem mais o texto JSON ao lado dos dicts das linhas novas. O texto de um campo `Any` que se leria como estrutura é gravado como texto JSON entre aspas e volta o mesmo texto (#252).

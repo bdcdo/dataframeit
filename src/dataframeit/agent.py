@@ -29,7 +29,12 @@ from .conditional import (
     should_skip_field,
     topological_sort,
 )
-from .errors import ProviderOutputError, retry_with_backoff, validation_error_summary
+from .errors import (
+    ProviderOutputError,
+    dump_response,
+    retry_with_backoff,
+    validation_error_summary,
+)
 from .llm import (
     _USAGE_COUNTERS,
     LLMConfig,
@@ -570,11 +575,7 @@ def call_agent(  # noqa: PLR0913, PLR0917 (assinatura comum aos modos de busca, 
             msg = "Agente não retornou resposta estruturada"
             raise ValueError(msg)
 
-        data = (
-            structured.model_dump(by_alias=False)
-            if hasattr(structured, "model_dump")
-            else structured
-        )
+        data = dump_response(structured) if hasattr(structured, "model_dump") else structured
 
         response = {"data": data, "usage": {**usage_total, "search_provider": provider.name}}
 
