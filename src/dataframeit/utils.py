@@ -282,6 +282,20 @@ def _admits_int(annotation: object) -> bool:
     )
 
 
+def _admits_any(annotation: object) -> bool:
+    """Se a anotação é `Any` ou `object`, ou a união com um deles entre os membros.
+
+    O campo aceita qualquer valor, e a validação não diz em que forma a célula
+    relida de um arquivo deveria estar.
+    """
+    return any(member is typing.Any or member is object for member in _members(annotation))
+
+
+def _admits_decimal(annotation: object) -> bool:
+    """Se a anotação é `Decimal`, ou a união com ele entre os membros."""
+    return any(member is Decimal for member in _members(annotation))
+
+
 def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     """Os campos com exclude=True, que não saem no model_dump e que a execução não grava."""
     return frozenset(
@@ -1255,6 +1269,7 @@ def read_df(
     if model is not None:
         _reread_text_columns(df, file, ext, model, kwargs)
         _reread_int_columns(df, file, ext, model, kwargs)
+        _reread_decimal_nan(df, file, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -1265,6 +1280,7 @@ def read_df(
         complex_fields = get_complex_fields(model)
         if complex_fields:
             normalize_complex_columns(df, complex_fields)
+        _normalize_any_columns(df, model)
     else:
         # Normalizar todas as colunas que parecem ter JSON
         _normalize_all_json_columns(df)
@@ -1386,6 +1402,101 @@ def _reread_int_columns(
         exact = {col: list(map(_int_or_read, raw[col], df[col])) for col in columns}
     for col, values in exact.items():
         if any(type(v) is int for v in values):
+            df[col] = pd.Series(values, index=df.index, dtype=object)
+
+
+# O texto que o str() dá ao Decimal NaN quieto, com sinal e diagnóstico.
+_DECIMAL_NAN_TEXT = re.compile(r"-?NaN\d*")
+
+
+def _reread_decimal_nan(
+    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
+) -> None:
+    """Relê do CSV e do XLSX o texto do `Decimal` NaN nos campos que admitem `Decimal`, in-place.
+
+    O checkpoint grava o Decimal NaN como o texto "NaN" (`_structures_as_json`),
+    que o leitor devolve ausente, como a célula vazia da linha pendente. A
+    coluna em que ele aparece passa a object, com o texto gravado, None na
+    célula ausente e as demais como lidas. A validação da retomada devolve o
+    Decimal NaN ao campo que o aceita, e o campo que também admite texto fica
+    com o texto. O parquet já devolve o texto. Argumento de leitura extra
+    desliga a releitura, como em `_reread_text_columns`.
+    """
+    reader = _TEXT_READERS.get(ext)
+    if reader is None or kwargs:
+        return
+    columns = [
+        f
+        for f, info in model.model_fields.items()
+        if f in df.columns and _admits_decimal(info.annotation)
+    ]
+    if not columns:
+        return
+    # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
+    raw = reader(
+        path,
+        usecols=columns,  # pragma: no mutate
+        dtype=str,
+        na_filter=False,
+    )
+    for col in columns:
+        is_nan = [_DECIMAL_NAN_TEXT.fullmatch(text) is not None for text in raw[col]]
+        if not any(is_nan):
+            continue
+        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
+        # têm o mesmo tamanho.
+        values = [
+            text if found else None if absent else read
+            for text, found, absent, read in zip(
+                raw[col], is_nan, df[col].isna(), df[col], strict=True
+            )
+        ]
+        df[col] = pd.Series(values, index=df.index, dtype=object)
+
+
+def _any_from_text(text: str) -> object:
+    """O valor que o checkpoint gravou num campo `Any` como o texto `text`.
+
+    O checkpoint grava em JSON a lista, o dict e a tupla de um campo `Any`, e o
+    texto que se leria como uma dessas estruturas, ou como texto JSON entre
+    aspas, ele grava como texto JSON (`_structures_as_json`): assim todo texto
+    volta o mesmo, e só a estrutura volta estrutura. O texto que não é nenhum
+    dos dois volta ele mesmo.
+    """
+    if text.startswith('"'):
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            return text
+        return decoded if isinstance(decoded, str) else text
+    return normalize_value(text)
+
+
+def _normalize_any_columns(df: pd.DataFrame, model: type[BaseModel]) -> None:
+    """Devolve às colunas de campo `Any` do modelo o que o checkpoint gravou em JSON, in-place.
+
+    A coluna em que algum texto volta outro valor (`_any_from_text`) passa a
+    object, com None na célula ausente; a coluna sem esses textos fica como
+    lida, com o tipo que o leitor deu.
+    """
+    for col, info in model.model_fields.items():
+        if (
+            col not in df.columns
+            or not _admits_any(info.annotation)
+            or not is_string_dtype(df[col].dtype)
+        ):
+            continue
+        # Uma lista só: a coluna `str` do pandas 3 cria outro objeto a cada leitura.
+        cells = list(df[col])
+        values = [
+            None if missing else _any_from_text(cell) if isinstance(cell, str) else cell
+            for cell, missing in zip(cells, df[col].isna(), strict=True)
+        ]
+        # O texto que volta ele mesmo é o próprio objeto lido.
+        if any(
+            isinstance(cell, str) and new is not cell
+            for new, cell in zip(values, cells, strict=True)
+        ):
             df[col] = pd.Series(values, index=df.index, dtype=object)
 
 

@@ -52,6 +52,9 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 ### Corrigido
 
 - Os backends `claude_code` e `codex` tratam status fora de 400 a 599 como ausente, como o LangChain, e repetem a falha de execução sem classificar pelo número inválido (#309).
+- A retomada da saída pandas interrompida mantém o NaN que um campo `Any` recebeu, em vez de trocá-lo por `None` (#252).
+- O checkpoint grava como texto JSON a lista, o dict e a tupla de um campo `Any`, também no parquet, e a retomada e `read_df` com `model` os devolvem como lista e dict: o parquet não troca mais o inteiro por float nem acrescenta as chaves das outras linhas, e o CSV e o XLSX não devolvem mais o texto JSON ao lado dos dicts das linhas novas. O texto de um campo `Any` que se leria como estrutura é gravado como texto JSON entre aspas e volta o mesmo texto (#252).
+- O checkpoint grava o `Decimal` NaN como o texto `NaN`, com os demais `Decimal` da coluna em texto, e a retomada o devolve como `Decimal` NaN ao campo que o aceita, em vez de recusar a linha já processada; `read_df` com `model` traz o texto `NaN` na coluna do campo que admite `Decimal` (#252).
 - A assinatura de uma condição dataclass com conjunto em campo `init=False` lê o default que ficou só na classe. Mudar esse valor passa a recusar a retomada do checkpoint; instâncias equivalentes assinam igual. Dataclasses sem conjunto mantêm a assinatura anterior.
 - Os avisos de falha de linha, redução de workers, falha em `on_row_done`, erro do executor e colunas já existentes apontam a chamada de `dataframeit()`, inclusive quando a linha roda numa thread.
 - Com `strict=True`, a retomada compara só o caminho de cada erro da validação estrita: a data relida como texto num submodelo é aceita mesmo quando um validador dele muda outro campo a cada passada; antes, a linha era acusada para reprocessar (#378).
