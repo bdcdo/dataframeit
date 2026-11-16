@@ -19,10 +19,11 @@ _TEXTOS = {"texto": ["a", "b", "c"]}
 _DECIMAL_COM_NAN = Annotated[Decimal, Field(allow_inf_nan=True)]
 
 
-def _entrada(tipo: str):
+def _entrada(tipo: str, linhas: int = 3):
+    textos = {"texto": [f"t{i}" for i in range(linhas)]}
     if tipo == "polars":
-        return pytest.importorskip("polars").DataFrame(_TEXTOS)
-    return pd.DataFrame(_TEXTOS)
+        return pytest.importorskip("polars").DataFrame(textos)
+    return pd.DataFrame(textos)
 
 
 def _exige_formato(ext: str) -> None:
@@ -60,8 +61,11 @@ def _rodar(df, anotacao, respostas, **opcoes):
 def _retomar_do_checkpoint(caminho, entrada, anotacao, concluidas, nova):
     """Interrompe depois de `concluidas` e retoma pelo checkpoint com a resposta `nova`."""
     opcoes = {"checkpoint_path": str(caminho), "batch_size": 1}
-    _rodar(_entrada(entrada), anotacao, [*concluidas, ProviderAbortError("limite")], **opcoes)
-    saida, chamadas = _rodar(_entrada(entrada), anotacao, [nova], resume=True, **opcoes)
+    linhas = len(concluidas) + 1
+    _rodar(
+        _entrada(entrada, linhas), anotacao, [*concluidas, ProviderAbortError("limite")], **opcoes
+    )
+    saida, chamadas = _rodar(_entrada(entrada, linhas), anotacao, [nova], resume=True, **opcoes)
     assert chamadas == 1
     return list(saida["campo"])
 
@@ -229,19 +233,10 @@ _TEXTOS_AMBIGUOS = ["[1, 2]", " [1] ", "{'a': 1}", '"sim"', '"a" e "b"', "{}", '
 @pytest.mark.parametrize("entrada", ["pandas", "polars"])
 def test_retomada_do_checkpoint_devolve_o_texto_de_any_que_parece_json(tmp_path, entrada, ext):
     _exige_formato(ext)
-    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
-    opcoes = {"checkpoint_path": str(tmp_path / f"ck{ext}"), "batch_size": 1}
-    textos = {"texto": [f"t{i}" for i in range(len(_TEXTOS_AMBIGUOS) + 1)]}
-    pl = pytest.importorskip("polars") if entrada == "polars" else None
 
-    def df():
-        return pl.DataFrame(textos) if pl else pd.DataFrame(textos)
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", entrada, Any, _TEXTOS_AMBIGUOS, "fim")
 
-    _rodar(df(), modelo, [*_TEXTOS_AMBIGUOS, ProviderAbortError("limite")], **opcoes)
-    saida, chamadas = _rodar(df(), modelo, ["fim"], resume=True, **opcoes)
-
-    assert chamadas == 1
-    assert list(saida["campo"]) == [*_TEXTOS_AMBIGUOS, "fim"]
+    assert valores == [*_TEXTOS_AMBIGUOS, "fim"]
 
 
 @pytest.mark.parametrize(

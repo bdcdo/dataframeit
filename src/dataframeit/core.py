@@ -3398,9 +3398,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
             values = df[target].to_numpy(dtype=object).copy()
         # Cópia: o array da coluna de objetos é o da própria coluna, só de leitura.
         saved_values = saved[column].to_numpy(dtype=object, copy=True)
-        if saved[column].dtype != object or _admits_any(
-            questions.model_fields[str(column)].annotation
-        ):
+        if saved[column].dtype != object or str(column) in checkpoint.any_fields:
             saved_values[saved[column].isna().to_numpy()] = None
         values[concluded] = saved_values[concluded]
         df[target] = pd.Series(
@@ -3514,26 +3512,15 @@ def _structure_as_json(value: object) -> object:
     return _enum_as_value(value)
 
 
-def _cell_converter(
-    values: Iterable[object], *, structures: bool, any_text: bool
-) -> Callable[[object], object]:
-    """A conversão de cada célula de uma coluna de objeto para o checkpoint (`_structures_as_json`)."""
-    convert = _structure_as_json if structures else _enum_as_value
-    if any_text:
-        as_json = convert
-
-        def convert(value: object) -> object:
-            if isinstance(value, str) and _any_from_text(value) is not value:
-                return json.dumps(value, ensure_ascii=False)
-            return as_json(value)
-
-    if any(isinstance(value, Decimal) and value.is_qnan() for value in values):
-        inner = convert
-
-        def convert(value: object) -> object:
-            return str(value) if isinstance(value, Decimal) else inner(value)
-
-    return convert
+def _cell_for_checkpoint(
+    value: object, *, structures: bool, any_text: bool, decimal_text: bool
+) -> object:
+    """A célula de uma coluna de objeto como o checkpoint a grava (`_structures_as_json`)."""
+    if decimal_text and isinstance(value, Decimal):
+        return str(value)
+    if any_text and isinstance(value, str) and _any_from_text(value) is not value:
+        return json.dumps(value, ensure_ascii=False)
+    return _structure_as_json(value) if structures else _enum_as_value(value)
 
 
 def _structures_as_json(
@@ -3574,10 +3561,13 @@ def _structures_as_json(
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
-            convert = _cell_converter(
-                out[col],
+            convert = partial(
+                _cell_for_checkpoint,
                 structures=columns is None or col in columns or col in any_columns,
                 any_text=col in any_columns,
+                decimal_text=any(
+                    isinstance(value, Decimal) and value.is_qnan() for value in out[col]
+                ),
             )
             converted = out[col].map(convert)
             # Series.map infere o tipo do resultado, e uma coluna com int ao
