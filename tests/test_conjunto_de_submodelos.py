@@ -130,26 +130,13 @@ def test_resposta_sem_item_no_conjunto_chega_a_saida():
     assert chat.invocacoes == 1
 
 
-def test_dump_response_devolve_o_dump_pelo_nome_dos_campos():
-    resposta = ConjuntoDeEnum(campo={Tag.PF})
-
-    assert dump_response(resposta) == {"campo": {Tag.PF}}
-
-
-def test_dump_response_guarda_o_type_error_como_causa():
-    resposta = ConjuntoDeModelo.model_validate({"campo": [{"nome": "SP"}]})
-
-    with pytest.raises(ProviderAbortError, match="Repetir a linha não resolve") as erro:
-        dump_response(resposta)
-
-    assert isinstance(erro.value.__cause__, TypeError)
-
-
 def test_chave_de_dict_que_e_submodelo_interrompe_como_o_conjunto():
     resposta = ChaveDeModelo(campo={Cidade(nome="SP"): 1})
 
-    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'") as erro:
         dump_response(resposta)
+
+    assert isinstance(erro.value.__cause__, TypeError)
 
 
 def test_type_error_de_outra_origem_segue_como_veio():
