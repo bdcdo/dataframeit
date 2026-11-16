@@ -2837,9 +2837,10 @@ def _pandas_internals(cls: type) -> frozenset[str]:
     """Atributos que o pandas guarda na instância da classe dele ou de uma subclasse.
 
     No DataFrame e na Series, os do DataFrame e da Series vazios. No Index e no
-    array do pandas, os do Index vazio, os que as classes do pandas na MRO
+    array do pandas, os do Index vazio, entre eles o `_cache` que o
+    `cache_readonly` preenche com o uso, e os que as classes do pandas na MRO
     declaram, como o `_pa_array` do array Arrow, cujo repr mostra o arranjo
-    dos blocos, e o `_cache` que o `cache_readonly` cria no primeiro uso.
+    dos blocos.
     """
     if issubclass(cls, (pd.DataFrame, pd.Series)):
         return _TABLE_INTERNALS
@@ -2849,7 +2850,7 @@ def _pandas_internals(cls: type) -> frozenset[str]:
         if base.__module__.partition(".")[0] == "pandas"
         for name in inspect.get_annotations(base)
     )
-    return _INDEX_INTERNALS | {"_cache", *declared}
+    return _INDEX_INTERNALS | set(declared)
 
 
 def _stable(value: object, descent: _Descent | None = None) -> object:
