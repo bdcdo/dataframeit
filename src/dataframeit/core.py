@@ -102,7 +102,9 @@ from .utils import (
     _is_structure_class,
     _json_default,
     _keeps_nan,
+    _mixes_text_and_number,
     _quoted_nan_text,
+    _quoted_scalar_text,
     _reads_as_other,
     _resolved,
     _silent_slice_write,
@@ -1994,6 +1996,11 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 for field_name, field in questions.model_fields.items()
                 if _accepts_only_decimal(field.annotation)
             ),
+            scalar_fields=frozenset(
+                field_name
+                for field_name, field in questions.model_fields.items()
+                if _mixes_text_and_number(field.annotation)
+            ),
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
             with _silent_slice_write(df_pandas):
@@ -2050,6 +2057,10 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     # laço das linhas, para o reprocessamento campo a campo e para as marcas da
     # interrupção. Tirado antes dela, que grava None nas células ausentes.
     any_nan_columns = _any_nan_columns(df_pandas, questions)
+    if checkpoint is not None and status_col in df_pandas.columns and not input_has_status:
+        # A coluna que veio do checkpoint desta execução (`_resume_from_checkpoint`)
+        # guarda o NaN à parte da célula vazia, também sem nenhum None.
+        any_nan_columns |= checkpoint.any_fields.intersection(df_pandas.columns)
     # Com resume True ou False, a linha 'processed' não vai ao modelo; o campo
     # obrigatório que ela não tem é acusado aqui, em vez de sair vazio.
     incompatible_columns, processed_values = _validate_processed_rows(
@@ -3523,10 +3534,8 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         # porque o pandas 3 infere a coluna de texto como `str`, que troca o
         # None por NaN. Na coluna relida com outro dtype, como o float64 do
         # parquet, a célula nula é o None que a execução gravou, e nos objetos
-        # o NaN contaria como valor. Na coluna de objetos de um campo `Any`,
-        # o NaN é o ausente do leitor: nenhum formato guarda o NaN de `Any`, e
-        # ao lado do None da linha pendente a validação da retomada o contaria
-        # como valor.
+        # o NaN contaria como valor. Na coluna de objetos, `read_df` já devolve
+        # None na célula ausente, e o NaN que resta é o que o modelo devolveu.
         # O np.empty de objetos começa com None em toda célula.
         if target is None:
             values = np.empty(len(df), dtype=object)
@@ -3535,7 +3544,7 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
             values = df[target].to_numpy(dtype=object).copy()
         # Cópia: o array da coluna de objetos é o da própria coluna, só de leitura.
         saved_values = saved[column].to_numpy(dtype=object, copy=True)
-        if saved[column].dtype != object or str(column) in checkpoint.any_fields:
+        if saved[column].dtype != object:
             saved_values[saved[column].isna().to_numpy()] = None
         values[concluded] = saved_values[concluded]
         df[target] = pd.Series(
@@ -3657,12 +3666,15 @@ def _cell_for_checkpoint(  # noqa: PLR0913 (uma opção por forma de gravar a c�
     text_file: bool,
     decimal_text: bool,
     nan_text: bool,
+    scalar_text: bool,
 ) -> object:
     """A célula de uma coluna de objeto como o checkpoint a grava (`_structures_as_json`)."""
     if decimal_text and isinstance(value, Decimal):
         return str(value)
     if nan_text and isinstance(value, float) and math.isnan(value):
         return _FLOAT_NAN_TEXT
+    if scalar_text and isinstance(value, str):
+        return _quoted_scalar_text(value)
     # No campo que também é `Any`, o escape de `any_text` abaixo já põe o texto
     # "NaN" entre aspas, e o texto que se leria como estrutura precisa dele.
     if nan_text and not any_text and isinstance(value, str):
@@ -3676,12 +3688,13 @@ def _cell_for_checkpoint(  # noqa: PLR0913 (uma opção por forma de gravar a c�
     return _structure_as_json(value) if structures else _enum_as_value(value)
 
 
-def _structures_as_json(  # noqa: PLR0913 (uma família de colunas por forma de gravar)
+def _structures_as_json(  # noqa: PLR0913, PLR0917 (uma família de colunas por forma de gravar)
     df: pd.DataFrame,
     columns: Collection[str] | None = None,
     any_columns: Collection[str] = (),
     nan_columns: Collection[str] = (),
     decimal_columns: Collection[str] = (),
+    scalar_columns: Collection[str] = (),
     *,
     text_file: bool = False,
 ) -> pd.DataFrame:
@@ -3709,11 +3722,14 @@ def _structures_as_json(  # noqa: PLR0913 (uma família de colunas por forma de 
 
     Com `text_file`, o Decimal das `decimal_columns`, as dos campos só de
     `Decimal`, vai como texto, que o XLSX gravaria como double, e o NaN das
-    `nan_columns`, as dos campos que admitem `float`, vai como o texto "NaN":
-    o CSV e o XLSX o gravariam como a célula vazia da linha pendente. O texto
-    "NaN" que o modelo devolveu num campo desses que também admite texto vai
-    com um par de aspas (`_quoted_nan_text`). `read_df` com o modelo relê os
-    três (`_raw_restorer`).
+    `nan_columns`, as dos campos que admitem `float` e dos campos `Any`, vai
+    como o texto "NaN": o CSV e o XLSX o gravariam como a célula vazia da
+    linha pendente. O texto "NaN" que o modelo devolveu num campo desses que
+    também admite texto vai com um par de aspas (`_quoted_nan_text`). Nas
+    `scalar_columns`, as da união de texto e número (`_mixes_text_and_number`),
+    vai com um par de aspas todo texto que o leitor devolveria como número,
+    bool ou ausência (`_quoted_scalar_text`). `read_df` com o modelo relê
+    todos (`_raw_restorer`).
 
     Em qualquer formato, na coluna com um Decimal NaN todo Decimal vai como
     texto. O pandas conta o Decimal NaN como ausente; o
@@ -3736,6 +3752,7 @@ def _structures_as_json(  # noqa: PLR0913 (uma família de colunas por forma de 
                 decimal_text=(text_file and col in decimal_columns)
                 or any(isinstance(value, Decimal) and value.is_nan() for value in out[col]),
                 nan_text=text_file and col in nan_columns,
+                scalar_text=text_file and col in scalar_columns,
             )
             converted = out[col].map(convert)
             # Series.map infere o tipo do resultado, e uma coluna com int ao
@@ -3758,8 +3775,9 @@ def _to_parquet_keeping_nan(df: pd.DataFrame, path: Path, nan_columns: Collectio
 
     O to_parquet do pandas grava como nulo o NaN de uma coluna de objetos, ao
     lado do None da linha pendente e da resposta None. A coluna de um campo
-    que admite `float`, só com float e None e com algum NaN, é refeita na
-    tabela do Arrow com o NaN como valor; `read_df` com o modelo o relê
+    que admite `float`, ou de um campo `Any`, só com número e None e com algum
+    NaN (`_holds_only_number_with_nan`), é refeita na tabela do Arrow como
+    float64, com o NaN como valor; `read_df` com o modelo o relê
     (`_reread_parquet`). Sem coluna assim, a gravação é a do pandas.
     """
     keeping = {
@@ -3769,7 +3787,7 @@ def _to_parquet_keeping_nan(df: pd.DataFrame, path: Path, nan_columns: Collectio
         and df[col].dtype == object
         # O isna, vetorizado, poupa a lista da coluna sem NaN nem None.
         and df[col].isna().any()
-        and _holds_only_float_with_nan(values := df[col].tolist())
+        and _holds_only_number_with_nan(values := df[col].tolist())
     }
     if not keeping:
         df.to_parquet(path, index=False)
@@ -3782,17 +3800,30 @@ def _to_parquet_keeping_nan(df: pd.DataFrame, path: Path, nan_columns: Collectio
         table = table.set_column(
             table.schema.get_field_index(col),
             col,
-            # De uma lista de float e None, o Arrow infere o float64 e mantém o NaN.
+            # De uma lista de float, int e None, o Arrow infere o float64 e mantém o NaN.
             pa.array(values),
         )
     pq.write_table(table, path)
 
 
-def _holds_only_float_with_nan(values: list[object]) -> bool:
-    """Se as células são só float e None, com algum NaN."""
-    return all(value is None or type(value) is float for value in values) and any(
-        isinstance(value, float) and math.isnan(value) for value in values
-    )
+# O maior inteiro até o qual todo inteiro tem um float64 igual a ele.
+_MAX_EXACT_FLOAT_INT = 2**53
+
+
+def _holds_only_number_with_nan(values: list[object]) -> bool:
+    """Se as células são só float, int que o float64 guarda exato e None, com algum NaN.
+
+    O int ao lado de um float já sai float64 da gravação do pandas, e da
+    coluna com nulo o leitor o devolve float. O bool e o int acima de 2**53
+    não têm float64 igual a eles, e a coluna com um deles fica com a gravação
+    do pandas, que grava o NaN como nulo.
+    """
+    return all(
+        value is None
+        or type(value) is float
+        or (type(value) is int and abs(value) <= _MAX_EXACT_FLOAT_INT)
+        for value in values
+    ) and any(isinstance(value, float) and math.isnan(value) for value in values)
 
 
 def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação sabe dos campos do modelo)
@@ -3803,6 +3834,7 @@ def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação 
     any_fields: Collection[str] = (),
     nan_fields: Collection[str] = (),
     decimal_fields: Collection[str] = (),
+    scalar_fields: Collection[str] = (),
 ) -> None:
     """Salva DataFrame em disco com escrita atômica. Formato inferido pela extensão.
 
@@ -3816,14 +3848,17 @@ def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação 
     colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
     coluna de objeto, porque gravariam o repr de qualquer estrutura.
     `nan_fields` são os campos cujo NaN é valor (`_keeps_nan`), gravado à
-    parte da célula vazia, e `decimal_fields`, os campos só de `Decimal`, que
-    o CSV e o XLSX gravam como texto.
+    parte da célula vazia, como o dos `any_fields`; `decimal_fields`, os
+    campos só de `Decimal`, que o CSV e o XLSX gravam como texto; e
+    `scalar_fields`, as uniões de texto e número, cujo texto o CSV e o XLSX
+    gravam entre aspas quando o leitor o trocaria.
     """
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
+    nan_fields = {*nan_fields, *any_fields}
     if ext in (".csv", ".xlsx"):
         frame = _structures_as_json(
-            df, None, any_fields, nan_fields, decimal_fields, text_file=True
+            df, None, any_fields, nan_fields, decimal_fields, scalar_fields, text_file=True
         )
         if ext == ".csv":
             # O to_csv trata None como False em index, e o teste de mutação faz a troca à toa.
@@ -3883,6 +3918,7 @@ def _try_save_checkpoint(df: pd.DataFrame, checkpoint: _Checkpoint) -> bool:
             checkpoint.any_fields,
             checkpoint.nan_fields,
             checkpoint.decimal_fields,
+            checkpoint.scalar_fields,
         )
     except Exception as error:  # noqa: BLE001 (ver a docstring)
         warnings.warn(
@@ -3917,6 +3953,9 @@ class _Checkpoint:
     nan_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
     # Campos só de `Decimal`, que o CSV e o XLSX gravam como texto.
     decimal_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
+    # Uniões de texto e número, cujo texto o CSV e o XLSX gravam entre aspas
+    # quando o leitor o trocaria (`_quoted_scalar_text`).
+    scalar_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
 
 
 class _SnapshotWriter:

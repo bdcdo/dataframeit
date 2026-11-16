@@ -19,9 +19,14 @@ from dataframeit.utils import (
     _admits_any,
     _admits_decimal,
     _any_from_text,
+    _holds_cell_to_restore,
+    _inside_quotes,
+    _mixes_text_and_number,
     _quoted_nan_text,
+    _quoted_scalar_text,
     _reads_as_other,
     _scalar_or_read,
+    _unquoted_scalar_text,
 )
 
 _TEXTOS = {"texto": ["a", "b", "c"]}
@@ -690,6 +695,7 @@ def _confere_floats(valores, esperados):
 
 
 _NAN = float("nan")
+_MODELO_ANY = create_model("ModeloDoCaso", campo=(Any, ...))
 
 
 @pytest.mark.parametrize("anotacao", [float, Optional[float]])
@@ -795,20 +801,40 @@ def test_parquet_grava_o_nan_de_float_a_parte_do_nulo(tmp_path):
             "outra": coluna,
             "sem_nan": pd.Series([1.5, None, None], dtype=object),
             "com_inteiro": pd.Series([1, _NAN, None], dtype=object),
+            "com_inteiro_no_limite": pd.Series([2**53, -(2**53), _NAN], dtype=object),
+            "com_inteiro_grande": pd.Series([2**53 + 1, _NAN, None], dtype=object),
+            "com_bool": pd.Series([True, _NAN, None], dtype=object),
+            "de_any": coluna,
             "texto": ["a", "b", "c"],
         }
     )
+    campos = {"campo", "sem_nan", "com_inteiro", "com_inteiro_no_limite", "com_inteiro_grande"}
 
-    _save_checkpoint(df, caminho, nan_fields={"campo", "sem_nan", "com_inteiro", "ausente"})
+    _save_checkpoint(
+        df, caminho, nan_fields={*campos, "com_bool", "ausente"}, any_fields={"de_any"}
+    )
 
     tabela = pq.read_table(caminho)
     nulos = {nome: tabela.column(nome).null_count for nome in tabela.column_names}
-    assert nulos == {"campo": 1, "outra": 2, "sem_nan": 2, "com_inteiro": 2, "texto": 0}
+    assert nulos == {
+        "campo": 1,
+        "outra": 2,
+        "sem_nan": 2,
+        "com_inteiro": 1,
+        "com_inteiro_no_limite": 0,
+        # O float64 não guarda o inteiro acima de 2**53 nem o bool, e o NaN segue nulo.
+        "com_inteiro_grande": 2,
+        "com_bool": 2,
+        "de_any": 1,
+        "texto": 0,
+    }
+    assert tabela.column("com_inteiro").to_pylist()[0] == 1.0
+    assert tabela.column("com_inteiro_grande").to_pylist()[0] == 2**53 + 1
     # Quem lê o arquivo sem o modelo recebe a coluna de float de sempre.
     lido = pd.read_parquet(caminho)
     assert lido["campo"].dtype == "float64"
     assert lido["texto"].tolist() == ["a", "b", "c"]
-    assert len(lido.columns) == 5
+    assert len(lido.columns) == 9
 
 
 def test_parquet_sem_nan_de_float_e_gravado_pelo_pandas(tmp_path):
@@ -863,14 +889,14 @@ def test_read_df_separa_o_nan_do_texto_nan_no_campo_float_ou_texto(tmp_path):
     lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,", 'd,"""NaN"""']), modelo)
 
     primeiro, nan, vazio, texto = lido["campo"].tolist()
-    assert (primeiro, vazio, texto) == ("1.5", None, "NaN")
+    assert (primeiro, vazio, texto) == (1.5, None, "NaN")
     assert isinstance(nan, float)
     assert math.isnan(nan)
 
 
-def test_read_df_deixa_como_lida_a_coluna_de_float_ou_texto_sem_nan(tmp_path):
+def test_read_df_deixa_como_lida_a_coluna_de_float_ou_texto_so_com_texto_comum(tmp_path):
     modelo = create_model("ModeloDoCaso", campo=(Union[float, str], ...))
-    caminho = _csv(tmp_path, ["a,1.5", "b,x"])
+    caminho = _csv(tmp_path, ["a,y", "b,x"])
 
     pd.testing.assert_frame_equal(read_df(caminho, modelo), pd.read_csv(caminho))
 
@@ -1412,8 +1438,7 @@ def test_saida_relida_com_read_df_retoma_sem_o_aviso_do_nan_de_any(tmp_path, ext
 @pytest.mark.parametrize("ext", [".csv", ".xlsx"])
 def test_retomada_do_checkpoint_devolve_o_texto_do_campo_float_ou_any(tmp_path, ext):
     _exige_formato(ext)
-    # O NaN desse campo segue a regra do `Any`: relido de checkpoint, conta como ausente.
-    respostas = ["[1, 2]", "NaN", '"NaN"', "x", [1, 2]]
+    respostas = ["[1, 2]", "NaN", '"NaN"', "x", [1, 2], _NAN]
 
     valores = _retomar_do_checkpoint(
         tmp_path / f"ck{ext}", "pandas", Union[float, Any], respostas, "z"
@@ -1546,3 +1571,510 @@ def test_read_df_rele_as_colunas_do_csv_com_indice_tirado_da_primeira_coluna(tmp
     assert [str(valor) for valor in lido["decimal"]] == ["1.10", "2.20", "3.30"]
     _confere_floats(lido["real"].tolist(), [_NAN, 1.5, None])
     assert lido["livre"].tolist() == [5, "x", "y"]
+
+
+def test_read_df_rele_o_csv_com_indice_tirado_da_primeira_coluna_e_todo_campo_relido(tmp_path):
+    """Com todas as colunas no usecols, a releitura não tiraria o índice e viria deslocada."""
+    modelo = create_model("ModeloDoCaso", inteiro=(Optional[int], ...), decimal=(Decimal, ...))
+    caminho = tmp_path / "saida.csv"
+    caminho.write_text(
+        "inteiro,decimal\n2,9007199254740993,1.10\n0,,2.20\n1,7,3.30\n", encoding="utf-8"
+    )
+
+    lido = read_df(caminho, modelo)
+
+    assert lido.index.tolist() == [2, 0, 1]
+    assert lido["inteiro"].tolist() == [9007199254740993, None, 7]
+    assert [str(valor) for valor in lido["decimal"]] == ["1.10", "2.20", "3.30"]
+
+
+# =============================================================================
+# NaN de campo `Any` relido de checkpoint
+# =============================================================================
+
+
+@pytest.mark.parametrize("anotacao", [Any, Optional[Any], object])
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_devolve_o_nan_de_any(tmp_path, ext, anotacao):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", anotacao, [1.5, _NAN], 2.5)
+
+    _confere_floats(valores, [1.5, _NAN, 2.5])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_devolve_none_ao_lado_do_nan_de_any(tmp_path, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Optional[Any], [None, _NAN, 1.5], 2.5
+    )
+
+    _confere_floats(valores, [None, _NAN, 1.5, 2.5])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_separa_o_nan_de_any_do_texto_nan(tmp_path, ext):
+    _exige_formato(ext)
+    respostas = [_NAN, "NaN", "x", None, 5, '"NaN"']
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", Optional[Any], respostas, "z")
+
+    esperados = [*respostas, "z"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
+    assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+def test_retomada_do_parquet_devolve_none_no_nan_de_any_ao_lado_de_um_texto(tmp_path):
+    """A coluna de texto do parquet não tem NaN, e o de `Any` vai como nulo ao lado do texto."""
+    pytest.importorskip("pyarrow")
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / "ck.parquet", "pandas", Optional[Any], [_NAN, "x"], "z"
+    )
+
+    assert valores == [None, "x", "z"]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_completo_mantem_o_nan_de_any_sem_nenhum_none(tmp_path, ext):
+    """A coluna que veio do checkpoint guarda o NaN à parte da célula vazia, e não é ambígua."""
+    _exige_formato(ext)
+    caminho = str(tmp_path / f"ck{ext}")
+    _rodar(pd.DataFrame(_TEXTOS), Any, [1.5, _NAN, 2.5], checkpoint_path=caminho, batch_size=1)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        saida = _retomar(pd.DataFrame(_TEXTOS), _MODELO_ANY, checkpoint_path=caminho, batch_size=1)
+
+    _confere_floats(saida["campo"].tolist(), [1.5, _NAN, 2.5])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_arquivo_relido_mantem_pulado_o_campo_any_com_condition(tmp_path, ext):
+    """A célula vazia do campo pulado volta None, ao lado do NaN que outra linha recebeu."""
+    _exige_formato(ext)
+
+    class ComCondicao(BaseModel):
+        tipo: str
+        campo: Any = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "a"}})
+
+    caminho = tmp_path / f"ck{ext}"
+    gravado = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "tipo": ["a", "b", "a"],
+            "campo": pd.Series([_NAN, None, 2.5], dtype=object),
+            "_dataframeit_status": "processed",
+        }
+    )
+    _save_checkpoint(gravado, caminho, any_fields={"campo"})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        retomada = _retomar(read_df(caminho, ComCondicao), ComCondicao)
+
+    _confere_floats(retomada["campo"].tolist(), [_NAN, None, 2.5])
+
+
+def test_checkpoint_de_texto_grava_o_nan_de_any_como_o_texto_nan():
+    celulas = [1.5, _NAN, None, "NaN"]
+    df = pd.DataFrame({"campo": pd.Series(celulas, dtype=object)})
+
+    de_texto = _structures_as_json(df, any_columns=["campo"], nan_columns=["campo"], text_file=True)
+    parquet = _structures_as_json(df, any_columns=["campo"], nan_columns=["campo"])
+
+    assert de_texto["campo"].tolist() == [1.5, "NaN", None, '"NaN"']
+    _confere_floats(parquet["campo"].tolist()[:3], [1.5, _NAN, None])
+    assert parquet["campo"].tolist()[3] == "NaN"
+
+
+def test_read_df_devolve_o_nan_de_any_e_none_na_celula_vazia_da_coluna_de_numeros(tmp_path):
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,"]), _MODELO_ANY)
+
+    assert lido["campo"].dtype == object
+    _confere_floats(lido["campo"].tolist(), [1.5, _NAN, None])
+
+
+def test_read_df_devolve_o_nan_de_any_ao_lado_de_um_texto(tmp_path):
+    celulas = ["a,x", "b,NaN", "c,", "d,NA", 'e,"""NaN"""', "f,5"]
+
+    lido = read_df(_csv(tmp_path, celulas), _MODELO_ANY)
+    cru = read_df(_csv(tmp_path, celulas), _MODELO_ANY, normalize=False)
+
+    assert lido["campo"].tolist()[2:] == [None, None, "NaN", 5]
+    _confere_floats(lido["campo"].tolist()[:2][1:], [_NAN])
+    assert cru["campo"].tolist()[2:] == [None, None, '"NaN"', 5]
+    _confere_floats(cru["campo"].tolist()[1:2], [_NAN])
+
+
+def test_read_df_deixa_como_lida_a_coluna_de_numeros_de_any_sem_nan(tmp_path):
+    caminho = _csv(tmp_path, ["a,1.5", "b,", "c,NA"])
+
+    pd.testing.assert_frame_equal(read_df(caminho, _MODELO_ANY), pd.read_csv(caminho))
+
+
+@pytest.mark.parametrize("ext", [".xlsx", ".parquet"])
+def test_read_df_devolve_o_nan_de_any_do_xlsx_e_do_parquet(tmp_path, ext):
+    _exige_formato(ext)
+    caminho = tmp_path / f"ck{ext}"
+    df = pd.DataFrame({**_TEXTOS, "campo": pd.Series([1.5, _NAN, None], dtype=object)})
+    _save_checkpoint(df, caminho, any_fields={"campo"})
+
+    lido = read_df(caminho, _MODELO_ANY)
+
+    assert lido["campo"].dtype == object
+    _confere_floats(lido["campo"].tolist(), [1.5, _NAN, None])
+
+
+def test_read_df_devolve_o_nan_de_any_do_xlsx_ao_lado_de_um_texto(tmp_path):
+    pytest.importorskip("openpyxl")
+    caminho = tmp_path / "ck.xlsx"
+    df = pd.DataFrame({"campo": pd.Series(["x", _NAN, None, "[1]"], dtype=object)})
+    _save_checkpoint(df, caminho, any_fields={"campo"})
+
+    primeiro, nan, vazio, texto = read_df(caminho, _MODELO_ANY)["campo"].tolist()
+
+    assert (primeiro, vazio, texto) == ("x", None, "[1]")
+    _confere_floats([nan], [_NAN])
+
+
+def test_read_df_nao_rele_o_xlsx_da_coluna_de_any_sem_celula_ausente(tmp_path):
+    pytest.importorskip("openpyxl")
+    caminho = tmp_path / "ck.xlsx"
+    _save_checkpoint(
+        pd.DataFrame({"campo": pd.Series(["x", 5], dtype=object)}), caminho, any_fields={"campo"}
+    )
+
+    releituras = []
+    with patch.dict(
+        "dataframeit.utils._TEXT_READERS", {".xlsx": _conta_chamadas(pd.read_excel, releituras)}
+    ):
+        lido = read_df(caminho, _MODELO_ANY)
+
+    assert releituras == []
+    assert lido["campo"].tolist() == ["x", 5]
+
+
+# =============================================================================
+# União com float que recebeu também inteiro, bool ou texto, no parquet
+# =============================================================================
+
+
+def test_retomada_do_parquet_devolve_o_nan_da_uniao_de_float_e_int(tmp_path):
+    pytest.importorskip("pyarrow")
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / "ck.parquet", "pandas", Union[float, int], [_NAN, 3], 2.5
+    )
+
+    # O inteiro ao lado de um float volta float, como do CSV e do XLSX.
+    _confere_floats(valores, [_NAN, 3.0, 2.5])
+    assert [type(valor) for valor in valores] == [float, float, float]
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "outra"),
+    [(Optional[Union[float, bool]], True), (Optional[Union[float, str]], "x")],
+)
+def test_retomada_do_parquet_devolve_none_no_nan_ao_lado_de_bool_ou_texto(
+    tmp_path, anotacao, outra
+):
+    """O float64 não guarda o bool nem o texto, e a coluna com um deles grava o NaN como nulo."""
+    pytest.importorskip("pyarrow")
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / "ck.parquet", "pandas", anotacao, [_NAN, outra], 2.5
+    )
+
+    assert valores == [None, outra, 2.5]
+
+
+# =============================================================================
+# União de texto e número no CSV e no XLSX
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "esperado"),
+    [
+        (Union[float, str], True),
+        (Union[str, int], True),
+        (Union[bool, str], True),
+        (Optional[Union[float, str]], True),
+        (Union[int, float, bool, str, None], True),
+        (Annotated[Union[int, str], Field(description="x")], True),
+        (str, False),
+        (Optional[str], False),
+        (Union[int, float], False),
+        (Union[str, Decimal], False),
+        (Union[str, float, Decimal], False),
+        (Union[str, Any], False),
+        (float, False),
+        (list[Union[str, int]], False),
+    ],
+)
+def test_mixes_text_and_number(anotacao, esperado):
+    assert _mixes_text_and_number(anotacao) is esperado
+
+
+@pytest.mark.parametrize(
+    ("texto", "dentro"),
+    [
+        ("abc", "abc"),
+        ("", ""),
+        ('"', '"'),
+        ('""', ""),
+        ('"""', '"'),
+        ('""""', ""),
+        ('"a"', "a"),
+        ('""a""', "a"),
+        ('"a', '"a'),
+        ('a"', 'a"'),
+        ('""a"', '"a'),
+        ('"a""', 'a"'),
+    ],
+)
+def test_inside_quotes(texto, dentro):
+    assert _inside_quotes(texto) == dentro
+
+
+@pytest.mark.parametrize(
+    ("texto", "gravado"),
+    [
+        ("123", '"123"'),
+        ("N/A", '"N/A"'),
+        ("", '""'),
+        ("NaN", '"NaN"'),
+        ("true", '"true"'),
+        (" 7", '" 7"'),
+        ('"123"', '""123""'),
+        ('""', '""""'),
+        ("abc", "abc"),
+        ('"abc"', '"abc"'),
+        ('"123', '"123'),
+        ("12a", "12a"),
+    ],
+)
+def test_quoted_scalar_text_volta_o_mesmo_texto(texto, gravado):
+    assert _quoted_scalar_text(texto) == gravado
+    # O texto gravado sem aspas a mais é lido como está.
+    assert _unquoted_scalar_text(gravado) == (texto if gravado != texto else None)
+
+
+_RESPOSTAS_DE_TEXTO_E_NUMERO = [
+    (Union[float, str], [1.5, "1.5", "N/A", "x", "", '"7"', "NaN", _NAN, "true", 2.0, " 3"]),
+    (Union[int, str], [5, "5", "null", "x", "None", -3, "0"]),
+    (Union[bool, str], [True, "True", "x", "false", False, "FALSE"]),
+    (Optional[Union[float, str]], [None, "", "N/A", 1.5, "x"]),
+    (Optional[Union[int, float, bool, str]], [True, "True", None, "x", 7.5, "7.5", "NA"]),
+]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+@pytest.mark.parametrize(("anotacao", "respostas"), _RESPOSTAS_DE_TEXTO_E_NUMERO)
+def test_retomada_do_checkpoint_separa_o_texto_do_numero_na_uniao(
+    tmp_path, ext, anotacao, respostas
+):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", anotacao, respostas, "fim")
+
+    esperados = [*respostas, "fim"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
+    assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_devolve_o_texto_da_uniao_sem_numero_na_coluna(tmp_path, ext):
+    """Só com textos que se leem como número, o leitor tiparia a coluna inteira."""
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "polars", Union[int, str], ["123", "456"], "789"
+    )
+
+    assert valores == ["123", "456", "789"]
+
+
+def test_checkpoint_de_texto_grava_entre_aspas_o_texto_da_uniao_que_o_leitor_trocaria():
+    celulas = ["123", "N/A", "", "abc", '"1"', 123, 1.5, True, None, _NAN]
+    df = pd.DataFrame(
+        {"campo": pd.Series(celulas, dtype=object), "outra": pd.Series(celulas, dtype=object)}
+    )
+
+    de_texto = _structures_as_json(
+        df, nan_columns=["campo"], scalar_columns=["campo"], text_file=True
+    )
+    parquet = _structures_as_json(df, nan_columns=["campo"], scalar_columns=["campo"])
+
+    gravado = ['"123"', '"N/A"', '""', "abc", '""1""', 123, 1.5, True, None, "NaN"]
+    assert de_texto["campo"].tolist() == gravado
+    assert de_texto["outra"].tolist()[:9] == celulas[:9]
+    assert parquet["campo"].tolist()[:9] == celulas[:9]
+
+
+_MODELO_FLOAT_OU_TEXTO = create_model("ModeloDeUniao", campo=(Union[float, str], ...))
+_MODELO_INT_OU_TEXTO = create_model("ModeloDeUniao", campo=(Union[int, str], ...))
+
+
+def test_read_df_devolve_o_numero_e_o_texto_da_uniao_do_csv(tmp_path):
+    celulas = ["a,1.5", 'b,"""123"""', "c,x", "d,", "e,NA", 'f,"""N/A"""', 'g,"""x"""', "h,7"]
+
+    lido = read_df(_csv(tmp_path, celulas), _MODELO_FLOAT_OU_TEXTO)
+
+    assert lido["campo"].tolist() == [1.5, "123", "x", None, None, "N/A", '"x"', 7]
+
+
+@pytest.mark.parametrize(
+    ("anotacao", "celulas", "esperado"),
+    [
+        (Union[int, str], ["1.5", "True", "5", "007", "x"], ["1.5", "True", 5, "007", "x"]),
+        (Union[bool, str], ["1", "True", "1.5", "x"], ["1", True, "1.5", "x"]),
+        (
+            Union[float, str],
+            ["5", "1.5", "True", "1_000", "Infinity", "inf", "1e3", "x"],
+            [5, 1.5, "True", "1_000", "Infinity", math.inf, "1e3", "x"],
+        ),
+    ],
+)
+def test_read_df_so_devolve_da_uniao_o_numero_que_ela_admite_e_como_o_csv_o_grava(
+    tmp_path, anotacao, celulas, esperado
+):
+    """O texto sem aspas de um arquivo que não veio do checkpoint fica como lido."""
+    modelo = create_model("ModeloDoCaso", campo=(anotacao, ...))
+
+    lido = read_df(_csv(tmp_path, [f"a,{celula}" for celula in celulas]), modelo)["campo"].tolist()
+
+    assert lido == esperado
+    assert [type(valor) for valor in lido] == [type(valor) for valor in esperado]
+
+
+def test_read_df_deixa_como_lida_a_coluna_da_uniao_sem_numero_que_ela_admita(tmp_path):
+    caminho = _csv(tmp_path, ["a,1.5", "b,x"])
+
+    pd.testing.assert_frame_equal(read_df(caminho, _MODELO_INT_OU_TEXTO), pd.read_csv(caminho))
+
+
+def test_read_df_devolve_o_texto_nan_entre_aspas_da_uniao_com_outro_tipo_sem_ausente(tmp_path):
+    modelo = create_model("ModeloDoCaso", campo=(Union[float, str, Decimal], ...))
+
+    lido = read_df(_csv(tmp_path, ["a,x", 'b,"""NaN"""']), modelo)
+
+    assert lido["campo"].tolist() == ["x", "NaN"]
+
+
+def test_read_df_deixa_float64_a_coluna_de_numeros_da_uniao_com_celula_vazia(tmp_path):
+    caminho = _csv(tmp_path, ["a,1.5", "b,"])
+
+    pd.testing.assert_frame_equal(read_df(caminho, _MODELO_FLOAT_OU_TEXTO), pd.read_csv(caminho))
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_separa_o_nan_do_texto_nan_na_uniao_com_outro_tipo(tmp_path, ext):
+    """A união de float e texto com outro tipo só põe entre aspas o texto "NaN"."""
+    _exige_formato(ext)
+    respostas = ["abc", "NaN", _NAN, '"NaN"']
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Union[float, str, Decimal], respostas, "z"
+    )
+
+    esperados = [*respostas, "z"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in esperados]
+    assert [str(valor) for valor in valores] == [str(valor) for valor in esperados]
+
+
+@pytest.mark.parametrize("texto", ["5", "-12", "7.5", "1e+300", "inf", "True", "False", "+3", ".5"])
+def test_todo_texto_que_scalar_or_read_troca_passa_na_checagem_da_coluna(texto):
+    lido = object()
+    assert _scalar_or_read(texto, lido) is not lido
+
+    coluna = pd.Series(["x", texto], dtype=object)
+
+    assert _holds_cell_to_restore(coluna, scalars=True, unquote=False) is True
+
+
+def test_read_df_so_devolve_nan_do_texto_nan_na_uniao_com_float(tmp_path):
+    celulas = ["a,5", "b,NaN", "c,x"]
+
+    com_float = read_df(_csv(tmp_path, celulas), _MODELO_FLOAT_OU_TEXTO)["campo"].tolist()
+    sem_float = read_df(_csv(tmp_path, celulas), _MODELO_INT_OU_TEXTO)["campo"].tolist()
+
+    _confere_floats(com_float[1:2], [_NAN])
+    assert sem_float == [5, None, "x"]
+
+
+def test_read_df_devolve_o_texto_da_uniao_do_xlsx_e_deixa_o_numero_como_lido(tmp_path):
+    pytest.importorskip("openpyxl")
+    caminho = tmp_path / "ck.xlsx"
+    celulas = [2.0, "123", "x", None, "N/A", 7]
+    _save_checkpoint(
+        pd.DataFrame({"campo": pd.Series(celulas, dtype=object)}),
+        caminho,
+        nan_fields={"campo"},
+        scalar_fields={"campo"},
+    )
+
+    lido = read_df(caminho, _MODELO_FLOAT_OU_TEXTO)["campo"].tolist()
+
+    assert lido == [2, "123", "x", None, "N/A", 7]
+    # O número fica como o leitor do XLSX o deu, e a validação da retomada o leva ao tipo do campo.
+    assert pd.read_excel(caminho)["campo"].tolist()[:3] == [2, '"123"', "x"]
+
+
+@pytest.mark.parametrize("celulas", [["a,y", "b,x y"], ["a,sim", "b,é"]])
+def test_read_df_nao_rele_o_csv_da_coluna_so_com_texto_comum(tmp_path, celulas):
+    """Sem célula ausente, entre aspas ou que comece como número, o arquivo é lido uma vez só."""
+    caminho = _csv(tmp_path, celulas)
+
+    for modelo in (_MODELO_ANY, _MODELO_FLOAT_OU_TEXTO):
+        releituras = []
+        with patch.dict(
+            "dataframeit.utils._TEXT_READERS", {".csv": _conta_chamadas(pd.read_csv, releituras)}
+        ):
+            lido = read_df(caminho, modelo)
+
+        assert releituras == []
+        pd.testing.assert_frame_equal(lido, pd.read_csv(caminho))
+
+
+@pytest.mark.parametrize(
+    ("celulas", "scalars", "unquote", "esperado"),
+    [
+        (["x", "y"], True, True, False),
+        (["x", None], False, False, True),
+        (["x", "5"], True, False, True),
+        (["x", "5"], False, True, False),
+        (["x", "-1"], True, False, True),
+        (["x", "+1"], True, False, True),
+        (["x", ".5"], True, False, True),
+        (["x", "True"], True, False, True),
+        (["x", "False"], True, False, True),
+        (["x", "Trues"], True, False, False),
+        (["x", "inf"], True, False, True),
+        (["x", "Infinity"], True, False, True),
+        (["x", "nan"], True, False, True),
+        (["x", "a5"], True, False, False),
+        (["x", '"5"'], False, True, True),
+        (["x", '"5"'], True, False, False),
+        (["x", 'a"'], False, True, False),
+        ([1.5, 2], True, True, True),
+        ([True, "x"], False, True, False),
+    ],
+)
+def test_holds_cell_to_restore(celulas, scalars, unquote, esperado):
+    coluna = pd.Series(celulas, dtype=object)
+
+    assert _holds_cell_to_restore(coluna, scalars=scalars, unquote=unquote) is esperado
+
+
+def test_retomada_do_xlsx_devolve_inteiro_o_float_inteiro_de_any_ao_lado_de_um_texto(tmp_path):
+    """O XLSX guarda 2.0 como o número 2, e o leitor o devolve int na coluna com texto."""
+    pytest.importorskip("openpyxl")
+
+    valores = _retomar_do_checkpoint(tmp_path / "ck.xlsx", "pandas", Any, [2.0, "x"], 3.5)
+
+    assert valores == [2, "x", 3.5]
+    assert [type(valor) for valor in valores] == [int, str, float]
