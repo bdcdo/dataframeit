@@ -1163,6 +1163,9 @@ def test_strict_continua_acusando_o_valor_recusado_pelo_conteudo_no_submodelo():
         # O passo que um lado não tem encerra a descida, e o nível inteiro se compara.
         ({"a": 1, "b": 2}, {"a": 1, "b": 3}, ("Sub", "a"), False),
         ({"a": 1}, {"a": 1}, ("Sub", "a"), True),
+        # A chave que só um lado tem também encerra a descida.
+        ({"a": 1}, {}, ("a",), False),
+        ({}, {"a": 1}, ("a",), False),
         ([1, 2], [1, 3], ("list[int]", 0), False),
         ([1, 2], [1, 3], (2,), False),
         ([1, 2], [1, 2], (2,), True),
