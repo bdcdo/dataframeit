@@ -32,6 +32,10 @@ class IterableOpcional(BaseModel):
     campo: Optional[Iterable[str]] = None
 
 
+class GeneratorOpcional(BaseModel):
+    campo: Optional[Generator[str, None, None]] = None
+
+
 class IterableComSerializador(BaseModel):
     campo: Optional[Iterable[str]] = None
 
@@ -112,13 +116,17 @@ def test_iterable_dentro_de_submodelo_em_colecao_interrompe_pelo_campo_de_cima(m
     assert saida["_dataframeit_status"].isna().all()
 
 
-def test_resposta_sem_o_iterador_e_gravada_e_a_seguinte_interrompe():
+@pytest.mark.parametrize("modelo", [IterableOpcional, GeneratorOpcional])
+@pytest.mark.parametrize("itens", [["x"], []], ids=["com_itens", "vazia"])
+def test_campo_opcional_grava_as_respostas_none_e_interrompe_na_primeira_que_nao_e_none(
+    modelo, itens
+):
     with pytest.warns(UserWarning, match="Execução interrompida.*trouxe um iterador"):
-        chat, saida = _executa(IterableOpcional, [None, ["x"]], textos=("a", "b", "c"))
+        chat, saida = _executa(modelo, [None, None, itens], textos=("a", "b", "c", "d"))
 
-    assert chat.invocacoes == 2
-    assert saida["_dataframeit_status"].tolist()[0] == "processed"
-    assert saida["_dataframeit_status"].isna().tolist() == [False, True, True]
+    assert chat.invocacoes == 3
+    assert saida["_dataframeit_status"].tolist()[:2] == ["processed", "processed"]
+    assert saida["_dataframeit_status"].isna().tolist()[2:] == [True, True]
     assert saida["campo"].isna().all()
 
 

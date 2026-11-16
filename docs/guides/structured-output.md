@@ -63,6 +63,8 @@ class Modelo(BaseModel):
     itens: List[Item] = Field(description="Lista de itens extraídos")
 ```
 
+Declare o campo como `list[...]`, e não como `Iterable[...]` ou `Generator[...]`. Nesses dois tipos, a resposta traz um iterador no lugar dos itens, mesmo quando a lista vem vazia, e a primeira resposta assim interrompe a execução, com o aviso "Execução interrompida", depois de a chamada dessa linha já ter sido feita. No campo opcional, como `Optional[Iterable[str]]`, as respostas `None` que vêm antes dela são gravadas como as demais. O campo cujo serializador devolve a lista, como um `@field_serializer`, é aceito. Ver [Falhas que interrompem a execução](../reference/exceptions.md#falhas-que-interrompem-a-execucao).
+
 ## Modelos Aninhados
 
 Para estruturas complexas, use modelos aninhados:

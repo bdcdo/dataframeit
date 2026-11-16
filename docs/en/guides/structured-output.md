@@ -63,6 +63,8 @@ class Model(BaseModel):
     items: List[Item] = Field(description="List of extracted items")
 ```
 
+Declare the field as `list[...]`, not as `Iterable[...]` or `Generator[...]`. With those two types, the response holds an iterator in place of the items, even when the list comes back empty, and the first such response stops the run, with the "Execução interrompida" warning, after the call for that row has already been made. In an optional field, such as `Optional[Iterable[str]]`, the `None` responses that come before it are saved like any other. A field whose serializer returns the list, such as one with a `@field_serializer`, is accepted. See [Failures that stop the run](../reference/exceptions.md#failures-that-stop-the-run).
+
 ## Nested Models
 
 For complex structures, use nested models:

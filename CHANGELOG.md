@@ -18,9 +18,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 - Dois testes do runtime do Codex medem o request com cada flag desligada pelo provider religada: `incremental_tools` ainda repete as instruções base, e `reasoning_effort_override` ainda põe um `configuration_update` no `input`, este medido com o provider OpenAI embutido apontado para um servidor local. O teste falha, dizendo o que conferir, quando uma troca de pin tornar o override desnecessário.
 
+- Um teste do runtime do Codex manda o request pelo provider OpenAI embutido, apontado para um servidor local, com um modelo de cada forma de request, e confere que ele sai sem ferramenta fora das revisadas e sem mensagem repetida, o que os testes anteriores só mediam com o provider `mock`.
+
 ### Alterado
 
 - O modelo falso dos testes de busca web entrega as mensagens por um iterador de classe, e não por um gerador: no modo paralelo, duas linhas pediam a próxima mensagem ao mesmo tempo, o gerador levantava `ValueError: generator already executing`, e `test_limite_do_plano_do_tavily_interrompe_a_execucao[2]` falhava em cerca de 2 a cada mil execuções com a máquina sob carga.
+- A página de saída estruturada e a tabela de exceções dizem que o campo `Iterable` ou `Generator` interrompe a execução na primeira resposta em que ele não é `None`, mesmo com a lista vazia e com a chamada já feita, e que no campo opcional as respostas `None` são gravadas antes disso. Um teste fixa o caso opcional dos dois tipos.
 - O teste do Ctrl-C no reprocessamento parte de 7 linhas processadas, e não de 5: no modo paralelo, as 5 podiam estar todas com os workers quando o sinal chegava, não sobrava linha com o valor antigo e o teste falhava em cerca de 2 a cada mil execuções (#394).
 - O resumo de tokens e créditos inclui tentativas de busca sem resposta estruturada, recusas de parser e linhas Codex que falham; o uso da chamada que falhou soma ao das chamadas anteriores por campo. O custo já medido do Claude Code continua registrado na falha.
 - O `ty` trata como erro o teste implícito de verdade em valores opcionais. Os 56 pontos existentes distinguem `None` quando necessário e usam `bool(...)` quando vazio, zero ou `False` devem seguir o mesmo caminho. Os testes de provider restauram também uma variável de ambiente que existia com valor vazio.
