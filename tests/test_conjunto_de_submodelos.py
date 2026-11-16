@@ -8,6 +8,7 @@ repete em toda linha, e por isso interrompe a execução na primeira resposta,
 sem nova tentativa.
 """
 
+import dataclasses
 import datetime as dt
 from collections import deque
 from collections.abc import Set as AbstractSet
@@ -35,7 +36,12 @@ from pydantic_core import PydanticSerializationError
 from typing_extensions import override
 
 from dataframeit import dataframeit
-from dataframeit.errors import ProviderAbortError, dump_response
+from dataframeit.errors import (
+    ProviderAbortError,
+    _fields_holding_any,
+    _models_dumped,
+    dump_response,
+)
 
 
 class Tag(Enum):
@@ -1161,3 +1167,244 @@ def test_modo_por_campo_interrompe_antes_das_chamadas_que_faltam_na_linha():
     assert ["depois"] not in pedidos
     assert len(pedidos) < len(respostas)
     assert saida["_dataframeit_status"].isna().all()
+
+
+# =============================================================================
+# Submodelo que o model_dump deixa como objeto num campo `Any`
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("valor", "esperado"),
+    [
+        (deque([Cidade(nome="SP")]), deque([{"nome": "SP"}])),
+        ((deque([Cidade(nome="SP")]), 1), (deque([{"nome": "SP"}]), 1)),
+        (
+            [{"k": deque([Capital(nome="SP", uf="SP")])}],
+            [{"k": deque([{"nome": "SP", "uf": "SP"}])}],
+        ),
+    ],
+)
+def test_submodelo_dentro_de_deque_num_campo_any_sai_pelo_dump_dele(valor, esperado):
+    """No pydantic 2.12 o item do `deque` saía como objeto; no 2.14, pelo dump dele."""
+    assert dump_response(CampoQualquer(campo=valor)) == {"campo": esperado}
+
+
+def test_deque_de_um_campo_any_mantem_o_tamanho_maximo():
+    saida = dump_response(CampoQualquer(campo=deque([Cidade(nome="SP")], maxlen=3)))
+
+    assert saida["campo"].maxlen == 3
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        {(Cidade(nome="SP"), 2): "v"},
+        {Cidade(nome="SP"): "v"},
+        deque([{Cidade(nome="SP")}]),
+        deque([frozenset({Cidade(nome="SP")})]),
+    ],
+    ids=["chave_composta", "chave_submodelo", "conjunto_no_deque", "frozenset_no_deque"],
+)
+def test_chave_e_conjunto_com_submodelo_num_campo_any_interrompem(valor):
+    """No pydantic 2.12 o model_dump não cai com eles, e o valor sairia como objeto."""
+    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+        dump_response(CampoQualquer(campo=valor))
+
+
+@pytest.mark.parametrize(
+    ("valor", "esperado"),
+    [
+        (Cidade(nome="SP"), {"nome": "SP"}),
+        ([Cidade(nome="SP"), 1], [{"nome": "SP"}, 1]),
+        ((Cidade(nome="SP"),), ({"nome": "SP"},)),
+        ({"k": Cidade(nome="SP")}, {"k": {"nome": "SP"}}),
+        (deque([Cidade(nome="SP")]), deque([{"nome": "SP"}])),
+        ({1, "a"}, {1, "a"}),
+        (frozenset({1}), frozenset({1})),
+        ("texto", "texto"),
+    ],
+)
+def test_models_dumped_escreve_o_submodelo_que_sobrou_como_objeto(valor, esperado):
+    saida = _models_dumped(valor, CampoQualquer(campo=None))
+
+    assert saida == esperado
+    assert type(saida) is type(esperado)
+
+
+class _FilaPropria(deque[object]):
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
+class _Registro:
+    x: int
+
+
+def test_models_dumped_devolve_deque_da_subclasse_de_deque():
+    saida = _models_dumped(_FilaPropria([Cidade(nome="SP")]), CampoQualquer(campo=None))
+
+    assert type(saida) is deque
+    assert saida == deque([{"nome": "SP"}])
+
+
+@pytest.mark.parametrize("valor", [{_Registro}, {_Registro: 1}, {(_Registro, 1): 2}])
+def test_models_dumped_deixa_como_esta_a_classe_de_dataclass_em_conjunto_ou_chave(valor):
+    assert _models_dumped(valor, CampoQualquer(campo=None)) == valor
+    assert dump_response(CampoQualquer(campo=valor)) == {"campo": valor}
+
+
+def test_submodelo_com_conjunto_de_submodelos_dentro_de_deque_interrompe():
+    """No pydantic 2.14 o model_dump do item cai; no 2.12 o item saía como objeto."""
+    resposta = CampoQualquer(campo=deque([ConjuntoDeModelo(campo={Cidade(nome="SP")})]))
+
+    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+        dump_response(resposta)
+
+
+def test_models_dumped_interrompe_no_submodelo_cujo_dump_cai():
+    with pytest.raises(
+        ProviderAbortError, match=r"CampoQualquer.*unhashable|unhashable.*CampoQualquer"
+    ):
+        _models_dumped(ConjuntoDeModelo(campo={Cidade(nome="SP")}), CampoQualquer(campo=None))
+
+
+def test_submodelo_com_conjunto_vazio_dentro_de_deque_sai_com_o_conjunto():
+    resposta = CampoQualquer(campo=deque([ConjuntoDeModelo(campo=set())]))
+
+    assert dump_response(resposta) == {"campo": deque([{"campo": set()}])}
+
+
+def test_models_dumped_repassa_o_erro_do_dump_que_nao_e_de_hash():
+    class _DumpQuebrado(BaseModel):
+        x: int
+
+        @model_serializer
+        def _quebra(self) -> dict[str, int]:
+            msg = "outro erro"
+            raise ValueError(msg)
+
+    with pytest.raises((ValueError, PydanticSerializationError), match="outro erro"):
+        _models_dumped(_DumpQuebrado(x=1), CampoQualquer(campo=None))
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        {Cidade(nome="SP"): 1},
+        {(1, Cidade(nome="SP")): 1},
+        {(1, frozenset({Cidade(nome="SP")})): 1},
+        [{Cidade(nome="SP")}],
+        (frozenset({Cidade(nome="SP")}),),
+    ],
+)
+def test_models_dumped_interrompe_na_chave_e_no_conjunto_com_submodelo(valor):
+    with pytest.raises(
+        ProviderAbortError,
+        match=r"CampoQualquer.*unhashable type: 'dict'|unhashable type: 'dict'.*CampoQualquer",
+    ):
+        _models_dumped(valor, CampoQualquer(campo=None))
+
+
+class _SemQualquer(BaseModel):
+    a: int
+    b: Optional[list[Cidade]] = None
+    filhos: list["_SemQualquer"] = []
+
+
+class _QualquerNoSubmodelo(BaseModel):
+    sub: list[CampoQualquer]
+
+
+@pytest.mark.parametrize(
+    ("modelo", "esperado"),
+    [
+        (CampoQualquer, {"campo"}),
+        (create_model("ComObject", campo=(object, ...)), {"campo"}),
+        (create_model("ComOpcional", campo=(Optional[Any], ...)), {"campo"}),
+        (create_model("NaLista", a=(int, ...), campo=(dict[str, list[Any]], ...)), {"campo"}),
+        (_QualquerNoSubmodelo, {"sub"}),
+        (_SemQualquer, set()),
+        (ConjuntoDeModelo, set()),
+    ],
+)
+def test_fields_holding_any(modelo, esperado):
+    assert _fields_holding_any(modelo) == esperado
+
+
+def test_dump_so_refaz_o_campo_com_any():
+    """O campo sem `Any` sai como o model_dump o devolveu, sem ser percorrido."""
+    modelo = create_model("ListaEQualquer", lista=(list[int], ...), campo=(Any, ...))
+    resposta = modelo.model_validate({"lista": [1], "campo": [2]})
+
+    with patch("dataframeit.errors._models_dumped", side_effect=lambda valor, _: valor) as refeitos:
+        saida = dump_response(resposta)
+
+    assert saida == {"lista": [1], "campo": [2]}
+    assert [chamada.args[0] for chamada in refeitos.call_args_list] == [[2]]
+
+
+# =============================================================================
+# Limites do dump dos conjuntos de submodelos
+# =============================================================================
+
+
+class _PosicoesComSerializeAsAny(BaseModel):
+    conjuntos: tuple[set[SerializeAsAny[Cidade]], set[Cidade]]
+    listas: tuple[list[SerializeAsAny[Cidade]], list[Cidade]]
+
+
+class _PosicoesComBaseESubclasse(BaseModel):
+    conjuntos: tuple[set[Cidade], set[Capital]]
+    listas: tuple[list[Cidade], list[Capital]]
+
+
+def test_serialize_as_any_numa_posicao_vale_para_todos_os_conjuntos_do_campo():
+    """Na lista, o pydantic só escreve pela subclasse o item da posição marcada."""
+    capital = Capital(nome="SP", uf="SP")
+    resposta = _PosicoesComSerializeAsAny(
+        conjuntos=({capital}, {capital}), listas=([capital], [capital])
+    )
+
+    saida = dump_response(resposta)
+
+    assert saida["listas"] == ([{"nome": "SP", "uf": "SP"}], [{"nome": "SP"}])
+    assert saida["conjuntos"] == ([{"nome": "SP", "uf": "SP"}], [{"nome": "SP", "uf": "SP"}])
+
+
+def test_subclasse_declarada_noutra_posicao_sai_com_os_campos_dela_no_conjunto_da_base():
+    """Na lista, o item de subclasse na posição da base sai só com os campos da base."""
+    capital = Capital(nome="SP", uf="SP")
+    resposta = _PosicoesComBaseESubclasse(
+        conjuntos=({capital}, {capital}), listas=([capital], [capital])
+    )
+
+    saida = dump_response(resposta)
+
+    assert saida["listas"] == ([{"nome": "SP"}], [{"nome": "SP", "uf": "SP"}])
+    assert saida["conjuntos"] == ([{"nome": "SP", "uf": "SP"}], [{"nome": "SP", "uf": "SP"}])
+
+
+_EmCentavos = Annotated[int, PlainSerializer(lambda valor: f"{valor} centavos")]
+
+
+class _SerializadorDeTipoAoLadoDoConjunto(BaseModel):
+    com_conjunto: tuple[set[Cidade], list[_EmCentavos]]
+    com_lista: tuple[list[Cidade], list[_EmCentavos]]
+    conjunto_serializado: dict[str, Annotated[set[Cidade], PlainSerializer(lambda valor: "x")]]
+
+
+def test_serializador_de_tipo_dentro_do_campo_com_conjunto_de_submodelos_e_ignorado():
+    """O campo cujo dump cai é escrito sem o model_dump, que é quem roda o serializador."""
+    cidade = Cidade(nome="SP")
+    resposta = _SerializadorDeTipoAoLadoDoConjunto(
+        com_conjunto=({cidade}, [5]),
+        com_lista=([cidade], [5]),
+        conjunto_serializado={"k": {cidade}},
+    )
+
+    saida = dump_response(resposta)
+
+    assert saida["com_lista"] == ([{"nome": "SP"}], ["5 centavos"])
+    assert saida["com_conjunto"] == ([{"nome": "SP"}], [5])
+    assert saida["conjunto_serializado"] == {"k": [{"nome": "SP"}]}

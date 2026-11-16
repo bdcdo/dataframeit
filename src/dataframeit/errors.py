@@ -20,6 +20,7 @@ import re
 import time
 import unicodedata
 import warnings
+from collections import deque
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from contextlib import suppress
@@ -152,7 +153,88 @@ def dump_response(response: BaseModel, model: type[BaseModel] | None = None) -> 
     # O @model_serializer do modelo pode devolver outra coisa que um dict.
     if not isinstance(data, dict):
         return data
+    for name in _fields_holding_any(declared).intersection(data):
+        data[name] = _models_dumped(data[name], response)
     return _declared_sets_as_lists(declared, data, response, written)
+
+
+@functools.cache
+def _fields_holding_any(model: type[BaseModel]) -> frozenset[str]:
+    """Os campos do modelo com `Any` ou `object` em algum nível, também dentro de um submodelo."""
+    return frozenset(
+        name
+        for name, field in model.model_fields.items()
+        if _holds_any(field.annotation, frozenset({model}))
+    )
+
+
+def _holds_any(annotation: object, seen: frozenset[type]) -> bool:
+    """Se a anotação tem `Any` ou `object` em algum nível, também dentro de um submodelo.
+
+    `seen` são os modelos já abertos no caminho, como em `_holds_model_set`.
+    """
+    for member in _members(annotation):
+        if member is Any or member is object:
+            return True
+        if isinstance(member, type) and issubclass(member, BaseModel):
+            if member not in seen and any(
+                _holds_any(field.annotation, seen | {member})
+                for field in member.model_fields.values()
+            ):
+                return True
+        elif any(_holds_any(arg, seen) for arg in get_args(member)):
+            return True
+    return False
+
+
+def _models_dumped(value: object, response: BaseModel) -> object:
+    """O valor que o model_dump devolveu, com o dump dos submodelos que ele deixou como objeto.
+
+    No pydantic 2.12, o model_dump não desce no `deque` nem na chave de dict
+    que um campo `Any` recebeu, e o submodelo de dentro sai como objeto, sem
+    erro; no 2.14, o item do `deque` sai pelo dump dele, e a chave e o conjunto
+    que guardam um submodelo derrubam o dump. Esta função dá o resultado do
+    2.14 nas duas versões: desce na lista, na tupla, no `deque` e nos valores
+    do dict, escreve o submodelo pelo model_dump dele e levanta
+    ProviderAbortError na chave e no conjunto que guardam um submodelo, e no
+    submodelo cujo dump cai por um conjunto de submodelos.
+    """
+    if isinstance(value, BaseModel):
+        try:
+            dumped = value.model_dump(by_alias=False)
+        except _DUMP_ERRORS as error:
+            if not _is_unhashable(error):
+                raise
+            raise ProviderAbortError(_unhashable_dump_message(response, error)) from error
+        return _models_dumped(dumped, response)
+    kind = type(value)
+    if kind is dict:
+        pairs = cast("dict[object, object]", value)  # pragma: no mutate
+        if any(_holds_model(key) for key in pairs):
+            raise ProviderAbortError(_unhashable_dump_message(response, _UNHASHABLE_DICT))
+        return {key: _models_dumped(item, response) for key, item in pairs.items()}
+    if kind in (set, frozenset):
+        if _holds_model(value):
+            raise ProviderAbortError(_unhashable_dump_message(response, _UNHASHABLE_DICT))
+        return value
+    if kind in (list, tuple):
+        items = cast("Iterable[object]", value)  # pragma: no mutate
+        return kind(_models_dumped(item, response) for item in items)
+    if isinstance(value, deque):
+        return deque((_models_dumped(item, response) for item in value), value.maxlen)
+    return value
+
+
+def _holds_model(value: object) -> bool:
+    """Se o valor é um submodelo, ou uma tupla ou um conjunto que guarda um."""
+    if isinstance(value, BaseModel):
+        return True
+    return isinstance(value, (tuple, set, frozenset)) and any(_holds_model(item) for item in value)
+
+
+# O erro do Python para o dict que entraria num conjunto ou viraria chave, que
+# é o que o model_dump do pydantic 2.14 levanta no lugar de `_models_dumped`.
+_UNHASHABLE_DICT = TypeError("unhashable type: 'dict'")
 
 
 # O model_dump levanta o TypeError do Python, ou o PydanticSerializationError,

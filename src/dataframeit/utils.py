@@ -295,18 +295,27 @@ def _admits_any(annotation: object) -> bool:
     return any(member is typing.Any or member is object for member in _members(annotation))
 
 
-def _mixes_text_and_number(annotation: object) -> bool:
-    """Se a anotação é a união de `str` com `int`, `float` ou `bool`, sem outro tipo além de None.
+# Os tipos sem estrutura que a união com `str` grava ao lado do texto na mesma coluna.
+_SCALAR_CLASSES = (*_NUMBER_CLASSES, Decimal, dt.date, dt.datetime, dt.time)
 
-    O CSV e o XLSX não dizem se a célula `123` guarda o número ou o texto, e o
-    leitor devolve ausente o texto "N/A": o checkpoint grava entre aspas o
-    texto que o leitor trocaria (`_quoted_scalar_text`).
+
+def _mixes_text_and_scalar(annotation: object) -> bool:
+    """Se a anotação é a união de `str` com número, bool, `Decimal`, data, hora ou `Literal`.
+
+    Sem outro tipo além de None, e sem contar a união que só aceita texto, como
+    a de `str` com um `Literal` de textos. O CSV e o XLSX não dizem se a célula
+    `123` guarda o número ou o texto, e o leitor devolve ausente o texto "N/A":
+    o checkpoint grava entre aspas o texto que o leitor trocaria
+    (`_quoted_scalar_text`).
     """
-    members = set(_members(annotation))
+    members = _members(annotation)
+    others = [member for member in members if member is not str and member is not type(None)]
     return (
         str in members
-        and not members.isdisjoint(_NUMBER_CLASSES)
-        and members <= {str, type(None), *_NUMBER_CLASSES}
+        and not accepts_only_text(annotation)
+        and all(
+            member in _SCALAR_CLASSES or get_origin(member) is typing.Literal for member in others
+        )
     )
 
 
@@ -1288,7 +1297,9 @@ def _silent_slice_write(df: pd.DataFrame) -> Generator[None, None, None]:
         df._is_copy = parent  # noqa: SLF001
 
 
-def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> None:
+def normalize_complex_columns(
+    df: pd.DataFrame, complex_fields: set[str], keep_object: Collection[str] = ()
+) -> None:
     """Normaliza colunas complexas no DataFrame, convertendo strings JSON.
 
     Modifica o DataFrame in-place.
@@ -1296,12 +1307,23 @@ def normalize_complex_columns(df: pd.DataFrame, complex_fields: set[str]) -> Non
     Args:
         df: DataFrame a normalizar.
         complex_fields: Set com nomes das colunas a normalizar.
+        keep_object: Colunas que, sendo de objetos, continuam de objetos, sem
+            nova inferência de tipo.
     """
     # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
     # teste de mutação, não muda nada; no pandas 2, a troca levanta.
     with _silent_slice_write(df):  # pragma: no mutate
         for col in complex_fields:
-            if col in df.columns:
+            if col not in df.columns:
+                continue
+            if col in keep_object and df[col].dtype == object:
+                # O apply volta a inferir o tipo: na coluna de objetos só com
+                # número e None, como a do campo que é estrutura e `Any`, o
+                # None viraria NaN e o inteiro, float.
+                df[col] = pd.Series(
+                    [normalize_value(value) for value in df[col]], index=df.index, dtype=object
+                )
+            else:
                 df[col] = df[col].apply(normalize_value)
 
 
@@ -1410,10 +1432,11 @@ def read_df(
                arquivo, e a do campo que admite float, ou do campo Any, traz
                o NaN que o checkpoint gravou como o texto "NaN", com None na
                célula vazia; do .parquet, o NaN vem à parte do nulo. Do .csv,
-               o número e o bool de um campo Any, ou da união de str com int,
-               float ou bool, ao lado de um texto voltam número e bool, e,
-               nessa união, o texto que o checkpoint gravou entre aspas,
-               como "123" e "N/A", volta sem elas também do .xlsx.
+               o número e o bool de um campo Any, ou da união de str com número,
+               bool ou Literal deles, ao lado de um texto voltam número e bool, e,
+               na união de str com número, bool, Decimal, data, hora ou
+               Literal, o texto que o checkpoint gravou entre aspas, como
+               "123" e "N/A", volta sem elas também do .xlsx.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
@@ -1555,9 +1578,9 @@ def _raw_restorer(  # noqa: PLR0911 (uma saída por tipo de campo)
 
     O XLSX guarda número como double e fica fora da releitura do int, porque
     o int que ele devolve já pode vir arredondado. Ele guarda o tipo de cada
-    célula, e dele o campo `Any` e a união de texto e número
-    (`_mixes_text_and_number`) só releem o NaN, a célula ausente e o texto
-    entre aspas; o número e o bool em texto são do CSV. O campo que admite
+    célula, e dele o campo `Any` e a união de texto com número, data ou outro
+    tipo sem estrutura (`_mixes_text_and_scalar`) só releem o NaN, a célula
+    ausente e o texto entre aspas; o número e o bool em texto são do CSV. O campo que admite
     `float` vem antes do que admite `Decimal`: na união dos dois, o texto
     "NaN" volta float NaN, que o campo aceita.
     """
@@ -1566,7 +1589,7 @@ def _raw_restorer(  # noqa: PLR0911 (uma saída por tipo de campo)
     if is_csv and _accepts_only_int(annotation) and not is_integer_dtype(read):
         return _int_as_written
     is_any = _admits_any(annotation)
-    if is_any or _mixes_text_and_number(annotation):
+    if is_any or _mixes_text_and_scalar(annotation):
         texts = is_string_dtype(read.dtype)
         # No `Any`, o texto entre aspas é JSON, que `_normalize_any_columns` lê.
         unquote = not is_any
@@ -1574,17 +1597,25 @@ def _raw_restorer(  # noqa: PLR0911 (uma saída por tipo de campo)
         if not _holds_cell_to_restore(read, scalars=scalars, unquote=unquote):
             return None
         members = _members(annotation)
+        in_literals = {
+            type(arg)
+            for member in members
+            if get_origin(member) is typing.Literal
+            for arg in get_args(member)
+        }
         return functools.partial(
             _scalars_as_written,
             scalars=scalars,
             nan=is_any or float in members,
-            # O int também é o número de um campo float: a validação o leva a float.
+            decimal_nan=Decimal in members,
+            # O int também é o número de um campo float, que a validação leva a
+            # float; o número e o bool de um `Literal` contam pelo tipo deles.
             admitted=None
             if is_any
             else tuple(
                 cls
                 for cls in _NUMBER_CLASSES
-                if cls in members or (cls is int and float in members)
+                if cls in members or cls in in_literals or (cls is int and float in members)
             ),
         )
     # O leitor devolve ausente o texto do NaN, e a coluna sem célula ausente
@@ -1779,7 +1810,7 @@ def _inside_quotes(text: str) -> str:
 
 
 def _quoted_scalar_text(text: str) -> str:
-    """O texto da união de texto e número como o checkpoint CSV e XLSX o grava.
+    """O texto da união de texto com outro tipo como o checkpoint CSV e XLSX o grava.
 
     O texto que o leitor devolveria como número, bool ou ausência
     (`_reads_as_other`), como "123", "N/A" e "", vai com um par de aspas, e o
@@ -1796,20 +1827,23 @@ def _unquoted_scalar_text(text: str) -> str | None:
     return text[1:-1] if inner != text and _reads_as_other(inner) else None
 
 
-def _scalars_as_written(
+def _scalars_as_written(  # noqa: PLR0913 (uma opção por forma de reler a célula)
     raw: pd.Series,
     read: pd.Series,
     *,
     scalars: bool,
     nan: bool,
+    decimal_nan: bool,
     admitted: Collection[type] | None,
 ) -> pd.Series | None:
-    """A coluna do campo `Any`, ou da união de texto e número, como o checkpoint a gravou.
+    """A coluna do campo `Any`, ou da união de texto com outro tipo, como o checkpoint a gravou.
 
     O checkpoint grava entre aspas o texto que o leitor devolveria como
     número, bool ou ausência (`_structures_as_json`), e a célula sem aspas que
     se lê assim é o que o modelo devolveu. Com `nan`, o texto "NaN" é o NaN do
-    campo. A célula que o leitor devolveu ausente, vazia ou não, volta None.
+    campo; com `decimal_nan`, o texto do `Decimal` NaN volta em texto, como em
+    `_decimal_as_written`. A célula que o leitor devolveu ausente, vazia ou
+    não, volta None.
     Na coluna de texto da união, a que tem `admitted`, o texto gravado entre
     aspas volta sem elas (`_unquoted_scalar_text`); o do `Any` é JSON, que
     `_normalize_any_columns` lê. Com `scalars`, no CSV, cujo leitor tipa a
@@ -1833,6 +1867,9 @@ def _scalars_as_written(
         new = value
         if nan and text == _FLOAT_NAN_TEXT:
             new = math.nan
+            changed = True
+        elif decimal_nan and _DECIMAL_NAN_TEXT.fullmatch(text):
+            new = text
             changed = True
         elif absent:
             new = None
