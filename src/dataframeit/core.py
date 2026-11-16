@@ -4858,11 +4858,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # que uma falha ao fechá-la não impede.
     pending_rows = iter(rows_to_process)
     in_flight: dict[Future[None], tuple[_RowData, float]] = {}
-
-    def save_tail() -> None:
-        if writer:
-            _try_save_checkpoint(df, writer.checkpoint)
-
     with tqdm(total=len(rows_to_process), desc=desc) as pbar:
         with (
             _on_ctrl_c(mark_uncounted_rows, save_registered_rows),
@@ -4929,6 +4924,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
         # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
         # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
         # completa antes de gravar.
+        def save_tail() -> None:
+            if writer:
+                _try_save_checkpoint(df, writer.checkpoint)
+
         with _on_ctrl_c(mark_uncounted_rows, save_tail):
             if abort_event.is_set():
                 mark_unreached(counted)
