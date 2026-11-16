@@ -1213,21 +1213,23 @@ def test_ctrl_c_dentro_do_on_row_done_no_sequencial_grava_a_linha_entregue(tmp_p
 @requer_pthread_kill
 @pytest.mark.parametrize("paralelo", [1, 3])
 def test_ctrl_c_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_antigo(tmp_path, paralelo):
-    """5 linhas processadas e uma com erro, reprocess_columns e Ctrl-C durante a 3ª chamada.
+    """7 linhas processadas e uma com erro, reprocess_columns e Ctrl-C durante a 3ª chamada.
 
     Como na interrupção por limite de uso, a linha processada que não foi
     alcançada mantém o valor antigo e ganha a marca em `_error_details`, e a
     linha com erro que ia ser refeita volta a ficar sem status, no DataFrame do
     usuário e no checkpoint. Com batch_size=2, as duas primeiras linhas já
     estão gravadas quando o Ctrl-C chega no sequencial, e só as marcas mudaram
-    desde então.
+    desde então. No paralelo, as duas linhas que já estavam com os outros
+    workers quando o Ctrl-C chegou também terminam: com a 3ª, são até 5
+    alcançadas, e as 7 processadas deixam ao menos duas com o valor antigo.
     """
     df = pd.DataFrame(
         {
-            "texto": [f"t{i}" for i in range(6)],
-            "campo1": ["antigo"] * 5 + [None],
-            "_dataframeit_status": ["processed"] * 5 + ["error"],
-            "_error_details": [None] * 5 + ["falha"],
+            "texto": [f"t{i}" for i in range(8)],
+            "campo1": ["antigo"] * 7 + [None],
+            "_dataframeit_status": ["processed"] * 7 + ["error"],
+            "_error_details": [None] * 7 + ["falha"],
         }
     )
     ckpt = tmp_path / "ckpt.csv"
@@ -1245,9 +1247,9 @@ def test_ctrl_c_no_reprocessamento_marca_as_linhas_que_ficaram_com_valor_antigo(
 
     for saida in (df, pd.read_csv(ckpt)):
         alcancadas = saida["texto"].isin(pagas)
-        com_erro = saida["texto"].eq("t5") & ~alcancadas
+        com_erro = saida["texto"].eq("t7") & ~alcancadas
         antigas = ~alcancadas & ~com_erro
-        assert antigas.sum() >= 1
+        assert antigas.sum() >= 2
         assert list(saida.loc[alcancadas, "campo1"]) == [
             f"r-{texto}" for texto in saida.loc[alcancadas, "texto"]
         ]
