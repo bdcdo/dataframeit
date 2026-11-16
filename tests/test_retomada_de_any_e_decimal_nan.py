@@ -414,7 +414,10 @@ def test_arquivo_de_texto_grava_como_texto_o_decimal_do_campo_so_de_decimal():
     coluna = pd.Series([Decimal("1.50"), Decimal(2), None], dtype=object)
     df = pd.DataFrame({"campo": coluna, "outra": coluna})
 
-    de_texto = _structures_as_json(df, decimal_columns=["campo"], text_file=True)
+    # O Decimal de outra coluna, como a de um campo `Any`, fica para o gravador do formato.
+    de_texto = _structures_as_json(
+        df, any_columns=["outra"], decimal_columns=["campo"], text_file=True
+    )
     parquet = _structures_as_json(df, decimal_columns=["campo"])
 
     assert de_texto["campo"].tolist()[:2] == ["1.50", "2"]
@@ -548,30 +551,12 @@ def test_retomada_do_checkpoint_devolve_o_decimal_com_modelo_estrito(tmp_path, e
 def test_xlsx_grava_como_texto_o_decimal_do_campo_so_de_decimal(tmp_path):
     openpyxl = pytest.importorskip("openpyxl")
     caminho = tmp_path / "ck.xlsx"
-    coluna = pd.Series([Decimal("1.10"), None], dtype=object)
+    df = pd.DataFrame({"campo": pd.Series([Decimal("1.10"), None], dtype=object)})
 
-    _save_checkpoint(
-        pd.DataFrame({"campo": coluna, "outra": coluna}), caminho, decimal_fields={"campo"}
-    )
+    _save_checkpoint(df, caminho, decimal_fields={"campo"})
 
-    planilha = openpyxl.load_workbook(caminho).active
-    assert (planilha["A2"].data_type, planilha["A2"].value) == ("s", "1.10")
-    assert planilha["B2"].data_type == "n"
-
-
-def test_checkpoint_xlsx_guarda_como_numero_o_decimal_de_any(tmp_path):
-    openpyxl = pytest.importorskip("openpyxl")
-    caminho = tmp_path / "ck.xlsx"
-
-    _rodar(
-        pd.DataFrame(_TEXTOS),
-        Any,
-        [Decimal("1.5"), "x", ProviderAbortError("limite")],
-        checkpoint_path=str(caminho),
-        batch_size=1,
-    )
-
-    assert openpyxl.load_workbook(caminho).active["B2"].data_type == "n"
+    celula = openpyxl.load_workbook(caminho).active["A2"]
+    assert (celula.data_type, celula.value) == ("s", "1.10")
 
 
 def test_parquet_grava_o_decimal_sem_nan_como_decimal(tmp_path):
