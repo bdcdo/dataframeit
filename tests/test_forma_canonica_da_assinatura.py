@@ -1,10 +1,11 @@
 """Forma canônica que a assinatura do checkpoint tira de cada folha e de cada contêiner."""
 
+import sys
 from decimal import Decimal
 from enum import Enum
 from functools import partial
 from types import MethodType, UnionType
-from typing import Any, Literal, NewType, Optional, TypeVar, Union
+from typing import Annotated, Any, Literal, NewType, Optional, TypeVar, Union
 
 import pandas as pd
 import pytest
@@ -146,6 +147,23 @@ def test_origem_que_nao_e_tipo_entra_pelo_chamavel_dela():
     assert _schema_leaf(Literal["a"], _Descent()) == {"origin": origem, "args": ["a"]}
     assert isinstance(origem, dict)
     assert set(origem) == {"callable", "state"}
+
+
+def test_origem_do_typing_assina_pelo_que_a_versao_do_python_traz():
+    """A retomada entre versões do Python é recusada por estas origens, e a documentação o diz."""
+    formas: list[Any] = [
+        _schema_leaf(anotacao, _Descent())
+        for anotacao in (Literal["a"], Annotated[int, "x"], Optional[int])
+    ]
+    literal, anotado, uniao = (forma["origin"] for forma in formas)
+
+    # O código de `_SpecialForm.__call__`, que muda com o bytecode de cada versão.
+    assert literal["callable"]["function"] == "_SpecialForm.__call__"
+    if sys.version_info >= (3, 13):
+        assert anotado["callable"]["function"] == "_SpecialForm.__call__"
+    else:
+        assert anotado == "Annotated"
+    assert uniao == ("Union" if sys.version_info >= (3, 14) else "UnionType")
 
 
 def test_modelo_entra_pelo_nome_pela_doc_e_pelo_model_config_na_forma_canonica():
