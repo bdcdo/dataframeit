@@ -88,6 +88,7 @@ from .utils import (
     ORIGINAL_TYPE_POLARS_DF,
     TOKEN_COLUMNS,
     ConversionInfo,
+    _admits_any,
     _admits_none,
     _column_rank,
     _dropped_by_model_serializer,
@@ -617,12 +618,14 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
     # linha pendente, e segue contando como ausente.
+    # O campo `Any` também recebe o NaN que o modelo devolveu, e na coluna de
+    # objetos da saída pandas ele fica ao lado do None.
     nan_columns = {
         field_name
         for field_name, field in pydantic_model.model_fields.items()
         if field_name in df.columns
         and df[field_name].dtype == object
-        and _keeps_nan(field.annotation)
+        and (_keeps_nan(field.annotation) or _admits_any(field.annotation))
     }
     # O isin lê o pd.NA, status ausente da coluna `string` de convert_dtypes.
     processed_positions = np.flatnonzero(df[status_col].isin(["processed"])).tolist()
@@ -1880,7 +1883,12 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         checkpoint = dataclasses.replace(
             checkpoint,
             meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
-            structures=frozenset(complex_fields),
+            structures=frozenset(complex_fields)
+            | {
+                field_name
+                for field_name, field in questions.model_fields.items()
+                if _admits_any(field.annotation)
+            },
         )
         if resume and status_col not in df_pandas.columns and checkpoint.path.exists():
             with _silent_slice_write(df_pandas):
@@ -3371,15 +3379,20 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         # porque o pandas 3 infere a coluna de texto como `str`, que troca o
         # None por NaN. Na coluna relida com outro dtype, como o float64 do
         # parquet, a célula nula é o None que a execução gravou, e nos objetos
-        # o NaN contaria como valor.
+        # o NaN contaria como valor. Na coluna de objetos de um campo `Any`,
+        # o NaN é o ausente do leitor: nenhum formato guarda o NaN de `Any`, e
+        # a validação da retomada o contaria como valor.
         # O np.empty de objetos começa com None em toda célula.
         if target is None:
             values = np.empty(len(df), dtype=object)
             target = column
         else:
             values = df[target].to_numpy(dtype=object).copy()
-        saved_values = saved[column].to_numpy(dtype=object)
-        if saved[column].dtype != object:
+        # Cópia: o array da coluna de objetos é o da própria coluna, só de leitura.
+        saved_values = saved[column].to_numpy(dtype=object, copy=True)
+        if saved[column].dtype != object or _admits_any(
+            questions.model_fields[str(column)].annotation
+        ):
             saved_values[saved[column].isna().to_numpy()] = None
         values[concluded] = saved_values[concluded]
         df[target] = pd.Series(
@@ -3493,6 +3506,13 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
 
     Com `columns`, só essas colunas são serializadas; sem, todas as de objeto.
 
+    Na coluna com um Decimal NaN, todo Decimal vai como texto. O pandas conta o
+    Decimal NaN como ausente, e o CSV e o XLSX o gravariam como a célula vazia
+    da linha pendente; o decimal128 do parquet não tem NaN, e a coluna que
+    juntasse Decimal e o texto "NaN" seria recusada. `read_df` devolve o
+    Decimal NaN ao campo que admite Decimal (`_restore_decimal_nan`), e a
+    validação da retomada devolve os demais ao tipo do campo.
+
     O Enum vai pelo valor em toda coluna de objeto, como dentro do JSON: o CSV
     e o XLSX gravariam o texto dele ("Cor.AZUL"), que a validação recusa, e o
     parquet recusa a coluna inteira.
@@ -3511,10 +3531,15 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
             )
         return enum_as_value(value)
 
+    def decimal_as_text(value: object, convert: Callable[[object], object]) -> object:
+        return str(value) if isinstance(value, Decimal) else convert(value)
+
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == object:
             convert = to_json if columns is None or col in columns else enum_as_value
+            if any(isinstance(value, Decimal) and value.is_qnan() for value in out[col]):
+                convert = partial(decimal_as_text, convert=convert)
             converted = out[col].map(convert)
             # Series.map infere o tipo do resultado, e uma coluna com int ao
             # lado de None ou de float vira float64, que arredonda o int acima
@@ -3543,7 +3568,8 @@ def _save_checkpoint(
     arquivo que acabou de ser escrito: se o processo morre entre as duas
     gravações, o hash não bate e a retomada recomeça em vez de aceitar o par.
 
-    `structures` são os campos de estrutura do modelo. O parquet serializa só
+    `structures` são os campos de estrutura do modelo e os campos `Any`, que
+    recebem estrutura de qualquer forma. O parquet serializa só
     eles, que a retomada devolve aos tipos declarados, e grava as demais
     colunas como vieram, salvo o Enum, pelo valor; CSV e XLSX serializam toda
     coluna de objeto, porque gravariam o repr de qualquer estrutura.
@@ -3624,8 +3650,8 @@ class _Checkpoint:
     # Assinatura da execução e hash dos textos, gravados ao lado do checkpoint
     # a cada gravação (ver _write_checkpoint_signature).
     meta: dict[str, Any] | None = dataclasses.field(default=None, compare=False)
-    # Campos de estrutura do modelo, que o parquet grava como JSON
-    # (ver _save_checkpoint); sem eles, toda coluna de objeto.
+    # Campos de estrutura e campos `Any` do modelo, que o parquet grava como
+    # JSON (ver _save_checkpoint); sem eles, toda coluna de objeto.
     structures: frozenset[str] | None = dataclasses.field(default=None, compare=False)
 
 

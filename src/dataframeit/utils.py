@@ -282,6 +282,20 @@ def _admits_int(annotation: object) -> bool:
     )
 
 
+def _admits_any(annotation: object) -> bool:
+    """Se a anotação é `Any` ou `object`, ou a união com um deles entre os membros.
+
+    O campo aceita qualquer valor, e a validação não diz em que forma a célula
+    relida de um arquivo deveria estar.
+    """
+    return any(member is typing.Any or member is object for member in _members(annotation))
+
+
+def _admits_decimal(annotation: object) -> bool:
+    """Se a anotação é `Decimal`, ou a união com ele entre os membros."""
+    return any(member is Decimal for member in _members(annotation))
+
+
 def _excluded_fields(model: type[BaseModel]) -> frozenset[str]:
     """Os campos com exclude=True, que não saem no model_dump e que a execução não grava."""
     return frozenset(
@@ -1255,6 +1269,7 @@ def read_df(
     if model is not None:
         _reread_text_columns(df, file, ext, model, kwargs)
         _reread_int_columns(df, file, ext, model, kwargs)
+        _restore_decimal_nan(df, file, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -1265,6 +1280,7 @@ def read_df(
         complex_fields = get_complex_fields(model)
         if complex_fields:
             normalize_complex_columns(df, complex_fields)
+        _normalize_any_columns(df, model)
     else:
         # Normalizar todas as colunas que parecem ter JSON
         _normalize_all_json_columns(df)
@@ -1387,6 +1403,92 @@ def _reread_int_columns(
     for col, values in exact.items():
         if any(type(v) is int for v in values):
             df[col] = pd.Series(values, index=df.index, dtype=object)
+
+
+# O texto que o str() dá ao Decimal NaN quieto, com sinal e diagnóstico.
+_DECIMAL_NAN_TEXT = re.compile(r"-?NaN\d*")
+
+
+def _restore_decimal_nan(
+    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
+) -> None:
+    """Devolve o `Decimal` NaN aos campos do modelo que admitem `Decimal`, in-place.
+
+    O checkpoint grava o Decimal NaN como o texto "NaN", porque o pandas o conta
+    como ausente e o gravaria como a célula vazia da linha pendente, e o
+    decimal128 do parquet não tem NaN. O leitor do CSV e do XLSX devolve esse
+    texto ausente, e a coluna é relida como texto cru para achá-lo; o parquet
+    devolve o próprio texto. A coluna em que ele aparece passa a object, com o
+    Decimal NaN, None na célula ausente e as demais como lidas. Argumento de
+    leitura extra desliga a releitura do CSV e do XLSX, como em
+    `_reread_text_columns`.
+    """
+    columns = [
+        f
+        for f, info in model.model_fields.items()
+        if f in df.columns and _admits_decimal(info.annotation)
+    ]
+    if not columns:
+        return
+    if ext == ".parquet":
+        raw = df
+    else:
+        reader = _TEXT_READERS.get(ext)
+        if reader is None or kwargs:
+            return
+        # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
+        raw = reader(
+            path,
+            usecols=columns,  # pragma: no mutate
+            dtype=str,
+            na_filter=False,
+        )
+    for col in columns:
+        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
+        # têm o mesmo tamanho.
+        is_nan = [
+            isinstance(text, str) and _DECIMAL_NAN_TEXT.fullmatch(text) is not None
+            for text in raw[col]
+        ]
+        if not any(is_nan):
+            continue
+        values = [
+            Decimal(text) if found else None if absent else read
+            for text, found, absent, read in zip(
+                raw[col], is_nan, df[col].isna(), df[col], strict=True
+            )
+        ]
+        df[col] = pd.Series(values, index=df.index, dtype=object)
+
+
+def _normalize_any_columns(df: pd.DataFrame, model: type[BaseModel]) -> None:
+    """Devolve a estrutura ao texto JSON das colunas de campo `Any` do modelo, in-place.
+
+    O checkpoint grava em JSON a lista, o dict e a tupla que o modelo devolveu
+    num campo `Any` (`_admits_any`), como os dos campos de estrutura. A coluna
+    em que algum texto volta estrutura passa a object. Na coluna de objetos, a
+    célula ausente volta None: nenhum formato guarda o NaN de um campo `Any`,
+    e o NaN que o leitor pôs nela contaria como valor na retomada, que o
+    distingue do None nessa coluna. A coluna de outro tipo sem JSON fica como
+    lida.
+    """
+    for col, info in model.model_fields.items():
+        if (
+            col not in df.columns
+            or not _admits_any(info.annotation)
+            or not is_string_dtype(df[col].dtype)
+        ):
+            continue
+        values = [normalize_value(value) for value in df[col]]
+        absent = df[col].isna()
+        unchanged = all(new is read for new, read in zip(values, df[col], strict=True))
+        if unchanged and not (df[col].dtype == object and absent.any()):
+            continue
+        df[col] = pd.Series(
+            [None if missing else value for value, missing in zip(values, absent, strict=True)],
+            index=df.index,
+            dtype=object,
+        )
 
 
 def _normalize_all_json_columns(df: pd.DataFrame) -> None:
