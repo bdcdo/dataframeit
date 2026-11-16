@@ -64,8 +64,8 @@ def _titulo(mensagem):
     return next(linha.strip("║ ") for linha in mensagem.splitlines() if linha.strip("╔═╗ "))
 
 
-def _executar(fabrica, monkeypatch, parallel_requests=2, erro_da_linha=None):
-    """Roda duas linhas que falham com o erro da fábrica e lê o que a execução avisou.
+def _executar(fabrica, monkeypatch, parallel_requests=2, erro_da_linha=None, textos=("a", "b")):
+    """Roda as linhas, duas por padrão, que falham com o erro da fábrica e lê o que a execução avisou.
 
     Com `erro_da_linha`, cada linha falha com o erro que ele dá ao texto dela.
     """
@@ -86,7 +86,7 @@ def _executar(fabrica, monkeypatch, parallel_requests=2, erro_da_linha=None):
     ):
         warnings.simplefilter("always")
         saida = dataframeit(
-            pd.DataFrame({"texto": ["a", "b"]}),
+            pd.DataFrame({"texto": list(textos)}),
             _Campo,
             "{texto}",
             parallel_requests=parallel_requests,
@@ -623,36 +623,60 @@ def test_aviso_de_interrupcao_orienta_a_cota_esgotada(
     assert "use_search" not in aviso
 
 
-@pytest.mark.parametrize("cota_primeiro", [False, True], ids=["outra-antes", "cota-antes"])
-def test_cota_esgotada_orienta_o_aviso_mesmo_depois_de_outra_parada(cota_primeiro, monkeypatch):
-    """Duas linhas em voo param por motivos diferentes; o aviso traz a cota, em qualquer ordem."""
-    primeira_registrada = threading.Event()
+@pytest.mark.parametrize(
+    ("ordem", "antes"),
+    [
+        (["outra", "cota"], 1),
+        (["cota", "outra"], 0),
+        (["cota", "cota"], 0),
+        (["outra", "outra"], 0),
+        (["outra", "cota", "cota"], 1),
+    ],
+    ids=["outra-e-cota", "cota-e-outra", "duas-cotas", "duas-outras", "outra-e-duas-cotas"],
+)
+def test_cota_esgotada_orienta_o_aviso_mesmo_depois_de_outra_parada(ordem, antes, monkeypatch):
+    """Linhas em voo param na ordem dada; o aviso traz a cota e cita a parada que veio antes dela."""
+    textos = "abc"[: len(ordem)]
+    erros = {
+        texto: ProviderUsageLimitError(f"cota {texto}")
+        if tipo == "cota"
+        else ProviderAbortError(f"parou {texto}")
+        for texto, tipo in zip(textos, ordem, strict=True)
+    }
+    registradas = [0]
+    registro = threading.Condition()
     registrar = core._add_failed_usage
 
     def registra_e_avisa(token_stats, erro):
         registrar(token_stats, erro)
-        primeira_registrada.set()
+        with registro:
+            registradas[0] += 1
+            registro.notify_all()
 
     monkeypatch.setattr(core, "_add_failed_usage", registra_e_avisa)
-    erros = {"a": ProviderAbortError("o runtime encerrou"), "b": ProviderUsageLimitError("cota")}
-    if cota_primeiro:
-        erros = {"a": erros["b"], "b": erros["a"]}
-
-    # As duas linhas entram no provider antes de a primeira parar.
-    em_voo = threading.Barrier(2, timeout=10)
+    # Todas as linhas entram no provider antes de a primeira parar, e cada uma
+    # para depois de a anterior registrar a parada.
+    em_voo = threading.Barrier(len(ordem), timeout=10)
 
     def erro_da_linha(texto):
         em_voo.wait()
-        if texto == "b":
-            assert primeira_registrada.wait(timeout=10)
+        with registro:
+            assert registro.wait_for(lambda: registradas[0] >= textos.index(texto), timeout=10)
         return erros[texto]
 
-    execucao = _executar(None, monkeypatch, erro_da_linha=erro_da_linha)
+    execucao = _executar(
+        None,
+        monkeypatch,
+        parallel_requests=len(ordem),
+        erro_da_linha=erro_da_linha,
+        textos=textos,
+    )
 
     _conferir_coerencia(execucao, aborta=True)
     aviso = next(aviso for aviso in execucao.avisos if aviso.startswith(INTERRUPCAO))
-    assert "cota" in aviso
-    assert "renovação do período" in aviso
-    # A parada que chegou antes da cota também fica no aviso.
-    assert ("o runtime encerrou" in aviso) is not cota_primeiro
+    assert ("renovação do período" in aviso) is ("cota" in ordem)
+    assert aviso.count("Antes, outra linha parou") == antes
+    # A primeira parada fica no aviso; a outra que veio depois dela, não.
+    assert ("parou a" in aviso) is (ordem[0] == "outra")
+    assert "parou b" not in aviso
     assert ".." not in aviso

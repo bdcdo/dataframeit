@@ -4169,8 +4169,10 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
     # início, e o teste de mutação troca à toa o valor inicial.
     marked = False  # pragma: no mutate
-    # Se a parada guardada em token_stats["abort"] é a da cota esgotada.
-    quota_abort = False
+    # Se a parada guardada em token_stats["abort"] é a da cota esgotada. A
+    # primeira parada o define antes de qualquer leitura, e o teste de mutação
+    # troca à toa o valor inicial.
+    quota_abort = False  # pragma: no mutate
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
