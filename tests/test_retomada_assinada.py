@@ -344,7 +344,7 @@ def test_checkpoint_que_nao_rele_com_as_linhas_da_entrada_recomeca(tmp_path, mon
 
 def test_aviso_de_falha_da_assinatura_aponta_para_quem_chamou(tmp_path):
     ckpt = tmp_path / "ckpt.csv"
-    original = Path.write_text
+    original = Path.write_bytes
 
     def falha(self, *args, **kwargs):
         if self.name.endswith(".dataframeit.json.tmp"):
@@ -352,7 +352,7 @@ def test_aviso_de_falha_da_assinatura_aponta_para_quem_chamou(tmp_path):
             raise OSError(msg)
         return original(self, *args, **kwargs)
 
-    with patch.object(Path, "write_text", falha), warnings.catch_warnings(record=True) as avisos:
+    with patch.object(Path, "write_bytes", falha), warnings.catch_warnings(record=True) as avisos:
         warnings.simplefilter("always")
         _roda(
             pd.DataFrame({"texto": ["a"]}),

@@ -46,7 +46,7 @@ uv run --extra dev --with mutmut==3.8.1 mutmut results  # mutantes não mortos
 uv run --extra dev --with mutmut==3.8.1 mutmut show <nome-do-mutante>  # a alteração
 ```
 
-No macOS, rode com `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`: sem ela, os processos que o mutmut cria por `fork` travam ou abortam, e os mutantes saem como timeout. O mutmut envolve cada função mutada num trampolim, que acrescenta quadros à pilha; por isso `_user_stacklevel`, que conta os quadros até `dataframeit()`, fica fora da mutação, e os avisos dos módulos mutados usam `_user_stacklevel()` no lugar de um `stacklevel` fixo.
+No macOS, rode com `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`: sem ela, os processos que o mutmut cria por `fork` travam ou abortam, e os mutantes saem como timeout. O mutmut envolve cada função mutada num trampolim, que acrescenta quadros à pilha; por isso `_user_stacklevel`, que conta os quadros até `dataframeit()`, e a própria `dataframeit()`, cujo quadro ele procura, ficam fora da mutação, e os avisos dos módulos mutados usam `_user_stacklevel()` no lugar de um `stacklevel` fixo.
 
 ## Fluxo
 

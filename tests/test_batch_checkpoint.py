@@ -698,7 +698,7 @@ def test_texto_ausente_casa_com_texto_ausente(tmp_path):
 
 def test_falha_ao_gravar_a_assinatura_vira_aviso(tmp_path):
     ckpt = tmp_path / "ckpt.csv"
-    original = Path.write_text
+    original = Path.write_bytes
 
     def falha_na_assinatura(self, *args, **kwargs):
         if self.name.endswith(".dataframeit.json.tmp"):
@@ -707,7 +707,7 @@ def test_falha_ao_gravar_a_assinatura_vira_aviso(tmp_path):
         return original(self, *args, **kwargs)
 
     with (
-        patch.object(Path, "write_text", falha_na_assinatura),
+        patch.object(Path, "write_bytes", falha_na_assinatura),
         pytest.warns(UserWarning, match="Falha ao gravar a assinatura.*disco cheio"),
     ):
         final = _roda(pd.DataFrame({"texto": ["a"]}), _crash_depois_de(100, [0]), ckpt)

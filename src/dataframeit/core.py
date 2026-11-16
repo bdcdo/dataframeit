@@ -39,7 +39,7 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-from pandas.api.extensions import ExtensionArray
+from pandas.api.extensions import ExtensionArray, ExtensionDtype
 from pandas.api.types import infer_dtype, is_bool, is_scalar
 
 # O mesmo `pandas.util.hash_pandas_object`, que o `pandas.util` entrega por um
@@ -163,7 +163,7 @@ class _FallbackHandler(logging.Handler):
 # pulado de conditional.py. O handler de reserva mantém o resumo visível sem
 # configuração, e o nível WARNING nesse logger o silencia.
 def _is_fallback(handler: logging.Handler) -> bool:
-    return getattr(handler, "is_dataframeit_fallback", False)
+    return hasattr(handler, "is_dataframeit_fallback")
 
 
 def _install_fallback_handler(logger: logging.Logger) -> None:
@@ -307,7 +307,10 @@ def _notify_row_done(on_row_done: Callable[[RowResult], None] | None, result: Ro
     try:
         on_row_done(result)
     except Exception as e:  # noqa: BLE001 (o callback é do usuário; a falha dele não para a execução)
-        warnings.warn(f"on_row_done falhou na linha {result.index}: {_error_text(e)}", stacklevel=1)
+        msg = f"on_row_done falhou na linha {result.index}: {_error_text(e)}"
+        # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
+        # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
+        warnings.warn(msg, stacklevel=1)  # pragma: no mutate
 
 
 # Detalhe gravado na linha cujo texto está vazio, e que por isso não vai ao LLM.
@@ -354,7 +357,9 @@ def _as_object_columns(
     como NaN, que dali em diante é valor: a saída polars, que guarda o NaN
     dessas colunas, mostraria NaN na linha pendente e na de erro.
     """
-    with _silent_slice_write(df):
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
         for col in columns:
             if col in df.columns and df[col].dtype != object:
                 values = df[col].astype(object)
@@ -377,8 +382,7 @@ def _warn_missing_texts(df: pd.DataFrame, text_column: str, rows: list[Hashable]
         warnings.warn(
             f"{missing} linha(s) sem texto não vão ao LLM e ficam com status 'error' "
             f"('{_MISSING_TEXT_DETAIL}').",
-            UserWarning,
-            stacklevel=3,
+            stacklevel=_user_stacklevel(),
         )
 
 
@@ -500,7 +504,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         """Campos acusados pelo erro; o erro do modelo inteiro acusa todos."""
         rejected = set()
         for detail in error.errors():
-            location = detail.get("loc", ())
+            location = detail["loc"]
             # A linha se valida pelo nome (_validate_row), que o erro traz.
             if location and location[0] in pydantic_model.model_fields:
                 rejected.add(str(location[0]))
@@ -602,10 +606,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                 row_values[field_name] = value
 
         empty_cells = {
-            field_name
-            for field_name in empty_text_fields
-            if row_values[field_name] is None
-            and (field_name not in df.columns or pd.isna(row[field_name]))
+            field_name for field_name in empty_text_fields if row_values[field_name] is None
         }
         skipped_fields = set()
         if any(row_values[field_name] is None for field_name in conditions):
@@ -624,14 +625,15 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
         skipped = frozenset(skipped_fields)
 
         projected = {}
-        missing_values = set()
+        # Na ordem do modelo, que o preenchimento dos defaults da linha recusada segue.
+        missing_values = []
         restored = set()
         omitted_required = set()
         for field_name, field in pydantic_model.model_fields.items():
             if field_name in excluded_fields:
                 continue
             value = row_values[field_name]
-            if value is None and (field_name not in df.columns or pd.isna(row[field_name])):
+            if value is None:
                 if field_name in omittable_fields and field_name in df.columns:
                     if field.is_required():
                         omitted_required.add(field_name)
@@ -645,7 +647,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
                     values_to_fill[(position, field_name)] = ""
                     restored.add(field_name)
                     continue
-                missing_values.add(field_name)
+                missing_values.append(field_name)
                 if field_name in skipped or not (
                     field.is_required() or field_name in written_none_fields
                 ):
@@ -682,7 +684,7 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0915 (validação por l
             field_name for field_name in restored if validated_data[field_name] != ""
         )
 
-        for field_name in missing_values & validated_data.keys():
+        for field_name in validated_data.keys() & missing_values:
             values_to_fill[(position, field_name)] = validated_data[field_name]
 
         # O arquivo não guarda o tipo de todo valor (ver _validate_row). O
@@ -839,23 +841,21 @@ def _validated_where_same(
     if same(validated, value):
         return validated
     if isinstance(validated, dict) and isinstance(value, dict) and len(validated) == len(value):
-        if not all(
-            _same_json({key: None}, {read_key: None})
-            for key, read_key in zip(validated, value, strict=True)
-        ):
+        if not _same_json(dict.fromkeys(validated), dict.fromkeys(value)):
             return value
-        return {
-            key: _validated_where_same(item, read, _same_json)
-            for (key, item), read in zip(validated.items(), value.values(), strict=True)
-        }
+        # Os dois dicts têm o mesmo tamanho, e o strict do zip nunca levanta; o
+        # teste de mutação o troca por None ou pelo default, que dão o mesmo.
+        pairs = zip(validated.items(), value.values(), strict=True)  # pragma: no mutate
+        return {key: _validated_where_same(item, read, _same_json) for (key, item), read in pairs}
     if (
         isinstance(validated, (list, tuple))
         and isinstance(value, (list, tuple))
         and len(validated) == len(value)
     ):
+        # As duas sequências têm o mesmo tamanho; ver o zip do dict acima.
         items = [
             _validated_where_same(item, read, _same_json)
-            for item, read in zip(validated, value, strict=True)
+            for item, read in zip(validated, value, strict=True)  # pragma: no mutate
         ]
         return tuple(items) if isinstance(validated, tuple) else items
     return value
@@ -876,7 +876,9 @@ def _apply_processed_values(
     by_column: dict[str, dict[int, Any]] = {}
     for (position, field_name), value in values.items():
         by_column.setdefault(field_name, {})[position] = value
-    with _silent_slice_write(df):
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
         for field_name, cells in by_column.items():
             column = df[field_name].to_numpy(dtype=object, copy=True)
             for position, value in cells.items():
@@ -1037,7 +1039,7 @@ def _warn_search_rate_limit(  # noqa: PLR0913 (configuração de busca da execu�
         + "."
     )
 
-    warnings.warn(msg, UserWarning, stacklevel=3)
+    warnings.warn(msg, stacklevel=_user_stacklevel())
 
 
 def _validate_search_overrides(
@@ -1299,7 +1301,13 @@ def _validate_status_column(
     # (track_tokens é o padrão) gravaria por cima do status.
     if (
         status_col != "_dataframeit_status"
-        and _column_rank(status_col, "_dataframeit_status") != _USER_COLUMN
+        and _column_rank(
+            status_col,
+            # O segundo argumento só decide o rank do próprio status padrão, que a
+            # linha de cima já excluiu: o teste de mutação o troca à toa.
+            "_dataframeit_status",  # pragma: no mutate
+        )
+        != _USER_COLUMN
     ):
         msg = (
             f"status_column='{status_col}' é o nome de uma coluna de controle do dataframeit, "
@@ -1397,6 +1405,9 @@ def dataframeit(
 ) -> PolarsDataFrame: ...
 
 
+# Fora do teste de mutação: o mutmut renomearia a função e a chamaria por um
+# trampolim, e _user_stacklevel, que aponta os avisos para quem chamou
+# `dataframeit`, não acharia o quadro dela.
 def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública: cada parâmetro é uma opção documentada)
     data: pd.DataFrame | pd.Series | PolarsDataFrame | PolarsSeries | list[Any] | dict[Any, Any],
     questions: type[BaseModel] | None = None,
@@ -1428,7 +1439,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
     batch_size: int | None = None,
     checkpoint_path: str | os.PathLike[str] | None = None,
     on_row_done: Callable[[RowResult], None] | None = None,
-) -> pd.DataFrame | PolarsDataFrame:
+) -> pd.DataFrame | PolarsDataFrame:  # pragma: no mutate block
     """Processa textos usando LLMs para extrair informações estruturadas.
 
     Suporta múltiplos tipos de entrada:
@@ -1572,7 +1583,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
         warnings.warn(
             "O parâmetro 'perguntas' está depreciado; use 'questions'.",
             DeprecationWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
         questions = perguntas
     elif questions is None:
@@ -1686,7 +1697,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                         f"Múltiplas colunas candidatas encontradas: {matches}. "
                         f"Usando '{text_column}'. Passe text_column= para suprimir este aviso.",
                         UserWarning,
-                        stacklevel=2,
+                        stacklevel=_user_stacklevel(),
                     )
             elif len(df_pandas.columns) == 1:
                 text_column = df_pandas.columns[0]
@@ -1871,7 +1882,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             "execução não as preenche nelas: ficam com o padrão de cada campo, ou None. "
             f"Para preenchê-las, passe reprocess_columns={suggested_columns!r}.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
 
     # Um checkpoint sem posição pendente não depende do provider nem de autenticação.
@@ -2066,7 +2077,7 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             f"Execução interrompida: {token_stats['abort'].rstrip('.')}. {summary}. "
             f"Para retomar, {how}.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
 
     if track_tokens and any(token_stats.values()):
@@ -2086,14 +2097,14 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             f"{token_stats['final_workers']}. Considere usar "
             f"parallel_requests={token_stats['final_workers']} para evitar rate limits.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_user_stacklevel(),
         )
 
     # Retornar no formato original (remove colunas de status/erro se não houver erros)
     return from_pandas(df_pandas, conversion_info, status_col, annotations)
 
 
-def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por recurso ligado)
+def _setup_columns(  # noqa: PLR0913 (uma família de colunas por recurso ligado)
     df: pd.DataFrame,
     expected_columns: list[str],
     status_column: str | None,
@@ -2135,38 +2146,13 @@ def _setup_columns(  # noqa: C901, PLR0912, PLR0913 (uma família de colunas por
             # Coluna única
             trace_cols = ["_trace"]
 
-    # Identificar colunas que precisam ser criadas
-    new_cols = [col for col in expected_columns if col not in df.columns]
-    needs_status = status_col not in df.columns
-    needs_error = error_col not in df.columns
-    needs_tokens = [col for col in token_cols if col not in df.columns] if track_tokens else []
-    needs_search = [col for col in search_cols if col not in df.columns]
-    needs_trace = [col for col in trace_cols if col not in df.columns]
-
-    if (
-        not new_cols
-        and not needs_status
-        and not needs_error
-        and not needs_tokens
-        and not needs_search
-        and not needs_trace
-    ):
-        return
-
-    with _silent_slice_write(df):
-        for col in new_cols:
-            df[col] = None
-        if needs_status:
-            df[status_col] = None
-        if needs_error:
-            df[error_col] = None
-        if track_tokens:
-            for col in needs_tokens:
+    columns = (*expected_columns, status_col, error_col, *token_cols, *search_cols, *trace_cols)
+    # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+    # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+    with _silent_slice_write(df):  # pragma: no mutate
+        for col in columns:
+            if col not in df.columns:
                 df[col] = None
-        for col in needs_search:
-            df[col] = None
-        for col in needs_trace:
-            df[col] = None
 
 
 def _get_processing_indices(
@@ -2254,7 +2240,7 @@ def _format_token_stats(
     if token_stats["search_count"] > 0:
         lines += [
             "-" * 60,
-            f"METRICAS DE BUSCA ({(search_provider or 'tavily').upper()})",
+            f"METRICAS DE BUSCA ({search_provider.upper() if search_provider else 'TAVILY'})",
             "-" * 60,
             f"Total de buscas: {token_stats['search_count']}",
             f"Creditos usados: {token_stats['search_credits']}",
@@ -2372,7 +2358,8 @@ def _has_unstable_extra(questions: type[BaseModel]) -> bool:
     """
     models = [questions]
     for model in models:  # a lista cresce com os modelos aninhados achados
-        model.model_rebuild(raise_errors=False)
+        # O Pydantic só testa a verdade de `raise_errors`; None daria o mesmo.
+        model.model_rebuild(raise_errors=False)  # pragma: no mutate
         for field_info in model.model_fields.values():
             for nested in get_nested_pydantic_models(field_info.annotation):
                 if nested not in models:
@@ -2404,7 +2391,8 @@ def _outside_json(value: object, path: frozenset[int] = frozenset()) -> bool:
     if isinstance(value, collections.abc.Mapping):
         items: Iterable[object] = value.values()
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
-        items = cast("Sequence[object]", value)
+        # O cast não age em tempo de execução, e o teste de mutação troca o tipo à toa.
+        items = cast("Sequence[object]", value)  # pragma: no mutate
     inner = path | {id(value)}
     return any(_outside_json(item, inner) for item in items)
 
@@ -2577,7 +2565,9 @@ def _instance_state(value: object, descent: _Descent) -> object:
         return descent.forms[key][1]
     depth = len(descent.depth)
     descent.depth[key] = depth
-    descent.lowest.append(depth + 1)
+    # O valor inicial só é comparado com profundidades, pelo `min` e pelo
+    # `lowest > depth`, e qualquer valor acima de `depth` dá o mesmo resultado.
+    descent.lowest.append(depth + 1)  # pragma: no mutate
     # O estado do objeto abre um trecho novo de contêineres (ver `_stable`).
     outer, descent.containers = descent.containers, set()
     # No objeto só com `__slots__`, o nome `__dict__` cai no `__getattr__` da
@@ -2632,8 +2622,8 @@ def _held_value(value: object, descent: _Descent) -> object:
     """
     if isinstance(value, (pd.DataFrame, pd.Series, np.ndarray)):
         return _data_form(value, descent)
-    builtin = _builtin_value(value)
-    return None if builtin is None else _stable(builtin, descent)
+    # O `_stable` devolve o None como veio.
+    return _stable(_builtin_value(value), descent)
 
 
 def _builtin_value(value: object) -> object:
@@ -2666,7 +2656,7 @@ def _attribute_or_none(value: object, name: str) -> object:
     primeira linha, e a exceção dela derrubaria a execução inteira.
     """
     try:
-        return getattr(value, name, None)
+        return getattr(value, name)
     except Exception:  # noqa: BLE001 (ver a docstring)
         return None
 
@@ -2756,7 +2746,8 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     mais fundo, e por isso não decide se a forma desse objeto é reaproveitada.
     """
     if descent is None:
-        descent = _Descent(leaves=False)
+        # `leaves` só é lido como condição, e o None no lugar do False daria o mesmo.
+        descent = _Descent(leaves=False)  # pragma: no mutate
     # O chamável vem antes do contêiner: o NamedTuple com `__call__` entraria
     # pela lista dos valores, sem o código, e a subclasse de dict, só pelos itens.
     # `_callable_leaf` o lê pelo `__call__` e pelo valor embutido ao lado do estado.
@@ -2776,7 +2767,9 @@ def _stable(value: object, descent: _Descent | None = None) -> object:
     elif isinstance(value, collections.abc.Set):
         form = sorted((_stable(item, descent) for item in value), key=_stable_repr)
     else:  # a Sequence, o que sobra de `_is_structure_class`; o ty não estreita por ele
-        form = [_stable(item, descent) for item in cast("Sequence[object]", value)]
+        # O cast não age em tempo de execução, e o teste de mutação troca o tipo à toa.
+        items = cast("Sequence[object]", value)  # pragma: no mutate
+        form = [_stable(item, descent) for item in items]
     descent.containers.remove(key)
     return form
 
@@ -2800,11 +2793,13 @@ def _holds_set(name: object) -> bool:
     return isinstance(name, tuple) and any(_holds_set(item) for item in name)
 
 
-def _data_form(value: object, descent: _Descent) -> object:
+def _data_form(
+    value: pd.DataFrame | pd.Series | np.ndarray | pd.Index | ExtensionArray, descent: _Descent
+) -> object:
     """DataFrame e Series por `_table_form`; ndarray, Index e array do pandas, por `_array_form`."""
     if isinstance(value, (pd.DataFrame, pd.Series)):
         return _table_form(value, descent)
-    return _array_form(cast("np.ndarray | pd.Index | ExtensionArray", value), descent)
+    return _array_form(value, descent)
 
 
 def _table_form(value: pd.DataFrame | pd.Series, descent: _Descent) -> object:
@@ -2866,6 +2861,15 @@ def _dtype_form(dtype: object, descent: _Descent) -> object:
     return str(dtype)
 
 
+# Os tipos que o `hash_pandas_object` lê pelos valores: bool, int, uint, timedelta,
+# datetime, float e complex (o float e o complex estendidos ficam de fora, ver
+# `_extended`).
+_HASHED_KINDS = frozenset("biumMfc")
+# O maior float e o maior complex que o `hash_pandas_object` lê, em bytes.
+_FLOAT64_SIZE = np.dtype(np.float64).itemsize
+_COMPLEX128_SIZE = np.dtype(np.complex128).itemsize
+
+
 def _column_cells(column: pd.Series, descent: _Descent) -> object:
     """Células da coluna, na ordem, por um valor que não muda de um processo a outro.
 
@@ -2884,20 +2888,32 @@ def _column_cells(column: pd.Series, descent: _Descent) -> object:
     """
     if isinstance(column.dtype, pd.CategoricalDtype):
         column = column.cat.codes
-    kind = column.dtype.kind
-    hashable = (kind in "biumMfc" and not _extended(column.dtype)) or infer_dtype(
-        column, skipna=False
+    hashable = (column.dtype.kind in _HASHED_KINDS and not _extended(column.dtype)) or infer_dtype(
+        column,
+        # O teste de mutação troca o False por None, que o pandas também lê como falso.
+        skipna=False,  # pragma: no mutate
     ) == "string"
     if not hashable:
         return _stable(column.tolist(), descent)
-    cells = hash_pandas_object(column, index=False).to_numpy()
+    cells = hash_pandas_object(
+        column,
+        # O teste de mutação troca o False por None, que o pandas também lê como falso.
+        index=False,  # pragma: no mutate
+    ).to_numpy()
     return hashlib.sha256(cells.tobytes()).hexdigest()
 
 
-def _extended(dtype: object) -> bool:
-    """Se o tipo é float ou complex estendido, como o `longdouble`, maior que o de 64 bits."""
-    kind, itemsize = getattr(dtype, "kind", ""), getattr(dtype, "itemsize", 0)
-    return (kind == "f" and itemsize > 8) or (kind == "c" and itemsize > 16)  # noqa: PLR2004 (float64, complex128)
+def _extended(dtype: np.dtype | ExtensionDtype) -> bool:
+    """Se o tipo é float ou complex estendido, como o `longdouble`, maior que o de 64 bits.
+
+    O tipo do pandas sem `itemsize`, como o esparso, não é estendido.
+    """
+    itemsize = getattr(dtype, "itemsize", None)
+    if itemsize is None:
+        return False
+    return (dtype.kind == "f" and itemsize > _FLOAT64_SIZE) or (
+        dtype.kind == "c" and itemsize > _COMPLEX128_SIZE
+    )
 
 
 def _stable_repr(value: object) -> str:
@@ -2934,20 +2950,19 @@ def _write_checkpoint_signature(path: Path, meta: dict[str, Any]) -> None:
     target = _signature_path(path)
     tmp = target.with_name(target.name + ".tmp")
     try:
-        tmp.write_text(json.dumps({**meta, "checkpoint": _file_hash(path)}), encoding="utf-8")
+        tmp.write_bytes(json.dumps({**meta, "checkpoint": _file_hash(path)}).encode())
         tmp.replace(target)
     except OSError as error:
         warnings.warn(
             f"Falha ao gravar a assinatura do checkpoint em {target}: {error}. "
             "O checkpoint é gravado, mas não será retomado automaticamente.",
-            UserWarning,
             stacklevel=_user_stacklevel(),
         )
 
 
 def _read_checkpoint_signature(path: Path) -> dict[str, Any] | None:
     try:
-        meta = json.loads(_signature_path(path).read_text(encoding="utf-8"))
+        meta = json.loads(_signature_path(path).read_bytes())
     except (OSError, ValueError):
         return None
     return meta if isinstance(meta, dict) else None
@@ -3027,7 +3042,7 @@ def _raise_if_overwritten(  # noqa: PLR0913 (as configurações da execução qu
     ]
     if not candidates:
         return
-    has_text = ~df[text_column].map(_is_missing_text).to_numpy(dtype=bool)
+    has_text = ~df[text_column].map(_is_missing_text).astype(bool).to_numpy()
     new_rows = has_text if pending is None else has_text & pending
     overwritten = [
         col for col in candidates if _holds_value(df, col, df[col][new_rows], nan_columns)
@@ -3126,13 +3141,14 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
     parquet.
     """
     reason, saved = _checkpoint_mismatch(df, checkpoint, questions, status_col=status_col)
-    if reason is not None or saved is None:
+    # _checkpoint_mismatch só devolve o checkpoint lido quando não há motivo
+    # para recusá-lo.
+    if saved is None:
         warnings.warn(
             f"O checkpoint em {checkpoint.path} {reason}; esta execução começa do zero e o "
             "sobrescreve. Para retomá-lo mesmo assim, carregue-o com read_df e "
             "passe-o como entrada.",
-            UserWarning,
-            stacklevel=3,
+            stacklevel=_user_stacklevel(),
         )
         return frozenset()
 
@@ -3143,7 +3159,9 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         reprocessed_columns,
         nan_columns,
         text_column=text_column,
-        status_col=status_col,
+        # Com `pending`, a checagem não lê o status_col, que só entra na mensagem
+        # da entrada sem coluna de status; o teste de mutação o troca à toa.
+        status_col=status_col,  # pragma: no mutate
         pending=~concluded,
     )
     by_name = {str(column): column for column in df.columns}
@@ -3168,16 +3186,22 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
         # None por NaN. Na coluna relida com outro dtype, como o float64 do
         # parquet, a célula nula é o None que a execução gravou, e nos objetos
         # o NaN contaria como valor.
+        # O np.empty de objetos começa com None em toda célula.
         if target is None:
-            values = pd.Series([None] * len(df), dtype=object).to_numpy().copy()
+            values = np.empty(len(df), dtype=object)
+            target = column
         else:
             values = df[target].to_numpy(dtype=object).copy()
         saved_values = saved[column].to_numpy(dtype=object)
         if saved[column].dtype != object:
             saved_values[saved[column].isna().to_numpy()] = None
         values[concluded] = saved_values[concluded]
-        df[column if target is None else target] = pd.Series(
-            values, index=df.index, dtype=object, copy=False
+        df[target] = pd.Series(
+            values,
+            index=df.index,
+            dtype=object,
+            # copy só decide se o pandas copia `values`, que é um array novo.
+            copy=False,  # pragma: no mutate
         )
     if checkpoint.path.suffix.lower() not in _EMPTY_TEXT_AS_ABSENT_EXTS:
         return frozenset()
@@ -3294,7 +3318,12 @@ def _structures_as_json(df: pd.DataFrame, columns: Collection[str] | None = None
     def to_json(value: object) -> object:
         value = _array_as_list(value)
         if _is_structure_class(type(value)):
-            return json.dumps(value, ensure_ascii=False, default=_json_default)
+            # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
+            return json.dumps(
+                value,
+                ensure_ascii=False,  # pragma: no mutate
+                default=_json_default,
+            )
         return enum_as_value(value)
 
     out = df.copy()
@@ -3337,7 +3366,11 @@ def _save_checkpoint(
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
     if ext == ".csv":
-        _structures_as_json(df).to_csv(tmp, index=False)
+        # O to_csv trata None como False em index, e o teste de mutação faz a troca à toa.
+        _structures_as_json(df).to_csv(
+            tmp,
+            index=False,  # pragma: no mutate
+        )
     elif ext == ".xlsx":
         _to_excel_as_text(_structures_as_json(df), tmp)
     elif ext == ".parquet":
@@ -3363,7 +3396,11 @@ def _to_excel_as_text(df: pd.DataFrame, path: Path) -> None:
     porque a marca é do openpyxl, que o checkpoint .xlsx já exige.
     """
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        # O to_excel trata None como False em index, e o teste de mutação faz a troca à toa.
+        df.to_excel(
+            writer,
+            index=False,  # pragma: no mutate
+        )
         for row in next(iter(writer.sheets.values())).iter_rows():
             for cell in row:
                 if cell.data_type == "f":
@@ -3462,24 +3499,23 @@ def _mark_unreached(  # noqa: PLR0913 (as linhas e o que a execução sabe das c
     demais ficam sem status, inclusive a que tinha 'error' e ia ser refeita,
     para que a retomada as encontre.
     """
-    unreached = np.fromiter((idx not in registered for idx in df.index), bool, len(df))
-    unreached &= np.asarray(to_process, dtype=bool)
-    status = df[status_col].to_numpy(dtype=object)
-    details = df["_error_details"].to_numpy(dtype=object)
+    unreached = np.fromiter((idx not in registered for idx in df.index), bool)
+    unreached &= np.asarray(to_process)
+    status = df[status_col].to_numpy()
+    details = df["_error_details"].to_numpy()
     processed = unreached & (status == "processed")
-    flag = np.zeros(len(df), dtype=bool)
-    if reprocess_columns:
-        flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL)
+    flag = processed & (details != _INTERRUPTED_REPROCESS_DETAIL) & bool(reprocess_columns)
     clear = unreached & ~processed & ~(pd.isna(status) & pd.isna(details))
     # A linha 'error' sai da verificação na primeira coluna em que tem valor.
     errors = np.flatnonzero(clear & (status == "error"))
     for column in value_columns:
         nan_is_value = _nan_is_value(df, column, nan_columns)
-        cells = df[column].to_numpy(dtype=object)[errors]
+        cells = df[column].to_numpy()[errors]
         holds = np.fromiter(
-            (not _is_absent(cell, nan_is_value=nan_is_value) for cell in cells), bool, len(cells)
+            (not _is_absent(cell, nan_is_value=nan_is_value) for cell in cells), bool
         )
-        clear[errors[holds]] = False
+        # As linhas de `errors` estão marcadas em `clear`; fica só a que não tem valor.
+        clear[errors] = ~holds
         errors = errors[~holds]
     if flag.any():
         df.loc[flag, "_error_details"] = _INTERRUPTED_REPROCESS_DETAIL
@@ -3537,9 +3573,20 @@ def _set_field_traces(df: pd.DataFrame, idx: Hashable, traces: dict[str, object]
     for key, trace in traces.items():
         column = f"_trace_{key}"
         if column not in df.columns:
-            with _silent_slice_write(df):
+            # No pandas 3, o contexto não lê o DataFrame, e trocá-lo por None, como faz o
+            # teste de mutação, não muda nada; no pandas 2, a troca levanta.
+            with _silent_slice_write(df):  # pragma: no mutate
                 df[column] = None
-        _set_cell(df, idx, column, json.dumps(trace, ensure_ascii=False))
+        _set_cell(df, idx, column, _trace_text(trace))
+
+
+def _trace_text(trace: object) -> str:
+    """O rastro em JSON, com o texto não ASCII como está."""
+    # O json trata None como False em ensure_ascii, e o teste de mutação faz a troca à toa.
+    return json.dumps(
+        trace,
+        ensure_ascii=False,  # pragma: no mutate
+    )
 
 
 def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
@@ -3587,10 +3634,11 @@ def _record_success(  # noqa: PLR0913 (grava cada família de colunas da linha)
     # Armazenar traces: um por campo ou grupo nos modos por campo, ou um só
     if trace_mode:
         if search_config and search_config.per_field:
-            _set_field_traces(df, idx, result.get("traces", {}))
+            # Com trace_mode, a linha passou pelo agente campo a campo, que sempre devolve os traces.
+            _set_field_traces(df, idx, result["traces"])
         else:
             # Com trace_mode, a linha passou por call_agent, que sempre devolve o trace.
-            _set_cell(df, idx, "_trace", json.dumps(result["trace"], ensure_ascii=False))
+            _set_cell(df, idx, "_trace", _trace_text(result["trace"]))
 
     _set_cell(df, idx, status_col, "processed")
     # Registra retries mesmo no sucesso; sem retry, some o erro de uma execução anterior
@@ -3613,7 +3661,7 @@ def _add_failed_usage(token_stats: TokenStats, error: BaseException) -> None:
     backend põe na exceção.
     """
     _add_usage_stats(token_stats, getattr(error, "row_usage", None) or {})
-    token_stats["cost_usd"] += getattr(error, "cost_usd", 0) or 0
+    token_stats["cost_usd"] += getattr(error, "cost_usd", None) or 0
 
 
 def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução inteira)
@@ -3648,7 +3696,10 @@ def _record_error(  # noqa: PLR0913 (o que a linha grava vem da execução intei
         error_details += _KEPT_VALUES_NOTE
 
     friendly_msg = get_friendly_error_message(error, config.provider)
-    warnings.warn(f"Falha ao processar linha {idx}.\n{friendly_msg}", stacklevel=1)
+    msg = f"Falha ao processar linha {idx}.\n{friendly_msg}"
+    # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
+    # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
+    warnings.warn(msg, stacklevel=1)  # pragma: no mutate
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", error_details)
 
@@ -3724,7 +3775,9 @@ def _record_unrecorded_error(
 ) -> None:
     """Marca como erro a linha cuja falha não pôde ser registrada normalmente."""
     error_msg = _error_text(error)
-    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)
+    # O stacklevel=1, que é o padrão, aponta o aviso para esta linha. O teste de
+    # mutação o tira ou o troca por 2, o que só o aponta para outra linha do core.py.
+    warnings.warn(f"Falha ao processar linha {idx}.", stacklevel=1)  # pragma: no mutate
     _set_cell(df, idx, status_col, "error")
     _set_cell(df, idx, "_error_details", f"[Falha ao registrar o erro] {error_msg}{note}")
 
@@ -3812,7 +3865,9 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # Linhas registradas nesta execução; o abort e o Ctrl-C marcam as demais.
     registered: set[Hashable] = set()
     # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
-    marked = False
+    # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
+    # início, e o teste de mutação troca à toa o valor inicial.
+    marked = False  # pragma: no mutate
     mark_unreached = partial(
         _mark_unreached,
         df,
@@ -3901,9 +3956,7 @@ def _process_rows(  # noqa: C901, PLR0913, PLR0915 (estado da execução repassa
     # vira aviso em _try_save_checkpoint e não troca a interrupção.
     with _on_ctrl_c(mark_unreached_on_ctrl_c, save_on_ctrl_c):
         rows = tqdm(df.iterrows(), total=len(df), desc=desc)
-        for (idx, row), chosen in zip(rows, to_process, strict=True):
-            if not chosen:
-                continue
+        for idx, row in itertools.compress(rows, to_process):
             started = time.monotonic()
             success, values = process_row(idx, row)
             if "abort" in token_stats:
@@ -4062,7 +4115,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     lock = threading.Lock()
     current_workers = parallel_requests
     initial_workers = parallel_requests
-    workers_reduced = False
     rate_limit_event = threading.Event()
     abort_event = threading.Event()
     # Linhas gravadas e contadas pelas threads; a coleta só marca como erro a
@@ -4070,7 +4122,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # O abort e o Ctrl-C marcam as demais.
     counted: set[Hashable] = set()
     # Se as marcas do Ctrl-C mudaram o DataFrame, e a gravação deve levá-las.
-    marked = False
+    # Só a gravação do Ctrl-C o lê, depois de a marcação o regravar logo de
+    # início, e o teste de mutação troca à toa o valor inicial.
+    marked = False  # pragma: no mutate
     checkpoint_counter = 0
     # A gravação do checkpoint não segura `lock`, para que as threads que
     # processam linhas sigam durante a I/O. Cada snapshot é copiado sob `lock`
@@ -4146,7 +4200,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
 
     def process_single_row(row_data: _RowData) -> None:
         """Processa uma única linha (executada em thread separada)."""
-        nonlocal current_workers, workers_reduced
+        nonlocal current_workers
 
         started = time.monotonic()
         _position, idx, row = row_data
@@ -4215,16 +4269,21 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             try:
                 rate_limited = is_rate_limit_error(e)
             except Exception:  # noqa: BLE001 (ver o comentário acima)
-                rate_limited = False
+                # Só o `if` abaixo o lê, e o None que o teste de mutação põe no
+                # lugar é também falso.
+                rate_limited = False  # pragma: no mutate
             if rate_limited:
                 with lock:
                     if current_workers > 1:
                         old_workers = current_workers
                         current_workers = max(1, current_workers // 2)
-                        workers_reduced = True
                         warnings.warn(
                             f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}.",
-                            stacklevel=2,
+                            # Na thread do executor não há chamada do usuário na pilha, e
+                            # o stacklevel=1, o padrão, aponta o aviso para esta linha. O
+                            # teste de mutação o tira ou o troca por 2, o que só o aponta
+                            # para outra linha do pacote.
+                            stacklevel=1,  # pragma: no mutate
                         )
                         rate_limit_event.set()
                         # Limpar evento após um tempo
@@ -4335,7 +4394,9 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                         warnings.warn(
                             f"Erro inesperado no executor depois de registrar a linha "
                             f"{idx}, que mantém o status gravado: {_error_text(e)}",
-                            stacklevel=1,
+                            # O padrão é 1, e tirar o argumento, como faz o teste de
+                            # mutação, não muda nada.
+                            stacklevel=1,  # pragma: no mutate
                         )
                     else:
                         with lock:
@@ -4350,10 +4411,11 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # grava o checkpoint (ou o regrava) antes de ser relançado, e a cauda chega
     # ao arquivo, como no modo sequencial. O Ctrl-C que corta as marcas as
     # completa antes de gravar.
-    with _on_ctrl_c(
-        mark_uncounted_rows,
-        partial(_try_save_checkpoint, df, writer.checkpoint) if writer else (lambda: None),
-    ):
+    def save_tail() -> None:
+        if writer:
+            _try_save_checkpoint(df, writer.checkpoint)
+
+    with _on_ctrl_c(mark_uncounted_rows, save_tail):
         if abort_event.is_set():
             mark_unreached(counted)
 
@@ -4366,6 +4428,6 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     token_stats["elapsed_seconds"] = elapsed
     token_stats["initial_workers"] = initial_workers
     token_stats["final_workers"] = current_workers
-    token_stats["workers_reduced"] = workers_reduced
+    token_stats["workers_reduced"] = current_workers < initial_workers
 
     return token_stats
