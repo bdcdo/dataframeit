@@ -1,7 +1,8 @@
-"""Retomada do campo `Any` e do `Decimal` NaN: o valor que o modelo devolveu volta como foi."""
+"""Retomada do campo `Any`, do `Decimal` e do NaN: o valor que o modelo devolveu volta como foi."""
 
 import math
 import warnings
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Optional, Union
@@ -11,9 +12,9 @@ import pandas as pd
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from dataframeit import ProviderAbortError, dataframeit, read_df
-from dataframeit.core import _save_checkpoint, _structures_as_json
-from dataframeit.utils import _admits_any, _admits_decimal, _any_from_text
+from dataframeit import ProviderAbortError, core, dataframeit, read_df
+from dataframeit.core import _same_value, _save_checkpoint, _structures_as_json
+from dataframeit.utils import _admits_any, _admits_decimal, _any_from_text, _reads_as_other
 
 _TEXTOS = {"texto": ["a", "b", "c"]}
 _DECIMAL_COM_NAN = Annotated[Decimal, Field(allow_inf_nan=True)]
@@ -389,7 +390,7 @@ def test_checkpoint_grava_como_texto_os_decimais_da_coluna_com_nan():
         {
             "com_nan": pd.Series([Decimal("1.50"), Decimal("NaN"), 2], dtype=object),
             "sem_nan": pd.Series([Decimal("1.50"), Decimal(2), None], dtype=object),
-            "sinalizador": pd.Series([Decimal("sNaN"), None], dtype=object).reindex(range(3)),
+            "sinalizador": pd.Series([Decimal("sNaN"), Decimal("1.50"), None], dtype=object),
         }
     )
 
@@ -397,8 +398,17 @@ def test_checkpoint_grava_como_texto_os_decimais_da_coluna_com_nan():
 
     assert gravado["com_nan"].tolist() == ["1.50", "NaN", 2]
     assert gravado["sem_nan"].tolist() == [Decimal("1.50"), Decimal(2), None]
-    assert str(gravado["sinalizador"].tolist()[0]) == "sNaN"
-    assert isinstance(gravado["sinalizador"].tolist()[0], Decimal)
+    assert gravado["sinalizador"].tolist()[:2] == ["sNaN", "1.50"]
+    assert gravado["sinalizador"].isna().tolist() == [False, False, True]
+
+
+def test_arquivo_de_texto_grava_todo_decimal_como_texto():
+    df = pd.DataFrame({"campo": pd.Series([Decimal("1.50"), Decimal(2), None], dtype=object)})
+
+    gravado = _structures_as_json(df, text_file=True)
+
+    assert gravado["campo"].tolist()[:2] == ["1.50", "2"]
+    assert gravado["campo"].isna().tolist() == [False, False, True]
 
 
 def test_csv_grava_o_decimal_nan_como_texto_e_a_linha_pendente_vazia(tmp_path):
@@ -414,6 +424,12 @@ class _ModeloDecimal(BaseModel):
     campo: Decimal
 
 
+class _ModeloDecimalOuInt(BaseModel):
+    """Na união, só o texto do NaN volta do texto cru; o campo só de Decimal volta inteiro."""
+
+    campo: Union[Decimal, int]
+
+
 def _csv(tmp_path: Path, celulas: list[str]) -> Path:
     caminho = tmp_path / "saida.csv"
     caminho.write_text("\n".join(["outra,campo", *celulas]) + "\n", encoding="utf-8")
@@ -421,23 +437,31 @@ def _csv(tmp_path: Path, celulas: list[str]) -> Path:
 
 
 def test_read_df_devolve_o_texto_do_decimal_nan_e_none_na_celula_vazia(tmp_path):
-    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,", "d,-NaN"]), _ModeloDecimal)
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,", "d,-NaN"]), _ModeloDecimalOuInt)
 
     assert lido["campo"].dtype == object
     assert lido["campo"].tolist() == [1.5, "NaN", None, "-NaN"]
 
 
-@pytest.mark.parametrize("celula", ["nan", "NA", "NaN ", "xNaN", "NaNx", "sNaN"])
+@pytest.mark.parametrize("celula", ["nan", "NA", "NaN ", "xNaN", "NaNx", "ssNaN", "sNaNx"])
 def test_read_df_so_rele_como_decimal_nan_o_texto_que_o_checkpoint_grava(tmp_path, celula):
     caminho = _csv(tmp_path, ["a,1.5", f"b,{celula}"])
 
-    lido = read_df(caminho, _ModeloDecimal)
+    lido = read_df(caminho, _ModeloDecimalOuInt)
 
     pd.testing.assert_frame_equal(lido, pd.read_csv(caminho))
 
 
-def test_read_df_sem_decimal_nan_deixa_a_coluna_como_lida(tmp_path):
-    lido = read_df(_csv(tmp_path, ["a,1.5", "b,"]), _ModeloDecimal)
+@pytest.mark.parametrize("celula", ["sNaN", "-sNaN7"])
+def test_read_df_devolve_o_texto_do_decimal_nan_sinalizador(tmp_path, celula):
+    lido = read_df(_csv(tmp_path, ["a,1.5", f"b,{celula}"]), _ModeloDecimalOuInt)
+
+    # A coluna com o texto do NaN sinalizador, que o leitor não toma por ausente, já vem em texto.
+    assert lido["campo"].tolist() == ["1.5", celula]
+
+
+def test_read_df_sem_decimal_nan_deixa_a_coluna_da_uniao_como_lida(tmp_path):
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,"]), _ModeloDecimalOuInt)
 
     assert lido["campo"].dtype == "float64"
 
@@ -456,7 +480,772 @@ def test_read_df_de_json_nao_rele_o_decimal_nan(tmp_path):
 
 
 def test_read_df_so_rele_o_decimal_nan_no_campo_que_admite_decimal(tmp_path):
-    modelo = create_model("ModeloDoCaso", campo=(float, ...))
+    modelo = create_model("ModeloDoCaso", campo=(bool, ...))
     caminho = _csv(tmp_path, ["a,1.5", "b,NaN"])
 
     pd.testing.assert_frame_equal(read_df(caminho, modelo), pd.read_csv(caminho))
+
+
+# =============================================================================
+# Decimal relido de CSV e XLSX
+# =============================================================================
+
+_DECIMAIS = [Decimal("1.10"), Decimal("12345678901234567890.123456789"), Decimal("1E+2")]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_devolve_o_decimal_com_todos_os_digitos(tmp_path, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Decimal, _DECIMAIS, Decimal("3.00")
+    )
+
+    _confere_decimais(valores, [*_DECIMAIS, Decimal("3.00")])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_com_entrada_polars_devolve_o_valor_do_decimal(tmp_path, ext):
+    _exige_formato(ext)
+    respostas = [Decimal("0.1"), Decimal("12345678901234567890.123456789")]
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "polars", Decimal, respostas, Decimal(3)
+    )
+
+    # A saída polars põe a coluna na escala comum; o valor é o mesmo.
+    assert valores == [*respostas, Decimal(3)]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_devolve_o_decimal_com_modelo_estrito(tmp_path, ext):
+    _exige_formato(ext)
+
+    class Estrito(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        campo: Optional[Decimal]
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Estrito, [Decimal("1.10"), None], Decimal("2.0")
+    )
+
+    _confere_decimais(valores, [Decimal("1.10"), None, Decimal("2.0")])
+
+
+def test_xlsx_grava_o_decimal_como_texto(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    caminho = tmp_path / "ck.xlsx"
+    df = pd.DataFrame({"campo": pd.Series([Decimal("1.10"), None], dtype=object)})
+
+    _save_checkpoint(df, caminho)
+
+    celula = openpyxl.load_workbook(caminho).active["A2"]
+    assert (celula.data_type, celula.value) == ("s", "1.10")
+
+
+def test_parquet_grava_o_decimal_sem_nan_como_decimal(tmp_path):
+    pytest.importorskip("pyarrow")
+    caminho = tmp_path / "ck.parquet"
+    df = pd.DataFrame({"campo": pd.Series([Decimal("1.10"), None], dtype=object)})
+
+    _save_checkpoint(df, caminho)
+
+    assert pd.read_parquet(caminho)["campo"].tolist() == [Decimal("1.10"), None]
+
+
+def test_read_df_devolve_em_texto_a_coluna_do_campo_so_de_decimal(tmp_path):
+    lido = read_df(_csv(tmp_path, ["a,1.10", "b,", "c,NaN", "d,1E+2"]), _ModeloDecimal)
+
+    assert lido["campo"].dtype == object
+    assert lido["campo"].tolist() == ["1.10", None, "NaN", "1E+2"]
+
+
+def test_read_df_deixa_como_lida_a_coluna_vazia_do_campo_so_de_decimal(tmp_path):
+    caminho = _csv(tmp_path, ["a,", "b,"])
+
+    pd.testing.assert_frame_equal(read_df(caminho, _ModeloDecimal), pd.read_csv(caminho))
+
+
+def test_read_df_devolve_o_texto_do_numero_que_o_xlsx_guarda_no_campo_decimal(tmp_path):
+    pytest.importorskip("openpyxl")
+    caminho = tmp_path / "saida.xlsx"
+    pd.DataFrame({"campo": [1.1, None, 2.0]}).to_excel(caminho, index=False)
+
+    lido = read_df(caminho, _ModeloDecimal)
+
+    assert lido["campo"].tolist() == ["1.1", None, "2"]
+
+
+def test_retomada_devolve_ao_decimal_o_texto_que_o_xlsx_rele_de_uma_celula_numerica():
+    relido = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo": pd.Series(["1e+20", "+1.5"], dtype=object),
+            "_dataframeit_status": "processed",
+        }
+    )
+
+    retomada, chamadas = _rodar(relido, Decimal, [], resume=True)
+
+    assert chamadas == 0
+    _confere_decimais(retomada["campo"].tolist(), [Decimal("1E+20"), Decimal("1.5")])
+
+
+@pytest.mark.parametrize(
+    ("validado", "relido", "esperado"),
+    [
+        (Decimal("1E+20"), "1e+20", True),
+        (Decimal("1.5"), "+1.5", True),
+        (Decimal("1.50"), "1.5", True),
+        (Decimal("1.5"), "1.6", False),
+        (Decimal("1.5"), "abc", False),
+        (Decimal("1.5"), "NaN", False),
+        (Decimal("NaN"), "NaN", True),
+        (Decimal("NaN"), "-NaN", False),
+        (Decimal("sNaN"), "sNaN", True),
+        (Decimal("sNaN"), "1.5", False),
+        (Decimal("sNaN"), Decimal("sNaN"), True),
+        (Decimal("sNaN"), 1.5, False),
+        (Decimal("1.5"), 1.5, True),
+        (Decimal("1.5"), 1, False),
+    ],
+)
+def test_same_value_do_decimal(validado, relido, esperado):
+    assert _same_value(validado, relido) is esperado
+
+
+# =============================================================================
+# Decimal NaN sinalizador
+# =============================================================================
+
+
+def test_retomada_em_memoria_mantem_o_decimal_nan_sinalizador():
+    interrompida, _ = _rodar(
+        pd.DataFrame(_TEXTOS),
+        _DECIMAL_COM_NAN,
+        [Decimal("1.5"), Decimal("sNaN"), ProviderAbortError("limite")],
+    )
+
+    retomada, chamadas = _rodar(interrompida, _DECIMAL_COM_NAN, [Decimal(2)], resume=True)
+
+    assert chamadas == 1
+    _confere_decimais(retomada["campo"].tolist(), [Decimal("1.5"), Decimal("sNaN"), Decimal(2)])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_retomada_do_checkpoint_devolve_o_decimal_nan_sinalizador(tmp_path, entrada, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}",
+        entrada,
+        _DECIMAL_COM_NAN,
+        [Decimal("1.5"), Decimal("sNaN")],
+        Decimal("2.25"),
+    )
+
+    _confere_decimais(valores, [Decimal("1.5"), Decimal("sNaN"), Decimal("2.25")])
+
+
+def test_is_absent_nao_levanta_com_o_decimal_nan_sinalizador():
+    assert core._is_absent(Decimal("sNaN"), nan_is_value=False) is False
+
+
+# =============================================================================
+# NaN de campo float relido de checkpoint
+# =============================================================================
+
+
+def _confere_floats(valores, esperados):
+    assert len(valores) == len(esperados)
+    for valor, esperado in zip(valores, esperados, strict=True):
+        if esperado is None:
+            assert valor is None
+        elif math.isnan(esperado):
+            assert isinstance(valor, float)
+            assert math.isnan(valor)
+        else:
+            assert valor == esperado
+
+
+_NAN = float("nan")
+
+
+@pytest.mark.parametrize("anotacao", [float, Optional[float]])
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_retomada_do_checkpoint_devolve_o_nan_de_float(tmp_path, entrada, ext, anotacao):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", entrada, anotacao, [1.5, _NAN], 2.0)
+
+    _confere_floats(valores, [1.5, _NAN, 2.0])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_retomada_do_checkpoint_devolve_none_ao_lado_do_nan_de_float(tmp_path, entrada, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", entrada, Optional[float], [None, _NAN, 1.5], 2.0
+    )
+
+    _confere_floats(valores, [None, _NAN, 1.5, 2.0])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_devolve_o_nan_de_float_com_modelo_estrito(tmp_path, ext):
+    _exige_formato(ext)
+
+    class Estrito(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        campo: float
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", Estrito, [1.5, _NAN], 2.0)
+
+    _confere_floats(valores, [1.5, _NAN, 2.0])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_sem_nan_devolve_none_no_float_opcional(tmp_path, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Optional[float], [None, 1.5], 2.0
+    )
+
+    _confere_floats(valores, [None, 1.5, 2.0])
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx"])
+def test_retomada_do_checkpoint_devolve_o_texto_nan_do_campo_float_ou_texto(tmp_path, ext):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", "pandas", Union[float, str], ["abc", "NaN"], "z"
+    )
+
+    assert valores == ["abc", "NaN", "z"]
+
+
+def test_csv_grava_o_nan_de_float_como_texto_e_a_linha_pendente_vazia(tmp_path):
+    caminho = tmp_path / "ck.csv"
+    coluna = pd.Series([1.5, _NAN, None], dtype=object)
+    df = pd.DataFrame({"campo": coluna, "outra": coluna})
+
+    _save_checkpoint(df, caminho, nan_fields={"campo"})
+
+    assert caminho.read_text(encoding="utf-8") == "campo,outra\n1.5,1.5\nNaN,\n,\n"
+
+
+def test_parquet_grava_o_nan_de_float_a_parte_do_nulo(tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    caminho = tmp_path / "ck.parquet"
+    coluna = pd.Series([1.5, _NAN, None], dtype=object)
+    df = pd.DataFrame(
+        {
+            "campo": coluna,
+            "outra": coluna,
+            "sem_nan": pd.Series([1.5, None, None], dtype=object),
+            "com_inteiro": pd.Series([1, _NAN, None], dtype=object),
+            "texto": ["a", "b", "c"],
+        }
+    )
+
+    _save_checkpoint(df, caminho, nan_fields={"campo", "sem_nan", "com_inteiro", "ausente"})
+
+    tabela = pq.read_table(caminho)
+    nulos = {nome: tabela.column(nome).null_count for nome in tabela.column_names}
+    assert nulos == {"campo": 1, "outra": 2, "sem_nan": 2, "com_inteiro": 2, "texto": 0}
+    # Quem lê o arquivo sem o modelo recebe a coluna de float de sempre.
+    lido = pd.read_parquet(caminho)
+    assert lido["campo"].dtype == "float64"
+    assert lido["texto"].tolist() == ["a", "b", "c"]
+    assert len(lido.columns) == 5
+
+
+def test_parquet_sem_nan_de_float_e_gravado_pelo_pandas(tmp_path):
+    pytest.importorskip("pyarrow")
+    caminho = tmp_path / "ck.parquet"
+    df = pd.DataFrame({"campo": pd.Series([1.5, None], dtype=object)})
+
+    with patch.object(pd.DataFrame, "to_parquet", autospec=True) as gravacao:
+        gravacao.side_effect = lambda frame, destino, **_: Path(destino).touch()
+        _save_checkpoint(df, caminho, nan_fields={"campo"})
+
+    assert gravacao.call_args.kwargs == {"index": False}
+
+
+def test_parquet_nao_refaz_a_coluna_de_float_que_nao_e_de_objetos(tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    caminho = tmp_path / "ck.parquet"
+
+    _save_checkpoint(pd.DataFrame({"campo": [1.5, _NAN]}), caminho, nan_fields={"campo"})
+
+    # O to_parquet do pandas, que grava como nulo o NaN da coluna float64.
+    assert pq.read_table(caminho).column("campo").null_count == 1
+
+
+class _ModeloFloat(BaseModel):
+    campo: Optional[float]
+
+
+def test_read_df_devolve_o_nan_de_float_e_none_na_celula_vazia(tmp_path):
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,"]), _ModeloFloat)
+
+    assert lido["campo"].dtype == object
+    _confere_floats(lido["campo"].tolist(), [1.5, _NAN, None])
+
+
+@pytest.mark.parametrize("celula", ["nan", "NA", "-NaN", "NaN "])
+def test_read_df_so_rele_como_nan_de_float_o_texto_que_o_checkpoint_grava(tmp_path, celula):
+    caminho = _csv(tmp_path, ["a,1.5", f"b,{celula}"])
+
+    pd.testing.assert_frame_equal(read_df(caminho, _ModeloFloat), pd.read_csv(caminho))
+
+
+def test_read_df_com_argumento_de_leitura_nao_rele_o_nan_de_float(tmp_path):
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN"]), _ModeloFloat, sep=",")
+
+    assert lido["campo"].dtype == "float64"
+
+
+def test_read_df_devolve_o_texto_nan_no_campo_float_ou_texto(tmp_path):
+    modelo = create_model("ModeloDoCaso", campo=(Union[float, str], ...))
+
+    lido = read_df(_csv(tmp_path, ["a,1.5", "b,NaN", "c,"]), modelo)
+
+    assert lido["campo"].tolist() == [1.5, "NaN", None]
+
+
+def test_read_df_rele_do_parquet_o_nan_de_float_e_o_int_exato(tmp_path):
+    pytest.importorskip("pyarrow")
+    modelo = create_model(
+        "ModeloDoCaso",
+        campo=(Optional[float], ...),
+        sem_nan=(Optional[float], ...),
+        inteiro=(Optional[int], ...),
+        texto=(Union[float, str], ...),
+    )
+    caminho = tmp_path / "ck.parquet"
+    df = pd.DataFrame(
+        {
+            "campo": pd.Series([1.5, _NAN, None], dtype=object),
+            "sem_nan": pd.Series([1.5, None, None], dtype=object),
+            "inteiro": pd.Series([2**60 + 1, None, 3], dtype=object),
+            "texto": ["a", "b", "c"],
+        }
+    )
+    _save_checkpoint(df, caminho, nan_fields={"campo", "sem_nan"})
+
+    lido = read_df(caminho, modelo)
+
+    assert lido["campo"].dtype == object
+    _confere_floats(lido["campo"].tolist(), [1.5, _NAN, None])
+    assert lido["sem_nan"].dtype == "float64"
+    assert lido["inteiro"].tolist() == [2**60 + 1, None, 3]
+    assert lido["texto"].tolist() == ["a", "b", "c"]
+
+
+def test_read_df_deixa_como_lida_a_coluna_de_int_do_parquet_so_com_nulos(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    modelo = create_model("ModeloDoCaso", inteiro=(Optional[int], ...))
+    caminho = tmp_path / "ck.parquet"
+    # Sem os metadados do pandas, a coluna de int só com nulos volta float64.
+    pq.write_table(pa.table({"inteiro": pa.array([None, None], pa.int64())}), caminho)
+
+    lido = read_df(caminho, modelo)
+
+    assert lido["inteiro"].dtype == "float64"
+    assert lido["inteiro"].isna().all()
+
+
+def test_read_df_do_parquet_sem_campo_a_reler_nao_abre_o_arquivo_de_novo(tmp_path):
+    pytest.importorskip("pyarrow")
+    modelo = create_model("ModeloDoCaso", texto=(str, ...))
+    caminho = tmp_path / "ck.parquet"
+    pd.DataFrame({"texto": ["a"]}).to_parquet(caminho)
+
+    # A primeira leitura é a do leitor guardado em `_READERS`, fora do patch.
+    with patch("dataframeit.utils.pd.read_parquet", wraps=pd.read_parquet) as releitura:
+        read_df(caminho, modelo)
+
+    assert releitura.call_count == 0
+
+
+def test_read_df_rele_o_csv_uma_vez_so_para_todos_os_campos(tmp_path):
+    modelo = create_model(
+        "ModeloDoCaso",
+        texto=(str, ...),
+        inteiro=(Optional[int], ...),
+        decimal=(Decimal, ...),
+        real=(float, ...),
+        sem_releitura=(bool, ...),
+    )
+    caminho = tmp_path / "saida.csv"
+    caminho.write_text(
+        "texto,inteiro,decimal,real,sem_releitura\n2023,9007199254740993,1.10,NaN,True\nNA,,2,1.5,False\n",
+        encoding="utf-8",
+    )
+
+    releituras = []
+    with patch.dict(
+        "dataframeit.utils._TEXT_READERS", {".csv": _conta_chamadas(pd.read_csv, releituras)}
+    ):
+        lido = read_df(caminho, modelo)
+
+    assert releituras == [["texto", "inteiro", "decimal", "real"]]
+    assert lido["texto"].tolist() == ["2023", "NA"]
+    assert lido["inteiro"].tolist() == [9007199254740993, None]
+    assert lido["decimal"].tolist() == ["1.10", "2"]
+    _confere_floats(lido["real"].tolist(), [_NAN, 1.5])
+    assert lido["sem_releitura"].tolist() == [True, False]
+
+
+def _conta_chamadas(leitor, chamadas):
+    """O leitor que guarda em `chamadas` o usecols de cada leitura."""
+
+    def contado(caminho, **opcoes):
+        chamadas.append(opcoes["usecols"])
+        return leitor(caminho, **opcoes)
+
+    return contado
+
+
+def test_read_df_sem_campo_a_reler_nao_abre_o_csv_de_novo(tmp_path):
+    modelo = create_model("ModeloDoCaso", sem_releitura=(bool, ...), ausente=(str, ...))
+    caminho = tmp_path / "saida.csv"
+    caminho.write_text("sem_releitura\nTrue\n", encoding="utf-8")
+
+    releituras = []
+    with patch.dict(
+        "dataframeit.utils._TEXT_READERS", {".csv": _conta_chamadas(pd.read_csv, releituras)}
+    ):
+        lido = read_df(caminho, modelo)
+
+    assert releituras == []
+    assert lido["sem_releitura"].tolist() == [True]
+
+
+# =============================================================================
+# Texto de `Any` que o CSV e o XLSX leriam como número, bool ou ausência
+# =============================================================================
+
+_TEXTOS_QUE_O_LEITOR_TROCA = [
+    "123",
+    "NaN",
+    "",
+    "1.5",
+    "true",
+    "N/A",
+    "null",
+    "None",
+    " 7",
+    "1e3",
+    "inf",
+    "abc",
+]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+@pytest.mark.parametrize("entrada", ["pandas", "polars"])
+def test_retomada_do_checkpoint_devolve_o_texto_de_any_que_o_leitor_trocaria(
+    tmp_path, entrada, ext
+):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(
+        tmp_path / f"ck{ext}", entrada, Any, _TEXTOS_QUE_O_LEITOR_TROCA, "fim"
+    )
+
+    assert valores == [*_TEXTOS_QUE_O_LEITOR_TROCA, "fim"]
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+@pytest.mark.parametrize(
+    "respostas", [["123", "456"], ["NaN", "NA"], ["true", "False"], ["", None]]
+)
+def test_retomada_do_checkpoint_devolve_o_texto_de_any_numa_coluna_que_o_leitor_converteria(
+    tmp_path, ext, respostas
+):
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", Optional[Any], respostas, "x")
+
+    assert valores == [*respostas, "x"]
+    assert [type(valor) for valor in valores] == [type(valor) for valor in [*respostas, "x"]]
+
+
+@pytest.mark.parametrize(
+    "texto",
+    ["", " ", "123", " 7", "7 ", "-1.5", "1e3", "inf", "nan", "NaN", "NA", "N/A", "<NA>", "None"],
+)
+def test_reads_as_other_acusa_o_numero_e_a_ausencia_do_leitor(texto):
+    assert _reads_as_other(texto) is True
+
+
+@pytest.mark.parametrize("texto", ["null", "True", "true", "tRue", "FALSE", " false "])
+def test_reads_as_other_acusa_o_texto_que_o_leitor_troca(texto):
+    assert _reads_as_other(texto) is True
+
+
+@pytest.mark.parametrize("texto", ["abc", "1 2", "12a", "sim", "verdadeiro", "N/D", "-", "1,5"])
+def test_reads_as_other_deixa_o_texto_que_o_leitor_devolve(texto):
+    assert _reads_as_other(texto) is False
+
+
+def test_checkpoint_de_texto_grava_entre_aspas_o_texto_de_any_que_o_leitor_trocaria():
+    celulas = ["123", "NaN", "", "abc", "[1]", 123, None]
+    df = pd.DataFrame(
+        {"campo": pd.Series(celulas, dtype=object), "outra": pd.Series(celulas, dtype=object)}
+    )
+
+    de_texto = _structures_as_json(df, any_columns=["campo"], text_file=True)
+    parquet = _structures_as_json(df, any_columns=["campo"])
+
+    assert de_texto["campo"].tolist() == ['"123"', '"NaN"', '""', "abc", '"[1]"', 123, None]
+    assert de_texto["outra"].tolist() == celulas
+    assert parquet["campo"].tolist() == ["123", "NaN", "", "abc", '"[1]"', 123, None]
+
+
+# =============================================================================
+# Tupla de `Any`
+# =============================================================================
+
+
+@pytest.mark.parametrize("ext", [".csv", ".xlsx", ".parquet"])
+def test_retomada_do_checkpoint_devolve_a_tupla_de_any_como_lista(tmp_path, ext):
+    """O JSON do checkpoint não tem tupla, e `Any` não diz que a lista relida era uma."""
+    _exige_formato(ext)
+
+    valores = _retomar_do_checkpoint(tmp_path / f"ck{ext}", "pandas", Any, [(1, 2), [3]], (4,))
+
+    assert valores == [[1, 2], [3], (4,)]
+    assert [type(valor) for valor in valores] == [list, list, tuple]
+
+
+def test_retomada_em_memoria_mantem_a_tupla_de_any():
+    interrompida, _ = _rodar(
+        pd.DataFrame(_TEXTOS), Any, [(1, 2), [3], ProviderAbortError("limite")]
+    )
+
+    retomada, _ = _rodar(interrompida, Any, ["x"], resume=True)
+
+    assert retomada["campo"].tolist() == [(1, 2), [3], "x"]
+    assert type(retomada["campo"].tolist()[0]) is tuple
+
+
+# =============================================================================
+# NaN de `Any` na coluna sem None e no reprocessamento campo a campo
+# =============================================================================
+
+_AVISO_DO_NAN_DE_ANY = r"As colunas \['campo'\], de campo `Any`, têm NaN em linhas já processadas"
+
+
+def _retomar(df, modelo, **opcoes):
+    """Retoma sem chamada ao LLM e sem esconder os avisos."""
+    with (
+        patch("dataframeit.core.call_langchain", side_effect=AssertionError("sem chamada")),
+        patch("dataframeit.core.validate_provider_dependencies"),
+    ):
+        return dataframeit(
+            df, questions=modelo, prompt="Analise {texto}", track_tokens=False, **opcoes
+        )
+
+
+def test_retomada_da_saida_completa_avisa_que_o_nan_de_any_volta_none():
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+    completa, _ = _rodar(pd.DataFrame(_TEXTOS), modelo, [1.5, _NAN, "x"])
+    assert "_dataframeit_status" not in completa.columns
+    completa["_dataframeit_status"] = "processed"
+
+    with pytest.warns(UserWarning, match=_AVISO_DO_NAN_DE_ANY + r".*volta None"):
+        retomada = _retomar(completa, modelo)
+
+    assert retomada["campo"].tolist() == [1.5, None, "x"]
+
+
+def test_retomada_nao_avisa_do_nan_de_any_na_coluna_com_none():
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+    interrompida, _ = _rodar(
+        pd.DataFrame(_TEXTOS), modelo, [1.5, _NAN, ProviderAbortError("limite")]
+    )
+    interrompida["_dataframeit_status"] = "processed"
+    interrompida["campo"] = pd.Series([1.5, _NAN, None], dtype=object)
+    opcional = create_model("ModeloDoCaso", campo=(Optional[Any], ...))
+
+    retomada = _retomar(interrompida, opcional)
+
+    _confere_floats(retomada["campo"].tolist(), [1.5, _NAN, None])
+
+
+def test_retomada_nao_avisa_do_nan_de_any_fora_das_linhas_processadas():
+    modelo = create_model("ModeloDoCaso", campo=(Any, ...))
+    df = pd.DataFrame(
+        {
+            **_TEXTOS,
+            "campo": pd.Series(["x", "y", _NAN], dtype=object),
+            "_dataframeit_status": ["processed", "processed", "error"],
+        }
+    )
+
+    retomada = _retomar(df, modelo, resume=True)
+
+    assert retomada["campo"].tolist()[:2] == ["x", "y"]
+
+
+def test_retomada_nao_avisa_do_ausente_que_nao_e_nan_na_coluna_de_any():
+    modelo = create_model("ModeloDoCaso", campo=(Optional[Any], ...))
+    df = pd.DataFrame(
+        {
+            **_TEXTOS,
+            "campo": pd.Series(["x", pd.NA, pd.NaT], dtype=object),
+            "_dataframeit_status": "processed",
+        }
+    )
+
+    retomada = _retomar(df, modelo)
+
+    assert retomada["campo"].tolist() == ["x", None, None]
+
+
+def test_retomada_nao_avisa_do_nan_da_coluna_de_any_que_nao_e_de_objetos():
+    modelo = create_model("ModeloDoCaso", campo=(Optional[Any], ...))
+    df = pd.DataFrame({**_TEXTOS, "campo": [1.5, _NAN, 2.5], "_dataframeit_status": "processed"})
+
+    retomada = _retomar(df, modelo)
+
+    assert retomada["campo"].tolist() == [1.5, None, 2.5]
+
+
+def test_retomada_avisa_do_nan_de_any_e_mantem_pulado_o_campo_com_condition():
+    """O NaN da coluna relida de arquivo segue ausente, e a condição falsa o aceita."""
+
+    class ComCondicao(BaseModel):
+        tipo: str
+        campo: Any = Field(json_schema_extra={"condition": {"field": "tipo", "equals": "a"}})
+
+    relido = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "tipo": ["a", "b"],
+            "campo": pd.Series(["x", _NAN], dtype=object),
+            "_dataframeit_status": "processed",
+        }
+    )
+
+    with pytest.warns(UserWarning, match=_AVISO_DO_NAN_DE_ANY):
+        retomada = _retomar(relido, ComCondicao)
+
+    assert retomada["campo"].tolist() == ["x", None]
+
+
+class _DoisCampos(BaseModel):
+    campo: Any
+    outro: str
+
+
+@contextmanager
+def _backend_campo_a_campo(conhecidos):
+    """Backend que guarda em `conhecidos` o que cada chamada parcial recebe dos outros campos."""
+
+    def invoke_partial(texto, campos, valores):
+        conhecidos.append(valores)
+        return {"data": {"outro": "novo"}, "usage": None}
+
+    with patch("dataframeit.core.validate_provider_dependencies"):
+        yield lambda *args, **kwargs: _contexto(
+            core.ProviderBackend(
+                label="falso", invoke=lambda texto: {"data": {}}, invoke_partial=invoke_partial
+            )
+        )
+
+
+@contextmanager
+def _contexto(valor):
+    yield valor
+
+
+@pytest.mark.parametrize("paralelo", [1, 2])
+def test_reprocessamento_campo_a_campo_passa_o_nan_de_any_como_valor(paralelo):
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b", "c"],
+            "campo": pd.Series([_NAN, None, "x"], dtype=object),
+            "outro": ["antigo"] * 3,
+            "_dataframeit_status": ["processed", "error", "processed"],
+        }
+    )
+    conhecidos = []
+
+    with (
+        _backend_campo_a_campo(conhecidos) as fabrica,
+        patch.object(core, "_provider_backend", fabrica),
+    ):
+        saida = dataframeit(
+            df,
+            questions=_DoisCampos,
+            prompt="Analise {texto}",
+            track_tokens=False,
+            reprocess_columns=["outro"],
+            parallel_requests=paralelo,
+        )
+
+    da_primeira = next(valores for valores in conhecidos if valores["campo"] != "x")
+    assert isinstance(da_primeira["campo"], float)
+    assert math.isnan(da_primeira["campo"])
+    assert saida["outro"].tolist()[0] == "novo"
+
+
+def test_reprocessamento_campo_a_campo_passa_none_no_nan_de_any_da_coluna_sem_none():
+    df = pd.DataFrame(
+        {
+            "texto": ["a", "b"],
+            "campo": pd.Series([_NAN, "x"], dtype=object),
+            "outro": ["antigo"] * 2,
+            "_dataframeit_status": "processed",
+        }
+    )
+    conhecidos = []
+    opcional = create_model("ModeloDoCaso", campo=(Optional[Any], ...), outro=(str, ...))
+
+    with (
+        _backend_campo_a_campo(conhecidos) as fabrica,
+        patch.object(core, "_provider_backend", fabrica),
+        pytest.warns(UserWarning, match=_AVISO_DO_NAN_DE_ANY),
+    ):
+        dataframeit(
+            df,
+            questions=opcional,
+            prompt="Analise {texto}",
+            track_tokens=False,
+            reprocess_columns=["outro"],
+        )
+
+    assert [valores["campo"] for valores in conhecidos] == [None, "x"]
+
+
+def test_any_nan_columns_so_conta_a_coluna_de_objetos_de_any_com_none():
+    modelo = create_model(
+        "ModeloDoCaso",
+        com_none=(Any, ...),
+        sem_none=(Any, ...),
+        de_float=(Any, ...),
+        nao_any=(Optional[float], ...),
+        ausente=(Any, ...),
+    )
+    df = pd.DataFrame(
+        {
+            "com_none": pd.Series([_NAN, None], dtype=object),
+            "sem_none": pd.Series([_NAN, "x"], dtype=object),
+            "de_float": [_NAN, 1.5],
+            "nao_any": pd.Series([_NAN, None], dtype=object),
+        }
+    )
+
+    assert core._any_nan_columns(df, modelo) == frozenset({"com_none"})

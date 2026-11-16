@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin, overload
 
 import pandas as pd
-from pandas.api.types import is_integer_dtype, is_string_dtype
+from pandas.api.types import is_float_dtype, is_integer_dtype, is_string_dtype
+from pandas.io.parsers.readers import STR_NA_VALUES
 from pydantic import BaseModel, Field, create_model
 
 if TYPE_CHECKING:
@@ -1253,7 +1254,11 @@ def read_df(
                None na célula vazia. O NewType e o apelido `type` contam
                pelo tipo a que se referem. A coluna só com células vazias fica como lida: float
                no CSV e, na coluna nula que o checkpoint grava no parquet,
-               object com None.
+               object com None. Do .csv, do .xlsx e do .xls, a coluna do
+               campo só de Decimal vem em texto, com os dígitos do arquivo,
+               e a do campo que admite float traz o NaN que o checkpoint
+               gravou como o texto "NaN", com None na célula vazia; do
+               .parquet, o NaN vem à parte do nulo.
         normalize: Se True (padrão), normaliza colunas que parecem conter JSON.
                    Se False, não faz nenhuma normalização.
         **kwargs: Argumentos adicionais passados para a função de leitura do pandas.
@@ -1304,9 +1309,7 @@ def read_df(
         return df
 
     if model is not None:
-        _reread_text_columns(df, file, ext, model, kwargs)
-        _reread_int_columns(df, file, ext, model, kwargs)
-        _reread_decimal_nan(df, file, ext, model, kwargs)
+        _reread_as_written(df, file, ext, model, kwargs)
 
     # Normalizar colunas
     if not normalize:
@@ -1325,35 +1328,93 @@ def read_df(
     return df
 
 
-def _reread_text_columns(
+def _reread_as_written(
     df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
 ) -> None:
-    """Relê como texto cru os campos de texto do modelo, in-place.
+    """Devolve às colunas dos campos do modelo o que o leitor do pandas trocou, in-place.
 
-    Sem isso, "2023" volta como número e "N/A" ou "NA" viram ausência, e a
-    retomada acusa ou troca o valor. Só a célula vazia vira ausência.
-    Qualquer argumento de leitura desliga a releitura, porque, somado ao
-    usecols dela, ele pode mudar as linhas que o leitor devolve: com
-    on_bad_lines, a linha malformada deixa de sê-lo quando só as colunas de
-    texto são lidas, volta na releitura e desloca o texto das seguintes; com
-    index_col, parse_dates ou names, a releitura levanta. A atribuição alinha
-    pelo índice e não acusa a diferença de tamanho.
+    O CSV e o XLSX são relidos uma vez só como texto cru, e cada coluna volta
+    conforme o campo (`_raw_restorer`); do parquet voltam o int exato e o NaN
+    à parte do nulo (`_reread_parquet`). Qualquer argumento de leitura desliga
+    a releitura, porque ele muda o que o leitor devolve, e a releitura sem ele
+    não casaria com o que foi lido: com on_bad_lines, a linha malformada deixa
+    de sê-lo quando só algumas colunas são lidas, volta na releitura e desloca
+    as seguintes; com index_col, parse_dates ou names, a releitura levanta;
+    dtype fixa tipos. A atribuição alinha pelo índice e não acusa a diferença
+    de tamanho.
     """
-    reader = _TEXT_READERS.get(ext)
-    if reader is None or kwargs:
+    if kwargs:
         return
-    text_columns = [f for f in get_text_fields(model) if f in df.columns]
-    if not text_columns:
+    if ext == ".parquet":
+        _reread_parquet(df, path, model)
+        return
+    reader = _TEXT_READERS.get(ext)
+    if reader is None:
+        return
+    text_fields = get_text_fields(model)
+    restorers = {
+        name: restorer
+        for name, info in model.model_fields.items()
+        if name in df.columns
+        and (
+            restorer := _raw_restorer(
+                info.annotation, df[name], is_text=name in text_fields, is_csv=ext == ".csv"
+            )
+        )
+        is not None
+    }
+    if not restorers:
         return
     # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
     raw = reader(
         path,
-        usecols=text_columns,  # pragma: no mutate
+        usecols=list(restorers),  # pragma: no mutate
         dtype=str,
         na_filter=False,
     )
-    for col in text_columns:
-        df[col] = raw[col].mask(raw[col] == "")
+    # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
+    # têm o mesmo tamanho.
+    for col, restorer in restorers.items():
+        restored = restorer(raw[col], df[col])
+        if restored is not None:
+            df[col] = restored
+
+
+def _raw_restorer(
+    annotation: object, read: pd.Series, *, is_text: bool, is_csv: bool
+) -> Callable[[pd.Series, pd.Series], pd.Series | None] | None:
+    """Como a coluna de um campo volta do texto cru do CSV ou do XLSX; None se fica como lida.
+
+    A função devolvida recebe a coluna em texto cru e a coluna lida, e devolve
+    a coluna restaurada, ou None quando o texto cru não muda nada nela.
+
+    O XLSX guarda número como double e fica fora da releitura do int, porque
+    o int que ele devolve já pode vir arredondado. O campo que admite
+    `Decimal` vem antes do que admite `float`: na união dos dois, o texto do
+    NaN volta pela validação.
+    """
+    if is_text:
+        return _text_as_written
+    if is_csv and _accepts_only_int(annotation) and not is_integer_dtype(read):
+        return _int_as_written
+    members = _members(annotation)
+    if _admits_decimal(annotation):
+        return functools.partial(_decimal_as_written, every_cell=members == [Decimal])
+    if _keeps_nan(annotation):
+        # No campo que também admite texto, o "NaN" pode ser o texto que o
+        # modelo devolveu, e é a validação que decide, como no Decimal.
+        marked = _FLOAT_NAN_TEXT if str in members else math.nan
+        return functools.partial(_float_nan_as_written, marked=marked)
+    return None
+
+
+def _text_as_written(raw: pd.Series, _read: pd.Series) -> pd.Series:
+    """O texto cru do campo de texto: só a célula vazia vira ausência.
+
+    Sem isso, "2023" volta como número e "N/A" ou "NA" viram ausência, e a
+    retomada acusa ou troca o valor.
+    """
+    return raw.mask(raw == "")
 
 
 def _accepts_only_int(field_type: object) -> bool:
@@ -1388,107 +1449,128 @@ def _int_or_read(text: str, read: object) -> object:
     return read
 
 
-def _reread_int_columns(
-    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
-) -> None:
-    """Relê como int exato os campos int do modelo, do CSV e do parquet, in-place.
+def _int_as_written(raw: pd.Series, read: pd.Series) -> pd.Series | None:
+    """O int exato do campo int relido do CSV.
 
     O leitor do pandas devolve float64 numa coluna com int e célula vazia, como
     a de um checkpoint com linha pendente, e o float arredonda o int acima de
     2**53; com int acima do Int64, o CSV volta como texto. A coluna relida
     passa a object, com o int que o arquivo guarda como inteiro e None na
     célula que o leitor devolveu ausente, seja vazia ou "NA"; a célula que
-    guarda outra coisa, como 7.5, fica como lida. O XLSX guarda número como
-    double e fica de fora, porque o int que ele devolve já pode vir
-    arredondado. Qualquer argumento de leitura também desliga a releitura,
-    porque ele muda o que o leitor devolve (on_bad_lines pula linhas, dtype
-    fixa tipos, chunksize nem devolve DataFrame), e a releitura sem ele não
-    casaria com o que foi lido.
+    guarda outra coisa, como 7.5, fica como lida. A coluna sem nenhum int fica
+    como lida.
     """
-    if ext not in (".csv", ".parquet") or kwargs:
-        return
-    columns = [
-        f
-        for f, info in model.model_fields.items()
-        if f in df.columns and _accepts_only_int(info.annotation) and not is_integer_dtype(df[f])
-    ]
-    if not columns:
-        return
-    if ext == ".parquet":
-        # O columns só poupa a leitura das outras colunas, que a releitura não usa.
-        raw = pd.read_parquet(
-            path,
-            columns=columns,  # pragma: no mutate
-            dtype_backend="numpy_nullable",
-        )
-        exact = {
-            col: [None if pd.isna(v) else int(v) for v in raw[col]]
-            for col in columns
-            if is_integer_dtype(raw[col])
-        }
-    else:
-        # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
-        raw = pd.read_csv(
-            path,
-            usecols=columns,  # pragma: no mutate
-            dtype=str,
-            na_filter=False,
-        )
-        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
-        # têm o mesmo tamanho.
-        exact = {col: list(map(_int_or_read, raw[col], df[col])) for col in columns}
-    for col, values in exact.items():
-        if any(type(v) is int for v in values):
-            df[col] = pd.Series(values, index=df.index, dtype=object)
+    values = list(map(_int_or_read, raw, read))
+    if not any(type(value) is int for value in values):
+        return None
+    return pd.Series(values, index=read.index, dtype=object)
 
 
-# O texto que o str() dá ao Decimal NaN quieto, com sinal e diagnóstico.
-_DECIMAL_NAN_TEXT = re.compile(r"-?NaN\d*")
+# O texto que o str() dá ao Decimal NaN, quieto ou sinalizador, com sinal e diagnóstico.
+_DECIMAL_NAN_TEXT = re.compile(r"-?s?NaN\d*")
+# O texto com que o checkpoint CSV e XLSX grava o NaN de um campo float.
+_FLOAT_NAN_TEXT = "NaN"
 
 
-def _reread_decimal_nan(
-    df: pd.DataFrame, path: Path, ext: str, model: type[BaseModel], kwargs: dict[str, Any]
-) -> None:
-    """Relê do CSV e do XLSX o texto do `Decimal` NaN nos campos que admitem `Decimal`, in-place.
+def _decimal_as_written(raw: pd.Series, read: pd.Series, *, every_cell: bool) -> pd.Series | None:
+    """O texto do `Decimal` no campo que o admite, para a validação devolvê-lo ao tipo.
 
-    O checkpoint grava o Decimal NaN como o texto "NaN" (`_structures_as_json`),
-    que o leitor devolve ausente, como a célula vazia da linha pendente. A
-    coluna em que ele aparece passa a object, com o texto gravado, None na
-    célula ausente e as demais como lidas. A validação da retomada devolve o
-    Decimal NaN ao campo que o aceita, e o campo que também admite texto fica
-    com o texto. O parquet já devolve o texto. Argumento de leitura extra
-    desliga a releitura, como em `_reread_text_columns`.
+    O leitor devolve o `Decimal` como float, que perde o zero do fim e os
+    dígitos além do double (`1.10` volta `1.1`), e devolve ausente o texto do
+    `Decimal` NaN (`_structures_as_json`), como a célula vazia da linha
+    pendente. Com `every_cell`, no campo que só admite `Decimal`, toda célula
+    com valor volta em texto. Sem, na união com outro tipo, só o texto do NaN
+    volta, e as demais ficam como lidas: o texto de um número não diz qual dos
+    tipos da união o gravou. A coluna relida passa a object, com None na
+    célula ausente; sem nenhuma célula em texto, fica como lida.
     """
-    reader = _TEXT_READERS.get(ext)
-    if reader is None or kwargs:
-        return
-    columns = [
-        f
-        for f, info in model.model_fields.items()
-        if f in df.columns and _admits_decimal(info.annotation)
+    is_nan = [_DECIMAL_NAN_TEXT.fullmatch(text) is not None for text in raw]
+    values = [
+        text if found or (every_cell and not absent) else None if absent else value
+        for text, found, absent, value in zip(raw, is_nan, read.isna(), read, strict=True)
     ]
-    if not columns:
+    if not (any(is_nan) or (every_cell and any(value is not None for value in values))):
+        return None
+    return pd.Series(values, index=read.index, dtype=object)
+
+
+def _float_nan_as_written(raw: pd.Series, read: pd.Series, *, marked: object) -> pd.Series | None:
+    """O NaN do campo que admite `float`, que o checkpoint grava como o texto "NaN".
+
+    O leitor devolve esse texto ausente, como a célula vazia da linha pendente
+    e da resposta None. A coluna em que ele aparece passa a object, com
+    `marked` na célula do texto, None na ausente e as demais como lidas; sem
+    ele, fica como lida.
+    """
+    is_nan = raw == _FLOAT_NAN_TEXT
+    if not is_nan.any():
+        return None
+    values = [
+        marked if found else None if absent else value
+        for found, absent, value in zip(is_nan, read.isna(), read, strict=True)
+    ]
+    return pd.Series(values, index=read.index, dtype=object)
+
+
+def _reread_parquet(df: pd.DataFrame, path: Path, model: type[BaseModel]) -> None:
+    """Relê do parquet o int exato e o NaN à parte do nulo, in-place.
+
+    O leitor do pandas devolve float64 numa coluna de int com célula nula, que
+    arredonda o int acima de 2**53, e numa coluna de float devolve NaN também
+    na célula nula. O parquet guarda o int e o nulo à parte, e a leitura com
+    os tipos do Arrow os separa. A coluna de campo int que o arquivo guarda
+    como inteiro passa a object, com o int exato e None na célula nula. A do
+    campo que admite `float` com algum NaN passa a object, com o NaN e None;
+    sem NaN, fica como lida, com o nulo em NaN.
+    """
+    ints = [
+        name
+        for name, info in model.model_fields.items()
+        if name in df.columns
+        and _accepts_only_int(info.annotation)
+        and not is_integer_dtype(df[name])
+    ]
+    floats = [
+        name
+        for name, info in model.model_fields.items()
+        if name in df.columns and _keeps_nan(info.annotation) and is_float_dtype(df[name])
+    ]
+    if not ints and not floats:
         return
-    # O usecols só poupa a leitura das outras colunas, que a releitura não usa.
-    raw = reader(
+    # O columns só poupa a leitura das outras colunas, que a releitura não usa.
+    raw = pd.read_parquet(
         path,
-        usecols=columns,  # pragma: no mutate
-        dtype=str,
-        na_filter=False,
+        columns=ints + floats,  # pragma: no mutate
+        dtype_backend="pyarrow",
     )
-    for col in columns:
-        is_nan = [_DECIMAL_NAN_TEXT.fullmatch(text) is not None for text in raw[col]]
-        if not any(is_nan):
-            continue
-        # As duas leituras são do mesmo arquivo, sem argumento que pule linhas, e
-        # têm o mesmo tamanho.
-        values = [
-            text if found else None if absent else read
-            for text, found, absent, read in zip(
-                raw[col], is_nan, df[col].isna(), df[col], strict=True
-            )
-        ]
-        df[col] = pd.Series(values, index=df.index, dtype=object)
+    for col in ints:
+        if is_integer_dtype(raw[col]):
+            values = [None if pd.isna(value) else int(value) for value in raw[col]]
+            if any(value is not None for value in values):
+                df[col] = pd.Series(values, index=df.index, dtype=object)
+    for col in floats:
+        if is_float_dtype(raw[col]):
+            # O isna da coluna do Arrow só acusa o nulo, e o NaN fica entre os valores.
+            values = raw[col].to_numpy(dtype=object, na_value=None)
+            if any(value is not None and math.isnan(value) for value in values):
+                df[col] = pd.Series(values, index=df.index, dtype=object)
+
+
+def _reads_as_other(text: str) -> bool:
+    """Se o leitor do CSV ou do XLSX devolveria o texto como número, bool ou ausência.
+
+    Erra para o lado de dizer que sim, como no texto com espaços em volta de
+    um número, que só o leitor do CSV converte: o texto acusado é gravado entre
+    aspas (`_structures_as_json`) e volta o mesmo.
+    """
+    stripped = text.strip()
+    if not stripped or stripped in STR_NA_VALUES or stripped.casefold() in ("true", "false"):
+        return True
+    try:
+        float(stripped)
+    except ValueError:
+        return False
+    return True
 
 
 def _any_from_text(text: str) -> object:
