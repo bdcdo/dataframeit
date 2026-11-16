@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections import UserList, deque
+from collections import UserDict, UserList, deque
 from enum import Enum
 from typing import Any, Literal
 
@@ -1949,8 +1949,10 @@ class _Faixa(BaseModel):
         (_Grupo([frozenset({"c", "b"})]), {"bairros": [["b", "c"]], "outro": None}),
         (_Grupo({"k": frozenset({"c", "b"})}), {"bairros": {"k": ["b", "c"]}, "outro": None}),
         (_Faixa(bairros=frozenset({"c", "b"})), {"bairros": ["b", "c"]}),
+        (_Grupo(deque([frozenset({"c", "b"})])), {"bairros": [["b", "c"]], "outro": None}),
+        (_Grupo(UserDict(k=frozenset({"c", "b"}))), {"bairros": {"k": ["b", "c"]}, "outro": None}),
     ],
-    ids=["tupla", "lista", "dict", "modelo"],
+    ids=["tupla", "lista", "dict", "modelo", "deque", "userdict"],
 )
 def test_registro_que_guarda_conjunto_de_texto_entra_pelos_atributos(registro, forma):
     """Em qualquer nível dos campos, como chave e como valor, com e sem descida."""
@@ -1974,6 +1976,8 @@ def test_registro_que_o_repr_escreve_igual_em_todo_processo_fica_pelo_repr(regis
     """Como no checkpoint já gravado com ele; o conjunto de inteiros itera na mesma ordem."""
     assert core._stable({"x": registro}, core._Descent()) == {"x": registro}
     assert core._stable({registro: 1}, core._Descent()) == {str(registro): 1}
+    # Também dentro da chave tupla, que entra pelo `str` dela.
+    assert core._stable({(registro, 2): 1}, core._Descent()) == {str((registro, 2)): 1}
     assert core._stable({"x": _Grupo}, core._Descent()) == {"x": "_Grupo"}
 
 

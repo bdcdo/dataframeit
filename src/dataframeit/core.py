@@ -2610,22 +2610,24 @@ def _record_form(value: object, descent: _Descent) -> object:
 def _holds_unordered_set(value: object, path: frozenset[int] = frozenset()) -> bool:
     """Se o valor tem um conjunto que não é só de inteiros, em qualquer nível.
 
-    Desce pela tupla, pela lista, pelas chaves e pelos valores do dict e pelos
-    campos do registro (`_is_record`). O hash do inteiro é o próprio valor, e o
-    conjunto só de inteiros itera na mesma ordem em todo processo. `path` traz
-    o `id` do que está aberto acima do valor: o que volta a ele não é
-    percorrido de novo.
+    Desce pelas coleções de `_is_structure_class`, como a tupla, a lista e o
+    deque, pelas chaves e pelos valores do Mapping e pelos campos do registro
+    (`_is_record`). O hash do inteiro é o próprio valor, e o conjunto só de
+    inteiros itera na mesma ordem em todo processo. `path` traz o `id` do que
+    está aberto acima do valor: o que volta a ele não é percorrido de novo.
     """
-    if isinstance(value, (set, frozenset)):
+    structure = _is_structure_class(type(value))
+    if structure and isinstance(value, collections.abc.Set):
         return not all(isinstance(item, int) for item in value)
     if id(value) in path:
         return False
-    if isinstance(value, (tuple, list)):
-        items: Iterable[object] = value
-    elif isinstance(value, dict):
+    if _is_record(value):
+        items: Iterable[object] = _record_fields(value)
+    elif structure and isinstance(value, collections.abc.Mapping):
         items = [*value.keys(), *value.values()]
-    elif _is_record(value):
-        items = _record_fields(value)
+    elif structure:
+        # O cast não age em tempo de execução, e o teste de mutação troca o tipo à toa.
+        items = cast("Iterable[object]", value)  # pragma: no mutate
     else:
         return False
     inner = path | {id(value)}
@@ -2916,12 +2918,12 @@ def _key_form(name: object, descent: _Descent) -> str:
 
 
 def _key_needs_form(name: object) -> bool:
-    """Se a chave passa pela forma canônica: o conjunto, o registro, e a tupla que contém um deles.
+    """Se a chave passa pela forma canônica: o conjunto, o registro com conjunto de texto, e a tupla que contém um deles.
 
-    O registro (`_is_record`) vai a `_record_form`, que decide se ele entra
-    pelos atributos.
+    O registro sem esse conjunto (`_holds_unordered_set`) fica pelo `str`,
+    também dentro da tupla, como no checkpoint já gravado com ele.
     """
-    if isinstance(name, (set, frozenset)) or _is_record(name):
+    if isinstance(name, (set, frozenset)) or (_is_record(name) and _holds_unordered_set(name)):
         return True
     return isinstance(name, tuple) and any(_key_needs_form(item) for item in name)
 
