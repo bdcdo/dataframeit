@@ -9,9 +9,10 @@ sem nova tentativa.
 """
 
 import datetime as dt
+from collections import deque
 from collections.abc import Set as AbstractSet
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Annotated, Any, Optional, Union
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -20,12 +21,16 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PlainSerializer,
+    SerializeAsAny,
     SerializerFunctionWrapHandler,
+    WrapSerializer,
     create_model,
     field_serializer,
     field_validator,
     model_serializer,
 )
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 from pydantic_core import PydanticSerializationError
 from typing_extensions import override
 
@@ -229,27 +234,6 @@ def test_chave_de_dict_que_e_submodelo_guarda_o_type_error_como_causa():
         dump_response(resposta)
 
     assert isinstance(erro.value.__cause__, TypeError)
-
-
-def test_conjunto_de_submodelos_dentro_de_outro_campo_interrompe_com_a_saida_dele():
-    resposta = ConjuntoAninhado(sub=ConjuntoDeModelo(campo={Cidade(nome="SP")}), campo="x")
-
-    with pytest.raises(ProviderAbortError) as erro:
-        dump_response(resposta)
-
-    mensagem = str(erro.value)
-    # O texto do TypeError muda com a versão do Python; o "unhashable type" fica.
-    assert mensagem.startswith("O model_dump da resposta caiu com TypeError: ")
-    assert "unhashable type: 'dict'" in mensagem
-    assert (
-        ". O modelo ConjuntoAninhado tem um set, um frozenset ou uma chave de dict cujos itens "
-        "viram dict no dump, como os de submodelos, e o dict não é hashable. Repetir a linha "
-        "não resolve: " in mensagem
-    )
-    assert mensagem.endswith(
-        "declare como list ou tuple o conjunto que fica dentro de outro campo, e como texto ou "
-        "número a chave de dict"
-    )
 
 
 def test_conjunto_de_submodelos_ao_lado_de_chave_que_e_submodelo_interrompe_pela_chave():
@@ -648,15 +632,6 @@ def test_conjunto_de_submodelos_sai_lista_com_o_model_serializer_em_volta():
     assert dump_response(resposta) == {"campo": [{"nome": "RJ"}, {"nome": "SP"}]}
 
 
-def test_conjunto_aninhado_com_o_model_serializer_em_volta_interrompe():
-    resposta = AninhadoComSerializadorEmVolta(sub=ConjuntoDeModelo(campo={Cidade(nome="SP")}))
-
-    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'") as erro:
-        dump_response(resposta)
-
-    assert isinstance(erro.value.__cause__, PydanticSerializationError)
-
-
 def test_erro_de_serializacao_de_outra_origem_segue_como_veio():
     class SerializadorQueCai(BaseModel):
         campo: str
@@ -693,3 +668,496 @@ def test_serializador_de_outro_campo_nao_tira_a_lista_do_conjunto_vazio():
             return valor.upper()
 
     assert dump_response(OutroSerializado(campo=set(), outro="x")) == {"campo": [], "outro": "X"}
+
+
+# =============================================================================
+# Conjunto de submodelos dentro de outro campo
+# =============================================================================
+
+
+class Capital(Cidade):
+    uf: str
+
+
+class Pais(BaseModel):
+    nome: str
+    regioes: list[Regiao]
+
+
+class ListaDeCidades(BaseModel):
+    campo: list[Cidade]
+
+
+class ConjuntoDaUniao(BaseModel):
+    campo: set[Union[Cidade, Capital]]
+
+
+class CampoQualquer(BaseModel):
+    campo: Any
+
+
+class Colecoes(BaseModel):
+    em_lista: list[set[Cidade]]
+    em_tupla: tuple[frozenset[Cidade], int]
+    em_dict: dict[str, set[Cidade]]
+    em_conjunto: frozenset[Regiao]
+    em_modelo: ConjuntoDeModelo
+    em_lista_de_modelo: list[ConjuntoDeModelo]
+    ao_lado: str
+
+
+def test_conjunto_de_submodelos_dentro_de_outro_campo_sai_como_lista():
+    sp, rj = Cidade(nome="SP"), Cidade(nome="RJ")
+    resposta = Colecoes(
+        em_lista=[{sp, rj}, set()],
+        em_tupla=(frozenset({sp}), 7),
+        em_dict={"sudeste": {rj, sp}},
+        em_conjunto=frozenset({Regiao(nome="Sudeste", cidades=frozenset({sp, rj}))}),
+        em_modelo=ConjuntoDeModelo(campo={rj, sp}),
+        em_lista_de_modelo=[ConjuntoDeModelo(campo={sp}), ConjuntoDeModelo(campo=set())],
+        ao_lado="x",
+    )
+    em_ordem = [{"nome": "RJ"}, {"nome": "SP"}]
+
+    dump = dump_response(resposta)
+
+    assert dump == {
+        "em_lista": [em_ordem, []],
+        "em_tupla": ([{"nome": "SP"}], 7),
+        "em_dict": {"sudeste": em_ordem},
+        "em_conjunto": [{"nome": "Sudeste", "cidades": em_ordem}],
+        "em_modelo": {"campo": em_ordem},
+        "em_lista_de_modelo": [{"campo": [{"nome": "SP"}]}, {"campo": []}],
+        "ao_lado": "x",
+    }
+    assert list(dump) == list(Colecoes.model_fields)
+    assert type(dump["em_tupla"]) is tuple
+    assert type(dump["em_lista"]) is list
+
+
+def test_conjunto_de_submodelos_em_tres_niveis_sai_como_lista():
+    regiao = Regiao(nome="Sul", cidades=frozenset({Cidade(nome="POA")}))
+
+    assert dump_response(Pais(nome="BR", regioes=[regiao])) == {
+        "nome": "BR",
+        "regioes": [{"nome": "Sul", "cidades": [{"nome": "POA"}]}],
+    }
+
+
+def test_conjunto_aninhado_chega_a_saida_como_lista():
+    sub = ConjuntoDeModelo(campo={Cidade(nome="SP"), Cidade(nome="BH")})
+
+    chat, saida = _executa_resposta(ConjuntoAninhado(sub=sub, campo="x"))
+
+    assert chat.invocacoes == 1
+    assert saida["sub"].tolist() == [{"campo": [{"nome": "BH"}, {"nome": "SP"}]}]
+
+
+def test_conjunto_aninhado_com_o_model_serializer_em_volta_sai_como_lista():
+    resposta = AninhadoComSerializadorEmVolta(sub=ConjuntoDeModelo(campo={Cidade(nome="SP")}))
+
+    assert dump_response(resposta) == {"sub": {"campo": [{"nome": "SP"}]}}
+
+
+def test_conjunto_vazio_dentro_de_outro_campo_sai_como_lista():
+    """O dump que não cai sai igual ao que cai: a lista não depende das outras células da linha."""
+    resposta = Colecoes(
+        em_lista=[set()],
+        em_tupla=(frozenset(), 7),
+        em_dict={"vazio": set()},
+        em_conjunto=frozenset(),
+        em_modelo=ConjuntoDeModelo(campo=set()),
+        em_lista_de_modelo=[ConjuntoDeModelo(campo=set())],
+        ao_lado="x",
+    )
+
+    assert dump_response(resposta) == {
+        "em_lista": [[]],
+        "em_tupla": ([], 7),
+        "em_dict": {"vazio": []},
+        "em_conjunto": [],
+        "em_modelo": {"campo": []},
+        "em_lista_de_modelo": [{"campo": []}],
+        "ao_lado": "x",
+    }
+
+
+class ConjuntosDeTexto(BaseModel):
+    campo: list[set[str]]
+    sub: ConjuntoDeEnum
+
+
+def test_conjunto_dentro_de_outro_campo_sem_submodelo_segue_conjunto():
+    resposta = ConjuntosDeTexto(campo=[{"a"}], sub=ConjuntoDeEnum(campo={Tag.PF}))
+
+    assert dump_response(resposta) == {"campo": [{"a"}], "sub": {"campo": {Tag.PF}}}
+
+
+class No(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    nome: str
+    filhos: frozenset["No"] = frozenset()
+
+
+class Arvore(BaseModel):
+    raiz: No
+
+
+def test_conjunto_do_modelo_recursivo_sai_como_lista_em_todo_nivel():
+    folha = No(nome="b")
+
+    assert dump_response(Arvore(raiz=No(nome="a", filhos=frozenset({folha})))) == {
+        "raiz": {"nome": "a", "filhos": [{"nome": "b", "filhos": []}]}
+    }
+    assert dump_response(Arvore(raiz=folha)) == {"raiz": {"nome": "b", "filhos": []}}
+
+
+class SemConjuntoDeModelo(BaseModel):
+    par: tuple[Cidade, set[str]]
+    filhos: list["SemConjuntoDeModelo"] = []
+
+
+def test_campo_com_submodelo_e_sem_conjunto_de_submodelos_fica_com_o_model_dump():
+    folha = SemConjuntoDeModelo(par=(Cidade(nome="RJ"), {"b"}))
+    resposta = SemConjuntoDeModelo(par=(Cidade(nome="SP"), {"a"}), filhos=[folha])
+
+    assert dump_response(resposta) == {
+        "par": ({"nome": "SP"}, {"a"}),
+        "filhos": [{"par": ({"nome": "RJ"}, {"b"}), "filhos": []}],
+    }
+
+
+class VariosFundos(BaseModel):
+    com_serializador: list[set[Cidade]]
+    cheio: list[set[Cidade]]
+    vazio: list[set[Cidade]]
+    outro_vazio: list[set[Cidade]]
+
+    @field_serializer("com_serializador")
+    def _so_o_tamanho(self, valor: list[set[Cidade]]) -> int:
+        return len(valor)
+
+
+def test_cada_campo_com_conjunto_fundo_sai_lista_depois_do_que_ja_saiu_e_do_serializado():
+    resposta = VariosFundos(
+        com_serializador=[set()], cheio=[{Cidade(nome="SP")}], vazio=[set()], outro_vazio=[set()]
+    )
+    so_vazios = VariosFundos(com_serializador=[set()], cheio=[set()], vazio=[set()], outro_vazio=[])
+
+    assert dump_response(resposta) == {
+        "com_serializador": 1,
+        "cheio": [[{"nome": "SP"}]],
+        "vazio": [[]],
+        "outro_vazio": [[]],
+    }
+    assert dump_response(so_vazios) == {
+        "com_serializador": 1,
+        "cheio": [[]],
+        "vazio": [[]],
+        "outro_vazio": [],
+    }
+
+
+class SubComSerializador(BaseModel):
+    sub: ConjuntoDeModelo
+
+    @field_serializer("sub")
+    def _so_o_tamanho(self, valor: ConjuntoDeModelo) -> int:
+        return len(valor.campo)
+
+
+class ModeloComSerializadorDoDump(BaseModel):
+    sub: ConjuntoDeModelo
+
+    @model_serializer(mode="plain")
+    def _com_o_conjunto(self) -> dict[str, Any]:
+        return {"sub": {"campo": set(), "a_mais": 1}}
+
+
+def test_campo_com_serializador_proprio_fica_como_o_serializador_deu_ao_lado_do_conjunto_fundo():
+    vazio = ConjuntoDeModelo(campo=set())
+
+    assert dump_response(SubComSerializador(sub=vazio)) == {"sub": 0}
+    assert dump_response(ModeloComSerializadorDoDump(sub=vazio)) == {
+        "sub": {"campo": set(), "a_mais": 1}
+    }
+
+
+def test_conjunto_vazio_dentro_de_colecao_que_o_dump_simples_nao_escreve_fica_como_veio():
+    modelo = create_model("ModeloDoCaso", campo=(deque[set[Cidade]], ...))
+
+    dump = dump_response(modelo.model_validate({"campo": [[]]}))
+
+    assert dump == {"campo": deque([set()])}
+
+
+@pytest.mark.parametrize("modelo", [ConjuntoDeModelo, ConjuntoCongeladoDeModelo])
+def test_item_de_subclasse_no_conjunto_sai_com_os_campos_da_classe_declarada(modelo):
+    resposta = modelo(campo={Capital(nome="SP", uf="SP"), Cidade(nome="RJ")})
+    em_lista = ListaDeCidades(campo=[Capital(nome="SP", uf="SP")])
+
+    assert dump_response(resposta) == {"campo": [{"nome": "RJ"}, {"nome": "SP"}]}
+    # É o que o pydantic faz com o item de subclasse numa lista.
+    assert dump_response(em_lista) == {"campo": [{"nome": "SP"}]}
+
+
+def test_item_de_subclasse_declarada_na_uniao_sai_com_os_campos_dela():
+    resposta = ConjuntoDaUniao(campo={Capital(nome="SP", uf="SP"), Cidade(nome="RJ")})
+
+    assert dump_response(resposta) == {"campo": [{"nome": "RJ"}, {"nome": "SP", "uf": "SP"}]}
+
+
+def test_item_de_subclasse_com_conjunto_dentro_sai_pela_classe_declarada():
+    class RegiaoComSigla(Regiao):
+        sigla: str
+
+    resposta = ConjuntoDeRegioes(
+        campo={RegiaoComSigla(nome="Sul", sigla="S", cidades=frozenset({Cidade(nome="POA")}))}
+    )
+
+    assert dump_response(resposta) == {"campo": [{"nome": "Sul", "cidades": [{"nome": "POA"}]}]}
+
+
+def test_item_que_nao_e_de_nenhuma_classe_declarada_sai_pelo_dump_dele():
+    resposta = CampoQualquer(campo=[{Capital(nome="SP", uf="SP")}])
+
+    assert dump_response(resposta) == {"campo": [[{"nome": "SP", "uf": "SP"}]]}
+
+
+class ChaveAninhada(BaseModel):
+    campo: list[dict[Cidade, int]]
+    conjunto: set[Cidade]
+
+
+def test_chave_de_dict_que_e_submodelo_dentro_de_uma_lista_interrompe():
+    resposta = ChaveAninhada(campo=[{Cidade(nome="SP"): 1}], conjunto={Cidade(nome="RJ")})
+
+    with pytest.raises(ProviderAbortError) as erro:
+        dump_response(resposta)
+
+    mensagem = str(erro.value)
+    # O texto do TypeError muda com a versão do Python; o "unhashable type" fica.
+    assert mensagem.startswith("O model_dump da resposta caiu com TypeError: ")
+    assert "unhashable type: 'dict'" in mensagem
+    assert (
+        ". O modelo ChaveAninhada tem um set, um frozenset ou uma chave de dict cujos itens "
+        "viram dict no dump, como os de submodelos, e o dict não é hashable. Repetir a linha "
+        "não resolve: " in mensagem
+    )
+    assert mensagem.endswith(
+        "declare como texto ou número a chave de dict que é ou guarda um submodelo, e como list "
+        "ou tuple o conjunto que fica num dataclass ou numa coleção que não é lista, tupla, "
+        "conjunto nem dict"
+    )
+    assert isinstance(erro.value.__cause__, TypeError)
+
+
+class FilaDeConjuntos(BaseModel):
+    campo: deque[set[Cidade]]
+
+
+class ChaveDeConjunto(BaseModel):
+    campo: dict[frozenset[Cidade], int]
+
+
+def test_conjunto_de_submodelos_dentro_de_outra_colecao_interrompe():
+    # Com a anotação: no campo `Any`, o pydantic 2.12 não desce no deque, e o dump não cai.
+    resposta = FilaDeConjuntos(campo=deque([{Cidade(nome="SP")}]))
+
+    with pytest.raises(ProviderAbortError, match="numa coleção que não é lista"):
+        dump_response(resposta)
+
+
+def test_conjunto_de_submodelos_em_campo_extra_interrompe():
+    """O campo extra não tem anotação nem dump próprio, e o resto do dump cai com ele."""
+    resposta = ComExtra(campo={Cidade(nome="SP")}, a_mais={Cidade(nome="RJ")})
+
+    with pytest.raises(ProviderAbortError, match="unhashable type: 'dict'"):
+        dump_response(resposta)
+
+
+class SerializadorQueRepassa(BaseModel):
+    campo: list[set[Cidade]]
+
+    @field_serializer("campo", mode="wrap")
+    def _como_veio(self, valor: Any, handler: SerializerFunctionWrapHandler) -> Any:
+        return handler(valor)
+
+
+def test_conjunto_no_campo_com_serializador_que_repassa_sai_como_lista():
+    """O serializador que só repassa o valor cai como o dump sem ele, e o campo sai pela lista."""
+    resposta = SerializadorQueRepassa(campo=[{Cidade(nome="SP")}])
+
+    assert dump_response(resposta) == {"campo": [[{"nome": "SP"}]]}
+
+
+@pydantic_dataclass(frozen=True)
+class Ponto:
+    x: int
+
+
+@pydantic_dataclass(frozen=True)
+class Grupo:
+    cidades: frozenset[Cidade]
+
+
+@pytest.mark.parametrize(
+    "resposta",
+    [
+        CampoQualquer(campo={Ponto(x=1)}),
+        CampoQualquer(campo=[Grupo(cidades=frozenset({Cidade(nome="SP")}))]),
+        ChaveDeConjunto(campo={frozenset({Cidade(nome="SP")}): 1}),
+        CampoQualquer(campo=[{(Cidade(nome="SP"), 1): {Cidade(nome="RJ")}}]),
+        CampoQualquer(campo=[{(Ponto(x=1), 1): {Cidade(nome="RJ")}}]),
+    ],
+    ids=["dataclass", "conjunto-no-dataclass", "chave-conjunto", "chave-tupla", "chave-dataclass"],
+)
+def test_valor_que_o_dump_simples_nao_escreve_interrompe(resposta):
+    """O dataclass e a chave que guarda um submodelo sairiam como objeto, sem o dict do dump."""
+    with pytest.raises(ProviderAbortError, match="unhashable type"):
+        dump_response(resposta)
+
+
+def test_chave_de_tupla_sem_submodelo_segue_chave_ao_lado_do_conjunto():
+    resposta = CampoQualquer(campo={(1, "a"): {Cidade(nome="SP")}})
+
+    assert dump_response(resposta) == {"campo": {(1, "a"): [{"nome": "SP"}]}}
+
+
+class ConjuntoComoQualquer(BaseModel):
+    campo: set[SerializeAsAny[Cidade]]
+    em_lista: list[set[SerializeAsAny[Cidade]]]
+    campo_inteiro: SerializeAsAny[set[Cidade]]
+
+
+def test_item_de_subclasse_com_serialize_as_any_sai_com_os_campos_dela():
+    capital = Capital(nome="SP", uf="SP")
+    resposta = ConjuntoComoQualquer(campo={capital}, em_lista=[{capital}], campo_inteiro={capital})
+
+    assert dump_response(resposta) == {
+        "campo": [{"nome": "SP", "uf": "SP"}],
+        "em_lista": [[{"nome": "SP", "uf": "SP"}]],
+        "campo_inteiro": [{"nome": "SP", "uf": "SP"}],
+    }
+
+
+class NoComConjunto(BaseModel):
+    conjunto: set[Cidade] = set()
+    filhos: list["NoComConjunto"] = []
+
+
+def test_conjunto_vazio_do_modelo_que_guarda_a_si_mesmo_sai_como_lista():
+    vazio = dump_response(NoComConjunto(filhos=[NoComConjunto()]))
+    cheio = dump_response(NoComConjunto(filhos=[NoComConjunto(conjunto={Cidade(nome="SP")})]))
+
+    assert vazio == {"conjunto": [], "filhos": [{"conjunto": [], "filhos": []}]}
+    assert cheio == {"conjunto": [], "filhos": [{"conjunto": [{"nome": "SP"}], "filhos": []}]}
+
+
+class SerializadorNoAnnotated(BaseModel):
+    simples: Annotated[list[set[Cidade]], PlainSerializer(lambda valor: "serializado")]
+    em_volta: Annotated[
+        list[set[Cidade]], WrapSerializer(lambda valor, repassa: len(valor), return_type=int)
+    ]
+    direto: Annotated[set[Cidade], PlainSerializer(lambda valor: set())]
+
+
+class SerializadorSoDoJson(BaseModel):
+    simples: Annotated[list[set[Cidade]], PlainSerializer(lambda valor: "x", when_used="json")]
+    em_volta: Annotated[
+        list[set[Cidade]],
+        WrapSerializer(lambda valor, repassa: "x", when_used="json-unless-none"),
+    ]
+    sem_none: Annotated[
+        list[set[Cidade]], PlainSerializer(lambda valor: "x", when_used="unless-none")
+    ]
+
+
+def test_serializador_so_do_json_nao_tira_a_lista_do_conjunto_vazio():
+    resposta = SerializadorSoDoJson(simples=[set()], em_volta=[set()], sem_none=[set()])
+
+    assert dump_response(resposta) == {"simples": [[]], "em_volta": [[]], "sem_none": "x"}
+
+
+def test_campo_com_serializador_no_annotated_fica_como_o_serializador_deu():
+    resposta = SerializadorNoAnnotated(simples=[set()], em_volta=[set()], direto=set())
+
+    assert dump_response(resposta) == {"simples": "serializado", "em_volta": 1, "direto": set()}
+
+
+class ChaveQueViraModeloPorCampo(BaseModel):
+    antes: str
+    campo: dict[Cidade, int]
+
+    @field_validator("campo", mode="before")
+    @classmethod
+    def _chave_em_modelo(cls, valor):
+        return {Cidade(nome=str(nome)): numero for nome, numero in valor.items()}
+
+
+def test_modo_por_campo_interrompe_quando_o_dump_da_linha_cai():
+    respostas = {"antes": "x", "campo": {"SP": 1}}
+
+    def responde(text, model, *args, **kwargs):
+        return {"data": {campo: respostas[campo] for campo in model.model_fields}, "usage": {}}
+
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=responde) as chamadas,
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        pytest.warns(UserWarning, match="Execução interrompida.*a chave do dict é um submodelo"),
+    ):
+        saida = dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=ChaveQueViraModeloPorCampo,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+        )
+
+    # Só a primeira linha foi ao provider, e nenhuma ficou com status de erro.
+    assert chamadas.call_count == len(respostas)
+    assert saida["_dataframeit_status"].isna().all()
+
+
+class ChaveQueViraModeloComCondicao(BaseModel):
+    campo: dict[Cidade, int]
+    tem: bool
+    depois: Optional[str] = Field(
+        None, json_schema_extra={"condition": {"field": "tem", "equals": True}}
+    )
+
+    @field_validator("campo", mode="before")
+    @classmethod
+    def _chave_em_modelo(cls, valor):
+        return {Cidade(nome=str(nome)): numero for nome, numero in valor.items()}
+
+
+def test_modo_por_campo_interrompe_antes_das_chamadas_que_faltam_na_linha():
+    """A condição lê a linha validada depois de cada campo, e o dump que cai ali já interrompe."""
+    respostas = {"campo": {"SP": 1}, "tem": True, "depois": "x"}
+    pedidos = []
+
+    def responde(text, model, *args, **kwargs):
+        pedidos.append(list(model.model_fields))
+        return {"data": {campo: respostas[campo] for campo in model.model_fields}, "usage": {}}
+
+    with (
+        patch("dataframeit.agent.call_agent", side_effect=responde),
+        patch("dataframeit.core.validate_provider_dependencies"),
+        patch("dataframeit.core.validate_search_dependencies"),
+        pytest.warns(UserWarning, match="Execução interrompida.*a chave do dict é um submodelo"),
+    ):
+        saida = dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=ChaveQueViraModeloComCondicao,
+            prompt="Analise {texto}",
+            use_search=True,
+            search_per_field=True,
+            track_tokens=False,
+        )
+
+    assert ["depois"] not in pedidos
+    assert len(pedidos) < len(respostas)
+    assert saida["_dataframeit_status"].isna().all()
