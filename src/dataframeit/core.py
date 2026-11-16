@@ -4738,11 +4738,12 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     # que escapou antes disso, e não a que falhou depois, ao gravar o snapshot.
     # O abort e a exceção que sai do laço marcam as demais.
     counted: set[Hashable] = set()
-    # Avisos das linhas que falharam, na ordem em que as threads os guardam
-    # sob `lock`, com a linha já registrada. A thread principal os emite quando
-    # um futuro termina: tratado como erro, o aviso sai de `dataframeit()` como
-    # no modo sequencial, e a saída espera o callback das linhas em andamento.
-    row_warnings: list[str] = []
+    # Avisos das linhas que falharam, como o da falha e o de redução de
+    # workers, na ordem em que são guardados sob `lock`, com a linha já
+    # registrada. A thread principal os emite depois de fechar as linhas que
+    # terminaram: tratado como erro, o aviso sai de `dataframeit()` como no modo
+    # sequencial, e a saída espera o callback das linhas em andamento.
+    pending_warnings: list[str] = []
     # Se as marcas da saída por exceção mudaram o DataFrame, e a gravação deve
     # levá-las. Só essa gravação o lê, depois de a marcação o regravar logo de
     # início, e o teste de mutação troca à toa o valor inicial.
@@ -4921,13 +4922,13 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 if rate_limited and current_workers > 1:
                     old_workers = current_workers
                     current_workers = max(1, current_workers // 2)
-                    row_warnings.append(
+                    pending_warnings.append(
                         f"Rate limit detectado! Reduzindo workers de {old_workers} para {current_workers}."
                     )
                     rate_limit_event.set()
                     # Limpar evento após um tempo
                     threading.Timer(5.0, rate_limit_event.clear).start()
-                row_warnings.append(
+                pending_warnings.append(
                     _record_error_safely(
                         df,
                         idx,
@@ -4996,7 +4997,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
     in_flight: dict[Future[None], tuple[_RowData, float]] = {}
 
     def collect(future: Future[None]) -> None:
-        """Fecha a linha cujo futuro terminou e emite os avisos guardados até aqui."""
+        """Fecha a linha cujo futuro terminou, com o registro da que escapou da thread."""
         row, started = in_flight.pop(future)
         _position, idx, _row = row
         try:
@@ -5006,19 +5007,26 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
             # status e sumiria da saída.
             if idx in counted:
                 with lock:
-                    row_warnings.append(
+                    pending_warnings.append(
                         f"Erro inesperado no executor depois de registrar a linha "
                         f"{idx}, que mantém o status gravado: {_error_text(e)}",
                     )
             else:
                 with lock:
-                    row_warnings.append(_record_unrecorded_error(df, idx, e, status_col=status_col))
+                    pending_warnings.append(
+                        _record_unrecorded_error(df, idx, e, status_col=status_col)
+                    )
                     error = _recorded_error(df, idx)
                     snapshot = _count_row(idx)
                 _finish(row, started, snapshot, success=False, error=error, values={})
+
+    def emit_pending_warnings() -> None:
+        """Emite os avisos guardados até aqui; sem nenhum, não disputa `lock`."""
+        if not pending_warnings:
+            return
         with lock:
-            messages = row_warnings.copy()
-            row_warnings.clear()
+            messages = pending_warnings.copy()
+            pending_warnings.clear()
         for message in messages:
             _warn_at_user(message)
 
@@ -5065,6 +5073,7 @@ def _process_rows_parallel(  # noqa: C901, PLR0913, PLR0915 (estado compartilhad
                 for future in done:
                     collect(future)
                     pbar.update()
+                emit_pending_warnings()
 
         # A gravação do `with` acima não cobre o que vem depois dele. Uma exceção
         # durante as marcas de uma interrupção ou durante a gravação final, como
