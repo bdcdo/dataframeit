@@ -207,3 +207,4 @@ class InfoCompleta(BaseModel):
 4. Circular dependencies are not allowed, including between a group and fields outside it.
 5. Each condition is evaluated once: before the field's call, or after the group's answer when it depends on another field of the same group.
 6. Fields with conditions are processed in sequence, in dependency order; a skipped field spends no search.
+7. A skipped field is saved as `None` even when its `exclude_if` would drop `None` from `model_dump`: the condition decides, and `exclude_if` is not called with the skipped field's `None`. With `reprocess_columns`, that `None` replaces the row's previous value.

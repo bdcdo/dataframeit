@@ -977,6 +977,76 @@ def test_excecao_do_validador_na_linha_montada_fica_no_erro_da_linha():
     ]
 
 
+class ModeloComSerializadorPorValor(BaseModel):
+    categoria: str
+    nota: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _sem_nota_secreta(self, handler):
+        dados = handler(self)
+        if dados.get("nota") == "secreta":
+            del dados["nota"]
+        return dados
+
+
+@pytest.mark.parametrize("por_campo", [False, True])
+@pytest.mark.parametrize(("nota", "gravada"), [("secreta", "anterior"), ("pública", "pública")])
+def test_campo_que_o_model_serializer_tira_so_com_alguns_valores_segue_o_dump(
+    por_campo, nota, gravada
+):
+    """O modo por campo grava o dump da linha validada, como o modo simples."""
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "categoria": ["velha"],
+            "nota": ["anterior"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado = _rodar_com_dump(
+        entrada,
+        ModeloComSerializadorPorValor,
+        {"categoria": "nova", "nota": nota},
+        por_campo=por_campo,
+        reprocess_columns=["categoria", "nota"],
+    )
+
+    assert resultado["nota"].tolist() == [gravada]
+
+
+class ModeloComPuladoQueOExcludeIfTiraria(BaseModel):
+    categoria: str
+    obs: str | None = Field(
+        None,
+        exclude_if=lambda valor: valor is None,
+        json_schema_extra={"condition": {"field": "categoria", "equals": "com obs"}},
+    )
+
+
+def test_campo_pulado_pela_condicao_e_gravado_none_mesmo_com_exclude_if():
+    """A condição decide: o exclude_if não é chamado com o None do campo pulado."""
+    entrada = pd.DataFrame(
+        {
+            "texto": ["a"],
+            "categoria": ["com obs"],
+            "obs": ["anterior"],
+            "_dataframeit_status": ["processed"],
+        }
+    )
+
+    resultado = _rodar_com_dump(
+        entrada,
+        ModeloComPuladoQueOExcludeIfTiraria,
+        {"categoria": "sem obs", "obs": "não pedida"},
+        por_campo=True,
+        reprocess_columns=["categoria", "obs"],
+    )
+
+    assert resultado["categoria"].tolist() == ["sem obs"]
+    assert resultado["obs"].tolist() == [None]
+
+
 class ModeloComExcludeIfDoValidado(BaseModel):
     categoria: str
     obs: str | None = Field(None, exclude_if=lambda valor: valor is None)

@@ -207,3 +207,4 @@ class InfoCompleta(BaseModel):
 4. Dependências circulares não são permitidas, inclusive entre um grupo e campos de fora dele.
 5. Cada condição é avaliada uma vez: antes da chamada do campo, ou depois da resposta do grupo quando depende de outro campo do mesmo grupo.
 6. Os campos com condição são processados em sequência, na ordem das dependências; um campo pulado não consome busca.
+7. O campo pulado é gravado como `None` mesmo quando o `exclude_if` dele tiraria o `None` do `model_dump`: a condição decide, e o `exclude_if` não é chamado com o `None` do campo pulado. Com `reprocess_columns`, esse `None` substitui o valor anterior da linha.
