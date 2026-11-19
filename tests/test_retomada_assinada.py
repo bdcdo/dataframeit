@@ -38,6 +38,7 @@ from typing_extensions import TypedDict, override
 from dataframeit import ProviderUsageLimitError, dataframeit, read_df
 from dataframeit.core import (
     _dropped_by_model_serializer,
+    _read_checkpoint_signature,
     _run_signature,
     _same_at,
     _same_json,
@@ -1538,26 +1539,67 @@ class ComFabricaDoOutro(BaseModel):
     campo1: str = Field(default_factory=lambda dados: dados["outro"].upper())
 
 
-@pytest.mark.parametrize(("formato", "valor"), [("csv", "O"), ("xlsx", "O"), ("parquet", "")])
-def test_texto_vazio_do_campo_com_fabrica_dos_dados_vira_o_valor_da_fabrica(
-    tmp_path, formato, valor
-):
-    """O texto vazio do campo cuja fábrica lê os outros campos não é restaurado.
-
-    No CSV e no XLSX, a célula vazia dele conta como ausente, e a retomada a
-    preenche com o valor da fábrica, embora a execução tenha gravado "". O
-    parquet guarda o texto vazio, que volta como foi gravado.
-    """
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+@pytest.mark.parametrize("valor", ["", '""', "N/A"])
+def test_texto_do_campo_com_fabrica_dos_dados_volta_como_foi_gravado(tmp_path, formato, valor):
+    """O texto vazio e o texto com aspas voltam intactos, sem usar a fábrica."""
     direta, retomada, chamadas = _direta_e_retomada(
         tmp_path,
         formato,
         ComFabricaDoOutro,
-        lambda text: {"outro": "o", "campo1": ""} if text == "a" else {"outro": "x", "campo1": "y"},
+        lambda text: (
+            {"outro": "o", "campo1": valor} if text == "a" else {"outro": "x", "campo1": "y"}
+        ),
     )
 
     assert chamadas == ["b"]
-    assert list(direta["campo1"]) == ["", "y"]
-    assert list(retomada["campo1"]) == [valor, "y"]
+    assert list(retomada["campo1"]) == list(direta["campo1"]) == [valor, "y"]
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx"])
+def test_texto_vazio_volta_sem_rodar_a_fabrica_dos_dados_que_levanta(tmp_path, formato):
+    """Uma resposta vazia já gravada dispensa a fábrica que lê os outros campos."""
+
+    def fabrica(dados):
+        return dados["outro_inexistente"]
+
+    class ComFabricaQueLevanta(BaseModel):
+        outro: str
+        campo1: str = Field(default_factory=fabrica)
+
+    direta, retomada, chamadas = _direta_e_retomada(
+        tmp_path, formato, ComFabricaQueLevanta, lambda _: {"outro": "x", "campo1": ""}
+    )
+
+    assert chamadas == ["b"]
+    assert list(retomada["campo1"]) == list(direta["campo1"]) == ["", ""]
+
+
+@pytest.mark.parametrize("formato", ["csv", "xlsx"])
+def test_checkpoint_sem_marca_de_aspas_mantem_o_texto_literal(tmp_path, formato):
+    """Aspas gravadas sem escape são a resposta original, não o texto vazio."""
+    valor = '""'
+    _, saida, _ = _direta_e_retomada(
+        tmp_path, formato, ComFabricaDoOutro, lambda _: {"outro": "x", "campo1": valor}
+    )
+    caminho = tmp_path / f"ckpt.{formato}"
+    metadados = _read_checkpoint_signature(caminho)
+    assert metadados is not None
+    metadados.pop("quoted_factory_text")
+    saida["_dataframeit_status"] = "processed"
+    _save_checkpoint(saida, caminho, metadados)
+
+    with patch("dataframeit.core.call_langchain") as llm:
+        retomada = dataframeit(
+            pd.DataFrame({"texto": ["a", "b"]}),
+            questions=ComFabricaDoOutro,
+            prompt="{texto}",
+            batch_size=1,
+            checkpoint_path=caminho,
+        )
+
+    llm.assert_not_called()
+    assert list(retomada["campo1"]) == [valor, valor]
 
 
 @pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])

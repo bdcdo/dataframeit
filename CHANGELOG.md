@@ -85,6 +85,7 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ### Corrigido
 
+- A retomada do CSV e do XLSX preserva o texto vazio num campo `str` cuja `default_factory` lê outros campos, sem chamar a fábrica para substituir o texto já gravado (#290).
 - Com o aviso tratado como erro (`-W error`), a linha que falha é registrada como `'error'`, com o erro dela, e entregue ao `on_row_done` antes de o aviso da falha sair de `dataframeit()`, nos dois modos. Antes o aviso saía antes do registro, a linha ia ao checkpoint sem status, e toda retomada a chamava de novo e parava no mesmo ponto enquanto ela falhasse (#411).
 - No modo paralelo, os avisos da linha que falha, o da falha e o de redução de workers por rate limit, saem pela thread principal, depois de a linha ser registrada. Tratado como erro, o aviso de redução de workers sai de `dataframeit()` como exceção, e a linha guarda o 429; antes ele levantava na thread da linha, a execução seguia, e o erro gravado era `[Falha ao registrar o erro] UserWarning: Rate limit detectado! ...` (#411).
 - A falha da barra de progresso com o aviso dela tratado como erro não sai mais no lugar da exceção que já deixava o laço das linhas, como o Ctrl-C: vai nela como nota, como a falha da gravação do checkpoint na saída (#411).
