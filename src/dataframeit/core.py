@@ -97,6 +97,7 @@ from .utils import (
     _admits_none,
     _any_from_text,
     _column_rank,
+    _DefaultFactoryError,
     _dropped_by_model_serializer,
     _excluded_fields,
     _is_structure_class,
@@ -659,6 +660,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915 (validaç
         and _admits_none(field.annotation)
         and (field.default_factory is not None or field.default is not None)
     )
+    factory_fields = frozenset(
+        name
+        for name, field in pydantic_model.model_fields.items()
+        if field.default_factory is not None
+    )
 
     # O NaN só é valor na coluna de objetos, que guarda o None à parte. Na
     # coluna float64, como a do CSV relido, o NaN é também a resposta None e a
@@ -746,13 +752,16 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915 (validaç
                     continue
             projected[field_name] = value
 
-        validated_data, rejected = _validate_row(
-            _skipping_model(
-                pydantic_model, skipped, required_excluded | frozenset(omitted_required)
-            ),
-            projected,
-            rejected_fields,
+        hidden = required_excluded | frozenset(omitted_required)
+        row_model = _skipping_model(
+            pydantic_model, skipped, hidden, factory_fields.difference(projected, skipped, hidden)
         )
+        failed_factory = None
+        try:
+            validated_data, rejected = _validate_row(row_model, projected, rejected_fields)
+        except _DefaultFactoryError as error:
+            failed_factory = error.field_name
+            validated_data, rejected = None, {failed_factory}
         if validated_data is None:
             incompatible_fields.update(rejected)
             for field_name in missing_values:
@@ -763,10 +772,11 @@ def _validate_processed_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915 (validaç
                     # O None gravado, que a linha mantida mantém.
                     values_to_fill[(position, field_name)] = None
                     continue
+                if field_name == failed_factory:
+                    continue
                 try:
                     default = field.get_default(call_default_factory=True)
-                except ValueError:
-                    # This factory needs the fields that are being reprocessed.
+                except Exception:  # noqa: BLE001 (a fábrica pode depender dos valores recusados)
                     incompatible_fields.add(field_name)
                 else:
                     values_to_fill[(position, field_name)] = default

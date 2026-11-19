@@ -24,11 +24,12 @@ import types
 import typing
 import warnings
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, get_args, get_origin, overload
 
 import pandas as pd
 from pandas.api.types import is_float_dtype, is_integer_dtype, is_string_dtype
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from pandas.io.parsers import TextFileReader
     from polars import DataFrame as PolarsDataFrame
     from polars import Series as PolarsSeries
+    from pydantic.fields import FieldInfo
 
     # Tudo o que `read_df` pode devolver: o DataFrame e o que o leitor do pandas
     # devolve no lugar dele. O parâmetro do JsonReader fica Any, porque é um no
@@ -361,9 +363,38 @@ def _dropped_by_model_serializer(
     return frozenset(model.model_fields) - dumped - excluded_fields
 
 
+class _DefaultFactoryError(Exception):
+    """Identifica o campo cuja fábrica falhou durante a validação da retomada."""
+
+    def __init__(self, field_name: str) -> None:
+        self.field_name = field_name
+        super().__init__(field_name)
+
+
+_DefaultValue = TypeVar("_DefaultValue")
+
+
+def _guard_default_factory(
+    field_name: str, factory: Callable[..., _DefaultValue]
+) -> Callable[..., _DefaultValue]:
+    """Identifica a fábrica que levantou sem mudar os dados que o Pydantic passa a ela."""
+
+    @functools.wraps(factory)
+    def guarded(*args: Any, **kwargs: Any) -> _DefaultValue:
+        try:
+            return factory(*args, **kwargs)
+        except Exception as error:
+            raise _DefaultFactoryError(field_name) from error
+
+    return guarded
+
+
 @functools.lru_cache(maxsize=256)
 def _skipping_model(
-    model: type[BaseModel], skipped: frozenset[str], hidden: frozenset[str]
+    model: type[BaseModel],
+    skipped: frozenset[str],
+    hidden: frozenset[str],
+    guarded: frozenset[str] = frozenset(),
 ) -> type[BaseModel]:
     """O modelo de validação de uma linha com campos sem resposta trocados por `Any = None`.
 
@@ -372,23 +403,32 @@ def _skipping_model(
     serializador do campo, salvo o que o @model_serializer tira, que chega a
     ele como na execução, com o None no lugar do valor. Nos dois, o None não
     passa pelos validadores do campo, nem com o validate_default do modelo.
+    Na retomada, as fábricas dos campos de `guarded` identificam o campo se falharem.
     """
-    if not skipped and not hidden:
+    if not skipped and not hidden and not guarded:
         return model
     serializer_dropped = _dropped_by_model_serializer(model, _excluded_fields(model))
+    fields: dict[str, tuple[Any, FieldInfo | None]] = {
+        field_name: (
+            Any,
+            Field(None, exclude=field_name not in serializer_dropped, validate_default=False),
+        )
+        if field_name in hidden
+        else (Any, Field(None, validate_default=False))
+        for field_name in skipped | hidden
+    }
+    for field_name in guarded:
+        field = copy(model.model_fields[field_name])
+        factory = _guard_default_factory(
+            field_name, cast("Callable[..., Any]", field.default_factory)
+        )
+        field.default_factory = factory
+        # O Pydantic remonta o campo a partir dos atributos explícitos do FieldInfo.
+        field._attributes_set = {**field._attributes_set, "default_factory": factory}  # noqa: SLF001
+        fields[field_name] = (field.annotation, field)
     # Campos por **kwargs, que o ty não casa com as sobrecargas de create_model.
     return create_model(  # ty: ignore[no-matching-overload]
-        f"{model.__name__}Skipped",
-        __base__=model,
-        **{
-            field_name: (
-                Any,
-                Field(None, exclude=field_name not in serializer_dropped, validate_default=False),
-            )
-            if field_name in hidden
-            else (Any, Field(None, validate_default=False))
-            for field_name in skipped | hidden
-        },
+        f"{model.__name__}Skipped", __base__=model, **fields
     )
 
 
