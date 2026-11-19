@@ -109,6 +109,7 @@ from .utils import (
     _resolved,
     _silent_slice_write,
     _skipping_model,
+    _unquoted_scalar_text,
     _user_stacklevel,
     accepts_only_text,
     from_pandas,
@@ -1987,9 +1988,23 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
             status_col=status_col,
         )
         # Tirado da entrada antes da releitura, que a altera.
+        meta: dict[str, Any] = {
+            "signature": signature,
+            "texts": _text_hashes(df_pandas[text_column]),
+        }
+        if checkpoint.path.suffix.lower() in _EMPTY_TEXT_AS_ABSENT_EXTS:
+            factory_text = [
+                name
+                for name, field in questions.model_fields.items()
+                if field.default_factory_takes_validated_data is True
+                and accepts_only_text(field.annotation)
+                and not _admits_none(field.annotation)
+            ]
+            if factory_text:
+                meta["quoted_factory_text"] = factory_text
         checkpoint = dataclasses.replace(
             checkpoint,
-            meta={"signature": signature, "texts": _text_hashes(df_pandas[text_column])},
+            meta=meta,
             structures=frozenset(complex_fields),
             any_fields=any_fields,
             nan_fields=nan_columns,
@@ -1998,7 +2013,8 @@ def dataframeit(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917 (API pública
                 for field_name, field in questions.model_fields.items()
                 if _accepts_only_decimal(field.annotation)
             ),
-            scalar_fields=frozenset(
+            scalar_fields=frozenset(meta.get("quoted_factory_text", ()))
+            | frozenset(
                 field_name
                 for field_name, field in questions.model_fields.items()
                 if _mixes_text_and_scalar(field.annotation)
@@ -3348,7 +3364,18 @@ def _checkpoint_mismatch(
     # volta partido em duas linhas em algumas versões do pandas).
     if status_col not in saved.columns or len(saved) != len(df):
         return "não relê com a coluna de status e as linhas da entrada", None
+    # A marca permite ler checkpoints sem o escape sem tirar aspas do texto original.
+    if meta.get("quoted_factory_text") == (quoted_fields := run.get("quoted_factory_text")):
+        for name in saved.columns.intersection(quoted_fields or ()):
+            saved[name] = saved[name].map(_unquote_checkpoint_text)
     return None, saved
+
+
+def _unquote_checkpoint_text(value: object) -> object:
+    """Devolve o texto original ou a célula relida, inclusive o None."""
+    if isinstance(value, str) and (text := _unquoted_scalar_text(value)) is not None:
+        return text
+    return value
 
 
 def _holds_value(
@@ -3473,9 +3500,9 @@ def _resume_from_checkpoint(  # noqa: PLR0913 (a entrada, o checkpoint e a confi
     campo que só aceita texto, não admite None e cujo default não pode ser None
     (`_default_may_be_none`) só fica None quando a condição dele é falsa ou
     quando um validador troca uma resposta por None, que o tipo do campo
-    recusa. O campo cuja fábrica lê os outros campos não é restaurado: a célula
-    vazia dele conta como ausente, e a validação a preenche com o valor da
-    fábrica, mesmo onde a execução gravou "". A validação da retomada lê a
+    recusa. O texto vazio de campo cuja fábrica lê os outros campos vai entre
+    aspas e é restaurado na leitura. A célula vazia dele conta como ausente e
+    recebe o default. A validação da retomada lê a
     condição na linha, e do validador só pega o que troca o próprio texto
     vazio: o "" restaurado que ela não devolve como "" é acusado. O None que o
     validador dá a outra resposta, como "N/A", fica na mesma célula vazia, e a
@@ -3595,9 +3622,9 @@ def _default_may_be_none(field: FieldInfo) -> bool:
 
     O pydantic não valida o default, e o None dele fica no campo que o tipo
     recusa. A fábrica que lê os outros campos só é chamada com eles, e pode
-    dar None em alguma linha. Por isso o campo dela não é restaurado: na
-    retomada do CSV e do XLSX, a célula vazia conta como ausente e a fábrica a
-    preenche, mesmo onde a execução gravou "".
+    dar None em alguma linha. Na retomada do CSV e do XLSX, a célula vazia
+    conta como ausente e a fábrica a preenche. O texto vazio, quando gravado
+    entre aspas, já chega como texto à validação.
 
     A flag do pydantic vem antes da chamada porque essa fábrica, chamada sem
     os dados, levanta ValueError, e a resposta dela não pode depender de como
@@ -3728,10 +3755,12 @@ def _structures_as_json(  # noqa: PLR0913, PLR0917 (uma família de colunas por 
     como o texto "NaN": o CSV e o XLSX o gravariam como a célula vazia da
     linha pendente. O texto "NaN" que o modelo devolveu num campo desses que
     também admite texto vai com um par de aspas (`_quoted_nan_text`). Nas
-    `scalar_columns`, as da união de texto com outro tipo (`_mixes_text_and_scalar`),
+    `scalar_columns`, as da união de texto com outro tipo (`_mixes_text_and_scalar`)
+    e as dos campos de texto cuja fábrica lê os outros campos,
     vai com um par de aspas todo texto que o leitor devolveria como número,
-    bool ou ausência (`_quoted_scalar_text`). `read_df` com o modelo relê
-    todos (`_raw_restorer`).
+    bool ou ausência (`_quoted_scalar_text`). `read_df` remove as aspas da
+    união (`_raw_restorer`), e a retomada tira as dos campos marcados na
+    assinatura (`_checkpoint_mismatch`).
 
     Em qualquer formato, na coluna com um Decimal NaN todo Decimal vai como
     texto. O pandas conta o Decimal NaN como ausente; o
@@ -3852,8 +3881,8 @@ def _save_checkpoint(  # noqa: PLR0913, PLR0917 (o arquivo e o que a gravação 
     `nan_fields` são os campos cujo NaN é valor (`_keeps_nan`), gravado à
     parte da célula vazia, como o dos `any_fields`; `decimal_fields`, os
     campos só de `Decimal`, que o CSV e o XLSX gravam como texto; e
-    `scalar_fields`, as uniões de texto com outro tipo sem estrutura, cujo texto o CSV e o XLSX
-    gravam entre aspas quando o leitor o trocaria.
+    `scalar_fields`, os campos cujo texto o CSV e o XLSX gravam entre aspas
+    quando o leitor o trocaria.
     """
     ext = path.suffix.lower()
     tmp = path.with_name(path.name + ".tmp")
@@ -3955,8 +3984,8 @@ class _Checkpoint:
     nan_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
     # Campos só de `Decimal`, que o CSV e o XLSX gravam como texto.
     decimal_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
-    # Uniões de texto com outro tipo sem estrutura, cujo texto o CSV e o XLSX gravam entre aspas
-    # quando o leitor o trocaria (`_quoted_scalar_text`).
+    # Campos cujo texto o CSV e o XLSX gravam entre aspas quando o leitor o trocaria
+    # (`_quoted_scalar_text`).
     scalar_fields: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
 
 
