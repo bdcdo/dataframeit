@@ -1649,6 +1649,77 @@ def test_none_do_validador_em_campo_textual_continua_acusado(tmp_path, formato):
         )
 
 
+@pytest.mark.parametrize("formato", ["csv", "xlsx", "parquet"])
+def test_fabrica_que_levanta_com_none_do_validador_acusa_o_campo(tmp_path, formato):
+    """A retomada orienta a reprocessar o campo e a linha pode ser recuperada."""
+    if formato == "xlsx":
+        pytest.importorskip("openpyxl")
+    if formato == "parquet":
+        pytest.importorskip("pyarrow")
+
+    def fabrica():
+        raise KeyError
+
+    class ComFabricaQueLevanta(VazioViraNone):
+        campo1: str = Field(default_factory=fabrica)
+        outro: str
+
+    ckpt = tmp_path / f"ckpt.{formato}"
+    df = pd.DataFrame({"texto": ["a", "b"]})
+
+    def dump(text):
+        return ComFabricaQueLevanta(
+            campo1="" if text == "a" else text, outro="preservado"
+        ).model_dump()
+
+    with pytest.warns(UserWarning, match="interrompida"):
+        _roda(
+            df,
+            _uma_linha_por_execucao(dump),
+            modelo=ComFabricaQueLevanta,
+            batch_size=1,
+            checkpoint_path=ckpt,
+        )
+
+    def llm(text, *_args, **_kwargs):
+        return {"data": {"campo1": text, "outro": "novo"}, "usage": None}
+
+    with pytest.raises(ValueError, match=r"campos incompatíveis \['campo1'\]"):
+        _roda(df, llm, modelo=ComFabricaQueLevanta, batch_size=1, checkpoint_path=ckpt)
+
+    saida = _roda(
+        df,
+        llm,
+        modelo=ComFabricaQueLevanta,
+        batch_size=1,
+        checkpoint_path=ckpt,
+        reprocess_columns=["campo1"],
+    )
+    assert list(saida["campo1"]) == ["a", "b"]
+    assert list(saida["outro"]) == ["preservado", "novo"]
+
+
+def test_retomada_identifica_fabrica_dos_dados_que_falha_na_validacao_sem_strict():
+    """A fábrica recebe o inteiro validado antes dela e sua exceção acusa o campo."""
+    dados_recebidos = []
+
+    def fabrica(dados):
+        dados_recebidos.append(dados.copy())
+        raise RuntimeError
+
+    class ModeloEstrito(BaseModel):
+        model_config = ConfigDict(strict=True)
+        outro: int
+        campo1: str = Field(default_factory=fabrica)
+
+    df = pd.DataFrame({"outro": [1.0], "campo1": [None], "status": ["processed"]})
+    incompativeis, _ = _validate_processed_rows(df, "status", ModeloEstrito, set())
+
+    assert incompativeis == ["campo1"]
+    assert dados_recebidos == [{"outro": 1}]
+    assert type(dados_recebidos[0]["outro"]) is int
+
+
 class NaViraNone(BaseModel):
     campo1: str
 
